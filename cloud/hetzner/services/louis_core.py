@@ -3796,7 +3796,7 @@ def call_llm(
         log.info(f"→ Ollama ({OLLAMA_MODEL}) — {tag}")
         response = call_ollama(system_prompt, history, user_message, history_file=history_file)
         if response is not None and response.strip():
-            if first_of_day and needs_operational_context(user_message):
+            if first_of_day or _wants_follow_up_briefing(user_message) or needs_operational_context(user_message):
                 try:
                     save_last_briefing(response, snapshot)
                 except Exception:
