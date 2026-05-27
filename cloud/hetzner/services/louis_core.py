@@ -76,6 +76,41 @@ M365_HINT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Escritura explícita en archivos de memoria → Sonnet + tools (nunca Ollama)
+MEMORY_WRITE_RE = re.compile(
+    r"(?:"
+    r"\b(anota|anotar|guarda|guardar|registra|registrar)\b.*\b(?:agenda|AGENDA|clientes|CLIENTES|"
+    r"important|IMPORTANT|journal|JOURNAL|memoria|learnings|LEARNINGS|prospectos|PROSPECTOS)\b"
+    r"|"
+    r"\b(recuérdame|recuerdame|recuérdalo|recuerdalo)\b"
+    r"|"
+    r"\bagrega\s+(?:a|en)\s+(?:la\s+)?(?:agenda|AGENDA|clientes|CLIENTES|important|journal|memoria)\b"
+    r"|"
+    r"\bactualiza\s+(?:la\s+)?(?:agenda|AGENDA|clientes|CLIENTES|important)\b"
+    r"|"
+    r"\bescribe\s+en\s+(?:la\s+)?(?:agenda|AGENDA|clientes|memoria|important)\b"
+    r"|"
+    r"\b(anota|anotar)\s+(?:en\s+)?(?:agenda|AGENDA)\s*:"
+    r")",
+    re.IGNORECASE,
+)
+
+# Sub-agentes legales / invocación → Sonnet + tools
+LEGAL_AUTO_SONNET_RE = re.compile(
+    r"(?:"
+    r"\b(invocar|invoca|delegar)\s+(?:a\s+)?(?:el\s+)?(?:agente|sub-?agente)\b"
+    r"|"
+    r"\b(consejo\s+experto\s+legal|consejo\s+legal)\b"
+    r"|"
+    r"\b(crear|crea|nuevo|registrar)\s+(?:un\s+)?(?:agente|sub-?agente)\b"
+    r"|"
+    r"\b(listar|lista)\s+(?:mis\s+)?agentes\b"
+    r"|"
+    r"\b(agente\s+legal|agentes\s+legales)\b"
+    r")",
+    re.IGNORECASE,
+)
+
 OPERATIONAL_CONTEXT_RE = re.compile(
     r"\b(pendiente|pendientes|agenda|briefing|urgente|hoy|mañana|manana|resumen|"
     r"recuerda|recordar|vimos|matutino|seguimiento|prioridad|backlog|journal|"
@@ -448,6 +483,9 @@ OLLAMA_ANTI_HALLUCINATION_TAIL = (
     "El bloque [CONTEXTO INTERNO] en este system prompt tiene prioridad sobre memoria genérica. "
     "NO inventes tareas, nombres ni placeholders. Si falta un dato, di que no está en AGENDA/IMPORTANT.\n"
     "NUNCA repitas etiquetas internas ([CONTEXTO INTERNO], INSTRUCCIÓN, SNAPSHOT) en tu respuesta.\n"
+    "MEMORIA — SOLO LECTURA: puedes citar el contexto interno pero NO digas que ya anotaste, guardaste "
+    "o actualizaste un archivo. Si Polo pide guardar algo, indica que use `/sonnet anota en AGENDA: …` "
+    "o escriba explícitamente qué guardar.\n"
 )
 
 GPT_OSS_STYLE_APPEND = (
@@ -540,6 +578,15 @@ def build_operational_snapshot() -> str:
 
     lines.append("\n### Última entrada JOURNAL.md")
     lines.append(_last_journal_entry(journal))
+
+    clientes = _read_space_file("CLIENTES.md")
+    lines.append("\n### CLIENTES.md (resumen)")
+    if clientes.strip():
+        lines.append(clientes[:1500])
+        if len(clientes) > 1500:
+            lines.append("…[truncado]")
+    else:
+        lines.append("(vacío)")
 
     return "\n".join(lines)
 
@@ -703,7 +750,7 @@ def _mark_sonnet_hint_shown():
 
 
 def _needs_sonnet_hint(user_message: str) -> bool:
-    if needs_claude(user_message):
+    if needs_claude(user_message) or needs_sonnet_auto(user_message):
         return False
     return bool(M365_HINT_RE.search(user_message or ""))
 
@@ -717,6 +764,64 @@ def _sonnet_hint_response() -> str:
         "Requiere créditos Anthropic activos. En modo local te ayudo con agenda, "
         "pendientes y seguimiento desde AGENDA.md."
     )
+
+
+def needs_memory_write(user_message: str) -> bool:
+    """True si Polo pide persistir en archivos de memoria (carril escritura)."""
+    if not user_message:
+        return False
+    msg = user_message.strip()
+    if msg.lower().startswith(OLLAMA_FORCE_PREFIXES):
+        return False
+    return bool(MEMORY_WRITE_RE.search(msg))
+
+
+def needs_legal_sonnet(user_message: str) -> bool:
+    """True si el mensaje requiere tools de agentes legales."""
+    if not user_message:
+        return False
+    msg = user_message.strip()
+    if msg.lower().startswith(OLLAMA_FORCE_PREFIXES):
+        return False
+    return bool(LEGAL_AUTO_SONNET_RE.search(msg))
+
+
+def needs_sonnet_auto(user_message: str) -> bool:
+    """Ruta Sonnet sin prefijo: escritura memoria o agentes legales."""
+    return needs_memory_write(user_message) or needs_legal_sonnet(user_message)
+
+
+def _memory_write_billing_msg() -> str:
+    return (
+        "⚠️ Para *guardar en memoria* (AGENDA, CLIENTES, etc.) necesito Claude con tools.\n\n"
+        "Tu cuenta Anthropic está sin créditos. Cuando recargues, escribe por ejemplo:\n"
+        "`/sonnet anota en AGENDA: llamar a Gonzalo mañana 10:00`\n\n"
+        "Mientras tanto puedo *leer* pendientes desde AGENDA con un `hola` o preguntas de seguimiento."
+    )
+
+
+def _legal_sonnet_billing_msg() -> str:
+    return (
+        "⚠️ Para *agentes legales* (invocar, consejo experto, listar) necesito Claude Sonnet con tools.\n\n"
+        "Recarga créditos en https://console.anthropic.com/settings/billing y usa:\n"
+        "`/sonnet lista mis agentes`\n"
+        "`/sonnet invoca agente legal-regulatory-compliance con tarea: …`"
+    )
+
+
+def _sonnet_auto_billing_msg(user_message: str) -> str:
+    if needs_memory_write(user_message):
+        return _memory_write_billing_msg()
+    if needs_legal_sonnet(user_message):
+        return _legal_sonnet_billing_msg()
+    return _billing_error_msg()
+
+
+def _format_memory_tool_confirmations(tool_results: list[str]) -> str:
+    lines = [r for r in tool_results if r and ("OK agregado" in r or "OK escrito" in r)]
+    if not lines:
+        return ""
+    return "✅ *Memoria actualizada:*\n" + "\n".join(f"• {ln}" for ln in lines)
 
 
 def format_morning_briefing_deterministic(snapshot: str) -> str:
@@ -3812,6 +3917,7 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
     max_loops = 8
     turn_texts = []   # texto emitido por cada turn (puede ser "")
     tools_executed = []  # nombres de tools ejecutados (para fallback message)
+    memory_tool_results = []  # confirmaciones append/write_memory
     for _ in range(max_loops):
         body = {
             "model": CLAUDE_SONNET,
@@ -3844,14 +3950,23 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
         for tc in tool_calls:
             tools_executed.append(tc["name"])
             result = execute_tool(tc["name"], tc.get("input", {}))
+            if tc["name"] in ("append_to_memory", "write_memory"):
+                memory_tool_results.append(result)
             tool_results.append({"type": "tool_result", "tool_use_id": tc["id"], "content": result})
         messages.append({"role": "user", "content": tool_results})
+
+    mem_confirm = _format_memory_tool_confirmations(memory_tool_results)
 
     # Devolver el último turn con texto no vacío
     for t in reversed(turn_texts):
         if t and t.strip():
-            return t.strip()
+            out = t.strip()
+            if mem_confirm:
+                return f"{out}\n\n{mem_confirm}"
+            return out
     # Ningún turn devolvió texto — fallback informativo en lugar de "(sin respuesta)"
+    if mem_confirm:
+        return mem_confirm
     if tools_executed:
         return (
             f"Ejecuté: {', '.join(tools_executed)}. "
@@ -3921,13 +4036,23 @@ def call_llm(
         log.info(f"→ Haiku ({CLAUDE_HAIKU}) — override /haiku")
         return _call_claude_with_billing_check(call_haiku, api_key, system_prompt, history, user_message), "haiku"
 
-    # Análisis profundo / tools → Sonnet (solo con prefijo explícito)
-    if needs_claude(user_message):
-        log.info(f"→ Sonnet ({CLAUDE_SONNET}) — prefijo /sonnet o /profundo")
+    # Análisis profundo / tools → Sonnet (prefijo explícito o auto: memoria / agentes)
+    if needs_claude(user_message) or needs_sonnet_auto(user_message):
+        reason = "prefijo /sonnet" if needs_claude(user_message) else (
+            "escritura memoria" if needs_memory_write(user_message) else "agentes legales"
+        )
+        log.info(f"→ Sonnet ({CLAUDE_SONNET}) — {reason}")
         response = call_claude(api_key, system_prompt, history, user_message) or ""
         if _is_billing_error(response):
+            if needs_sonnet_auto(user_message) and not needs_claude(user_message):
+                return _sonnet_auto_billing_msg(user_message), "sonnet-billing-error"
             return _billing_error_msg(), "sonnet-billing-error"
-        return response, "sonnet"
+        tag = "sonnet"
+        if needs_memory_write(user_message) and not needs_claude(user_message):
+            tag = "sonnet-memory"
+        elif needs_legal_sonnet(user_message) and not needs_claude(user_message):
+            tag = "sonnet-legal"
+        return response, tag
 
     # Default: Ollama local
     return _ollama_route("chat default")

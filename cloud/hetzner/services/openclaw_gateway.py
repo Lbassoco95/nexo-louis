@@ -12,6 +12,13 @@ delgada que envuelve `louis_core` y expone tres rutas:
 
 Diseñado para correr en 127.0.0.1:3000 detrás de Caddy en louis.kawiil.mx.
 
+Pruebas rápidas (en el VPS):
+  curl -s http://127.0.0.1:3000/v1/status | jq '.agents_count,.models.ollama'
+  curl -s http://127.0.0.1:3000/v1/agents | jq '.count'
+  curl -s -X POST http://127.0.0.1:3000/v1/agents/legal-regulatory-compliance \\
+    -H 'Content-Type: application/json' \\
+    -d '{"tarea":"Resumen obligaciones CNBV","contexto":"transmisor de dinero"}'
+
 Sólo stdlib (http.server) — sin FastAPI/uvicorn — para minimizar deps.
 """
 
@@ -89,15 +96,25 @@ class Handler(BaseHTTPRequestHandler):
                 status = core._verificar_conexiones(incluir_m365=False)
             except Exception as e:
                 status = f"(error: {e})"
+            agents_dir = Path("/opt/openclaw/spaces/general/agents")
+            agents_count = len(list(agents_dir.glob("*.md"))) if agents_dir.exists() else 0
             self._send_json(200, {
                 "service": "openclaw-gateway",
                 "louis_core_loaded": True,
                 "memory_files": core.MEMORY_FILES,
+                "agents_count": agents_count,
+                "agents_dir": str(agents_dir),
                 "tools_count": len(core.TOOLS_DEFINITION),
                 "models": {
-                    "default_chat": core.CLAUDE_HAIKU,
+                    "default_chat": "ollama",
                     "tool_use": core.CLAUDE_SONNET,
                     "ollama": core.OLLAMA_MODEL,
+                },
+                "routing": {
+                    "chat_default": "ollama",
+                    "memory_write_auto": "sonnet",
+                    "legal_agents_auto": "sonnet",
+                    "m365_explicit": "/sonnet",
                 },
                 "introspection": status,
             })
