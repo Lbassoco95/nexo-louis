@@ -55,7 +55,8 @@ ANTHROPIC_VERSION = "2023-06-01"
 
 OLLAMA_BASE = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_DEFAULT_MODEL", "llama3.1:8b-instruct-q4_K_M")
-OLLAMA_TIMEOUT = 120  # CPU en VPS; prompt recortado para caber en num_ctx
+OLLAMA_TIMEOUT = 180  # CPU en VPS; snapshot inyectado alarga inferencia
+OLLAMA_SNAPSHOT_USER_MAX = 2200
 OLLAMA_MAX_SYSTEM_CHARS = 10_000
 OLLAMA_MAX_HISTORY_TURNS = 16
 OLLAMA_MEMORY_DEFAULT_SNIPPET = 300
@@ -501,8 +502,7 @@ def build_operational_snapshot() -> str:
     if hoy:
         lines.append(hoy[:3500])
     elif open_all:
-        for item in open_all[:12]:
-            lines.append(f"- {item}")
+        lines.extend(open_all[:12])
     else:
         lines.append("(sin pendientes abiertos en AGENDA — sección Para HOY vacía)")
 
@@ -589,9 +589,10 @@ def build_ollama_user_message(
     first_of_day: bool,
 ) -> str:
     """Envuelve el mensaje del usuario con snapshot real + instrucción de briefing."""
+    snap_show = snapshot if len(snapshot) <= OLLAMA_SNAPSHOT_USER_MAX else snapshot[:OLLAMA_SNAPSHOT_USER_MAX] + "\n…[snapshot truncado]"
     blocks = [
         "## SNAPSHOT OPERATIVO (datos reales — NO inventar ni usar placeholders)",
-        snapshot,
+        snap_show,
     ]
     last_b = _load_last_briefing_text()
     if _wants_follow_up_briefing(user_message) and last_b:
@@ -3598,7 +3599,7 @@ def call_ollama(
         "model": OLLAMA_MODEL,
         "messages": messages,
         "stream": False,
-        "options": {"temperature": 0.7, "num_ctx": 8192, "num_predict": 384},
+        "options": {"temperature": 0.7, "num_ctx": 8192, "num_predict": 280},
     }
     try:
         resp = http_post_json(f"{OLLAMA_BASE}/api/chat", headers={}, body=body, timeout=OLLAMA_TIMEOUT)
@@ -3782,15 +3783,30 @@ def call_llm(
     first_of_day = is_first_conversation_today(history_file)
 
     def _ollama_route(tag: str) -> tuple:
+        snapshot = build_operational_snapshot()
+        # Primer hola del día: briefing determinístico (datos reales, <1s) — evita timeout CPU
+        if first_of_day and _is_greeting(user_message) and not history:
+            log.info(f"→ Briefing determinístico ({OLLAMA_MODEL}) — {tag}")
+            response = format_morning_briefing_deterministic(snapshot)
+            try:
+                save_last_briefing(response, snapshot)
+            except Exception:
+                log.warning("No pude guardar last-briefing.json", exc_info=True)
+            return response, "ollama-briefing"
         log.info(f"→ Ollama ({OLLAMA_MODEL}) — {tag}")
         response = call_ollama(system_prompt, history, user_message, history_file=history_file)
         if response is not None and response.strip():
-            if first_of_day and (_is_greeting(user_message) or not history):
+            if first_of_day and needs_operational_context(user_message):
                 try:
-                    save_last_briefing(response, build_operational_snapshot())
+                    save_last_briefing(response, snapshot)
                 except Exception:
                     log.warning("No pude guardar last-briefing.json", exc_info=True)
             return response, "ollama"
+        # Fallback: si Ollama timeout pero hay snapshot, manda datos reales sin inventar
+        if snapshot and "sin pendientes abiertos" not in snapshot.lower():
+            log.warning(f"Ollama timeout — fallback determinístico ({tag})")
+            fb = format_morning_briefing_deterministic(snapshot)
+            return fb + "\n\n_(Respuesta generada desde AGENDA real; Ollama tardó demasiado.)_", "ollama-snapshot-fallback"
         log.warning(f"Ollama no respondió ({tag})")
         return _ollama_unavailable_msg(), "ollama-error"
 
