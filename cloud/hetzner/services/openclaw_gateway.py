@@ -107,8 +107,9 @@ class Handler(BaseHTTPRequestHandler):
                 "tools_count": len(core.TOOLS_DEFINITION),
                 "models": {
                     "default_chat": "ollama",
+                    "ollama_fast": core.OLLAMA_FAST_MODEL,
+                    "ollama_quality": core.OLLAMA_QUALITY_MODEL,
                     "tool_use": core.CLAUDE_SONNET,
-                    "ollama": core.OLLAMA_MODEL,
                 },
                 "routing": {
                     "chat_default": "ollama",
@@ -251,27 +252,65 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"tool": tool_name, "result": result})
             return
 
+        # Crear sub-agente — POST /v1/agents
+        if self.path == "/v1/agents":
+            nombre = body.get("nombre") or body.get("name")
+            especialidad = body.get("especialidad") or body.get("description", "")
+            prompt = body.get("prompt") or body.get("system_prompt", "")
+            modelo = body.get("modelo") or body.get("model", "claude-sonnet-4-6")
+            if not nombre or not prompt:
+                self._send_json(400, {"error": "nombre y prompt requeridos"})
+                return
+            t0 = time.time()
+            try:
+                result = core.execute_tool("crear_agente", {
+                    "nombre": nombre,
+                    "especialidad": especialidad or "(sin descripción)",
+                    "prompt": prompt,
+                    "modelo": modelo,
+                })
+            except Exception as e:
+                self._send_json(500, {"error": str(e)})
+                return
+            ms = int((time.time() - t0) * 1000)
+            self._send_json(200, {
+                "ok": result.startswith("OK"),
+                "agent": nombre,
+                "model_used": modelo,
+                "response": result,
+                "latency_ms": ms,
+            })
+            return
+
         # Invocar sub-agente — POST /v1/agents/{name}
         if self.path.startswith("/v1/agents/"):
-            agent_name = self.path[len("/v1/agents/"):]
+            agent_name = self.path[len("/v1/agents/"):].strip("/")
             tarea = body.get("tarea", "") or body.get("task", "")
             contexto = body.get("contexto", "") or body.get("context", "")
+            modelo_override = body.get("modelo_override") or body.get("model")
             if not tarea:
                 self._send_json(400, {"error": "'tarea' requerido en body"})
                 return
+            t0 = time.time()
             try:
                 result = core.execute_tool("invocar_agente", {
                     "nombre": agent_name,
                     "tarea": tarea,
                     "contexto": contexto,
+                    "modelo_override": modelo_override,
                 })
             except Exception as e:
                 self._send_json(500, {"error": str(e)})
                 return
+            ms = int((time.time() - t0) * 1000)
+            model_used = "ollama" if "vía Ollama" in result else "claude"
             self._send_json(200, {
+                "ok": not result.startswith("ERROR"),
                 "agent": agent_name,
                 "tarea": tarea,
+                "model_used": model_used,
                 "response": result,
+                "latency_ms": ms,
             })
             return
 

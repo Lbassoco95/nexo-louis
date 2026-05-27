@@ -323,6 +323,15 @@ def process_update(update, telegram_token, chat_id, api_key, system_prompt):
     if not user_input or not user_input.strip():
         return
 
+    if core.is_status_command(user_input):
+        response = core._verificar_conexiones(incluir_m365=False)
+        model_used = "status"
+        core.append_history(HISTORY_FILE, "user", user_input)
+        core.append_history(HISTORY_FILE, "assistant", response)
+        log.info(f"← {model_used} ({len(response)} chars)")
+        telegram_send_message(telegram_token, chat_id, response, parse_mode=None)
+        return
+
     cleaned = core.strip_override_prefix(user_input)
     core.append_history(HISTORY_FILE, "user", user_input)
     history = core.load_history(HISTORY_FILE, max_turns=16)[:-1]

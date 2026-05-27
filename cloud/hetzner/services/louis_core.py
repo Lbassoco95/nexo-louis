@@ -54,8 +54,15 @@ ANTHROPIC_API_BASE = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 
 OLLAMA_BASE = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_DEFAULT_MODEL", "gpt-oss:20b")
-OLLAMA_TIMEOUT = 240  # gpt-oss:20b en CPU (MoE) — inferencia más lenta
+OLLAMA_FAST_MODEL = os.environ.get(
+    "OLLAMA_FAST_MODEL",
+    os.environ.get("OLLAMA_DEFAULT_MODEL", "llama3.1:8b"),
+)
+OLLAMA_QUALITY_MODEL = os.environ.get("OLLAMA_QUALITY_MODEL", "gpt-oss:20b")
+OLLAMA_MODEL = OLLAMA_FAST_MODEL  # alias logging / status
+OLLAMA_CHAT_TIMEOUT = int(os.environ.get("OLLAMA_CHAT_TIMEOUT", "45"))
+OLLAMA_QUALITY_TIMEOUT = int(os.environ.get("OLLAMA_QUALITY_TIMEOUT", "240"))
+AGENT_FALLBACK_OLLAMA = os.environ.get("AGENT_FALLBACK_OLLAMA", "1").lower() in ("1", "true", "yes")
 OLLAMA_SNAPSHOT_CONTEXT_MAX = 2000  # snapshot en system, no en user
 OLLAMA_MAX_SYSTEM_CHARS = 10_000
 OLLAMA_MAX_HISTORY_TURNS = 16
@@ -98,16 +105,25 @@ MEMORY_WRITE_RE = re.compile(
 # Sub-agentes legales / invocación → Sonnet + tools
 LEGAL_AUTO_SONNET_RE = re.compile(
     r"(?:"
-    r"\b(invocar|invoca|delegar)\s+(?:a\s+)?(?:el\s+)?(?:agente|sub-?agente)\b"
+    r"\b(invocar|invoca|delegar|delega)\s+(?:a\s+)?(?:el\s+)?(?:agente|sub-?agente|legal-)\b"
     r"|"
-    r"\b(consejo\s+experto\s+legal|consejo\s+legal)\b"
+    r"\bdelega\s+(?:a\s+)?legal-"
     r"|"
-    r"\b(crear|crea|nuevo|registrar)\s+(?:un\s+)?(?:agente|sub-?agente)\b"
+    r"\b(consejo\s+experto\s+legal|consejo\s+legal|consejo\s+experto)\b"
+    r"|"
+    r"\b(crear|crea|nuevo|registra|registrar)\s+(?:un\s+)?(?:agente|sub-?agente)\b"
+    r"|"
+    r"\bcrea\s+agente\b"
     r"|"
     r"\b(listar|lista)\s+(?:mis\s+)?agentes\b"
     r"|"
     r"\b(agente\s+legal|agentes\s+legales)\b"
     r")",
+    re.IGNORECASE,
+)
+
+STATUS_COMMAND_RE = re.compile(
+    r"^(?:/status|status|estado|verifica(?:r)?\s+conexiones?)\s*$",
     re.IGNORECASE,
 )
 
@@ -171,9 +187,10 @@ TOOL_KEYWORDS = [
 TOOL_REGEX = re.compile("|".join(TOOL_KEYWORDS), re.IGNORECASE)
 
 OLLAMA_FORCE_PREFIXES = ("/llama", "/ollama", "/local")
+OLLAMA_QUALITY_PREFIXES = ("/oss",)
 CLAUDE_FORCE_PREFIXES = (
     "/sonnet", "/claude", "/calidad", "/fuerte", "/profundo", "/analisis", "/análisis",
-    "/verify", "/status",
+    "/verify",
 )
 
 # ===== Logger =====
@@ -529,66 +546,75 @@ def _open_checkbox_lines(text: str, max_items: int = 20) -> list[str]:
     return items
 
 
-def _last_journal_entry(journal_text: str) -> str:
+def _last_journal_entry(journal_text: str, max_chars: int = 1200) -> str:
     if not journal_text.strip():
         return "(sin entradas en JOURNAL.md)"
     parts = re.split(r"(?m)^##\s+(\d{4}-\d{2}-\d{2})", journal_text)
     if len(parts) >= 3:
         date = parts[-2]
         body = parts[-1].strip()
-        return f"## {date}\n{body[:1200]}"
-    return journal_text.strip()[:1200]
+        return f"## {date}\n{body[:max_chars]}"
+    return journal_text.strip()[:max_chars]
 
 
-def build_operational_snapshot() -> str:
-    """Datos reales de AGENDA/IMPORTANT/JOURNAL para anclar Ollama (sin inventar)."""
+def _extract_critical_important(important: str) -> str:
+    """Solo subsección CRÍTICO de IMPORTANT.md (evita volcar el archivo entero)."""
+    m = re.search(
+        r"(?im)^##\s*CR[IÍ]TICO[^\n]*\n([\s\S]*?)(?=^##\s+|\Z)",
+        important,
+    )
+    if m:
+        return m.group(1).strip()[:800]
+    if important.strip():
+        return important[:800]
+    return ""
+
+
+def build_operational_snapshot(compact: bool = True) -> str:
+    """Datos reales de AGENDA/IMPORTANT/JOURNAL para anclar respuestas (sin inventar)."""
     agenda = _read_space_file("AGENDA.md")
     important = _read_space_file("IMPORTANT.md")
     journal = _read_space_file("JOURNAL.md")
-    lines = [f"Generado: {datetime.now(TZ_CDMX).strftime('%Y-%m-%d %H:%M')} CDMX", ""]
+    clientes = _read_space_file("CLIENTES.md")
+    meta = f"Generado: {datetime.now(TZ_CDMX).strftime('%Y-%m-%d %H:%M')} CDMX"
+    lines = []
 
-    hoy = _extract_markdown_section(agenda, "Para HOY")
-    if not hoy:
-        hoy = _extract_markdown_section(agenda, "Para hoy")
-    semana = _extract_markdown_section(agenda, "Para esta SEMANA")
+    hoy = _extract_markdown_section(agenda, "Para HOY") or _extract_markdown_section(agenda, "Para hoy")
     urgent_block = _extract_markdown_section(agenda, "URGENTE")
-    open_all = _open_checkbox_lines(agenda, 25)
+    open_all = _open_checkbox_lines(agenda, 15 if compact else 25)
 
-    lines.append("### Para HOY (AGENDA.md)")
+    lines.append("*Para HOY*")
     if hoy:
-        lines.append(hoy[:3500])
+        lines.append(hoy[:1200 if compact else 3500])
     elif open_all:
-        lines.extend(open_all[:12])
+        lines.extend(open_all[:10 if compact else 12])
     else:
-        lines.append("(sin pendientes abiertos en AGENDA — sección Para HOY vacía)")
+        lines.append("(sin pendientes abiertos en AGENDA)")
 
     if urgent_block:
-        lines.append("\n### URGENTE")
-        lines.append(urgent_block[:1500])
+        lines.append("\n*URGENTE*")
+        lines.append(urgent_block[:600 if compact else 1500])
 
-    if semana:
-        lines.append("\n### Para esta SEMANA (resumen)")
-        lines.append(semana[:1200])
+    crit = _extract_critical_important(important)
+    lines.append("\n*IMPORTANT — CRÍTICO*")
+    lines.append(crit if crit else "(vacío)")
 
-    lines.append("\n### IMPORTANT.md (prioridades)")
-    if important.strip():
-        lines.append(important[:2000])
-    else:
-        lines.append("(vacío)")
+    lines.append("\n*JOURNAL (última entrada)*")
+    lines.append(_last_journal_entry(journal, 400 if compact else 1200))
 
-    lines.append("\n### Última entrada JOURNAL.md")
-    lines.append(_last_journal_entry(journal))
-
-    clientes = _read_space_file("CLIENTES.md")
-    lines.append("\n### CLIENTES.md (resumen)")
+    lines.append("\n*CLIENTES*")
     if clientes.strip():
-        lines.append(clientes[:1500])
-        if len(clientes) > 1500:
+        cap = 800 if compact else 1500
+        lines.append(clientes[:cap])
+        if len(clientes) > cap:
             lines.append("…[truncado]")
     else:
         lines.append("(vacío)")
 
-    return "\n".join(lines)
+    body = "\n".join(lines)
+    if not compact:
+        return f"{meta}\n\n{body}"
+    return body
 
 
 def is_first_conversation_today(history_file: Path | None) -> bool:
@@ -824,15 +850,50 @@ def _format_memory_tool_confirmations(tool_results: list[str]) -> str:
     return "✅ *Memoria actualizada:*\n" + "\n".join(f"• {ln}" for ln in lines)
 
 
+def should_deterministic_operational_response(user_message: str, history: list | None = None) -> bool:
+    """Saludos y consultas operativas → briefing instantáneo sin esperar Ollama."""
+    msg = (user_message or "").strip()
+    if not msg:
+        return True
+    low = msg.lower()
+    if low.startswith(OLLAMA_QUALITY_PREFIXES):
+        return False
+    if _is_greeting(msg):
+        return True
+    if needs_operational_context(msg) or _wants_follow_up_briefing(msg):
+        return True
+    return False
+
+
+def is_status_command(user_message: str) -> bool:
+    return bool(STATUS_COMMAND_RE.match((user_message or "").strip()))
+
+
 def format_morning_briefing_deterministic(snapshot: str) -> str:
-    """Briefing matutino push — plantilla con datos reales (sin LLM)."""
+    """Briefing push/Telegram — plantilla compacta con datos reales (sin LLM)."""
     hour = datetime.now(TZ_CDMX).hour
     saludo = "Buenos días" if hour < 12 else ("Buenas tardes" if hour < 19 else "Buenas noches")
+    ts = datetime.now(TZ_CDMX).strftime("%H:%M")
     return (
         f"*{saludo} Polo* — briefing {datetime.now(TZ_CDMX).strftime('%A %d %b %Y')} (CDMX)\n\n"
-        f"{snapshot[:3500]}\n\n"
-        "¿Por dónde empezamos?"
+        f"{snapshot[:3200]}\n\n"
+        f"¿Por dónde empezamos?\n_(datos AGENDA/IMPORTANT · {ts})_"
     )
+
+
+def deterministic_operational_response(snapshot: str | None = None) -> tuple[str, str]:
+    """Respuesta operativa instantánea (<1s)."""
+    snap = snapshot if snapshot is not None else build_operational_snapshot(compact=True)
+    response = sanitize_ollama_response(format_morning_briefing_deterministic(snap))
+    return response, "deterministic-briefing"
+
+
+def _resolve_ollama_model(user_message: str) -> tuple[str, int]:
+    """Modelo y timeout según prefijo (/oss = calidad lenta)."""
+    msg = (user_message or "").strip().lower()
+    if msg.startswith(OLLAMA_QUALITY_PREFIXES):
+        return OLLAMA_QUALITY_MODEL, OLLAMA_QUALITY_TIMEOUT
+    return OLLAMA_FAST_MODEL, OLLAMA_CHAT_TIMEOUT
 
 
 def generate_morning_briefing() -> str:
@@ -1024,6 +1085,21 @@ TOOLS_DEFINITION = [
                 "nombre": {"type": "string", "description": "Nombre del agente a invocar"},
                 "tarea": {"type": "string", "description": "Instrucción que se le da al agente"},
                 "contexto": {"type": "string", "description": "Contexto adicional (datos, restricciones), opcional"},
+                "modelo_override": {"type": "string", "description": "Forzar 'ollama' para sub-call local sin Anthropic"},
+            },
+            "required": ["nombre", "tarea"],
+        },
+    },
+    {
+        "name": "delegar_agente",
+        "description": "Alias de invocar_agente — delega tarea a un sub-agente registrado en agents/.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "nombre": {"type": "string"},
+                "tarea": {"type": "string"},
+                "contexto": {"type": "string"},
+                "modelo_override": {"type": "string"},
             },
             "required": ["nombre", "tarea"],
         },
@@ -1793,7 +1869,7 @@ def _verificar_conexiones(incluir_m365: bool = True) -> str:
     except Exception:
         pass
     out.append("\n--- Servicios ---")
-    for svc in ("telegram-bridge", "slack-bridge", "ollama", "openclaw", "fail2ban", "ufw"):
+    for svc in ("telegram-bridge", "slack-bridge", "scheduler", "openclaw-gateway", "ollama", "fail2ban"):
         try:
             r = subprocess.run(["systemctl", "is-active", svc], capture_output=True, text=True, timeout=3)
             state = r.stdout.strip() or r.stderr.strip()
@@ -1808,14 +1884,36 @@ def _verificar_conexiones(incluir_m365: bool = True) -> str:
             out.append(f"  • {c}")
     out.append("\n--- Ollama ---")
     try:
+        t0 = time.time()
         req = urllib.request.Request(f"{OLLAMA_BASE}/api/tags")
         with urllib.request.urlopen(req, timeout=5) as r:
             data = json.loads(r.read())
+            ms = int((time.time() - t0) * 1000)
             models = [m.get("name", "?") for m in data.get("models", [])]
-            out.append(f"  ✓ {OLLAMA_BASE} OK — modelos: {', '.join(models) or '(ninguno)'}")
-            out.append(f"  Default: {OLLAMA_MODEL}")
+            out.append(f"  ✓ {OLLAMA_BASE} OK ({ms}ms)")
+            out.append(f"  Chat: {OLLAMA_FAST_MODEL} (timeout {OLLAMA_CHAT_TIMEOUT}s)")
+            out.append(f"  Calidad (/oss): {OLLAMA_QUALITY_MODEL}")
+            out.append(f"  Modelos: {', '.join(models[:8]) or '(ninguno)'}")
     except Exception as e:
         out.append(f"  ✗ Ollama no responde: {e}")
+    out.append("\n--- Agentes ---")
+    try:
+        n_agents = len(list(AGENTS_DIR.glob("*.md"))) if AGENTS_DIR.exists() else 0
+        legal_sample = sorted(AGENTS_DIR.glob("legal-*.md"))[:3] if AGENTS_DIR.exists() else []
+        out.append(f"  Registrados: {n_agents} en {AGENTS_DIR}")
+        if legal_sample:
+            out.append("  Ejemplos: " + ", ".join(f.stem for f in legal_sample))
+    except Exception as e:
+        out.append(f"  ? agentes: {e}")
+    out.append("\n--- OpenClaw Gateway ---")
+    try:
+        req = urllib.request.Request("http://127.0.0.1:3000/v1/status")
+        with urllib.request.urlopen(req, timeout=5) as r:
+            st = json.loads(r.read())
+            out.append(f"  agents_count: {st.get('agents_count', '?')}")
+            out.append(f"  routing: {st.get('routing', {})}")
+    except Exception as e:
+        out.append(f"  ✗ gateway :3000 — {e}")
     if incluir_m365 and M365_SCRIPT.exists():
         out.append("\n--- M365 ---")
         for tenant in ("kawiil", "yoltik"):
@@ -1841,8 +1939,10 @@ def _verificar_conexiones(incluir_m365: bool = True) -> str:
     for cat, names in by_cat.items():
         out.append(f"  {cat}: {', '.join(names)}")
     out.append(f"\n--- Routing ---")
-    out.append(f"  Default: Ollama ({OLLAMA_MODEL})")
-    out.append(f"  Tool use / acciones: Claude ({CLAUDE_MODEL})")
+    out.append(f"  Chat default: Ollama ({OLLAMA_FAST_MODEL})")
+    out.append(f"  Briefing operativo: determinístico (<1s)")
+    out.append(f"  /oss: {OLLAMA_QUALITY_MODEL}")
+    out.append(f"  Tools / agentes / memoria: Claude ({CLAUDE_MODEL})")
     return "\n".join(out)
 
 
@@ -3457,7 +3557,24 @@ def _listar_agentes() -> str:
     return "\n".join(out)
 
 
-def _invocar_agente(nombre: str, tarea: str, contexto: str = "") -> str:
+def _invocar_agente_via_ollama(nombre: str, sub_system: str, user_msg: str) -> str | None:
+    resp = call_ollama(
+        sub_system, [], user_msg,
+        history_file=None,
+        model=OLLAMA_FAST_MODEL,
+        timeout=OLLAMA_QUALITY_TIMEOUT,
+    )
+    if not resp:
+        return None
+    return f"[{nombre} respondió vía Ollama]\n\n{resp}"
+
+
+def _invocar_agente(
+    nombre: str,
+    tarea: str,
+    contexto: str = "",
+    modelo_override: str | None = None,
+) -> str:
     """Ejecuta una sub-llamada al modelo del agente con su prompt + tarea."""
     if not _AGENT_NAME_RE.match(nombre):
         return f"ERROR: nombre '{nombre}' inválido."
@@ -3465,20 +3582,21 @@ def _invocar_agente(nombre: str, tarea: str, contexto: str = "") -> str:
     if not path.exists():
         return f"ERROR: agente '{nombre}' no existe. Usa `listar_agentes` para ver disponibles."
     meta = _parse_agent_file(path)
-    modelo = meta.get("modelo", "claude-sonnet-4-6")
+    modelo = (modelo_override or meta.get("modelo", "claude-sonnet-4-6")).strip()
     sub_system = meta["prompt"]
     user_msg = tarea if not contexto else f"{tarea}\n\n## Contexto adicional\n{contexto}"
 
-    if modelo.startswith("ollama") or modelo == "llama":
-        # Sub-call a Ollama, sin tools
-        resp = call_ollama(sub_system, [], user_msg)
-        if not resp:
-            return f"ERROR: Ollama no respondió al agente '{nombre}'"
-        return f"[{nombre} respondió]\n\n{resp}"
-    # Sub-call a Claude SIN tools (evita recursión accidental)
+    if modelo.lower().startswith("ollama") or modelo == "llama":
+        out = _invocar_agente_via_ollama(nombre, sub_system, user_msg)
+        return out or f"ERROR: Ollama no respondió al agente '{nombre}'"
+
     try:
         api_key = load_anthropic_key()
     except Exception as e:
+        if AGENT_FALLBACK_OLLAMA:
+            out = _invocar_agente_via_ollama(nombre, sub_system, user_msg)
+            if out:
+                return out
         return f"ERROR cargando key Anthropic: {e}"
     headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
     body = {
@@ -3489,7 +3607,18 @@ def _invocar_agente(nombre: str, tarea: str, contexto: str = "") -> str:
     }
     try:
         resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=120)
+    except urllib.error.HTTPError as e:
+        err_body = (getattr(e, "body", "") or "").lower()
+        if AGENT_FALLBACK_OLLAMA or "credit" in err_body:
+            out = _invocar_agente_via_ollama(nombre, sub_system, user_msg)
+            if out:
+                return out
+        return f"ERROR llamando al agente '{nombre}': HTTP {e.code}"
     except Exception as e:
+        if AGENT_FALLBACK_OLLAMA:
+            out = _invocar_agente_via_ollama(nombre, sub_system, user_msg)
+            if out:
+                return out
         return f"ERROR llamando al agente '{nombre}': {e}"
     text_blocks = [b.get("text", "") for b in resp.get("content", []) if b.get("type") == "text"]
     out = "".join(text_blocks).strip() or "(sin respuesta del agente)"
@@ -3744,8 +3873,13 @@ def execute_tool(name: str, args: dict) -> str:
             )
         elif name == "listar_agentes":
             return _listar_agentes()
-        elif name == "invocar_agente":
-            return _invocar_agente(args["nombre"], args["tarea"], args.get("contexto", ""))
+        elif name in ("invocar_agente", "delegar_agente"):
+            return _invocar_agente(
+                args["nombre"],
+                args["tarea"],
+                args.get("contexto", ""),
+                args.get("modelo_override"),
+            )
         elif name == "consejo_experto_legal":
             return _consejo_experto_legal(args["area"], args["pregunta"], args.get("contexto", ""), args.get("max_expertos", 3))
         elif name.startswith("m365_"):
@@ -3769,9 +3903,9 @@ def needs_claude(user_message: str) -> bool:
 
 
 def strip_override_prefix(user_message: str) -> str:
-    """Quita /sonnet, /llama, etc. del inicio antes de enviar al modelo."""
+    """Quita /sonnet, /llama, /oss, etc. del inicio antes de enviar al modelo."""
     cleaned = user_message
-    for prefix in CLAUDE_FORCE_PREFIXES + OLLAMA_FORCE_PREFIXES:
+    for prefix in CLAUDE_FORCE_PREFIXES + OLLAMA_FORCE_PREFIXES + OLLAMA_QUALITY_PREFIXES:
         if cleaned.lower().startswith(prefix):
             cleaned = cleaned[len(prefix):].strip()
             break
@@ -3783,28 +3917,32 @@ def call_ollama(
     history: list,
     user_message: str,
     history_file: Path | None = None,
+    model: str | None = None,
+    timeout: int | None = None,
 ) -> str | None:
     """Llama Ollama. Sin tools. Retorna None si falla."""
-    snapshot = build_operational_snapshot()
+    ollama_model = model or _resolve_ollama_model(user_message)[0]
+    ollama_timeout = timeout if timeout is not None else _resolve_ollama_model(user_message)[1]
+    snapshot = build_operational_snapshot(compact=True)
     first_of_day = is_first_conversation_today(history_file)
     internal_ctx = build_ollama_internal_context(user_message, history, snapshot, first_of_day)
     sys_p = _trim_system_for_ollama(system_prompt) + internal_ctx
     hist = _trim_history_for_ollama(history)
-    polo_msg = (user_message or "").strip() or "(mensaje vacío)"
+    polo_msg = strip_override_prefix((user_message or "").strip()) or "(mensaje vacío)"
     messages = [{"role": "system", "content": sys_p}]
     for h in hist:
         if h["role"] in ("user", "assistant") and isinstance(h["content"], str):
             messages.append({"role": h["role"], "content": h["content"]})
     messages.append({"role": "user", "content": polo_msg})
-    predict = 512 if "gpt-oss" in OLLAMA_MODEL.lower() else 280
+    predict = 512 if "gpt-oss" in ollama_model.lower() else 220
     body = {
-        "model": OLLAMA_MODEL,
+        "model": ollama_model,
         "messages": messages,
         "stream": False,
         "options": {"temperature": 0.6, "num_ctx": 8192, "num_predict": predict},
     }
     try:
-        resp = http_post_json(f"{OLLAMA_BASE}/api/chat", headers={}, body=body, timeout=OLLAMA_TIMEOUT)
+        resp = http_post_json(f"{OLLAMA_BASE}/api/chat", headers={}, body=body, timeout=ollama_timeout)
     except Exception as e:
         log.warning(f"Ollama falló ({e})")
         return None
@@ -4000,17 +4138,18 @@ def call_llm(
             log.info("→ Aviso /sonnet (correos/M365 sin prefijo)")
             return _sonnet_hint_response(), "sonnet-hint"
 
-        snapshot = build_operational_snapshot()
-        # Primer hola del día: briefing determinístico (datos reales, <1s) — evita timeout CPU
-        if first_of_day and _is_greeting(user_message) and not history:
-            log.info(f"→ Briefing determinístico ({OLLAMA_MODEL}) — {tag}")
-            response = sanitize_ollama_response(format_morning_briefing_deterministic(snapshot))
+        snapshot = build_operational_snapshot(compact=True)
+        if should_deterministic_operational_response(user_message, history):
+            log.info(f"→ Briefing determinístico (fast path) — {tag}")
+            response, det_tag = deterministic_operational_response(snapshot)
             try:
                 save_last_briefing(response, snapshot)
             except Exception:
                 log.warning("No pude guardar last-briefing.json", exc_info=True)
-            return response, "ollama-briefing"
-        log.info(f"→ Ollama ({OLLAMA_MODEL}) — {tag}")
+            return response, det_tag
+
+        ollama_model, _ = _resolve_ollama_model(user_message)
+        log.info(f"→ Ollama ({ollama_model}) — {tag}")
         response = call_ollama(system_prompt, history, user_message, history_file=history_file)
         if response is not None and response.strip():
             if first_of_day or _wants_follow_up_briefing(user_message) or needs_operational_context(user_message):
@@ -4019,13 +4158,15 @@ def call_llm(
                 except Exception:
                     log.warning("No pude guardar last-briefing.json", exc_info=True)
             return response, "ollama"
-        # Fallback: si Ollama timeout pero hay snapshot, manda datos reales sin inventar
         if snapshot and "sin pendientes abiertos" not in snapshot.lower():
             log.warning(f"Ollama timeout — fallback determinístico ({tag})")
-            fb = sanitize_ollama_response(format_morning_briefing_deterministic(snapshot))
-            return fb + "\n\n_(Respuesta desde AGENDA real; Ollama tardó demasiado.)_", "ollama-snapshot-fallback"
+            fb, _ = deterministic_operational_response(snapshot)
+            return fb + "\n\n_(Ollama no alcanzó a responder; datos desde AGENDA.)_", "ollama-snapshot-fallback"
         log.warning(f"Ollama no respondió ({tag})")
         return _ollama_unavailable_msg(), "ollama-error"
+
+    if msg.startswith(OLLAMA_QUALITY_PREFIXES):
+        return _ollama_route("override /oss")
 
     # Override Ollama explícito (sin fallback a Claude)
     if msg.startswith(OLLAMA_FORCE_PREFIXES):

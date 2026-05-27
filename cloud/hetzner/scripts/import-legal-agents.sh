@@ -34,6 +34,8 @@ mkdir -p "$(dirname "$CACHE_DIR")"
 # Defaults: commercial, corporate, privacy, regulatory, employment, ip, product, ai-governance
 PLUGINS_DEFAULT="commercial-legal corporate-legal privacy-legal regulatory-legal employment-legal ip-legal product-legal ai-governance-legal"
 PLUGINS="${PLUGINS:-$PLUGINS_DEFAULT}"
+# ollama = sub-call local sin Anthropic; claude-sonnet-4-6 si hay créditos
+LEGAL_AGENT_MODEL="${LEGAL_AGENT_MODEL:-ollama}"
 
 # ── 1) Clone or pull ──────────────────────────────────────────
 if [[ -d "$CACHE_DIR/.git" ]]; then
@@ -86,7 +88,7 @@ for plugin in $PLUGINS; do
       echo "---"
       echo "nombre: legal-${plugin%-legal}-${skill_slug}"
       echo "especialidad: [$plugin] $desc"
-      echo "modelo: claude-sonnet-4-6"
+      echo "modelo: $LEGAL_AGENT_MODEL"
       echo "origen: anthropics/claude-for-legal $plugin/skills/$skill_slug"
       echo "actualizado: $(date -Iseconds)"
       echo "---"

@@ -214,6 +214,16 @@ ssh $SSH_OPTS "$REMOTE" "
 echo '--- Servicios activos ---'
 systemctl is-active telegram-bridge slack-bridge scheduler ollama openclaw-gateway 2>&1 | paste <(echo -e 'telegram-bridge\nslack-bridge\nscheduler\nollama\nopenclaw-gateway') -
 echo ''
+echo '--- OpenClaw gateway ---'
+curl -fsS --max-time 5 http://127.0.0.1:3000/v1/status 2>/dev/null | python3 -c \"import sys,json; d=json.load(sys.stdin); print('agents_count',d.get('agents_count')); print('fast',d.get('models',{}).get('ollama_fast')); print('routing',d.get('routing'))\" 2>/dev/null || echo '(gateway status no disponible)'
+python3 -c \"
+import sys
+sys.path.insert(0,'/opt/openclaw/scripts')
+import louis_core as c
+assert c.should_deterministic_operational_response('hola')
+print('routing smoke OK')
+\" 2>/dev/null || echo '(louis_core smoke falló)'
+echo ''
 echo '--- Últimas 10 líneas del log de telegram-bridge ---'
 ${SUDO}tail -n 10 /opt/openclaw/logs/telegram-bridge.log 2>/dev/null || echo '(sin log todavía)'
 echo ''
@@ -234,9 +244,13 @@ Pruébalo:
   3. Recordatorio proactivo:
        'recuérdame en 2 minutos que esto funcionó'
      Espera 2 min — Louis te lo debe mandar solo.
-  4. Importar agentes legales (una sola vez):
-       ssh $REMOTE 'sudo bash /opt/openclaw/scripts/import-legal-agents.sh'
-     Después: 'lista mis agentes' debe mostrar ~30-50 agentes legales.
+  4. Telegram rápido: 'hola' o '¿qué tengo urgente?' → briefing <3s (determinístico)
+  5. Telegram status: '/status' → servicios + agentes sin LLM
+  6. Agentes: 'lista mis agentes' (/sonnet) o POST /v1/agents/{name}
+  7. .env recomendado en VPS:
+       OLLAMA_FAST_MODEL=llama3.1:8b
+       OLLAMA_QUALITY_MODEL=gpt-oss:20b
+       OLLAMA_CHAT_TIMEOUT=45
 
 Si algo falla:
   ssh $REMOTE 'journalctl -u telegram-bridge -u slack-bridge -u scheduler -f'

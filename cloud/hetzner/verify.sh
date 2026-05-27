@@ -98,21 +98,62 @@ if [[ -n "${LOUIS_DOMAIN:-}" ]]; then
   fi
 fi
 
-# 9b) Ollama (modelo local)
+# 9b) Louis bridges + gateway (systemd nativo)
+for unit in telegram-bridge slack-bridge scheduler openclaw-gateway; do
+  if systemctl is-active --quiet "$unit" 2>/dev/null; then
+    ok "$unit activo"
+  else
+    nope "$unit NO activo"
+  fi
+done
+GW_PORT="${OPENCLAW_PORT:-3000}"
+if curl -fsS "http://127.0.0.1:${GW_PORT}/v1/status" 2>/dev/null | grep -q '"agents_count"'; then
+  ok "openclaw-gateway /v1/status OK"
+  AC=$(curl -fsS "http://127.0.0.1:${GW_PORT}/v1/status" 2>/dev/null | grep -o '"agents_count": *[0-9]*' | grep -o '[0-9]*' || echo 0)
+  if [[ "${AC:-0}" -gt 0 ]]; then
+    ok "agents_count=${AC}"
+  else
+    warn "agents_count=0 (corre: sudo bash /opt/openclaw/scripts/import-legal-agents.sh)"
+  fi
+else
+  nope "openclaw-gateway /v1/status NO responde"
+fi
+
+# 9c) Ollama (modelo local)
 if systemctl is-active --quiet ollama; then
   ok "Ollama service activo"
   if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
     ok "Ollama responde en 127.0.0.1:11434"
-    if curl -fsS http://127.0.0.1:11434/api/tags 2>/dev/null | grep -q "gpt-oss"; then
-      ok "Modelo gpt-oss disponible"
+    TAGS=$(curl -fsS http://127.0.0.1:11434/api/tags 2>/dev/null || echo "")
+    if echo "$TAGS" | grep -q "llama3.1"; then
+      ok "Modelo llama3.1 (chat rápido) disponible"
     else
-      warn "Modelo gpt-oss NO encontrado en Ollama (corre: sudo ollama pull gpt-oss:20b)"
+      warn "llama3.1:8b NO en Ollama (corre: sudo ollama pull llama3.1:8b)"
+    fi
+    if echo "$TAGS" | grep -q "gpt-oss"; then
+      ok "Modelo gpt-oss (calidad /oss) disponible"
+    else
+      warn "gpt-oss:20b NO encontrado (opcional: sudo ollama pull gpt-oss:20b)"
     fi
   else
     nope "Ollama NO responde en 127.0.0.1:11434"
   fi
 else
   warn "Ollama NO activo (¿VPS sin 16GB+ RAM? bootstrap/06 lo skipea si <14GB)"
+fi
+
+# 9d) louis_core smoke (routing)
+if python3 -c "
+import sys
+sys.path.insert(0, '/opt/openclaw/scripts')
+import louis_core as c
+assert c.should_deterministic_operational_response('hola')
+assert c.needs_memory_write('anota en agenda: x')
+print('louis_core routing OK')
+" 2>/dev/null; then
+  ok "louis_core routing smoke OK"
+else
+  warn "louis_core smoke falló (¿scripts desactualizados?)"
 fi
 
 # 10) Sync infra
