@@ -42,10 +42,11 @@ if not M365_SCRIPT.exists():
     M365_SCRIPT = HOME_OC / "scripts" / "m365.py"
 
 # ===== Modelos =====
-# Routing por prioridad de velocidad:
-#   • Default chat → Claude Haiku (1-3s, calidad alta, costo bajísimo)
-#   • Tool use / acciones → Claude Sonnet (~5-10s, mejor reasoning)
-#   • Ollama local → solo bajo /llama explícito (gratis pero lento por carga del prompt)
+# Routing:
+#   • Default chat → Ollama local (gratis, privado, sin créditos Anthropic)
+#   • /sonnet, /claude, /fuerte, /profundo → Claude Sonnet (análisis profundo + tools)
+#   • /haiku → Claude Haiku (rápido, sin tools)
+#   • /llama, /ollama, /local → Ollama forzado (sin fallback a Claude)
 CLAUDE_SONNET = "claude-sonnet-4-6"      # tool use, decisiones complejas
 CLAUDE_HAIKU = "claude-haiku-4-5"        # chat rápido por default
 CLAUDE_MODEL = CLAUDE_SONNET              # compat (cuando se usa tool use)
@@ -54,7 +55,10 @@ ANTHROPIC_VERSION = "2023-06-01"
 
 OLLAMA_BASE = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_DEFAULT_MODEL", "llama3.1:8b-instruct-q4_K_M")
-OLLAMA_TIMEOUT = 30   # antes 180 — si no responde rápido, mejor caer a Haiku
+OLLAMA_TIMEOUT = 120  # CPU en VPS; prompt recortado para caber en num_ctx
+OLLAMA_MAX_SYSTEM_CHARS = 14_000
+OLLAMA_MAX_HISTORY_TURNS = 8
+OLLAMA_MEMORY_SNIPPET_CHARS = 500
 
 # ===== Routing (qué va a Claude vs Ollama) =====
 TOOL_KEYWORDS = [
@@ -100,7 +104,10 @@ TOOL_KEYWORDS = [
 TOOL_REGEX = re.compile("|".join(TOOL_KEYWORDS), re.IGNORECASE)
 
 OLLAMA_FORCE_PREFIXES = ("/llama", "/ollama", "/local")
-CLAUDE_FORCE_PREFIXES = ("/sonnet", "/claude", "/calidad", "/fuerte", "/verify", "/status")
+CLAUDE_FORCE_PREFIXES = (
+    "/sonnet", "/claude", "/calidad", "/fuerte", "/profundo", "/analisis", "/análisis",
+    "/verify", "/status",
+)
 
 # ===== Logger =====
 log = logging.getLogger("louis_core")
@@ -385,6 +392,57 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "Si Polo te pide ver explícitamente un password en chat: confirma 2 veces antes de mandarlo."
     )
     return "\n".join(parts)
+
+
+def _trim_system_for_ollama(system_prompt: str) -> str:
+    """Recorta el system prompt (~100k) para caber en num_ctx=8192 de Ollama en CPU."""
+    if len(system_prompt) <= OLLAMA_MAX_SYSTEM_CHARS:
+        return system_prompt
+    mem_marker = "# CONTEXTO DE MEMORIA"
+    canal_marker = "# CANAL ACTUAL:"
+    mem_idx = system_prompt.find(mem_marker)
+    canal_idx = system_prompt.find(canal_marker, mem_idx if mem_idx >= 0 else 0)
+    if mem_idx < 0:
+        return system_prompt[:OLLAMA_MAX_SYSTEM_CHARS] + "\n\n[contexto truncado para Ollama]"
+    head = system_prompt[:mem_idx]
+    tail = system_prompt[canal_idx:] if canal_idx >= 0 else ""
+    if len(head) > 10_000:
+        head = head[:10_000] + "\n[AGENTS.md truncado para Ollama]\n"
+    mem_block = system_prompt[mem_idx:canal_idx if canal_idx > mem_idx else len(system_prompt)]
+    compact_mem = []
+    for chunk in re.split(r"(## [A-Z_]+\.md\n```)", mem_block):
+        if chunk.startswith("## "):
+            compact_mem.append(chunk)
+        elif chunk.strip():
+            snippet = chunk.strip()
+            if len(snippet) > OLLAMA_MEMORY_SNIPPET_CHARS:
+                snippet = snippet[:OLLAMA_MEMORY_SNIPPET_CHARS] + "\n…[truncado]"
+            compact_mem.append(snippet + "\n```\n")
+    mem_compact = "".join(compact_mem)
+    out = head + "\n\n# CONTEXTO DE MEMORIA (resumido para Ollama local)\n" + mem_compact + "\n" + tail
+    if len(out) > OLLAMA_MAX_SYSTEM_CHARS:
+        out = out[:OLLAMA_MAX_SYSTEM_CHARS] + "\n[fin de contexto Ollama]"
+    log.info(f"System prompt Ollama: {len(system_prompt)} → {len(out)} chars")
+    return out
+
+
+def _trim_history_for_ollama(history: list) -> list:
+    if len(history) <= OLLAMA_MAX_HISTORY_TURNS:
+        return history
+    return history[-OLLAMA_MAX_HISTORY_TURNS:]
+
+
+def _ollama_unavailable_msg(reason: str = "") -> str:
+    extra = f" Detalle: {reason}" if reason else ""
+    return (
+        "⚠️ Ollama local no pudo responder a tiempo o falló."
+        f"{extra}\n\n"
+        "Sigo en modo local (sin gastar Anthropic). Prueba:\n"
+        "• Mensaje más corto\n"
+        "• Esperar 1-2 min (el modelo puede estar cargando en CPU)\n"
+        "• /sonnet … solo para análisis profundo, correos, tools o agentes legales (requiere créditos Anthropic)\n\n"
+        "Chat normal = Ollama automático. No necesitas /llama."
+    )
 
 
 # ===== Tools =====
@@ -3241,16 +3299,13 @@ def execute_tool(name: str, args: dict) -> str:
 
 # ===== Routing =====
 def needs_claude(user_message: str) -> bool:
+    """Claude solo con prefijo explícito (/sonnet, /profundo, …). El chat normal va a Ollama."""
     if not user_message:
         return False
     msg = user_message.strip().lower()
     if msg.startswith(OLLAMA_FORCE_PREFIXES):
         return False
-    if msg.startswith(CLAUDE_FORCE_PREFIXES):
-        return True
-    if TOOL_REGEX.search(user_message):
-        return True
-    return False
+    return msg.startswith(CLAUDE_FORCE_PREFIXES)
 
 
 def strip_override_prefix(user_message: str) -> str:
@@ -3263,10 +3318,12 @@ def strip_override_prefix(user_message: str) -> str:
     return cleaned or user_message
 
 
-def call_ollama(system_prompt: str, history: list, user_message: str) -> str:
-    """Llama Ollama. Sin tools. Retorna None si falla (para que el caller haga fallback)."""
-    messages = [{"role": "system", "content": system_prompt}]
-    for h in history:
+def call_ollama(system_prompt: str, history: list, user_message: str) -> str | None:
+    """Llama Ollama. Sin tools. Retorna None si falla."""
+    sys_p = _trim_system_for_ollama(system_prompt)
+    hist = _trim_history_for_ollama(history)
+    messages = [{"role": "system", "content": sys_p}]
+    for h in hist:
         if h["role"] in ("user", "assistant") and isinstance(h["content"], str):
             messages.append({"role": h["role"], "content": h["content"]})
     messages.append({"role": "user", "content": user_message})
@@ -3274,16 +3331,16 @@ def call_ollama(system_prompt: str, history: list, user_message: str) -> str:
         "model": OLLAMA_MODEL,
         "messages": messages,
         "stream": False,
-        "options": {"temperature": 0.7, "num_ctx": 8192},
+        "options": {"temperature": 0.7, "num_ctx": 8192, "num_predict": 1024},
     }
     try:
         resp = http_post_json(f"{OLLAMA_BASE}/api/chat", headers={}, body=body, timeout=OLLAMA_TIMEOUT)
     except Exception as e:
-        log.warning(f"Ollama falló ({e}), fallback a Haiku")
+        log.warning(f"Ollama falló ({e})")
         return None
     content = resp.get("message", {}).get("content", "")
     if not content or not content.strip():
-        log.warning("Ollama devolvió vacío, fallback a Haiku")
+        log.warning("Ollama devolvió vacío")
         return None
     return content.strip()
 
@@ -3441,64 +3498,64 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
 
 def call_llm(api_key: str, system_prompt: str, history: list, user_message: str) -> tuple:
     """
-    Routea al modelo correcto. Diseño: Ollama por default (gratis, privado).
-    Claude SOLO cuando hace falta (tool use, agentes legales, calidad pedida).
+    Routea al modelo correcto. Ollama por default; Claude solo con prefijo explícito.
 
-      • Override /llama, /ollama, /local → Ollama
-      • Override /sonnet, /claude, /fuerte → Sonnet con tools
-      • Override /haiku → Haiku sin tools
-      • Tool keywords detectados → Sonnet con tools (~5-10s) [único caso Claude default]
-      • Default chat → Ollama local (gratis, privado, sin créditos)
+      • Default y /llama → Ollama (sin fallback a Haiku)
+      • /sonnet, /claude, /fuerte, /profundo → Sonnet con tools
+      • /haiku → Haiku sin tools
     Returns: (response, model_used).
-    Si hay error de billing en Claude, traduce a mensaje human-friendly que Louis manda directo a Polo.
     """
     msg = (user_message or "").strip().lower()
 
-    # Override Ollama explícito
-    if msg.startswith(OLLAMA_FORCE_PREFIXES):
-        log.info(f"→ Ollama ({OLLAMA_MODEL}) — override /llama")
+    def _ollama_route(tag: str) -> tuple:
+        log.info(f"→ Ollama ({OLLAMA_MODEL}) — {tag}")
         response = call_ollama(system_prompt, history, user_message)
-        if response is not None:
+        if response is not None and response.strip():
             return response, "ollama"
-        log.warning("Ollama no respondió, cae a Haiku como fallback")
-        return _call_claude_with_billing_check(call_haiku, api_key, system_prompt, history, user_message), "haiku-fallback"
+        log.warning(f"Ollama no respondió ({tag})")
+        return _ollama_unavailable_msg(), "ollama-error"
+
+    # Override Ollama explícito (sin fallback a Claude)
+    if msg.startswith(OLLAMA_FORCE_PREFIXES):
+        return _ollama_route("override /llama")
 
     # Override Haiku explícito
     if msg.startswith(("/haiku", "/rápido", "/rapido")):
         log.info(f"→ Haiku ({CLAUDE_HAIKU}) — override /haiku")
         return _call_claude_with_billing_check(call_haiku, api_key, system_prompt, history, user_message), "haiku"
 
-    # Tool use o calidad pedida → Sonnet (único caso Claude default)
+    # Análisis profundo / tools → Sonnet (solo con prefijo explícito)
     if needs_claude(user_message):
-        log.info(f"→ Sonnet ({CLAUDE_SONNET}) — tool use o calidad pedida")
+        log.info(f"→ Sonnet ({CLAUDE_SONNET}) — prefijo /sonnet o /profundo")
         response = call_claude(api_key, system_prompt, history, user_message) or ""
-        # Si Claude devolvió mensaje de billing, lo trasladamos
         if _is_billing_error(response):
             return _billing_error_msg(), "sonnet-billing-error"
         return response, "sonnet"
 
-    # Default: Ollama local (gratis, privado, sin créditos)
-    log.info(f"→ Ollama ({OLLAMA_MODEL}) — chat default")
-    response = call_ollama(system_prompt, history, user_message)
-    if response is not None and response.strip():
-        return response, "ollama"
-    # Si Ollama falla y hay creds Anthropic OK, cae a Haiku
-    log.warning("Ollama no respondió, fallback a Haiku")
-    return _call_claude_with_billing_check(call_haiku, api_key, system_prompt, history, user_message), "haiku-fallback"
+    # Default: Ollama local
+    return _ollama_route("chat default")
+
+
+def _is_billing_error(text: str) -> bool:
+    if not text:
+        return False
+    low = text.lower()
+    return (
+        "credit balance is too low" in low
+        or ("invalid_request_error" in low and "credit" in low)
+        or ("error haiku http 400" in low and "credit" in low)
+    )
 
 
 def _billing_error_msg() -> str:
-    """Mensaje human-friendly cuando Anthropic API rechaza por créditos.
-    Texto plano sin Markdown — evita problemas de entity parse de Telegram."""
+    """Mensaje cuando Anthropic rechaza por créditos (solo rutas /sonnet, /haiku, /profundo)."""
     return ("⚠️ Polo, tu cuenta Anthropic se quedó sin créditos.\n\n"
-            "No puedo usar Claude (Sonnet ni Haiku) hasta que recargues. Para arreglarlo:\n"
-            "1. Abre https://console.anthropic.com/settings/billing\n"
-            "2. Agrega saldo (mínimo 10 USD) o activa Auto-reload\n"
-            "3. Espera 1-2 min y vuelve a escribirme\n\n"
-            "Mientras tanto, sigo respondiendo con Ollama local — pero los agentes legales "
-            "(consejo_experto_legal, invocar_agente con prefijo legal-) y vision/imagen "
-            "NO funcionan sin créditos.\n"
-            "Para forzar Ollama explícito, prefija tu mensaje con la palabra: /llama")
+            "El chat normal sigue en Ollama local (escríbeme sin prefijo).\n"
+            "Para análisis profundo, correos, calendario, agentes legales o visión necesitas Claude:\n"
+            "1. https://console.anthropic.com/settings/billing\n"
+            "2. Agrega saldo (mínimo 10 USD) o Auto-reload\n"
+            "3. Espera 1-2 min y usa /sonnet o /profundo al inicio del mensaje\n\n"
+            "Ejemplo: /sonnet revisa mi inbox de hoy y propón borrador de respuesta")
 
 
 def _call_claude_with_billing_check(fn, api_key, system_prompt, history, user_message):
