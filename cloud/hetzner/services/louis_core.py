@@ -56,7 +56,7 @@ ANTHROPIC_VERSION = "2023-06-01"
 OLLAMA_BASE = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_DEFAULT_MODEL", "llama3.1:8b-instruct-q4_K_M")
 OLLAMA_TIMEOUT = 120  # CPU en VPS; prompt recortado para caber en num_ctx
-OLLAMA_MAX_SYSTEM_CHARS = 14_000
+OLLAMA_MAX_SYSTEM_CHARS = 10_000
 OLLAMA_MAX_HISTORY_TURNS = 8
 OLLAMA_MEMORY_SNIPPET_CHARS = 500
 
@@ -3331,7 +3331,7 @@ def call_ollama(system_prompt: str, history: list, user_message: str) -> str | N
         "model": OLLAMA_MODEL,
         "messages": messages,
         "stream": False,
-        "options": {"temperature": 0.7, "num_ctx": 8192, "num_predict": 1024},
+        "options": {"temperature": 0.7, "num_ctx": 8192, "num_predict": 384},
     }
     try:
         resp = http_post_json(f"{OLLAMA_BASE}/api/chat", headers={}, body=body, timeout=OLLAMA_TIMEOUT)
