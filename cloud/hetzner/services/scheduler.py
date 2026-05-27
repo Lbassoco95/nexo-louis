@@ -124,27 +124,26 @@ def send_slack(text: str, channel: str = None):
         return False
 
 
-# ===== Enrich con Haiku (opcional) =====
-def enrich_with_haiku(raw_message: str) -> str:
-    """Reformula el mensaje en tono Louis (cálido, conciso, asistente ejecutivo)."""
-    try:
-        api_key = core.load_anthropic_key()
-    except Exception:
-        return raw_message
+# ===== Enrich con Ollama (sin Anthropic) =====
+def enrich_with_ollama(raw_message: str) -> str:
+    """Reformula recordatorio en tono Louis vía Ollama local."""
     sys_prompt = (
-        "Eres Louis, asistente ejecutivo de Polo. Estás MANDÁNDOLE un recordatorio proactivo "
-        "(él NO te preguntó). Reformula el mensaje crudo en tu tono: directo, cálido, una o dos "
-        "líneas máximo. Sin saludos. Usa *negrita* (un solo asterisco — Telegram Markdown legacy) "
-        "y emojis con moderación. NO empieces con 'recordatorio:' — solo el contenido. "
-        "Si es un briefing matutino, lista pendientes top 3 con bullets."
+        "Eres Louis, asistente ejecutivo de Polo. Reformula recordatorios proactivos: "
+        "directo, cálido, 1-2 líneas. Telegram *negrita* legacy. NO inventes hechos."
     )
-    user_msg = f"Mensaje crudo a entregar:\n{raw_message}"
+    user_msg = (
+        "Reformula SIN cambiar datos:\n" + raw_message[:2000]
+    )
     try:
-        result = core.call_haiku(api_key, sys_prompt, [], user_msg)
-        return result if result and not result.startswith("(error") else raw_message
+        result = core.call_ollama(sys_prompt, [], user_msg, history_file=None)
+        if result and not result.startswith("⚠️"):
+            return result
     except Exception as e:
-        log.warning(f"Enrich falló, mando raw: {e}")
-        return raw_message
+        log.warning(f"Enrich Ollama falló: {e}")
+    return raw_message
+
+
+MORNING_BRIEFING_MARKER = "__morning_briefing__"
 
 
 # ===== Queue I/O =====
@@ -226,9 +225,19 @@ def tick():
             raw = entry.get("message", "(recordatorio sin mensaje)")
             mode = entry.get("mode", "enrich")
             channel = entry.get("channel", "telegram")
-            text = enrich_with_haiku(raw) if mode == "enrich" else raw
+            if mode == "briefing" or raw == MORNING_BRIEFING_MARKER:
+                text = core.generate_morning_briefing()
+                try:
+                    core.save_last_briefing(text, core.build_operational_snapshot())
+                except Exception as e:
+                    log.warning(f"No guardé last-briefing: {e}")
+            elif mode == "enrich":
+                text = enrich_with_ollama(raw)
+            else:
+                text = raw
             # Prefijo discreto para distinguir mensaje proactivo
-            text = f"⏰ {text}"
+            prefix = "☀️ " if mode == "briefing" or raw == MORNING_BRIEFING_MARKER else "⏰ "
+            text = f"{prefix}{text}"
             if channel == "slack":
                 ok = send_slack(text)
             else:

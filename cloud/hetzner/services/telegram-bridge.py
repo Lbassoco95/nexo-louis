@@ -325,8 +325,10 @@ def process_update(update, telegram_token, chat_id, api_key, system_prompt):
 
     cleaned = core.strip_override_prefix(user_input)
     core.append_history(HISTORY_FILE, "user", user_input)
-    history = core.load_history(HISTORY_FILE)[:-1]
-    response, model_used = core.call_llm(api_key, system_prompt, history, cleaned or user_input)
+    history = core.load_history(HISTORY_FILE, max_turns=16)[:-1]
+    response, model_used = core.call_llm(
+        api_key, system_prompt, history, cleaned or user_input, history_file=HISTORY_FILE
+    )
     log.info(f"← {model_used} respondió ({len(response)} chars)")
     core.append_history(HISTORY_FILE, "assistant", response)
 

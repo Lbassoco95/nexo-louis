@@ -163,7 +163,7 @@ def main():
 
         # Historia: agregamos el mensaje crudo (texto del usuario)
         core.append_history(HISTORY_FILE, "user", text)
-        history = core.load_history(HISTORY_FILE)[:-1]
+        history = core.load_history(HISTORY_FILE, max_turns=16)[:-1]
 
         system_prompt = core.load_system_prompt(channel="slack")
         # Pequeño hint para el LLM sobre el contexto Slack
@@ -174,7 +174,9 @@ def main():
         )
         system_prompt = system_prompt + ctx_hint
 
-        response, model_used = core.call_llm(api_key, system_prompt, history, cleaned or text)
+        response, model_used = core.call_llm(
+            api_key, system_prompt, history, cleaned or text, history_file=HISTORY_FILE
+        )
         log.info(f"← {model_used} respondió a {user} en {channel} ({len(response)} chars)")
         core.append_history(HISTORY_FILE, "assistant", response)
         return core.format_for_slack(response)
