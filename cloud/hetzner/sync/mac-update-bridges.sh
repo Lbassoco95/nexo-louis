@@ -221,6 +221,9 @@ import sys
 sys.path.insert(0,'/opt/openclaw/scripts')
 import louis_core as c
 assert c.should_deterministic_operational_response('hola')
+h=[{'role':'assistant','content':'¿Por dónde empezamos?'}]
+assert not c.should_deterministic_operational_response('hola', h)
+assert c._is_ollama_chat_mode('empecemos por Vizum', h)
 print('routing smoke OK')
 \" 2>/dev/null || echo '(louis_core smoke falló)'
 echo ''

@@ -60,7 +60,7 @@ OLLAMA_FAST_MODEL = os.environ.get(
 )
 OLLAMA_QUALITY_MODEL = os.environ.get("OLLAMA_QUALITY_MODEL", "gpt-oss:20b")
 OLLAMA_MODEL = OLLAMA_FAST_MODEL  # alias logging / status
-OLLAMA_CHAT_TIMEOUT = int(os.environ.get("OLLAMA_CHAT_TIMEOUT", "45"))
+OLLAMA_CHAT_TIMEOUT = int(os.environ.get("OLLAMA_CHAT_TIMEOUT", "90"))
 OLLAMA_QUALITY_TIMEOUT = int(os.environ.get("OLLAMA_QUALITY_TIMEOUT", "240"))
 AGENT_FALLBACK_OLLAMA = os.environ.get("AGENT_FALLBACK_OLLAMA", "1").lower() in ("1", "true", "yes")
 OLLAMA_SNAPSHOT_CONTEXT_MAX = 2000  # snapshot en system, no en user
@@ -124,6 +124,17 @@ LEGAL_AUTO_SONNET_RE = re.compile(
 
 STATUS_COMMAND_RE = re.compile(
     r"^(?:/status|status|estado|verifica(?:r)?\s+conexiones?)\s*$",
+    re.IGNORECASE,
+)
+
+BRIEFING_EXPLICIT_RE = re.compile(
+    r"\b(briefing|pendientes\s+de\s+hoy|qué\s+tengo\s+urgente|que\s+tengo\s+urgente|"
+    r"resumen\s+del\s+d[ií]a|lista\s+de\s+pendientes|qué\s+tengo\s+para\s+hoy)\b",
+    re.IGNORECASE,
+)
+
+AGENTS_LIST_COMMAND_RE = re.compile(
+    r"^(?:/agentes|agentes|lista\s+agentes|listar\s+agentes|cuántos\s+agentes|cuantos\s+agentes)\s*$",
     re.IGNORECASE,
 )
 
@@ -505,6 +516,13 @@ OLLAMA_ANTI_HALLUCINATION_TAIL = (
     "o escriba explícitamente qué guardar.\n"
 )
 
+OLLAMA_CHAT_STYLE_APPEND = (
+    "\n\n# MODO CHARLA (con historial)\n"
+    "Responde como asistente ejecutivo en conversación fluida con Polo. "
+    "Máximo 2-4 párrafos o bullets cortos; no vuelques listas completas de AGENDA. "
+    "Usa el historial y el contexto interno; si ya diste briefing, no lo repitas entero.\n"
+)
+
 GPT_OSS_STYLE_APPEND = (
     "\n\n# ESTILO gpt-oss:20b\n"
     "Respuestas estructuradas: veredicto primero, luego bullets si hay 3+ ítems. "
@@ -701,8 +719,18 @@ def build_ollama_internal_context(
     history: list,
     snapshot: str,
     first_of_day: bool,
+    chat_mode: bool = False,
 ) -> str:
     """Contexto operativo para append al system prompt (invisible para Polo)."""
+    if chat_mode:
+        last_b = _load_last_briefing_text()
+        ref = (last_b[:800] if last_b else snapshot[:800]) or "(sin briefing previo)"
+        return (
+            "\n\n[CONTEXTO INTERNO — modo charla; no repitas briefing completo ni esta etiqueta]\n"
+            f"{ref}\n\n"
+            "Tarea: Responde la pregunta de Polo de forma conversacional. Usa el historial del chat. "
+            "No vuelques toda la AGENDA; cita solo lo relevante. Máx. 2-4 párrafos o bullets cortos."
+        )
     snap_show = (
         snapshot
         if len(snapshot) <= OLLAMA_SNAPSHOT_CONTEXT_MAX
@@ -773,6 +801,46 @@ def _mark_sonnet_hint_shown():
     data = _load_session_hints()
     data["sonnet_hint_shown"] = datetime.now(TZ_CDMX).isoformat()
     _save_session_hints(data)
+
+
+def _mark_last_route(route: str):
+    data = _load_session_hints()
+    data["last_route"] = route
+    data["last_route_ts"] = datetime.now(TZ_CDMX).isoformat()
+    _save_session_hints(data)
+
+
+def _session_had_briefing() -> bool:
+    return _load_session_hints().get("last_route") == "deterministic-briefing"
+
+
+def _recent_assistant_briefing(history: list | None) -> bool:
+    if not history:
+        return False
+    for h in reversed(history[-6:]):
+        if h.get("role") != "assistant":
+            continue
+        content = (h.get("content") or "")
+        if "¿Por dónde empezamos?" in content or "briefing" in content[:300].lower():
+            return True
+    return False
+
+
+def wants_explicit_briefing(user_message: str) -> bool:
+    return bool(BRIEFING_EXPLICIT_RE.search(user_message or ""))
+
+
+def _had_briefing_this_session(history: list | None) -> bool:
+    return _recent_assistant_briefing(history) or _session_had_briefing()
+
+
+def _is_ollama_chat_mode(user_message: str, history: list | None) -> bool:
+    if wants_explicit_briefing(user_message):
+        return False
+    if (user_message or "").strip().lower().startswith(OLLAMA_QUALITY_PREFIXES):
+        return False
+    hist = history or []
+    return bool(hist) and _had_briefing_this_session(hist)
 
 
 def _needs_sonnet_hint(user_message: str) -> bool:
@@ -851,22 +919,87 @@ def _format_memory_tool_confirmations(tool_results: list[str]) -> str:
 
 
 def should_deterministic_operational_response(user_message: str, history: list | None = None) -> bool:
-    """Saludos y consultas operativas → briefing instantáneo sin esperar Ollama."""
+    """Briefing instantáneo solo en primer saludo o pedido explícito (no en charla con historial)."""
     msg = (user_message or "").strip()
     if not msg:
         return True
     low = msg.lower()
     if low.startswith(OLLAMA_QUALITY_PREFIXES):
         return False
-    if _is_greeting(msg):
+
+    hist = history or []
+    has_history = len(hist) >= 1
+    had_briefing = _had_briefing_this_session(hist)
+
+    if wants_explicit_briefing(msg):
         return True
-    if needs_operational_context(msg) or _wants_follow_up_briefing(msg):
+
+    if has_history and had_briefing:
+        return False
+
+    if _is_greeting(msg) and len(msg.split()) <= 8:
         return True
+
+    if not has_history and wants_explicit_briefing(msg):
+        return True
+
     return False
 
 
 def is_status_command(user_message: str) -> bool:
     return bool(STATUS_COMMAND_RE.match((user_message or "").strip()))
+
+
+def is_agents_list_command(user_message: str) -> bool:
+    return bool(AGENTS_LIST_COMMAND_RE.match((user_message or "").strip()))
+
+
+def format_agents_list_compact(max_names: int = 15) -> str:
+    """Lista agentes registrados sin LLM (OpenClaw / spaces/general/agents/)."""
+    if not AGENTS_DIR.exists():
+        return "No hay carpeta de agentes en el VPS. Corre import-legal-agents.sh."
+    files = sorted(AGENTS_DIR.glob("*.md"))
+    if not files:
+        return "No hay sub-agentes registrados. Usa `/sonnet crea agente …` o POST /v1/agents."
+    legal = [f.stem for f in files if f.stem.startswith("legal-")]
+    custom = [f.stem for f in files if not f.stem.startswith("legal-")]
+    lines = [
+        f"*Agentes OpenClaw* — {len(files)} registrados",
+        f"  • Legales (claude-for-legal): {len(legal)}",
+        f"  • Personalizados: {len(custom)}",
+        "",
+        "*Ejemplos:*",
+    ]
+    for name in (legal[: max_names - 2] + custom[:2])[:max_names]:
+        lines.append(f"  • `{name}`")
+    if len(files) > max_names:
+        lines.append(f"  … y {len(files) - max_names} más")
+    lines.extend([
+        "",
+        "*Invocar desde Telegram (Ollama local):*",
+        "`invoca legal-regulatory-compliance: tu tarea en una línea`",
+        "",
+        "*API (en el VPS):*",
+        "`POST /v1/agents/{nombre}` body `{\"tarea\":\"…\",\"modelo_override\":\"ollama\"}`",
+        "",
+        "Listado completo con descripciones: `/sonnet lista mis agentes` (requiere créditos).",
+    ])
+    return "\n".join(lines)
+
+
+def _ollama_chat_timeout_fallback(user_message: str, snapshot: str) -> str:
+    """Fallback conversacional cuando Ollama timeout tras briefing (no repetir dump)."""
+    ref = _load_last_briefing_text()[:600] or snapshot[:600]
+    q = (user_message or "").strip()[:120]
+    return (
+        "No alcancé a terminar la respuesta con Ollama local a tiempo.\n\n"
+        f"*Tu pregunta:* {q or '(vacía)'}\n\n"
+        f"*Contexto rápido:*\n{ref}\n\n"
+        "Prueba:\n"
+        "• Reformula en una frase más corta\n"
+        "• `/oss` + tu pregunta (modelo más grande, más lento)\n"
+        "• `briefing` si quieres ver la lista completa de pendientes"
+    )
 
 
 def format_morning_briefing_deterministic(snapshot: str) -> str:
@@ -885,6 +1018,7 @@ def deterministic_operational_response(snapshot: str | None = None) -> tuple[str
     """Respuesta operativa instantánea (<1s)."""
     snap = snapshot if snapshot is not None else build_operational_snapshot(compact=True)
     response = sanitize_ollama_response(format_morning_briefing_deterministic(snap))
+    _mark_last_route("deterministic-briefing")
     return response, "deterministic-briefing"
 
 
@@ -901,22 +1035,37 @@ def generate_morning_briefing() -> str:
     return format_morning_briefing_deterministic(snap)
 
 
-def _trim_system_for_ollama(system_prompt: str) -> str:
+def _trim_system_for_ollama(
+    system_prompt: str,
+    chat_mode: bool = False,
+    ollama_model: str | None = None,
+) -> str:
     """Recorta system prompt priorizando AGENDA/IMPORTANT/JOURNAL."""
+    model = ollama_model or OLLAMA_FAST_MODEL
     tail = OLLAMA_ANTI_HALLUCINATION_TAIL
-    if "gpt-oss" in OLLAMA_MODEL.lower():
+    if chat_mode:
+        tail += OLLAMA_CHAT_STYLE_APPEND
+    elif "gpt-oss" in model.lower():
         tail += GPT_OSS_STYLE_APPEND
-    if len(system_prompt) <= OLLAMA_MAX_SYSTEM_CHARS:
-        return system_prompt + tail
     mem_marker = "# CONTEXTO DE MEMORIA"
     canal_marker = "# CANAL ACTUAL:"
     mem_idx = system_prompt.find(mem_marker)
     canal_idx = system_prompt.find(canal_marker, mem_idx if mem_idx >= 0 else 0)
+    if chat_mode and mem_idx >= 0:
+        head = system_prompt[:mem_idx]
+        canal_part = system_prompt[canal_idx:] if canal_idx >= 0 else ""
+        out = head[:6000] + "\n[memoria completa omitida en modo charla]\n" + canal_part
+        if len(out) > OLLAMA_MAX_SYSTEM_CHARS:
+            out = out[:OLLAMA_MAX_SYSTEM_CHARS]
+        log.info(f"System prompt Ollama (chat): {len(system_prompt)} → {len(out)} chars")
+        return out + tail
+    if len(system_prompt) <= OLLAMA_MAX_SYSTEM_CHARS:
+        return system_prompt + tail
     if mem_idx < 0:
         out = system_prompt[:OLLAMA_MAX_SYSTEM_CHARS] + "\n[contexto truncado para Ollama]"
         return out + tail
     head = system_prompt[:mem_idx]
-    tail = system_prompt[canal_idx:] if canal_idx >= 0 else ""
+    canal_part = system_prompt[canal_idx:] if canal_idx >= 0 else ""
     if len(head) > 8000:
         head = head[:8000] + "\n[AGENTS.md truncado para Ollama]\n"
     mem_block = system_prompt[mem_idx:canal_idx if canal_idx > mem_idx else len(system_prompt)]
@@ -940,7 +1089,7 @@ def _trim_system_for_ollama(system_prompt: str) -> str:
                 snippet = snippet[:OLLAMA_MEMORY_DEFAULT_SNIPPET] + "\n…[truncado]"
             compact_mem.append(snippet + "\n```\n")
     mem_compact = "".join(compact_mem)
-    out = head + "\n\n# CONTEXTO DE MEMORIA (resumido para Ollama local)\n" + mem_compact + "\n" + tail
+    out = head + "\n\n# CONTEXTO DE MEMORIA (resumido para Ollama local)\n" + mem_compact + "\n" + canal_part
     if len(out) > OLLAMA_MAX_SYSTEM_CHARS:
         out = out[:OLLAMA_MAX_SYSTEM_CHARS] + "\n[fin de contexto Ollama]"
     log.info(f"System prompt Ollama: {len(system_prompt)} → {len(out)} chars")
@@ -3925,8 +4074,11 @@ def call_ollama(
     ollama_timeout = timeout if timeout is not None else _resolve_ollama_model(user_message)[1]
     snapshot = build_operational_snapshot(compact=True)
     first_of_day = is_first_conversation_today(history_file)
-    internal_ctx = build_ollama_internal_context(user_message, history, snapshot, first_of_day)
-    sys_p = _trim_system_for_ollama(system_prompt) + internal_ctx
+    chat_mode = _is_ollama_chat_mode(user_message, history)
+    internal_ctx = build_ollama_internal_context(
+        user_message, history, snapshot, first_of_day, chat_mode=chat_mode,
+    )
+    sys_p = _trim_system_for_ollama(system_prompt, chat_mode=chat_mode, ollama_model=ollama_model) + internal_ctx
     hist = _trim_history_for_ollama(history)
     polo_msg = strip_override_prefix((user_message or "").strip()) or "(mensaje vacío)"
     messages = [{"role": "system", "content": sys_p}]
@@ -3934,7 +4086,12 @@ def call_ollama(
         if h["role"] in ("user", "assistant") and isinstance(h["content"], str):
             messages.append({"role": h["role"], "content": h["content"]})
     messages.append({"role": "user", "content": polo_msg})
-    predict = 512 if "gpt-oss" in ollama_model.lower() else 220
+    if "gpt-oss" in ollama_model.lower():
+        predict = 512
+    elif chat_mode:
+        predict = 350
+    else:
+        predict = 280
     body = {
         "model": ollama_model,
         "messages": messages,
@@ -4149,19 +4306,24 @@ def call_llm(
             return response, det_tag
 
         ollama_model, _ = _resolve_ollama_model(user_message)
-        log.info(f"→ Ollama ({ollama_model}) — {tag}")
+        chat_mode = _is_ollama_chat_mode(user_message, history)
+        log.info(f"→ Ollama ({ollama_model}) {'[charla]' if chat_mode else ''} — {tag}")
         response = call_ollama(system_prompt, history, user_message, history_file=history_file)
         if response is not None and response.strip():
-            if first_of_day or _wants_follow_up_briefing(user_message) or needs_operational_context(user_message):
+            _mark_last_route("ollama")
+            if first_of_day or _wants_follow_up_briefing(user_message) or wants_explicit_briefing(user_message):
                 try:
                     save_last_briefing(response, snapshot)
                 except Exception:
                     log.warning("No pude guardar last-briefing.json", exc_info=True)
             return response, "ollama"
+        if _had_briefing_this_session(history):
+            log.warning(f"Ollama timeout — fallback charla ({tag})")
+            return _ollama_chat_timeout_fallback(user_message, snapshot), "ollama-chat-fallback"
         if snapshot and "sin pendientes abiertos" not in snapshot.lower():
-            log.warning(f"Ollama timeout — fallback determinístico ({tag})")
+            log.warning(f"Ollama timeout — briefing único ({tag})")
             fb, _ = deterministic_operational_response(snapshot)
-            return fb + "\n\n_(Ollama no alcanzó a responder; datos desde AGENDA.)_", "ollama-snapshot-fallback"
+            return fb, "deterministic-briefing"
         log.warning(f"Ollama no respondió ({tag})")
         return _ollama_unavailable_msg(), "ollama-error"
 

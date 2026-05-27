@@ -332,6 +332,15 @@ def process_update(update, telegram_token, chat_id, api_key, system_prompt):
         telegram_send_message(telegram_token, chat_id, response, parse_mode=None)
         return
 
+    if core.is_agents_list_command(user_input):
+        response = core.format_agents_list_compact()
+        model_used = "agents-list"
+        core.append_history(HISTORY_FILE, "user", user_input)
+        core.append_history(HISTORY_FILE, "assistant", response)
+        log.info(f"← {model_used} ({len(response)} chars)")
+        telegram_send_message(telegram_token, chat_id, response, parse_mode="Markdown")
+        return
+
     cleaned = core.strip_override_prefix(user_input)
     core.append_history(HISTORY_FILE, "user", user_input)
     history = core.load_history(HISTORY_FILE, max_turns=16)[:-1]
