@@ -1,0 +1,73 @@
+# Caddyfile — reverse proxy con auto-TLS para Louis
+#
+# Caddy 2 hace ACME (Let's Encrypt) automáticamente. Solo asegúrate que:
+#  - LOUIS_DOMAIN y AGENTS_DOMAIN apunten (A record) a la IP del VPS
+#  - El puerto 80 esté abierto (lo está por ufw)
+#  - El email de contacto es correcto (mostrado en certs y notificaciones LE)
+
+{
+    email {$ACME_EMAIL}
+    # Logs en JSON van al stderr del container; docker compose logs los captura.
+}
+
+# ── Louis (OpenClaw) ────────────────────────────────────────
+{$LOUIS_DOMAIN} {
+    encode zstd gzip
+
+    # Headers de seguridad básicos
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options    "nosniff"
+        X-Frame-Options           "DENY"
+        Referrer-Policy           "no-referrer"
+        # Esconde el header Server por default
+        -Server
+    }
+
+    # OpenClaw corre nativo en el host, en localhost:OPENCLAW_PORT
+    reverse_proxy 127.0.0.1:{$OPENCLAW_PORT} {
+        # WebSocket / SSE — OpenClaw lo usa para streaming de respuestas
+        flush_interval -1
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    # Log de acceso (separa para no mezclar con kawiil)
+    log {
+        output file /data/logs/louis.log {
+            roll_size 10mb
+            roll_keep 5
+            roll_keep_for 720h
+        }
+    }
+}
+
+# ── kawiil-agents (FastAPI) ─────────────────────────────────
+{$AGENTS_DOMAIN} {
+    encode zstd gzip
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options    "nosniff"
+        Referrer-Policy           "no-referrer"
+        -Server
+    }
+
+    reverse_proxy 127.0.0.1:8000 {
+        flush_interval -1
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    log {
+        output file /data/logs/agents.log {
+            roll_size 10mb
+            roll_keep 5
+            roll_keep_for 720h
+        }
+    }
+}

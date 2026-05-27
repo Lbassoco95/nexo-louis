@@ -1,0 +1,113 @@
+CLOUDFLARE WAF — Reglas custom para ai.kawiil.mx
+═══════════════════════════════════════════════════════════════════
+Crear en: Dashboard → kawiil.mx → Security → WAF → Custom rules
+
+Cada regla: "Create rule" → pegar la expresión → seleccionar action.
+
+
+─────────────────────────────────────────────────────────────────
+REGLA 1: Bloqueo de paths conocidos de exploits OpenClaw
+─────────────────────────────────────────────────────────────────
+Nombre: yoltik-ai-block-known-exploits
+Acción: Block
+
+Expression (modo "Edit expression"):
+
+(http.host eq "ai.kawiil.mx") and (
+  starts_with(http.request.uri.path, "/api/skills/install") or
+  starts_with(http.request.uri.path, "/admin/exec") or
+  starts_with(http.request.uri.path, "/.openclaw/") or
+  starts_with(http.request.uri.path, "/_internal/") or
+  http.request.uri.query contains "cve-2026-25253"
+)
+
+
+─────────────────────────────────────────────────────────────────
+REGLA 2: Rate limiting agresivo
+─────────────────────────────────────────────────────────────────
+Esta no va en "Custom rules" sino en:
+Dashboard → kawiil.mx → Security → Rate limiting rules → Create
+
+Nombre: yoltik-ai-rate-limit
+Si: hostname eq "ai.kawiil.mx"
+Then: requests per period = 60
+      period = 1 minute
+      action = Block for 10 minutes
+      characteristics: IP source address
+
+
+─────────────────────────────────────────────────────────────────
+REGLA 3: Geo-restricción (México + EE.UU. únicamente)
+─────────────────────────────────────────────────────────────────
+Nombre: yoltik-ai-geo-allowlist
+Acción: Block
+
+Expression:
+
+(http.host eq "ai.kawiil.mx") and
+(ip.geoip.country ne "MX" and ip.geoip.country ne "US")
+
+(Si algún directivo viaja a Europa, añadir su país temporalmente.)
+
+
+─────────────────────────────────────────────────────────────────
+REGLA 4: Bloqueo de IPs anónimas (Tor, VPN comercial conocida)
+─────────────────────────────────────────────────────────────────
+Nombre: yoltik-ai-block-anon
+Acción: Managed Challenge
+
+Expression:
+
+(http.host eq "ai.kawiil.mx") and
+(ip.src.is_in_european_union or ip.src.in $threat_intel)
+
+Nota: el campo "$threat_intel" requiere plan Pro. En plan gratuito,
+usar "cf.threat_score gt 30" como aproximación:
+
+(http.host eq "ai.kawiil.mx") and (cf.threat_score gt 30)
+
+
+─────────────────────────────────────────────────────────────────
+REGLA 5: Bloqueo de User-Agents sospechosos
+─────────────────────────────────────────────────────────────────
+Nombre: yoltik-ai-block-bots
+Acción: Block
+
+Expression:
+
+(http.host eq "ai.kawiil.mx") and (
+  http.user_agent contains "sqlmap" or
+  http.user_agent contains "nmap" or
+  http.user_agent contains "masscan" or
+  http.user_agent contains "nikto" or
+  http.user_agent contains "ZmEu" or
+  http.user_agent eq ""
+)
+
+
+─────────────────────────────────────────────────────────────────
+ORDEN DE EJECUCIÓN RECOMENDADO
+─────────────────────────────────────────────────────────────────
+Cloudflare evalúa custom rules de arriba hacia abajo. Recomendado:
+
+1. yoltik-ai-block-known-exploits     (Block crítico)
+2. yoltik-ai-block-bots               (Block evidente)
+3. yoltik-ai-geo-allowlist            (Block por geo)
+4. yoltik-ai-block-anon               (Challenge para sospechosos)
+
+Y por separado:
+5. yoltik-ai-rate-limit               (en Rate limiting rules)
+
+
+─────────────────────────────────────────────────────────────────
+VERIFICACIÓN
+─────────────────────────────────────────────────────────────────
+Después de aplicar, prueba:
+
+1. Desde una IP de Europa (VPN) → debe ser bloqueado.
+2. curl con User-Agent vacío → debe ser bloqueado.
+3. curl -A "sqlmap" https://ai.kawiil.mx → debe ser bloqueado.
+4. Visita normal desde celular en MX → debe pasar (a la página de Access).
+
+Si una regla bloquea tráfico legítimo, ajústala en el dashboard.
+Cloudflare Logs (Analytics → Security Events) muestra qué regla disparó.

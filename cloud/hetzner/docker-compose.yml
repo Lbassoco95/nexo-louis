@@ -1,0 +1,58 @@
+name: louis
+
+services:
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: louis-caddy
+    restart: unless-stopped
+    network_mode: host    # necesitamos ver localhost:3000 de OpenClaw (nativo) y exponer 80/443 al exterior
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - /opt/louis-data/caddy/data:/data
+      - /opt/louis-data/caddy/config:/config
+    environment:
+      LOUIS_DOMAIN: ${LOUIS_DOMAIN}
+      AGENTS_DOMAIN: ${AGENTS_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+      OPENCLAW_PORT: ${OPENCLAW_PORT:-3000}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  kawiil-agents:
+    build:
+      # El Dockerfile se copia al repo en deploy.sh paso [3/6] como Dockerfile.louis
+      # — Docker requiere que el Dockerfile esté dentro del build context.
+      context: /opt/kawiil/repo
+      dockerfile: Dockerfile.louis
+      args:
+        REPO_DIR: server
+    image: louis/kawiil-agents:latest
+    container_name: louis-kawiil-agents
+    restart: unless-stopped
+    # Bind a localhost del host: Caddy (network_mode:host) lo verá en 127.0.0.1:8000
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      SUPABASE_URL:          ${SUPABASE_URL}
+      SUPABASE_SERVICE_KEY:  ${SUPABASE_SERVICE_KEY}
+      SUPABASE_ANON_KEY:     ${SUPABASE_ANON_KEY}
+      ANTHROPIC_API_KEY:     ${ANTHROPIC_API_KEY}
+      KAWIIL_DISPATCH_TOKEN: ${KAWIIL_DISPATCH_TOKEN}
+      KAWIIL_ORG_ID:         ${KAWIIL_ORG_ID}
+      KAWIIL_KAWIIL_ORG_ID:  ${KAWIIL_KAWIIL_ORG_ID}
+      KAWIIL_YOLTIK_ORG_ID:  ${KAWIIL_YOLTIK_ORG_ID}
+      TZ: America/Mexico_City
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health || curl -fsS http://127.0.0.1:8000/api/agents || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

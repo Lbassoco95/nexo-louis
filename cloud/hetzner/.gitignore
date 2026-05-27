@@ -1,0 +1,7 @@
+.env
+*.bak
+*.bak.*
+*.log
+caddy_data/
+caddy_config/
+.DS_Store

@@ -1,0 +1,267 @@
+#!/usr/bin/env python3
+"""
+louis-scheduler — proactividad de Louis.
+
+Cada 60s revisa /opt/openclaw/reminders/queue.jsonl. Para cada entry con
+`fire_at` <= now, manda el mensaje al canal (Telegram default), opcionalmente
+lo "enriquece" pasando por Claude Haiku (para tono natural), y mueve la entry
+a sent.jsonl.
+
+También maneja recordatorios recurrentes (daily/weekly) re-encolándolos.
+
+Formato de cada entry (una por línea):
+{
+  "id": "uuid",
+  "fire_at": "2026-05-26T08:00:00-06:00",
+  "message": "Briefing matutino: ¿qué tengo hoy?",
+  "channel": "telegram",         # o "slack"
+  "mode": "raw" | "enrich",      # raw = manda literal, enrich = pasa por Haiku
+  "recurrence": null | "daily" | "weekly" | "monthly",
+  "created_at": "2026-05-25T19:00:00-06:00",
+  "source": "user" | "system"
+}
+"""
+
+import os
+import sys
+import json
+import time
+import uuid
+import logging
+from pathlib import Path
+from datetime import datetime, timedelta, timezone
+
+# Importa lógica común
+sys.path.insert(0, str(Path(__file__).parent))
+import louis_core as core
+
+# ===== Paths =====
+HOME = Path.home()
+if Path("/opt/openclaw").exists():
+    HOME_OC = Path("/opt/openclaw")
+else:
+    HOME_OC = HOME / ".openclaw"
+
+REMINDERS_DIR = HOME_OC / "reminders"
+QUEUE_FILE = REMINDERS_DIR / "queue.jsonl"
+SENT_FILE = REMINDERS_DIR / "sent.jsonl"
+LOG_DIR = HOME_OC / "logs"
+LOG_FILE = LOG_DIR / "scheduler.log"
+
+CREDS_TELEGRAM = HOME_OC / "credentials" / "telegram.env"
+CREDS_SLACK = HOME_OC / "credentials" / "slack.env"
+
+# CDMX timezone
+TZ_CDMX = timezone(timedelta(hours=-6))
+
+# Tick cada 60s — fino suficiente para recordatorios al minuto
+TICK_SECONDS = 60
+
+# ===== Logging =====
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+REMINDERS_DIR.mkdir(parents=True, exist_ok=True)
+QUEUE_FILE.touch(exist_ok=True)
+SENT_FILE.touch(exist_ok=True)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler(sys.stdout)],
+)
+log = logging.getLogger("scheduler")
+
+
+# ===== Send helpers =====
+def send_telegram(text: str):
+    creds = core.load_env_file(CREDS_TELEGRAM)
+    token = creds.get("TELEGRAM_BOT_TOKEN")
+    chat_id = creds.get("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        log.error("Faltan credenciales Telegram")
+        return False
+    import urllib.request
+    import urllib.error
+    formatted = core.format_for_telegram(text)
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    body = {"chat_id": chat_id, "text": formatted[:4000], "parse_mode": "Markdown", "disable_web_page_preview": True}
+    try:
+        core.http_post_json(url, headers={}, body=body, timeout=15)
+        return True
+    except urllib.error.HTTPError:
+        # retry sin parse_mode
+        body.pop("parse_mode", None)
+        body["text"] = text[:4000]
+        try:
+            core.http_post_json(url, headers={}, body=body, timeout=15)
+            return True
+        except Exception as e:
+            log.error(f"Telegram send falló: {e}")
+            return False
+    except Exception as e:
+        log.error(f"Telegram send falló: {e}")
+        return False
+
+
+def send_slack(text: str, channel: str = None):
+    """Manda al DM del bot conmigo — necesita SLACK_DEFAULT_DM_USER en slack.env o env"""
+    creds = core.load_env_file(CREDS_SLACK)
+    token = creds.get("SLACK_BOT_TOKEN") or os.environ.get("SLACK_BOT_TOKEN")
+    user_id = channel or creds.get("SLACK_DEFAULT_DM_USER") or os.environ.get("SLACK_DEFAULT_DM_USER")
+    if not token or not user_id:
+        log.error("Faltan SLACK_BOT_TOKEN o SLACK_DEFAULT_DM_USER")
+        return False
+    formatted = core.format_for_slack(text)
+    try:
+        core.http_post_json(
+            "https://slack.com/api/chat.postMessage",
+            headers={"Authorization": f"Bearer {token}"},
+            body={"channel": user_id, "text": formatted[:4000], "mrkdwn": True},
+            timeout=15,
+        )
+        return True
+    except Exception as e:
+        log.error(f"Slack send falló: {e}")
+        return False
+
+
+# ===== Enrich con Haiku (opcional) =====
+def enrich_with_haiku(raw_message: str) -> str:
+    """Reformula el mensaje en tono Louis (cálido, conciso, asistente ejecutivo)."""
+    try:
+        api_key = core.load_anthropic_key()
+    except Exception:
+        return raw_message
+    sys_prompt = (
+        "Eres Louis, asistente ejecutivo de Polo. Estás MANDÁNDOLE un recordatorio proactivo "
+        "(él NO te preguntó). Reformula el mensaje crudo en tu tono: directo, cálido, una o dos "
+        "líneas máximo. Sin saludos. Usa *negrita* (un solo asterisco — Telegram Markdown legacy) "
+        "y emojis con moderación. NO empieces con 'recordatorio:' — solo el contenido. "
+        "Si es un briefing matutino, lista pendientes top 3 con bullets."
+    )
+    user_msg = f"Mensaje crudo a entregar:\n{raw_message}"
+    try:
+        result = core.call_haiku(api_key, sys_prompt, [], user_msg)
+        return result if result and not result.startswith("(error") else raw_message
+    except Exception as e:
+        log.warning(f"Enrich falló, mando raw: {e}")
+        return raw_message
+
+
+# ===== Queue I/O =====
+def read_queue() -> list:
+    """Lee queue.jsonl. Cada línea = un reminder dict."""
+    if not QUEUE_FILE.exists():
+        return []
+    out = []
+    for line in QUEUE_FILE.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except Exception as e:
+            log.warning(f"Línea inválida en queue: {line[:80]} ({e})")
+    return out
+
+
+def write_queue(items: list):
+    """Reescribe el queue completo (atomic-ish)."""
+    tmp = QUEUE_FILE.with_suffix(".jsonl.tmp")
+    with tmp.open("w") as f:
+        for it in items:
+            f.write(json.dumps(it, ensure_ascii=False) + "\n")
+    tmp.replace(QUEUE_FILE)
+
+
+def append_sent(entry: dict):
+    with SENT_FILE.open("a") as f:
+        entry = {**entry, "sent_at": datetime.now(TZ_CDMX).isoformat()}
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+# ===== Recurrence =====
+def next_fire(current_iso: str, recurrence: str) -> str:
+    """Calcula próxima fecha para recordatorios recurrentes."""
+    try:
+        dt = datetime.fromisoformat(current_iso)
+    except Exception:
+        return None
+    if recurrence == "daily":
+        return (dt + timedelta(days=1)).isoformat()
+    if recurrence == "weekly":
+        return (dt + timedelta(weeks=1)).isoformat()
+    if recurrence == "monthly":
+        # +30 días (aproximación simple — no calendar-aware)
+        return (dt + timedelta(days=30)).isoformat()
+    if recurrence == "yearly":
+        try:
+            return dt.replace(year=dt.year + 1).isoformat()
+        except ValueError:
+            # 29-feb → 28-feb del próximo año
+            return dt.replace(year=dt.year + 1, day=28).isoformat()
+    return None
+
+
+# ===== Main tick =====
+def tick():
+    now = datetime.now(TZ_CDMX)
+    queue = read_queue()
+    if not queue:
+        return
+    to_keep = []
+    fired = 0
+    for entry in queue:
+        try:
+            fire_at_str = entry.get("fire_at")
+            fire_at = datetime.fromisoformat(fire_at_str)
+            # Si fire_at no tiene tz, asumimos CDMX
+            if fire_at.tzinfo is None:
+                fire_at = fire_at.replace(tzinfo=TZ_CDMX)
+        except Exception as e:
+            log.warning(f"fire_at inválido en entry {entry.get('id')}: {e}")
+            continue
+
+        if fire_at <= now:
+            # Disparar
+            raw = entry.get("message", "(recordatorio sin mensaje)")
+            mode = entry.get("mode", "enrich")
+            channel = entry.get("channel", "telegram")
+            text = enrich_with_haiku(raw) if mode == "enrich" else raw
+            # Prefijo discreto para distinguir mensaje proactivo
+            text = f"⏰ {text}"
+            if channel == "slack":
+                ok = send_slack(text)
+            else:
+                ok = send_telegram(text)
+            log.info(f"Disparado {entry.get('id')} ({channel}, mode={mode}) → ok={ok}")
+            append_sent({**entry, "delivered": ok})
+            fired += 1
+
+            # Recurrencia
+            rec = entry.get("recurrence")
+            if rec:
+                next_iso = next_fire(fire_at_str, rec)
+                if next_iso:
+                    to_keep.append({**entry, "fire_at": next_iso, "id": str(uuid.uuid4())})
+                    log.info(f"Recurrente '{rec}' → reencolado para {next_iso}")
+        else:
+            to_keep.append(entry)
+
+    if fired > 0:
+        write_queue(to_keep)
+
+
+def main():
+    log.info("=== louis-scheduler arrancando ===")
+    log.info(f"Queue: {QUEUE_FILE}")
+    log.info(f"Tick cada {TICK_SECONDS}s")
+    while True:
+        try:
+            tick()
+        except Exception as e:
+            log.exception(f"Tick falló: {e}")
+        time.sleep(TICK_SECONDS)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,35 @@
+# rsync include/exclude — qué se sube de la Mac al Hetzner
+# Filtros estilo rsync (+/-/!):
+#   + = incluir
+#   - = excluir
+# El orden importa: primer match gana.
+
+# ── Incluir explícitamente ──
++ spaces/
++ spaces/*/
++ spaces/*/AGENDA.md
++ spaces/*/memory/
++ spaces/*/memory/**
++ spaces/*/system-prompt.md
++ spaces/*/prompts/
++ spaces/*/prompts/**
++ spaces/*/skills/
++ spaces/*/skills/**
+
+# ── Excluir todo lo demás ──
+- spaces/*/sessions/
+- spaces/*/logs/
+- spaces/*/cache/
+- spaces/*/tmp/
+- credentials/
+- credentials/**
+- *.log
+- *.tmp
+- *.bak
+- *.bak.*
+- .DS_Store
+- node_modules/
+- node_modules/**
+
+# Catch-all: cualquier otra cosa dentro de spaces/*/ que no haya hecho match, fuera.
+- spaces/*/*

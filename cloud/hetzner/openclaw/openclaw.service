@@ -1,0 +1,32 @@
+[Unit]
+Description=OpenClaw Gateway (Louis core)
+Documentation=https://openclaw.ai
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@@SYSTEM_USER@@
+Group=@@SYSTEM_USER@@
+WorkingDirectory=@@OPENCLAW_HOME@@
+EnvironmentFile=@@ENV_FILE@@
+ExecStart=@@OPENCLAW_BIN@@ start --config @@OPENCLAW_HOME@@/openclaw.json
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=openclaw
+
+# Hardening — limita lo que el proceso puede tocar
+NoNewPrivileges=true
+ProtectSystem=full
+# ProtectHome NO se activa: OpenClaw resuelve $HOME/.openclaw (symlink → /opt/openclaw)
+# y aunque el target esté fuera de /home, la resolución del path inicial pasa por home.
+# Con ProtectHome=read-only o tmpfs, escrituras vía esa ruta fallarían.
+PrivateTmp=true
+ReadWritePaths=@@OPENCLAW_HOME@@
+MemoryMax=2G
+TasksMax=512
+
+[Install]
+WantedBy=multi-user.target

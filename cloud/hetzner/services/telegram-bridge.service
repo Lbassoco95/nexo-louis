@@ -1,0 +1,28 @@
+[Unit]
+Description=Telegram bridge for Louis (Nexo) — polling + Whisper + Claude
+Documentation=https://github.com/Lbassoco95/kawiil-agents
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@@SYSTEM_USER@@
+Group=@@SYSTEM_USER@@
+WorkingDirectory=@@OPENCLAW_HOME@@
+EnvironmentFile=@@ENV_FILE@@
+ExecStart=/usr/bin/python3 @@OPENCLAW_HOME@@/scripts/telegram-bridge.py
+Restart=always
+RestartSec=10
+StandardOutput=append:@@OPENCLAW_HOME@@/logs/telegram-bridge.log
+StandardError=append:@@OPENCLAW_HOME@@/logs/telegram-bridge.log
+SyslogIdentifier=telegram-bridge
+
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+ReadWritePaths=@@OPENCLAW_HOME@@
+MemoryMax=1G
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target

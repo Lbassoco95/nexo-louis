@@ -1,0 +1,34 @@
+# ~/.cloudflared/config.yml
+# Template para Cloudflare Tunnel · Yoltik AI
+#
+# Reemplaza los siguientes valores:
+#   <USER>         → tu usuario de Mac (corre: whoami)
+#   <TUNNEL_UUID>  → el UUID que devuelve "cloudflared tunnel create yoltik-ai"
+#
+# Después de editar:
+#   sudo cloudflared service install --config /Users/<USER>/.cloudflared/config.yml
+
+tunnel: yoltik-ai
+credentials-file: /Users/<USER>/.cloudflared/<TUNNEL_UUID>.json
+
+# Configuración de logging (recomendado)
+logfile: /Users/<USER>/.cloudflared/cloudflared.log
+loglevel: info
+
+# Métricas locales (para health checks)
+metrics: localhost:9090
+
+# Configuración de ingress
+ingress:
+  # Acceso principal a OpenClaw (con auth de Cloudflare Access encima)
+  - hostname: ai.kawiil.mx
+    service: http://localhost:3000
+    originRequest:
+      noTLSVerify: false
+      httpHostHeader: ai.kawiil.mx
+      connectTimeout: 30s
+      tlsTimeout: 10s
+      tcpKeepAlive: 30s
+
+  # Catch-all: cualquier otro hostname no listado → 404
+  - service: http_status:404

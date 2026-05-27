@@ -1,0 +1,28 @@
+[Unit]
+Description=Louis scheduler — proactive reminders + briefings
+Documentation=https://github.com/Lbassoco95/kawiil-agents
+After=network-online.target telegram-bridge.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@@SYSTEM_USER@@
+Group=@@SYSTEM_USER@@
+WorkingDirectory=@@OPENCLAW_HOME@@
+EnvironmentFile=@@ENV_FILE@@
+ExecStart=/usr/bin/python3 @@OPENCLAW_HOME@@/scripts/scheduler.py
+Restart=always
+RestartSec=10
+StandardOutput=append:@@OPENCLAW_HOME@@/logs/scheduler.log
+StandardError=append:@@OPENCLAW_HOME@@/logs/scheduler.log
+SyslogIdentifier=louis-scheduler
+
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+ReadWritePaths=@@OPENCLAW_HOME@@
+MemoryMax=512M
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target
