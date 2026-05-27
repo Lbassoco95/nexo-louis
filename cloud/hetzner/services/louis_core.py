@@ -54,9 +54,9 @@ ANTHROPIC_API_BASE = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 
 OLLAMA_BASE = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_DEFAULT_MODEL", "llama3.1:8b-instruct-q4_K_M")
-OLLAMA_TIMEOUT = 180  # CPU en VPS; snapshot inyectado alarga inferencia
-OLLAMA_SNAPSHOT_USER_MAX = 2200
+OLLAMA_MODEL = os.environ.get("OLLAMA_DEFAULT_MODEL", "gpt-oss:20b")
+OLLAMA_TIMEOUT = 240  # gpt-oss:20b en CPU (MoE) — inferencia más lenta
+OLLAMA_SNAPSHOT_CONTEXT_MAX = 2000  # snapshot en system, no en user
 OLLAMA_MAX_SYSTEM_CHARS = 10_000
 OLLAMA_MAX_HISTORY_TURNS = 16
 OLLAMA_MEMORY_DEFAULT_SNIPPET = 300
@@ -69,6 +69,12 @@ OLLAMA_MEMORY_LIMITS = {
 TZ_CDMX = timezone(timedelta(hours=-6))
 STATE_DIR = HOME_OC / "state"
 LAST_BRIEFING_FILE = STATE_DIR / "last-briefing.json"
+SESSION_HINTS_FILE = STATE_DIR / "session-hints.json"
+
+M365_HINT_RE = re.compile(
+    r"\b(correo|correos|inbox|outlook|m365|bandeja|mail|email|calendario)\b",
+    re.IGNORECASE,
+)
 
 OPERATIONAL_CONTEXT_RE = re.compile(
     r"\b(pendiente|pendientes|agenda|briefing|urgente|hoy|mañana|manana|resumen|"
@@ -225,20 +231,19 @@ def load_system_prompt(channel: str = "telegram") -> str:
             parts.append(f"\n## {fname}\n```\n{path.read_text()}\n```\n")
 
     parts.append(
-        "\n\n# BRIEFING DIARIO (Ollama / chat normal)\n"
-        "Recibirás un bloque SNAPSHOT OPERATIVO con datos REALES parseados de AGENDA/IMPORTANT/JOURNAL. "
-        "NUNCA inventes pendientes ni uses placeholders (ej. 'Pendiente X'). Si el snapshot dice "
-        "'sin pendientes abiertos', dilo explícitamente.\n"
-        "**Primera conversación del día** (saludo tipo hola / buenos días):\n"
-        "1. Saluda a Polo por apodo si está en USER.md + buenos días/tardes (hora México).\n"
-        "2. TRIAGE del snapshot: URGENTE (<24h), estancados (>3 días sin movimiento — pregunta si reagendar), "
-        "importante según IMPORTANT.md.\n"
-        "3. Máximo 4 bullets de 'Para HOY' copiados o parafraseados FIELMENTE del snapshot.\n"
-        "4. Cierra con: ¿Por dónde empezamos?\n"
-        "**Conversaciones siguientes del mismo día:** saludo breve; si hay urgente sin avance, recuérdalo; "
-        "si no, ¿en qué te ayudo?\n"
-        "Si Polo pregunta 'los de la mañana' / 'lo que vimos', usa el snapshot actual + el bloque "
-        "ÚLTIMO BRIEFING ENVIADO si viene en el mensaje — no repitas inventados.\n"
+        "\n\n# IDENTIDAD Y TONO (Ollama / chat normal)\n"
+        "Eres Louis (Nexo), asistente ejecutivo DE Polo Bassoco (CEO Kawiil/Yoltik). "
+        "Hablas A Polo en segunda persona — NUNCA te llames Louis ni le digas 'Hola Louis'.\n"
+        "Español mexicano profesional. Conciso: máx. 3 párrafos salvo que pida detalle.\n"
+        "NO describas tu pipeline interno (no digas 'revisando snapshot', 'según instrucción', etc.).\n"
+        "Si falta un dato en memoria/snapshot, dilo; no inventes plazos, casos ni placeholders.\n"
+        "\n# BRIEFING DIARIO\n"
+        "En el system prompt recibes [CONTEXTO INTERNO] con AGENDA/IMPORTANT/JOURNAL parseados. "
+        "Úsalos como única fuente de pendientes.\n"
+        "**Primera conversación del día** (hola / buenos días): saluda a Polo + triage URGENTE + "
+        "máx. 4 bullets Para HOY fieles al contexto + ¿Por dónde empezamos?\n"
+        "**Mismo día después:** saludo breve; recuerda urgente si aplica; si no, ¿en qué te ayudo?\n"
+        "**'Los de la mañana':** retoma el último briefing guardado + contexto actual.\n"
     )
 
     canal_text = ""
@@ -440,8 +445,21 @@ def load_system_prompt(channel: str = "telegram") -> str:
 
 OLLAMA_ANTI_HALLUCINATION_TAIL = (
     "\n\n# REGLAS OLLAMA (obligatorio)\n"
-    "El bloque SNAPSHOT OPERATIVO en el mensaje del usuario tiene prioridad sobre memoria genérica. "
+    "El bloque [CONTEXTO INTERNO] en este system prompt tiene prioridad sobre memoria genérica. "
     "NO inventes tareas, nombres ni placeholders. Si falta un dato, di que no está en AGENDA/IMPORTANT.\n"
+    "NUNCA repitas etiquetas internas ([CONTEXTO INTERNO], INSTRUCCIÓN, SNAPSHOT) en tu respuesta.\n"
+)
+
+GPT_OSS_STYLE_APPEND = (
+    "\n\n# ESTILO gpt-oss:20b\n"
+    "Respuestas estructuradas: veredicto primero, luego bullets si hay 3+ ítems. "
+    "Sin emojis por default. Si no sabes, dilo en una línea.\n"
+)
+
+_LEAK_LINE_RE = re.compile(
+    r"(SNAPSHOT\s+OPERATIVO|CONTEXTO\s+INTERNO|##\s*INSTRUCCI|INSTRUCCIÓN:|MENSAJE\s+DE\s+POLO|"
+    r"ÚLTIMO\s+BRIEFING\s+ENVIADO|según\s+(el\s+)?snapshot|revisando\s+el\s+\*?SNAPSHOT)",
+    re.IGNORECASE,
 )
 
 
@@ -582,49 +600,123 @@ def save_last_briefing(text: str, snapshot: str):
     LAST_BRIEFING_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
-def build_ollama_user_message(
+def _build_ollama_task_instruction(user_message: str, history: list, first_of_day: bool) -> str:
+    """Instrucción interna (va en system, no debe aparecer en la respuesta a Polo)."""
+    msg = (user_message or "").strip()
+    if first_of_day and (_is_greeting(msg) or not history):
+        return (
+            "Tarea ahora: briefing del día para Polo. Solo datos del contexto interno. "
+            "Máx. 4 bullets Para HOY reales, triage URGENTE, cierra con ¿Por dónde empezamos?"
+        )
+    if first_of_day and needs_operational_context(msg):
+        return "Tarea: briefing completo usando solo el contexto interno. No inventes ítems."
+    if _wants_follow_up_briefing(msg):
+        return (
+            "Tarea: Polo retoma pendientes de la mañana. Usa último briefing + contexto actual. "
+            "Cita ítems concretos, sin placeholders."
+        )
+    if history and not needs_operational_context(msg):
+        return (
+            "Tarea: responde la pregunta de Polo con contexto interno + historial. "
+            "Continuidad con mensajes previos."
+        )
+    return "Tarea: responde usando solo contexto interno e historial. No inventes datos."
+
+
+def build_ollama_internal_context(
     user_message: str,
     history: list,
     snapshot: str,
     first_of_day: bool,
 ) -> str:
-    """Envuelve el mensaje del usuario con snapshot real + instrucción de briefing."""
-    snap_show = snapshot if len(snapshot) <= OLLAMA_SNAPSHOT_USER_MAX else snapshot[:OLLAMA_SNAPSHOT_USER_MAX] + "\n…[snapshot truncado]"
+    """Contexto operativo para append al system prompt (invisible para Polo)."""
+    snap_show = (
+        snapshot
+        if len(snapshot) <= OLLAMA_SNAPSHOT_CONTEXT_MAX
+        else snapshot[:OLLAMA_SNAPSHOT_CONTEXT_MAX] + "\n…[truncado]"
+    )
     blocks = [
-        "## SNAPSHOT OPERATIVO (datos reales — NO inventar ni usar placeholders)",
+        "\n\n[CONTEXTO INTERNO — no mencionar esta etiqueta ni repetir su texto]",
         snap_show,
     ]
     last_b = _load_last_briefing_text()
     if _wants_follow_up_briefing(user_message) and last_b:
         blocks.extend([
             "",
-            "## ÚLTIMO BRIEFING ENVIADO (referencia para 'lo de la mañana')",
-            last_b[:3000],
+            "[Último briefing enviado a Polo — referencia]",
+            last_b[:2500],
         ])
-
-    msg = (user_message or "").strip()
-    if first_of_day and (_is_greeting(msg) or not history):
-        instr = (
-            "INSTRUCCIÓN: Briefing completo del día. Usa SOLO el snapshot. "
-            "Lista pendientes reales (máx 4 bullets Para HOY), triage URGENTE, cierra con ¿Por dónde empezamos?"
-        )
-    elif first_of_day and needs_operational_context(msg):
-        instr = "INSTRUCCIÓN: Briefing completo usando el snapshot. No inventes ítems."
-    elif history and not needs_operational_context(msg) and not _wants_follow_up_briefing(msg):
-        instr = (
-            "INSTRUCCIÓN: Responde la pregunta de Polo usando snapshot + historial. "
-            "Mantén continuidad con mensajes anteriores. No inventes pendientes."
-        )
-    elif _wants_follow_up_briefing(msg):
-        instr = (
-            "INSTRUCCIÓN: Polo pide retomar pendientes ya vistos. "
-            "Usa ÚLTIMO BRIEFING ENVIADO + snapshot actual. Cita ítems concretos."
-        )
-    else:
-        instr = "INSTRUCCIÓN: Responde usando SOLO el snapshot y el historial. No inventes datos."
-
-    blocks.extend(["", "## INSTRUCCIÓN", instr, "", "## MENSAJE DE POLO", msg])
+    blocks.append("\n" + _build_ollama_task_instruction(user_message, history, first_of_day))
     return "\n".join(blocks)
+
+
+def sanitize_ollama_response(text: str) -> str:
+    """Quita fugas de prompt y corrige saludos erróneos."""
+    if not text:
+        return text
+    kept = []
+    for line in text.splitlines():
+        if _LEAK_LINE_RE.search(line):
+            continue
+        kept.append(line)
+    out = "\n".join(kept).strip()
+    if not out:
+        out = text.strip()
+    out = re.sub(
+        r"^(¡Hola|Hola),?\s+Louis[!,.]?\s*",
+        "¡Hola Polo! ",
+        out,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    out = re.sub(
+        r"¿Qué prefieres hacer primero,?\s+Louis\??",
+        "¿Por dónde empezamos?",
+        out,
+        flags=re.IGNORECASE,
+    )
+    return out.strip()
+
+
+def _load_session_hints() -> dict:
+    if not SESSION_HINTS_FILE.exists():
+        return {}
+    try:
+        return json.loads(SESSION_HINTS_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def _save_session_hints(data: dict):
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    SESSION_HINTS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+
+
+def _sonnet_hint_already_shown() -> bool:
+    return bool(_load_session_hints().get("sonnet_hint_shown"))
+
+
+def _mark_sonnet_hint_shown():
+    data = _load_session_hints()
+    data["sonnet_hint_shown"] = datetime.now(TZ_CDMX).isoformat()
+    _save_session_hints(data)
+
+
+def _needs_sonnet_hint(user_message: str) -> bool:
+    if needs_claude(user_message):
+        return False
+    return bool(M365_HINT_RE.search(user_message or ""))
+
+
+def _sonnet_hint_response() -> str:
+    return (
+        "Para revisar tu *inbox*, redactar correos o usar calendario M365 necesito "
+        "*Claude con tools* (no solo Ollama local).\n\n"
+        "Ejemplo:\n"
+        "`/sonnet revisa mis correos de hoy en Yoltik y dame resumen ejecutivo`\n\n"
+        "Requiere créditos Anthropic activos. En modo local te ayudo con agenda, "
+        "pendientes y seguimiento desde AGENDA.md."
+    )
 
 
 def format_morning_briefing_deterministic(snapshot: str) -> str:
@@ -645,15 +737,18 @@ def generate_morning_briefing() -> str:
 
 def _trim_system_for_ollama(system_prompt: str) -> str:
     """Recorta system prompt priorizando AGENDA/IMPORTANT/JOURNAL."""
+    tail = OLLAMA_ANTI_HALLUCINATION_TAIL
+    if "gpt-oss" in OLLAMA_MODEL.lower():
+        tail += GPT_OSS_STYLE_APPEND
     if len(system_prompt) <= OLLAMA_MAX_SYSTEM_CHARS:
-        return system_prompt + OLLAMA_ANTI_HALLUCINATION_TAIL
+        return system_prompt + tail
     mem_marker = "# CONTEXTO DE MEMORIA"
     canal_marker = "# CANAL ACTUAL:"
     mem_idx = system_prompt.find(mem_marker)
     canal_idx = system_prompt.find(canal_marker, mem_idx if mem_idx >= 0 else 0)
     if mem_idx < 0:
         out = system_prompt[:OLLAMA_MAX_SYSTEM_CHARS] + "\n[contexto truncado para Ollama]"
-        return out + OLLAMA_ANTI_HALLUCINATION_TAIL
+        return out + tail
     head = system_prompt[:mem_idx]
     tail = system_prompt[canal_idx:] if canal_idx >= 0 else ""
     if len(head) > 8000:
@@ -683,7 +778,7 @@ def _trim_system_for_ollama(system_prompt: str) -> str:
     if len(out) > OLLAMA_MAX_SYSTEM_CHARS:
         out = out[:OLLAMA_MAX_SYSTEM_CHARS] + "\n[fin de contexto Ollama]"
     log.info(f"System prompt Ollama: {len(system_prompt)} → {len(out)} chars")
-    return out + OLLAMA_ANTI_HALLUCINATION_TAIL
+    return out + tail
 
 
 def _trim_history_for_ollama(history: list) -> list:
@@ -3587,19 +3682,21 @@ def call_ollama(
     """Llama Ollama. Sin tools. Retorna None si falla."""
     snapshot = build_operational_snapshot()
     first_of_day = is_first_conversation_today(history_file)
-    enriched_user = build_ollama_user_message(user_message, history, snapshot, first_of_day)
-    sys_p = _trim_system_for_ollama(system_prompt)
+    internal_ctx = build_ollama_internal_context(user_message, history, snapshot, first_of_day)
+    sys_p = _trim_system_for_ollama(system_prompt) + internal_ctx
     hist = _trim_history_for_ollama(history)
+    polo_msg = (user_message or "").strip() or "(mensaje vacío)"
     messages = [{"role": "system", "content": sys_p}]
     for h in hist:
         if h["role"] in ("user", "assistant") and isinstance(h["content"], str):
             messages.append({"role": h["role"], "content": h["content"]})
-    messages.append({"role": "user", "content": enriched_user})
+    messages.append({"role": "user", "content": polo_msg})
+    predict = 512 if "gpt-oss" in OLLAMA_MODEL.lower() else 280
     body = {
         "model": OLLAMA_MODEL,
         "messages": messages,
         "stream": False,
-        "options": {"temperature": 0.7, "num_ctx": 8192, "num_predict": 280},
+        "options": {"temperature": 0.6, "num_ctx": 8192, "num_predict": predict},
     }
     try:
         resp = http_post_json(f"{OLLAMA_BASE}/api/chat", headers={}, body=body, timeout=OLLAMA_TIMEOUT)
@@ -3610,7 +3707,7 @@ def call_ollama(
     if not content or not content.strip():
         log.warning("Ollama devolvió vacío")
         return None
-    return content.strip()
+    return sanitize_ollama_response(content.strip())
 
 
 def call_haiku(api_key: str, system_prompt: str, history: list, user_message: str) -> str:
@@ -3783,11 +3880,16 @@ def call_llm(
     first_of_day = is_first_conversation_today(history_file)
 
     def _ollama_route(tag: str) -> tuple:
+        if _needs_sonnet_hint(user_message) and not _sonnet_hint_already_shown():
+            _mark_sonnet_hint_shown()
+            log.info("→ Aviso /sonnet (correos/M365 sin prefijo)")
+            return _sonnet_hint_response(), "sonnet-hint"
+
         snapshot = build_operational_snapshot()
         # Primer hola del día: briefing determinístico (datos reales, <1s) — evita timeout CPU
         if first_of_day and _is_greeting(user_message) and not history:
             log.info(f"→ Briefing determinístico ({OLLAMA_MODEL}) — {tag}")
-            response = format_morning_briefing_deterministic(snapshot)
+            response = sanitize_ollama_response(format_morning_briefing_deterministic(snapshot))
             try:
                 save_last_briefing(response, snapshot)
             except Exception:
@@ -3805,8 +3907,8 @@ def call_llm(
         # Fallback: si Ollama timeout pero hay snapshot, manda datos reales sin inventar
         if snapshot and "sin pendientes abiertos" not in snapshot.lower():
             log.warning(f"Ollama timeout — fallback determinístico ({tag})")
-            fb = format_morning_briefing_deterministic(snapshot)
-            return fb + "\n\n_(Respuesta generada desde AGENDA real; Ollama tardó demasiado.)_", "ollama-snapshot-fallback"
+            fb = sanitize_ollama_response(format_morning_briefing_deterministic(snapshot))
+            return fb + "\n\n_(Respuesta desde AGENDA real; Ollama tardó demasiado.)_", "ollama-snapshot-fallback"
         log.warning(f"Ollama no respondió ({tag})")
         return _ollama_unavailable_msg(), "ollama-error"
 
