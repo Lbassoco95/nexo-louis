@@ -3322,21 +3322,23 @@ def call_haiku(api_key: str, system_prompt: str, history: list, user_message: st
     }
     try:
         resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=60)
-    except HttpError400 as e:
-        log.error(f"Haiku falló — code={e.code} body={e.body[:500]}")
+    except urllib.error.HTTPError as e:
+        err_body = getattr(e, "body", "") or ""
+        log.error(f"Haiku falló — code={e.code} body={err_body[:500]}")
         # Fallback a Sonnet si el modelo fue rechazado
-        body_lower = e.body.lower()
+        body_lower = err_body.lower()
         if e.code == 400 and ("model" in body_lower or "not_found" in body_lower or "deprecated" in body_lower):
             log.warning("Modelo Haiku rechazado por API — fallback a Sonnet")
             body["model"] = CLAUDE_SONNET
             try:
                 resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=60)
-            except HttpError400 as e2:
-                return f"(Haiku→Sonnet fallback falló: HTTP {e2.code}: {e2.body[:200]})"
+            except urllib.error.HTTPError as e2:
+                err_body2 = getattr(e2, "body", "") or ""
+                return f"(Haiku→Sonnet fallback falló: HTTP {e2.code}: {err_body2[:200]})"
             except Exception as e2:
                 return f"(Haiku→Sonnet fallback falló: {e2})"
         else:
-            return f"(error Haiku HTTP {e.code}: {e.body[:300] or 'body vacío'})"
+            return f"(error Haiku HTTP {e.code}: {err_body[:300] or 'body vacío'})"
     except Exception as e:
         log.exception("Haiku API falló (exception)")
         return f"(error llamando a Haiku: {e})"
