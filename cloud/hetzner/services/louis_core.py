@@ -4159,13 +4159,26 @@ def execute_tool(name: str, args: dict) -> str:
 
 # ===== Routing =====
 def needs_claude(user_message: str) -> bool:
-    """Claude solo con prefijo explícito (/sonnet, /profundo, …). El chat normal va a Ollama."""
+    """Claude solo con prefijo explícito (/sonnet, /profundo, …). El chat normal va a DeepSeek."""
     if not user_message:
         return False
     msg = user_message.strip().lower()
     if msg.startswith(OLLAMA_FORCE_PREFIXES):
         return False
     return msg.startswith(CLAUDE_FORCE_PREFIXES)
+
+
+def needs_tools(user_message: str) -> bool:
+    """True si el mensaje pide datos/acciones que requieren herramientas: búsqueda legal
+    (DOF/tesis/SJF), correo/calendario M365, kawiil-central, browser, vault, etc.
+    → se enruta a Claude con tools (análisis/indexación/conocimiento).
+    Los overrides explícitos de chat (/ds, /llama, /oss, /haiku) tienen prioridad y NO cuentan."""
+    if not user_message:
+        return False
+    msg = user_message.strip()
+    if msg.lower().startswith(OLLAMA_FORCE_PREFIXES + OLLAMA_QUALITY_PREFIXES + DEEPSEEK_FORCE_PREFIXES + HAIKU_FORCE_PREFIXES):
+        return False
+    return bool(TOOL_REGEX.search(msg))
 
 
 def strip_override_prefix(user_message: str) -> str:
@@ -4487,6 +4500,39 @@ def call_llm(
         log.warning(f"Ollama no respondió ({tag})")
         return _ollama_unavailable_msg(), "ollama-error"
 
+    def _deepseek_route(tag: str) -> tuple:
+        # Saludo / briefing explícito → respuesta determinística instantánea (sin modelo).
+        snapshot = build_operational_snapshot(compact=True)
+        if should_deterministic_operational_response(user_message, history):
+            log.info(f"→ Briefing determinístico (fast path) — {tag}")
+            response, det_tag = deterministic_operational_response(snapshot)
+            try:
+                save_last_briefing(response, snapshot)
+            except Exception:
+                log.warning("No pude guardar last-briefing.json", exc_info=True)
+            return response, det_tag
+        # Conversación fluida → DeepSeek (rápido, API, sin timeouts de CPU). Le anteponemos
+        # el snapshot operativo para que tenga contexto real de AGENDA/IMPORTANT.
+        log.info(f"→ DeepSeek (chat) — {tag}")
+        ds_system = f"[CONTEXTO OPERATIVO ACTUAL]\n{snapshot}\n\n{system_prompt}"
+        try:
+            response = call_deepseek(ds_system, history, user_message)
+        except Exception as e:
+            log.warning(f"DeepSeek excepción ({e})")
+            response = None
+        if response and response.strip() and not response.lstrip().startswith(("(error", "(sin respuesta", "(respuesta vac")):
+            _mark_last_route("deepseek")
+            if first_of_day or _wants_follow_up_briefing(user_message) or wants_explicit_briefing(user_message):
+                try:
+                    save_last_briefing(response, snapshot)
+                except Exception:
+                    log.warning("No pude guardar last-briefing.json", exc_info=True)
+            return response, "deepseek"
+        # DeepSeek falló → briefing determinístico (NO caemos en Ollama lento de CPU).
+        log.warning(f"DeepSeek no respondió ({tag}) — fallback determinístico")
+        fb, _ = deterministic_operational_response(snapshot)
+        return fb, "deepseek-fallback"
+
     if msg.startswith(OLLAMA_QUALITY_PREFIXES):
         return _ollama_route("override /oss")
 
@@ -4506,10 +4552,13 @@ def call_llm(
         cleaned = strip_override_prefix(user_message)
         return _call_claude_with_billing_check(call_haiku, api_key, system_prompt, history, cleaned), "haiku"
 
-    # Análisis profundo / tools → Sonnet (prefijo explícito o auto: memoria / agentes)
-    if needs_claude(user_message) or needs_sonnet_auto(user_message):
+    # Análisis / búsqueda / datos / tools → Sonnet con tools.
+    # (prefijo /sonnet, o auto: memoria, agentes legales, o cualquier keyword de herramienta)
+    if needs_claude(user_message) or needs_sonnet_auto(user_message) or needs_tools(user_message):
         reason = "prefijo /sonnet" if needs_claude(user_message) else (
-            "escritura memoria" if needs_memory_write(user_message) else "agentes legales"
+            "escritura memoria" if needs_memory_write(user_message) else
+            "agentes legales" if needs_legal_sonnet(user_message) else
+            "herramienta/datos"
         )
         log.info(f"→ Sonnet ({CLAUDE_SONNET}) — {reason}")
         cleaned = strip_override_prefix(user_message)
@@ -4531,8 +4580,8 @@ def call_llm(
             tag = "sonnet-legal"
         return response, tag
 
-    # Default: Ollama local
-    return _ollama_route("chat default")
+    # Default: conversación fluida → DeepSeek
+    return _deepseek_route("chat default")
 
 
 def _is_billing_error(text: str) -> bool:
