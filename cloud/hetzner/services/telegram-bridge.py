@@ -341,11 +341,12 @@ def process_update(update, telegram_token, chat_id, api_key, system_prompt):
         telegram_send_message(telegram_token, chat_id, response, parse_mode="Markdown")
         return
 
-    cleaned = core.strip_override_prefix(user_input)
     core.append_history(HISTORY_FILE, "user", user_input)
     history = core.load_history(HISTORY_FILE, max_turns=16)[:-1]
+    # Pasamos el mensaje CRUDO: call_llm detecta /sonnet, /oss, /haiku, /llama
+    # y limpia el prefijo internamente antes de llamar al modelo.
     response, model_used = core.call_llm(
-        api_key, system_prompt, history, cleaned or user_input, history_file=HISTORY_FILE
+        api_key, system_prompt, history, user_input, history_file=HISTORY_FILE
     )
     log.info(f"← {model_used} respondió ({len(response)} chars)")
     core.append_history(HISTORY_FILE, "assistant", response)

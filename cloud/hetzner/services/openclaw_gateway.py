@@ -222,8 +222,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 api_key = core.load_anthropic_key()
                 sys_prompt = core.load_system_prompt(channel="api")
-                cleaned = core.strip_override_prefix(user_msg)
-                response, model_used = core.call_llm(api_key, sys_prompt, history, cleaned or user_msg)
+                # Mensaje crudo: call_llm maneja prefijos (/sonnet, /oss…) y los limpia internamente.
+                response, model_used = core.call_llm(api_key, sys_prompt, history, user_msg)
             except Exception as e:
                 log.exception("call_llm falló")
                 self._send_json(500, {"error": str(e), "trace": traceback.format_exc()})

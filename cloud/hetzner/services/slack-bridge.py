@@ -159,7 +159,6 @@ def main():
         # Quita la mención al bot del inicio si vino con @
         if bot_user_id:
             text = text.replace(f"<@{bot_user_id}>", "").strip()
-        cleaned = core.strip_override_prefix(text)
 
         # Historia: agregamos el mensaje crudo (texto del usuario)
         core.append_history(HISTORY_FILE, "user", text)
@@ -175,7 +174,7 @@ def main():
         system_prompt = system_prompt + ctx_hint
 
         response, model_used = core.call_llm(
-            api_key, system_prompt, history, cleaned or text, history_file=HISTORY_FILE
+            api_key, system_prompt, history, text, history_file=HISTORY_FILE
         )
         log.info(f"← {model_used} respondió a {user} en {channel} ({len(response)} chars)")
         core.append_history(HISTORY_FILE, "assistant", response)

@@ -199,6 +199,7 @@ TOOL_REGEX = re.compile("|".join(TOOL_KEYWORDS), re.IGNORECASE)
 
 OLLAMA_FORCE_PREFIXES = ("/llama", "/ollama", "/local")
 OLLAMA_QUALITY_PREFIXES = ("/oss",)
+HAIKU_FORCE_PREFIXES = ("/haiku", "/rápido", "/rapido")
 CLAUDE_FORCE_PREFIXES = (
     "/sonnet", "/claude", "/calidad", "/fuerte", "/profundo", "/analisis", "/análisis",
     "/verify",
@@ -916,6 +917,98 @@ def _format_memory_tool_confirmations(tool_results: list[str]) -> str:
     if not lines:
         return ""
     return "✅ *Memoria actualizada:*\n" + "\n".join(f"• {ln}" for ln in lines)
+
+
+# ===== Escritura determinística de memoria (sin Claude / sin créditos) =====
+# Permite que Louis "aprenda" aunque la cuenta Anthropic no tenga créditos: la
+# forma explícita "anota [en <archivo>]: <contenido>" se guarda directo con
+# append_to_memory, sin pasar por Sonnet. Es el carril de aprendizaje a prueba
+# de fallos — siempre disponible, gratis y local.
+_MEMORY_FILE_KEYWORDS = (
+    ("agenda", "AGENDA.md"),
+    ("prospecto", "PROSPECTOS.md"),
+    ("cliente", "CLIENTES.md"),
+    ("importante", "IMPORTANT.md"),
+    ("important", "IMPORTANT.md"),
+    ("journal", "JOURNAL.md"),
+    ("bitacora", "JOURNAL.md"),
+    ("bitácora", "JOURNAL.md"),
+    ("aprendizaje", "LEARNINGS.md"),
+    ("learning", "LEARNINGS.md"),
+    ("proyecto", "PROJECTS.md"),
+    ("project", "PROJECTS.md"),
+    ("personal", "PERSONAL.md"),
+    ("familia", "FAMILIA.md"),
+    ("salud", "SALUD.md"),
+    ("viaje", "VIAJES.md"),
+    ("finanza", "FINANZAS.md"),
+    ("equipo", "PEOPLE.md"),
+    ("gente", "PEOPLE.md"),
+    ("people", "PEOPLE.md"),
+)
+
+_MEMORY_TRIGGER_RE = re.compile(
+    r"^\s*(?:anota|anotar|agrega|agregar|registra|registrar|guarda|guardar|"
+    r"apunta|apuntar|recu[eé]rdame|recuerdame|recu[eé]rdalo|recuerdalo)\b[:\s]*",
+    re.IGNORECASE,
+)
+_MEMORY_FILE_PREFIX_RE = re.compile(
+    r"^(?:en|a|al)\s+(?:la\s+|el\s+|mi\s+)?([\wáéíóúñ]+)\s*:?\s*(.*)$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _resolve_memory_file_strict(token: str) -> str | None:
+    """Devuelve el archivo de memoria si el token coincide con una palabra clave, si no None."""
+    t = (token or "").lower().strip()
+    for kw, fname in _MEMORY_FILE_KEYWORDS:
+        if t.startswith(kw):
+            return fname
+    return None
+
+
+def try_deterministic_memory_write(user_message: str, strict: bool = True) -> str | None:
+    """Guarda una nota en memoria SIN Claude (append directo).
+
+    strict=True  → solo dispara con señal explícita (dos puntos en el mensaje,
+                   o archivo nombrado: "anota en AGENDA: …"). Pensado como
+                   fast-path que ahorra créditos y funciona offline sin robarle
+                   a Sonnet peticiones matizadas.
+    strict=False → permisivo (sin ':'); usado como fallback cuando Sonnet falla
+                   por créditos, para no perder el aprendizaje.
+
+    Devuelve confirmación (str) o None si el mensaje no es una nota clara.
+    """
+    if not user_message:
+        return None
+    msg = strip_override_prefix(user_message.strip())
+    tm = _MEMORY_TRIGGER_RE.match(msg)
+    if not tm:
+        return None
+    rest = msg[tm.end():].strip()
+    if not rest:
+        return None
+
+    fname = "AGENDA.md"
+    explicit_file = False
+    fpm = _MEMORY_FILE_PREFIX_RE.match(rest)
+    if fpm:
+        candidate = _resolve_memory_file_strict(fpm.group(1))
+        if candidate:
+            fname, explicit_file, rest = candidate, True, fpm.group(2).strip()
+
+    if strict and ":" not in user_message and not explicit_file:
+        return None
+
+    rest = rest.lstrip(":").strip()
+    if not rest:
+        return None
+
+    fecha = datetime.now(TZ_CDMX).strftime("%Y-%m-%d %H:%M")
+    result = execute_tool("append_to_memory", {"filename": fname, "content": f"- [{fecha}] {rest}"})
+    if not result.startswith("OK"):
+        return f"⚠️ No pude guardar en {fname}: {result}"
+    return f"✅ Anotado en *{fname}*:\n• {rest}"
 
 
 def should_deterministic_operational_response(user_message: str, history: list | None = None) -> bool:
@@ -4054,7 +4147,7 @@ def needs_claude(user_message: str) -> bool:
 def strip_override_prefix(user_message: str) -> str:
     """Quita /sonnet, /llama, /oss, etc. del inicio antes de enviar al modelo."""
     cleaned = user_message
-    for prefix in CLAUDE_FORCE_PREFIXES + OLLAMA_FORCE_PREFIXES + OLLAMA_QUALITY_PREFIXES:
+    for prefix in CLAUDE_FORCE_PREFIXES + OLLAMA_FORCE_PREFIXES + OLLAMA_QUALITY_PREFIXES + HAIKU_FORCE_PREFIXES:
         if cleaned.lower().startswith(prefix):
             cleaned = cleaned[len(prefix):].strip()
             break
@@ -4289,6 +4382,13 @@ def call_llm(
     msg = (user_message or "").strip().lower()
     first_of_day = is_first_conversation_today(history_file)
 
+    # Aprendizaje a prueba de fallos: "anota en AGENDA: …" se guarda directo,
+    # sin gastar créditos y aunque Anthropic esté sin saldo.
+    det_mem = try_deterministic_memory_write(user_message, strict=True)
+    if det_mem is not None:
+        _mark_last_route("memoria-directa")
+        return det_mem, "memoria-directa"
+
     def _ollama_route(tag: str) -> tuple:
         if _needs_sonnet_hint(user_message) and not _sonnet_hint_already_shown():
             _mark_sonnet_hint_shown()
@@ -4335,9 +4435,10 @@ def call_llm(
         return _ollama_route("override /llama")
 
     # Override Haiku explícito
-    if msg.startswith(("/haiku", "/rápido", "/rapido")):
+    if msg.startswith(HAIKU_FORCE_PREFIXES):
         log.info(f"→ Haiku ({CLAUDE_HAIKU}) — override /haiku")
-        return _call_claude_with_billing_check(call_haiku, api_key, system_prompt, history, user_message), "haiku"
+        cleaned = strip_override_prefix(user_message)
+        return _call_claude_with_billing_check(call_haiku, api_key, system_prompt, history, cleaned), "haiku"
 
     # Análisis profundo / tools → Sonnet (prefijo explícito o auto: memoria / agentes)
     if needs_claude(user_message) or needs_sonnet_auto(user_message):
@@ -4345,8 +4446,15 @@ def call_llm(
             "escritura memoria" if needs_memory_write(user_message) else "agentes legales"
         )
         log.info(f"→ Sonnet ({CLAUDE_SONNET}) — {reason}")
-        response = call_claude(api_key, system_prompt, history, user_message) or ""
+        cleaned = strip_override_prefix(user_message)
+        response = call_claude(api_key, system_prompt, history, cleaned) or ""
         if _is_billing_error(response):
+            # Sin créditos: si era una nota de memoria, sálvala en local para no perder el aprendizaje.
+            if needs_memory_write(user_message):
+                fb = try_deterministic_memory_write(user_message, strict=False)
+                if fb is not None:
+                    log.info("→ Memoria directa (fallback sin créditos)")
+                    return fb, "memoria-directa-fallback"
             if needs_sonnet_auto(user_message) and not needs_claude(user_message):
                 return _sonnet_auto_billing_msg(user_message), "sonnet-billing-error"
             return _billing_error_msg(), "sonnet-billing-error"
