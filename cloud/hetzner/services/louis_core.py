@@ -759,6 +759,45 @@ def _build_ollama_task_instruction(user_message: str, history: list, first_of_da
     return "Tarea: responde usando solo contexto interno e historial. No inventes datos."
 
 
+def _load_ollama_legal_memory(user_message: str, max_chars: int = 2000) -> str:
+    """
+    Carga los aprendizajes legales más relevantes para inyectarlos en el contexto
+    de Ollama cuando el mensaje toca temas legales. Devuelve "" si no hay nada.
+    """
+    if not OLLAMA_LEGAL_MEMORY.exists():
+        return ""
+    msg_lower = (user_message or "").lower()
+    legal_words = {
+        "ley", "decreto", "dof", "sjf", "tesis", "jurisprudencia", "artículo",
+        "art.", "reglamento", "norma", "nom", "impuesto", "sat", "isr", "iva",
+        "imss", "stps", "inai", "cnbv", "uif", "lfpiorpi", "cfdi", "scjn",
+        "amparo", "contrato", "laboral", "fiscal", "penal", "civil", "mercantil",
+        "societario", "corporativo", "compliance", "pld", "lavado", "datos personales",
+        "privacidad", "obligación", "sanción", "multa", "tribunal", "tfja",
+    }
+    is_legal = any(w in msg_lower for w in legal_words)
+    if not is_legal:
+        return ""
+    try:
+        content = OLLAMA_LEGAL_MEMORY.read_text()
+        lines = [l for l in content.splitlines() if l.startswith("- [")]
+        # Tomar las más recientes (al fondo del archivo)
+        recent = lines[-60:]  # últimas 60 entradas
+        if not recent:
+            return ""
+        bloque = "\n".join(recent)
+        if len(bloque) > max_chars:
+            bloque = bloque[-max_chars:]
+        return (
+            "\n\n[CONOCIMIENTO LEGAL INDEXADO — DOF/SJF (no mencionar esta etiqueta)]\n"
+            "Aprendizajes recientes de publicaciones reales. Úsalos para dar contexto "
+            "específico cuando el tema aplique:\n\n"
+            + bloque
+        )
+    except Exception:
+        return ""
+
+
 def build_ollama_internal_context(
     user_message: str,
     history: list,
@@ -770,9 +809,11 @@ def build_ollama_internal_context(
     if chat_mode:
         last_b = _load_last_briefing_text()
         ref = (last_b[:800] if last_b else snapshot[:800]) or "(sin briefing previo)"
+        legal_mem = _load_ollama_legal_memory(user_message, max_chars=1200)
         return (
             "\n\n[CONTEXTO INTERNO — modo charla; no repitas briefing completo ni esta etiqueta]\n"
-            f"{ref}\n\n"
+            f"{ref}\n"
+            f"{legal_mem}\n\n"
             "Tarea: Responde la pregunta de Polo de forma conversacional. Usa el historial del chat. "
             "No vuelques toda la AGENDA; cita solo lo relevante. Máx. 2-4 párrafos o bullets cortos."
         )
@@ -781,10 +822,13 @@ def build_ollama_internal_context(
         if len(snapshot) <= OLLAMA_SNAPSHOT_CONTEXT_MAX
         else snapshot[:OLLAMA_SNAPSHOT_CONTEXT_MAX] + "\n…[truncado]"
     )
+    legal_mem = _load_ollama_legal_memory(user_message, max_chars=2000)
     blocks = [
         "\n\n[CONTEXTO INTERNO — no mencionar esta etiqueta ni repetir su texto]",
         snap_show,
     ]
+    if legal_mem:
+        blocks.append(legal_mem)
     last_b = _load_last_briefing_text()
     if _wants_follow_up_briefing(user_message) and last_b:
         blocks.extend([
@@ -2524,12 +2568,17 @@ def _legal_briefing() -> str:
 # El conocimiento se inyecta automáticamente cuando se invoca el agente.
 
 KNOWLEDGE_BASE = HOME_OC / "spaces" / "general" / "agents" / "knowledge"
-KNOWLEDGE_MAX_DOCS = 500       # docs máximos por agente (aumentado para acumulación)
-KNOWLEDGE_CONTEXT_DOCS = 5     # docs que se inyectan en cada invocación
+KNOWLEDGE_MAX_DOCS = 500       # docs máximos por agente (acumulación continua)
+KNOWLEDGE_CONTEXT_DOCS = 5     # docs que se inyectan en cada invocación de agente
 # Rotation state: qué agente fue el último en indexarse en background
 LEGAL_BG_ROTATION = HOME_OC / "state" / "legal-bg-rotation.json"
 # Cola de prioridad: docs urgentes a indexar antes que el batch normal
 LEGAL_BG_PRIORITY = HOME_OC / "state" / "legal-bg-priority.jsonl"
+
+# Memoria legal de Ollama: aprendizajes condensados de DOF/SJF que Ollama absorbe
+# en su contexto cuando responde temas legales. Se acumula en background.
+OLLAMA_LEGAL_MEMORY = SPACE / "OLLAMA_LEGAL_MEMORY.md"
+OLLAMA_LEGAL_MEMORY_MAX = 300  # entradas máximas antes de rotar
 
 # Keywords DOF/SJF por agente. Agentes no listados usan su campo 'especialidad'.
 KAWIIL_KNOWLEDGE_MAP: dict = {
@@ -2609,38 +2658,82 @@ def _knowledge_save_index(agente: str, idx: dict):
     idx_file.write_text(json.dumps(idx, ensure_ascii=False, indent=2))
 
 
-def _summarize_for_knowledge(agente: str, titulo: str, fecha: str, fuente: str, texto: str) -> str:
-    """Usa Claude Haiku para resumir un documento legal (económico y rápido)."""
-    try:
-        api_key = load_anthropic_key()
-    except Exception:
-        return texto[:800] + "…"
+def _summarize_for_knowledge(agente: str, titulo: str, fecha: str, fuente: str,
+                             texto: str) -> tuple[str, str]:
+    """
+    Usa DeepSeek para resumir un documento legal del DOF/SJF.
+    Devuelve (resumen_completo, aprendizaje_ollama) donde:
+    - resumen_completo: 400-600 palabras para el knowledge dir del agente
+    - aprendizaje_ollama: 1-2 líneas condensadas que Ollama absorbe en su contexto
+    """
     system = (
-        f"Eres el asistente de indexación del agente legal mexicano '{agente}'. "
-        f"Tu tarea: leer documentos del DOF o SJF y producir un RESUMEN EJECUTIVO "
-        f"de máximo 600 palabras, en español, enfocado en:\n"
-        f"1. ¿Qué establece o resuelve el documento?\n"
-        f"2. ¿A qué obligaciones/derechos impacta?\n"
-        f"3. ¿Qué artículos clave cita?\n"
-        f"4. ¿Con qué otras normas se relaciona?\n"
-        f"5. ¿Cuál es la implicación práctica para empresas en México?\n"
-        f"Sé conciso. No repitas el título. Usa bullets cuando ayude."
+        f"Eres el indexador legal del agente '{agente}' (derecho mexicano). "
+        f"Lee el documento y responde en DOS partes separadas por '|||OLLAMA|||':\n\n"
+        f"PARTE 1 — RESUMEN COMPLETO (para base de conocimiento del agente, ~400 palabras):\n"
+        f"- ¿Qué establece o resuelve?\n"
+        f"- ¿Qué obligaciones/derechos crea o modifica?\n"
+        f"- Artículos clave mencionados\n"
+        f"- Normas relacionadas (leyes, reglamentos, NOMs)\n"
+        f"- Implicación práctica para empresas en México\n\n"
+        f"|||OLLAMA|||\n\n"
+        f"PARTE 2 — APRENDIZAJE CLAVE (para Ollama, máx 2 líneas concisas):\n"
+        f"Una síntesis de la idea más importante de este documento en 1-2 líneas "
+        f"que un modelo local pueda usar como referencia rápida al responder.\n\n"
+        f"Responde en español de México. No repitas el título en la parte 1."
     )
-    prompt = f"Fuente: {fuente} | Fecha: {fecha}\nTítulo: {titulo}\n\n{texto[:6000]}"
+    prompt = f"Fuente: {fuente} | Fecha: {fecha}\nTítulo: {titulo}\n\n{texto[:5000]}"
     try:
-        headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
-        body = {
-            "model": CLAUDE_HAIKU,
-            "max_tokens": 800,
-            "system": system,
-            "messages": [{"role": "user", "content": prompt}],
-        }
-        resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=60)
-        blocks = [b.get("text", "") for b in resp.get("content", []) if b.get("type") == "text"]
-        return "".join(blocks).strip() or texto[:800]
+        resumen_raw = call_deepseek(system, [], prompt)
+        if resumen_raw and "|||OLLAMA|||" in resumen_raw:
+            partes = resumen_raw.split("|||OLLAMA|||", 1)
+            resumen = partes[0].strip()
+            aprendizaje = partes[1].strip()[:300]
+        elif resumen_raw:
+            # DeepSeek no siguió el formato — tomar todo como resumen, extractar inicio
+            resumen = resumen_raw.strip()
+            aprendizaje = resumen[:200].rstrip(".") + "."
+        else:
+            resumen = texto[:800] + "…"
+            aprendizaje = titulo[:150]
     except Exception as e:
-        log.warning(f"Haiku summarize falló ({agente}): {e}")
-        return texto[:800] + "…"
+        log.warning(f"DeepSeek summarize falló ({agente}): {e}")
+        resumen = texto[:800] + "…"
+        aprendizaje = titulo[:150]
+    return resumen, aprendizaje
+
+
+def _ollama_legal_append(agente: str, area: str, fecha: str, titulo: str, aprendizaje: str):
+    """
+    Agrega un aprendizaje condensado a OLLAMA_LEGAL_MEMORY.md.
+    Ollama lo absorberá en su contexto cuando responda temas legales.
+    Rota el archivo si supera OLLAMA_LEGAL_MEMORY_MAX entradas.
+    """
+    try:
+        OLLAMA_LEGAL_MEMORY.parent.mkdir(parents=True, exist_ok=True)
+        entrada = (
+            f"- [{datetime.now().strftime('%Y-%m-%d')}] [{agente}] [{area}] "
+            f"**{titulo[:80]}** — {aprendizaje}\n"
+        )
+        if OLLAMA_LEGAL_MEMORY.exists():
+            contenido = OLLAMA_LEGAL_MEMORY.read_text()
+            lineas = [l for l in contenido.splitlines() if l.startswith("- [")]
+            if len(lineas) >= OLLAMA_LEGAL_MEMORY_MAX:
+                # Rotar: quitar el 20% más antiguo
+                lineas = lineas[OLLAMA_LEGAL_MEMORY_MAX // 5:]
+            lineas.append(entrada.rstrip())
+            header = (
+                "# Memoria Legal de Ollama\n"
+                "_Aprendizajes condensados DOF/SJF — actualizado automáticamente en background_\n\n"
+            )
+            OLLAMA_LEGAL_MEMORY.write_text(header + "\n".join(lineas) + "\n")
+        else:
+            OLLAMA_LEGAL_MEMORY.write_text(
+                "# Memoria Legal de Ollama\n"
+                "_Aprendizajes condensados DOF/SJF — actualizado automáticamente en background_\n\n"
+                + entrada
+            )
+    except Exception as e:
+        log.warning(f"_ollama_legal_append: {e}")
 
 
 def _legal_indexar_agente(agente: str, forzar: bool = False, limite: int = 30,
@@ -2719,16 +2812,18 @@ def _legal_indexar_agente(agente: str, forzar: bool = False, limite: int = 30,
                 if doc_id in already_indexed:
                     continue
                 try:
-                    resumen = _summarize_for_knowledge(
-                        agente, r["titulo"] or "", r["fecha"] or "", "DOF",
-                        r["texto_plano"] or "")
+                    titulo_doc = r["titulo"] or "(sin título)"
+                    resumen, aprendizaje = _summarize_for_knowledge(
+                        agente, titulo_doc, r["fecha"] or "", "DOF", r["texto_plano"] or "")
                     fname = f"dof-{r['fecha'] or 'nd'}-{r['cod_nota']}.md"
                     (docs_dir / fname).write_text(
-                        f"# {r['titulo'] or '(sin título)'}\n"
+                        f"# {titulo_doc}\n"
                         f"**Fuente:** DOF | **Fecha:** {r['fecha']} | "
                         f"**Tipo:** {r['tipo_documento'] or '?'} | **ID:** {r['cod_nota']}\n\n"
                         f"{resumen}\n"
                     )
+                    _ollama_legal_append(agente, cfg.get("label", "DOF"),
+                                        r["fecha"] or "", titulo_doc, aprendizaje)
                     already_indexed.add(doc_id)
                     nuevos += 1
                 except Exception as e:
@@ -2763,18 +2858,20 @@ def _legal_indexar_agente(agente: str, forzar: bool = False, limite: int = 30,
                     continue
                 try:
                     kind = "Jurisprudencia" if r["ta_tj"] == 1 else "Tesis Aislada"
-                    resumen = _summarize_for_knowledge(
-                        agente, r["rubro"] or "", r["fecha_publicacion"] or "", "SJF",
-                        r["texto"] or "")
+                    rubro = r["rubro"] or "(sin rubro)"
+                    resumen, aprendizaje = _summarize_for_knowledge(
+                        agente, rubro, r["fecha_publicacion"] or "", "SJF", r["texto"] or "")
                     fname = f"sjf-{r['fecha_publicacion'] or 'nd'}-{r['registro_digital']}.md"
                     (docs_dir / fname).write_text(
-                        f"# {r['rubro'] or '(sin rubro)'}\n"
+                        f"# {rubro}\n"
                         f"**Fuente:** SJF ({kind}) | **Época:** {r['epoca'] or '?'} | "
                         f"**Instancia:** {r['instancia'] or '?'} | "
                         f"**Fecha:** {r['fecha_publicacion']} | **ID:** {r['registro_digital']}\n"
                         f"**Materias:** {r['materias'] or '?'}\n\n"
                         f"{resumen}\n"
                     )
+                    _ollama_legal_append(agente, cfg.get("label", "SJF"),
+                                        r["fecha_publicacion"] or "", rubro, aprendizaje)
                     already_indexed.add(doc_id)
                     nuevos += 1
                 except Exception as e:
