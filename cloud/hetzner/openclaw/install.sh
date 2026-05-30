@@ -128,6 +128,48 @@ chmod 600 "$ENV_OUT"
 chown "$SYSTEM_USER":"$SYSTEM_USER" "$ENV_OUT"
 log "openclaw.env generado ($(wc -l < "$ENV_OUT") variables)"
 
+# ── 5b) Credenciales por-canal (las que leen los bridges) ───
+# telegram-bridge.py y scheduler.py NO leen openclaw.env: leen
+# credentials/telegram.env y esperan TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID.
+# Sin este archivo el bridge sale con exit(1) y systemd lo reinicia en bucle.
+# Lo generamos desde .env (TELEGRAM_ALLOWED_CHAT_ID → TELEGRAM_CHAT_ID).
+CREDS_DIR="$OPENCLAW_HOME/credentials"
+mkdir -p "$CREDS_DIR"
+TG_CHAT_ID="${TELEGRAM_CHAT_ID:-${TELEGRAM_ALLOWED_CHAT_ID:-}}"
+if [[ -n "${TELEGRAM_BOT_TOKEN:-}" && -n "$TG_CHAT_ID" ]]; then
+  CREDS_TG="$CREDS_DIR/telegram.env"
+  if [[ -f "$CREDS_TG" ]] && grep -q '^TELEGRAM_CHAT_ID=' "$CREDS_TG" 2>/dev/null; then
+    log "credentials/telegram.env ya existe (skip — no piso credenciales puestas a mano)"
+  else
+    {
+      echo "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}"
+      echo "TELEGRAM_CHAT_ID=${TG_CHAT_ID}"
+    } > "$CREDS_TG"
+    chmod 600 "$CREDS_TG"
+    chown "$SYSTEM_USER":"$SYSTEM_USER" "$CREDS_TG"
+    log "credentials/telegram.env generado"
+  fi
+else
+  warn "Falta TELEGRAM_BOT_TOKEN o TELEGRAM_(ALLOWED_)CHAT_ID en .env — telegram-bridge no arrancará"
+fi
+
+# slack.env (opcional) — solo si hay tokens; el bridge exige xoxb + xapp.
+if [[ -n "${SLACK_BOT_TOKEN:-}" && -n "${SLACK_APP_TOKEN:-}" ]]; then
+  CREDS_SLACK="$CREDS_DIR/slack.env"
+  if [[ ! -f "$CREDS_SLACK" ]]; then
+    {
+      echo "SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}"
+      echo "SLACK_APP_TOKEN=${SLACK_APP_TOKEN}"
+      [[ -n "${SLACK_SIGNING_SECRET:-}" ]] && echo "SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET}"
+      [[ -n "${SLACK_DEFAULT_DM_USER:-}" ]] && echo "SLACK_DEFAULT_DM_USER=${SLACK_DEFAULT_DM_USER}"
+    } > "$CREDS_SLACK"
+    chmod 600 "$CREDS_SLACK"
+    chown "$SYSTEM_USER":"$SYSTEM_USER" "$CREDS_SLACK"
+    log "credentials/slack.env generado"
+  fi
+fi
+chown -R "$SYSTEM_USER":"$SYSTEM_USER" "$CREDS_DIR"
+
 # ── 6) Instalación del binario OpenClaw (opcional) ──────────
 OPENCLAW_BIN=""
 if command -v openclaw >/dev/null 2>&1; then
