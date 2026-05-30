@@ -48,7 +48,7 @@ if not M365_SCRIPT.exists():
 #   • /haiku → Claude Haiku (rápido, sin tools)
 #   • /llama, /ollama, /local → Ollama forzado (sin fallback a Claude)
 CLAUDE_SONNET = "claude-sonnet-4-6"      # tool use, decisiones complejas
-CLAUDE_HAIKU = "claude-haiku-4-5"        # chat rápido por default
+CLAUDE_HAIKU = "claude-haiku-4-5-20251001"  # chat rápido por default
 CLAUDE_MODEL = CLAUDE_SONNET              # compat (cuando se usa tool use)
 ANTHROPIC_API_BASE = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
