@@ -53,6 +53,10 @@ CLAUDE_MODEL = CLAUDE_SONNET              # compat (cuando se usa tool use)
 ANTHROPIC_API_BASE = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 
+# DeepSeek (provider alterno barato — /deepseek, /ds). Compatible OpenAI chat.
+DEEPSEEK_API_BASE = os.environ.get("DEEPSEEK_API_BASE", "https://api.deepseek.com/chat/completions")
+DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+
 OLLAMA_BASE = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 OLLAMA_FAST_MODEL = os.environ.get(
     "OLLAMA_FAST_MODEL",
@@ -200,6 +204,7 @@ TOOL_REGEX = re.compile("|".join(TOOL_KEYWORDS), re.IGNORECASE)
 OLLAMA_FORCE_PREFIXES = ("/llama", "/ollama", "/local")
 OLLAMA_QUALITY_PREFIXES = ("/oss",)
 HAIKU_FORCE_PREFIXES = ("/haiku", "/rápido", "/rapido")
+DEEPSEEK_FORCE_PREFIXES = ("/deepseek", "/ds")
 CLAUDE_FORCE_PREFIXES = (
     "/sonnet", "/claude", "/calidad", "/fuerte", "/profundo", "/analisis", "/análisis",
     "/verify",
@@ -232,6 +237,14 @@ def load_anthropic_key():
     key = env.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
     if not key:
         raise RuntimeError(f"No encontré ANTHROPIC_API_KEY en {ANTHROPIC_ENV_FILE} ni en env")
+    return key
+
+
+def load_deepseek_key():
+    env = load_env_file(ANTHROPIC_ENV_FILE)
+    key = env.get("DEEPSEEK_API_KEY") or os.environ.get("DEEPSEEK_API_KEY")
+    if not key:
+        raise RuntimeError(f"No encontré DEEPSEEK_API_KEY en {ANTHROPIC_ENV_FILE} ni en env")
     return key
 
 
@@ -3811,6 +3824,13 @@ def _invocar_agente_via_ollama(nombre: str, sub_system: str, user_msg: str) -> s
     return f"[{nombre} respondió vía Ollama]\n\n{resp}"
 
 
+def _invocar_agente_via_deepseek(nombre: str, sub_system: str, user_msg: str, modelo: str) -> str | None:
+    resp = call_deepseek(sub_system, [], user_msg, model=modelo)
+    if not resp:
+        return None
+    return f"[{nombre} respondió vía DeepSeek]\n\n{resp}"
+
+
 def _invocar_agente(
     nombre: str,
     tarea: str,
@@ -3827,6 +3847,10 @@ def _invocar_agente(
     modelo = (modelo_override or meta.get("modelo", "claude-sonnet-4-6")).strip()
     sub_system = meta["prompt"]
     user_msg = tarea if not contexto else f"{tarea}\n\n## Contexto adicional\n{contexto}"
+
+    if modelo.lower().startswith("deepseek"):
+        out = _invocar_agente_via_deepseek(nombre, sub_system, user_msg, modelo)
+        return out or f"ERROR: DeepSeek no respondió al agente '{nombre}'"
 
     if modelo.lower().startswith("ollama") or modelo == "llama":
         out = _invocar_agente_via_ollama(nombre, sub_system, user_msg)
@@ -4147,7 +4171,7 @@ def needs_claude(user_message: str) -> bool:
 def strip_override_prefix(user_message: str) -> str:
     """Quita /sonnet, /llama, /oss, etc. del inicio antes de enviar al modelo."""
     cleaned = user_message
-    for prefix in CLAUDE_FORCE_PREFIXES + OLLAMA_FORCE_PREFIXES + OLLAMA_QUALITY_PREFIXES + HAIKU_FORCE_PREFIXES:
+    for prefix in CLAUDE_FORCE_PREFIXES + OLLAMA_FORCE_PREFIXES + OLLAMA_QUALITY_PREFIXES + HAIKU_FORCE_PREFIXES + DEEPSEEK_FORCE_PREFIXES:
         if cleaned.lower().startswith(prefix):
             cleaned = cleaned[len(prefix):].strip()
             break
@@ -4201,6 +4225,42 @@ def call_ollama(
         log.warning("Ollama devolvió vacío")
         return None
     return sanitize_ollama_response(content.strip())
+
+
+def call_deepseek(system_prompt: str, history: list, user_message: str, model: str | None = None) -> str | None:
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt[:50_000]})
+    for h in history:
+        if h["role"] in ("user", "assistant") and isinstance(h["content"], str) and h["content"].strip():
+            messages.append({"role": h["role"], "content": h["content"]})
+    cleaned = strip_override_prefix((user_message or "").strip()) or "(mensaje vacío)"
+    messages.append({"role": "user", "content": cleaned})
+    selected_model = (model or DEEPSEEK_MODEL).strip()
+    if selected_model.startswith("deepseek/"):
+        selected_model = selected_model.split("/", 1)[1]
+    headers = {"Authorization": f"Bearer {load_deepseek_key()}"}
+    body = {
+        "model": selected_model,
+        "messages": messages,
+        "temperature": 0.3,
+        "max_tokens": 2048,
+        "stream": False,
+    }
+    try:
+        resp = http_post_json(DEEPSEEK_API_BASE, headers, body, timeout=120)
+    except urllib.error.HTTPError as e:
+        err_body = getattr(e, "body", "") or ""
+        log.error(f"DeepSeek falló — code={e.code} body={err_body[:500]}")
+        return f"(error DeepSeek HTTP {e.code}: {err_body[:300] or 'body vacío'})"
+    except Exception as e:
+        log.exception("DeepSeek API falló")
+        return f"(error llamando a DeepSeek: {e})"
+    choices = resp.get("choices") or []
+    if not choices:
+        return "(sin respuesta de DeepSeek)"
+    msg = choices[0].get("message") or {}
+    return (msg.get("content") or "").strip() or "(respuesta vacía de DeepSeek)"
 
 
 def call_haiku(api_key: str, system_prompt: str, history: list, user_message: str) -> str:
@@ -4433,6 +4493,12 @@ def call_llm(
     # Override Ollama explícito (sin fallback a Claude)
     if msg.startswith(OLLAMA_FORCE_PREFIXES):
         return _ollama_route("override /llama")
+
+    # Override DeepSeek explícito (/deepseek, /ds)
+    if msg.startswith(DEEPSEEK_FORCE_PREFIXES):
+        log.info(f"→ DeepSeek ({DEEPSEEK_MODEL}) — override /deepseek")
+        response = call_deepseek(system_prompt, history, user_message)
+        return response or "(DeepSeek no respondió)", "deepseek"
 
     # Override Haiku explícito
     if msg.startswith(HAIKU_FORCE_PREFIXES):
