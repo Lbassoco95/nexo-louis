@@ -37,9 +37,9 @@ chmod +x "$RUNNER_SCRIPT"
 echo "✓ Script copiado a $RUNNER_SCRIPT"
 
 # Permite sobrescribir los comandos de backfill vía env al instalar
-DOF_CMD="${DOF_BACKFILL_CMD:-cd \$HOME/dof_biblioteca && python3 backfill.py}"
-DOF_MES_CMD="${DOF_BACKFILL_MES_CMD:-cd \$HOME/dof_biblioteca && python3 backfill.py --mes}"
-SJF_CMD="${SJF_BACKFILL_CMD:-cd \$HOME/sjf_biblioteca && python3 backfill.py}"
+DOF_CMD="${DOF_BACKFILL_CMD:-cd \$HOME/dof_biblioteca && python3 dof_biblioteca.py}"
+DOF_MES_CMD="${DOF_BACKFILL_MES_CMD:-cd \$HOME/dof_biblioteca && python3 dof_biblioteca.py --mes}"
+SJF_CMD="${SJF_BACKFILL_CMD:-cd \$HOME/sjf_biblioteca && python3 sjf_biblioteca.py}"
 
 cat > "$PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
