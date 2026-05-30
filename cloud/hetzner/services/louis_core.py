@@ -2194,10 +2194,11 @@ def _verificar_conexiones(incluir_m365: bool = True) -> str:
     for cat, names in by_cat.items():
         out.append(f"  {cat}: {', '.join(names)}")
     out.append(f"\n--- Routing ---")
-    out.append(f"  Chat default: Ollama ({OLLAMA_FAST_MODEL})")
+    out.append(f"  Chat default: DeepSeek ({DEEPSEEK_MODEL}) — fluido, API")
     out.append(f"  Briefing operativo: determinístico (<1s)")
-    out.append(f"  /oss: {OLLAMA_QUALITY_MODEL}")
-    out.append(f"  Tools / agentes / memoria: Claude ({CLAUDE_MODEL})")
+    out.append(f"  Búsqueda/tools/agentes/memoria: Claude ({CLAUDE_SONNET})")
+    out.append(f"  /oss: Ollama {OLLAMA_QUALITY_MODEL} — local, privado")
+    out.append(f"  /llama: Ollama {OLLAMA_FAST_MODEL} — local forzado")
     return "\n".join(out)
 
 
