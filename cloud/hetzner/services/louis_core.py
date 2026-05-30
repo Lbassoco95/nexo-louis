@@ -412,7 +412,17 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "(ejemplar de un día) o la búsqueda del DOF, luego `browser_leer` para extraer el contenido, "
         "y entrega el resultado (o un .html con el análisis). El browser ya está configurado para no "
         "ser bloqueado por el portal. Para SJF usa el buscador público de la SCJN igual con el browser. "
-        "La regla es: si te lo piden, lo CONSIGUES y lo MANDAS — no reportas que no se pudo."
+        "La regla es: si te lo piden, lo CONSIGUES y lo MANDAS — no reportas que no se pudo.\n"
+        "## INDEXACIÓN DE CONOCIMIENTO LEGAL (agentes kawiil-*)\n"
+        "- `legal_indexar(agente, forzar, limite)` — indexa DOF/SJF para un agente kawiil-* específico "
+        "(o 'todos' para todos). El agente lee docs relevantes a su especialidad, los resume con Claude Haiku "
+        "y guarda el conocimiento. Úsalo cuando Polo diga 'indexa a kawiil-nelli', 'que los agentes aprendan', "
+        "'actualiza el conocimiento legal'. El scheduler lo corre automáticamente cada semana.\n"
+        "- `legal_conocimiento(agente)` — muestra qué sabe un agente kawiil-*: cuántos docs tiene, "
+        "resumen semanal, última indexación. Úsalo cuando Polo pregunte 'qué sabe kawiil-metzli del ISR'.\n"
+        "IMPORTANTE: los agentes kawiil-* ya tienen su conocimiento indexado INYECTADO automáticamente "
+        "cuando los invocas. No necesitas pedirles que 'busquen' — ya saben lo que hay en DOF/SJF de su "
+        "especialidad y pueden citar publicaciones específicas."
         "\n\n# SELF-UPDATE — PUEDES EDITARTE A TI MISMO\n"
         "Tienes tools (`leer_mi_codigo`, `editar_mi_codigo`, `reiniciar_mi_servicio`, "
         "`ver_mis_backups`, `restaurar_mi_codigo`) para modificar tu propio código en /opt/openclaw/scripts/. "
@@ -1433,6 +1443,30 @@ TOOLS_DEFINITION = [
         "name": "legal_briefing",
         "description": "Briefing ejecutivo combinado SJF + DOF: cómo va la descarga, cuánto se descargó en las últimas 24h, qué llegó nuevo importante, errores. Ideal para el briefing matutino del scheduler.",
         "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "legal_indexar",
+        "description": "Indexa DOF/SJF para un agente legal kawiil-* específico (o 'todos' para indexar todos). Lee documentos relevantes a la especialidad del agente, los resume con Claude Haiku, y guarda el conocimiento en su directorio. Los agentes usan ese conocimiento automáticamente cuando responden preguntas. ÚSALO cuando Polo diga 'indexa a kawiil-nelli', 'actualiza el conocimiento', 'que los agentes aprendan del DOF', o cuando el scheduler lo programe semanalmente.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agente": {"type": "string", "description": "Nombre del agente kawiil-* (ej: 'kawiil-nelli') o 'todos' para indexar todos los kawiil-*."},
+                "forzar": {"type": "boolean", "default": False, "description": "Si true, re-indexa aunque ya fue indexado recientemente."},
+                "limite": {"type": "integer", "default": 30, "description": "Máximo de documentos nuevos a indexar por agente (10-100)."},
+            },
+            "required": ["agente"],
+        },
+    },
+    {
+        "name": "legal_conocimiento",
+        "description": "Muestra el conocimiento indexado de un agente kawiil-*: cuántos docs tiene, áreas cubiertas, última indexación, resumen semanal. ÚSALO cuando Polo pregunte 'qué sabe kawiil-nelli', 'cuánto contexto tiene el agente', 'muéstrame el resumen del DOF que tiene kawiil-metzli'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agente": {"type": "string", "description": "Nombre del agente kawiil-* (ej: 'kawiil-nelli')."},
+            },
+            "required": ["agente"],
+        },
     },
     {
         "name": "mac_estado",
@@ -2482,6 +2516,358 @@ def _legal_briefing() -> str:
     except Exception as e:
         parts.append(f"(no pude listar DOF reciente: {e})")
     return "\n".join(parts)
+
+
+# ===== Legal Agent Knowledge Indexing =====
+# Cada agente kawiil-* acumula resúmenes de DOF/SJF de su especialidad.
+# Se indexa semanalmente por el scheduler; también se puede disparar manualmente.
+# El conocimiento se inyecta automáticamente cuando se invoca el agente.
+
+KNOWLEDGE_BASE = HOME_OC / "spaces" / "general" / "agents" / "knowledge"
+KNOWLEDGE_MAX_DOCS = 200       # docs máximos por agente
+KNOWLEDGE_CONTEXT_DOCS = 5     # docs que se inyectan en cada invocación
+KNOWLEDGE_REINDEX_DAYS = 7     # días entre re-indexados automáticos
+
+# Keywords DOF/SJF por agente. Agentes no listados usan su campo 'especialidad'.
+KAWIIL_KNOWLEDGE_MAP: dict = {
+    "kawiil-nelli": {
+        "label": "Compliance PLD / ALD / LFPIORPI",
+        "dof": ["LFPIORPI", "lavado de dinero", "financiamiento terrorismo", "UIF", "CNBV"],
+        "sjf": ["lavado de dinero", "LFPIORPI", "financiamiento del terrorismo", "UIF"],
+    },
+    "kawiil-tepantli": {
+        "label": "Ciberseguridad / Datos Personales / LFPDPPP",
+        "dof": ["datos personales", "LFPDPPP", "INAI", "ciberseguridad"],
+        "sjf": ["datos personales", "privacidad", "LFPDPPP", "INAI"],
+    },
+    "kawiil-metzli": {
+        "label": "Fiscal / SAT / CFF",
+        "dof": ["CFF", "SAT", "reforma fiscal", "ISR", "IVA", "IEPS"],
+        "sjf": ["CFF", "SAT", "ISR", "IVA", "TFJA", "devolución impuestos"],
+    },
+    "kawiil-ehecatl": {
+        "label": "Laboral / STPS / IMSS",
+        "dof": ["LFT", "STPS", "IMSS", "seguridad social", "salario mínimo"],
+        "sjf": ["LFT", "STPS", "derecho laboral", "IMSS", "despido injustificado"],
+    },
+    "kawiil-tonati": {
+        "label": "Corporativo / M&A / Gobierno Corporativo",
+        "dof": ["LGSM", "fusión", "escisión", "gobierno corporativo", "valores"],
+        "sjf": ["fusión de sociedades", "gobierno corporativo", "accionistas", "LGSM"],
+    },
+    "kawiil-citlali": {
+        "label": "Tecnología / Fintech / Regulación Digital",
+        "dof": ["fintech", "Ley Fintech", "criptomonedas", "tecnología financiera", "CNBV"],
+        "sjf": ["fintech", "tecnología financiera", "criptomonedas"],
+    },
+    "kawiil-yoliztli": {
+        "label": "Propiedad Intelectual / IMPI",
+        "dof": ["IMPI", "propiedad industrial", "marcas", "patentes", "derechos de autor"],
+        "sjf": ["propiedad industrial", "IMPI", "marcas", "patente"],
+    },
+    "kawiil-tlali": {
+        "label": "Ambiental / Energía / SEMARNAT",
+        "dof": ["SEMARNAT", "ambiental", "energía", "cambio climático", "NOM"],
+        "sjf": ["medio ambiente", "SEMARNAT", "impacto ambiental"],
+    },
+    "kawiil-patli": {
+        "label": "Salud / Farmacéutico / COFEPRIS",
+        "dof": ["COFEPRIS", "salud", "medicamentos", "dispositivos médicos"],
+        "sjf": ["COFEPRIS", "derecho a la salud", "medicamentos"],
+    },
+    "kawiil-calli": {
+        "label": "Inmobiliario / Vivienda / Desarrollo Urbano",
+        "dof": ["desarrollo urbano", "vivienda", "INFONAVIT", "CONAVI"],
+        "sjf": ["bienes inmuebles", "arrendamiento", "INFONAVIT"],
+    },
+}
+
+
+def _knowledge_dir(agente: str) -> Path:
+    d = KNOWLEDGE_BASE / agente
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "docs").mkdir(exist_ok=True)
+    return d
+
+
+def _knowledge_index(agente: str) -> dict:
+    """Lee index.json del agente o devuelve estructura vacía."""
+    idx_file = KNOWLEDGE_BASE / agente / "index.json"
+    if idx_file.exists():
+        try:
+            return json.loads(idx_file.read_text())
+        except Exception:
+            pass
+    return {"agente": agente, "docs": [], "last_indexed": None, "total": 0}
+
+
+def _knowledge_save_index(agente: str, idx: dict):
+    idx_file = KNOWLEDGE_BASE / agente / "index.json"
+    idx_file.write_text(json.dumps(idx, ensure_ascii=False, indent=2))
+
+
+def _summarize_for_knowledge(agente: str, titulo: str, fecha: str, fuente: str, texto: str) -> str:
+    """Usa Claude Haiku para resumir un documento legal (económico y rápido)."""
+    try:
+        api_key = load_anthropic_key()
+    except Exception:
+        return texto[:800] + "…"
+    system = (
+        f"Eres el asistente de indexación del agente legal mexicano '{agente}'. "
+        f"Tu tarea: leer documentos del DOF o SJF y producir un RESUMEN EJECUTIVO "
+        f"de máximo 600 palabras, en español, enfocado en:\n"
+        f"1. ¿Qué establece o resuelve el documento?\n"
+        f"2. ¿A qué obligaciones/derechos impacta?\n"
+        f"3. ¿Qué artículos clave cita?\n"
+        f"4. ¿Con qué otras normas se relaciona?\n"
+        f"5. ¿Cuál es la implicación práctica para empresas en México?\n"
+        f"Sé conciso. No repitas el título. Usa bullets cuando ayude."
+    )
+    prompt = f"Fuente: {fuente} | Fecha: {fecha}\nTítulo: {titulo}\n\n{texto[:6000]}"
+    try:
+        headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
+        body = {
+            "model": CLAUDE_HAIKU,
+            "max_tokens": 800,
+            "system": system,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=60)
+        blocks = [b.get("text", "") for b in resp.get("content", []) if b.get("type") == "text"]
+        return "".join(blocks).strip() or texto[:800]
+    except Exception as e:
+        log.warning(f"Haiku summarize falló ({agente}): {e}")
+        return texto[:800] + "…"
+
+
+def _legal_indexar_agente(agente: str, forzar: bool = False, limite: int = 30) -> str:
+    """
+    Indexa DOF/SJF para el agente dado. Guarda resúmenes en knowledge dir.
+    Si ya fue indexado recientemente (< KNOWLEDGE_REINDEX_DAYS), omite salvo forzar=True.
+    """
+    if not _AGENT_NAME_RE.match(agente):
+        return f"ERROR: nombre de agente '{agente}' inválido."
+    agent_file = AGENTS_DIR / f"{agente}.md"
+    if not agent_file.exists():
+        return f"ERROR: agente '{agente}' no existe."
+
+    idx = _knowledge_index(agente)
+    if not forzar and idx.get("last_indexed"):
+        try:
+            last = datetime.fromisoformat(idx["last_indexed"])
+            days_ago = (datetime.now() - last).days
+            if days_ago < KNOWLEDGE_REINDEX_DAYS:
+                return (f"⏭ {agente}: ya indexado hace {days_ago}d "
+                        f"({idx.get('total', 0)} docs). Usa forzar=true para re-indexar.")
+        except Exception:
+            pass
+
+    # Obtener keywords para este agente
+    cfg = KAWIIL_KNOWLEDGE_MAP.get(agente)
+    if not cfg:
+        # Inferir desde la especialidad del agente
+        meta = _parse_agent_file(agent_file)
+        especialidad = meta.get("especialidad", "")
+        words = [w for w in especialidad.replace(",", " ").split() if len(w) > 4][:5]
+        cfg = {
+            "label": especialidad,
+            "dof": words,
+            "sjf": words,
+        }
+
+    kdir = _knowledge_dir(agente)
+    docs_dir = kdir / "docs"
+    nuevos = 0
+    omitidos = 0
+    errores = 0
+    already_indexed = set(idx.get("docs", []))
+
+    # ── Indexar desde DOF ──────────────────────────────────────────────────
+    if DOF_DB.exists():
+        conn = _legal_open(DOF_DB)
+        for keyword in (cfg.get("dof") or [])[:4]:  # máx 4 keywords
+            try:
+                rows = conn.execute(
+                    "SELECT n.cod_nota, n.fecha, n.titulo, n.tipo_documento, "
+                    "n.texto_plano "
+                    "FROM notas n "
+                    "WHERE n.incluido=1 AND n.texto_plano IS NOT NULL "
+                    "AND length(n.texto_plano) > 200 "
+                    "AND (n.titulo LIKE ? OR n.texto_plano LIKE ?) "
+                    "ORDER BY n.fecha DESC LIMIT ?",
+                    (f"%{keyword}%", f"%{keyword}%", limite // len(cfg.get("dof", ["x"]) or ["x"])),
+                ).fetchall()
+            except Exception as e:
+                log.warning(f"DOF query '{keyword}' falló: {e}")
+                rows = []
+            for r in rows:
+                doc_id = f"dof-{r['cod_nota']}"
+                if doc_id in already_indexed:
+                    omitidos += 1
+                    continue
+                if nuevos >= limite:
+                    break
+                try:
+                    resumen = _summarize_for_knowledge(
+                        agente, r["titulo"] or "", r["fecha"] or "", "DOF",
+                        r["texto_plano"] or ""
+                    )
+                    fname = f"dof-{r['fecha'] or 'nd'}-{r['cod_nota']}.md"
+                    doc_path = docs_dir / fname
+                    doc_path.write_text(
+                        f"# {r['titulo'] or '(sin título)'}\n"
+                        f"**Fuente:** DOF | **Fecha:** {r['fecha']} | "
+                        f"**Tipo:** {r['tipo_documento'] or '?'} | **ID:** {r['cod_nota']}\n\n"
+                        f"{resumen}\n"
+                    )
+                    already_indexed.add(doc_id)
+                    nuevos += 1
+                except Exception as e:
+                    log.warning(f"Doc DOF {r['cod_nota']} falló: {e}")
+                    errores += 1
+        conn.close()
+
+    # ── Indexar desde SJF ──────────────────────────────────────────────────
+    if SJF_DB.exists():
+        conn = _legal_open(SJF_DB)
+        for keyword in (cfg.get("sjf") or [])[:4]:
+            try:
+                rows = conn.execute(
+                    "SELECT t.registro_digital, t.rubro, t.epoca, t.instancia, "
+                    "t.materias, t.fecha_publicacion, t.ta_tj, t.texto "
+                    "FROM tesis t "
+                    "WHERE t.texto IS NOT NULL AND length(t.texto) > 200 "
+                    "AND (t.rubro LIKE ? OR t.texto LIKE ? OR t.materias LIKE ?) "
+                    "ORDER BY t.fecha_publicacion DESC LIMIT ?",
+                    (f"%{keyword}%", f"%{keyword}%", f"%{keyword}%",
+                     limite // len(cfg.get("sjf", ["x"]) or ["x"])),
+                ).fetchall()
+            except Exception as e:
+                log.warning(f"SJF query '{keyword}' falló: {e}")
+                rows = []
+            for r in rows:
+                doc_id = f"sjf-{r['registro_digital']}"
+                if doc_id in already_indexed:
+                    omitidos += 1
+                    continue
+                if nuevos >= limite:
+                    break
+                try:
+                    kind = "Jurisprudencia" if r["ta_tj"] == 1 else "Tesis Aislada"
+                    resumen = _summarize_for_knowledge(
+                        agente, r["rubro"] or "", r["fecha_publicacion"] or "", "SJF",
+                        r["texto"] or ""
+                    )
+                    fname = f"sjf-{r['fecha_publicacion'] or 'nd'}-{r['registro_digital']}.md"
+                    doc_path = docs_dir / fname
+                    doc_path.write_text(
+                        f"# {r['rubro'] or '(sin rubro)'}\n"
+                        f"**Fuente:** SJF ({kind}) | **Época:** {r['epoca'] or '?'} | "
+                        f"**Instancia:** {r['instancia'] or '?'} | "
+                        f"**Fecha:** {r['fecha_publicacion']} | **ID:** {r['registro_digital']}\n"
+                        f"**Materias:** {r['materias'] or '?'}\n\n"
+                        f"{resumen}\n"
+                    )
+                    already_indexed.add(doc_id)
+                    nuevos += 1
+                except Exception as e:
+                    log.warning(f"Doc SJF {r['registro_digital']} falló: {e}")
+                    errores += 1
+        conn.close()
+
+    # ── Actualizar resumen semanal ──────────────────────────────────────────
+    total_docs = len(list(docs_dir.glob("*.md")))
+    _rebuild_weekly_summary(agente, kdir, docs_dir)
+
+    # ── Actualizar índice ───────────────────────────────────────────────────
+    idx.update({
+        "agente": agente,
+        "label": cfg.get("label", ""),
+        "docs": list(already_indexed)[-KNOWLEDGE_MAX_DOCS:],
+        "last_indexed": datetime.now().isoformat(),
+        "total": total_docs,
+    })
+    _knowledge_save_index(agente, idx)
+
+    return (
+        f"✅ Indexación {agente} completada:\n"
+        f"  • Nuevos docs: {nuevos}\n"
+        f"  • Ya indexados (omitidos): {omitidos}\n"
+        f"  • Errores: {errores}\n"
+        f"  • Total en knowledge: {total_docs}\n"
+        f"  • Área: {cfg.get('label', '?')}"
+    )
+
+
+def _rebuild_weekly_summary(agente: str, kdir: Path, docs_dir: Path):
+    """Reconstruye resumen-semanal.md con los últimos 20 docs."""
+    try:
+        all_docs = sorted(docs_dir.glob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True)[:20]
+        if not all_docs:
+            return
+        lines = [f"# Resumen semanal de conocimiento — {agente}\n",
+                 f"_Actualizado: {datetime.now().strftime('%Y-%m-%d %H:%M')}_\n\n"]
+        for doc in all_docs:
+            try:
+                content = doc.read_text()
+                # Primer bloque: título + primeras 3 líneas del resumen
+                doc_lines = [l for l in content.splitlines() if l.strip()]
+                lines.append("\n---\n\n")
+                lines.extend([l + "\n" for l in doc_lines[:5]])
+            except Exception:
+                pass
+        (kdir / "resumen-semanal.md").write_text("".join(lines))
+    except Exception as e:
+        log.warning(f"_rebuild_weekly_summary {agente}: {e}")
+
+
+def _load_agent_knowledge(agente: str, max_chars: int = 8000) -> str:
+    """
+    Carga el conocimiento indexado del agente para inyectarlo como contexto.
+    Devuelve string vacío si no hay conocimiento aún.
+    """
+    docs_dir = KNOWLEDGE_BASE / agente / "docs"
+    if not docs_dir.exists():
+        return ""
+    # Los más recientes primero
+    all_docs = sorted(docs_dir.glob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True)
+    if not all_docs:
+        return ""
+    chunks = []
+    total = 0
+    for doc in all_docs[:KNOWLEDGE_CONTEXT_DOCS]:
+        try:
+            text = doc.read_text()[:2000]
+            if total + len(text) > max_chars:
+                break
+            chunks.append(text)
+            total += len(text)
+        except Exception:
+            pass
+    if not chunks:
+        return ""
+    header = f"## Conocimiento indexado de {agente} (DOF/SJF)\n_Últimas publicaciones analizadas:_\n\n"
+    return header + "\n\n---\n\n".join(chunks)
+
+
+def _legal_indexar_todos(limite_por_agente: int = 20) -> str:
+    """Indexa todos los agentes kawiil-* disponibles. Para el scheduler semanal."""
+    if not AGENTS_DIR.exists():
+        return "No hay directorio de agentes."
+    kawiil_files = [f for f in AGENTS_DIR.glob("kawiil-*.md")]
+    if not kawiil_files:
+        return "No hay agentes kawiil-* registrados."
+    resultados = []
+    for f in kawiil_files:
+        agente = f.stem
+        try:
+            r = _legal_indexar_agente(agente, forzar=False, limite=limite_por_agente)
+            resultados.append(f"{agente}: {r.splitlines()[0] if r else '?'}")
+            log.info(f"legal_indexar_todos: {agente} → {r[:80]}")
+        except Exception as e:
+            resultados.append(f"{agente}: ERROR {e}")
+            log.warning(f"legal_indexar_todos {agente}: {e}")
+    return f"Indexación semanal legal ({len(kawiil_files)} agentes):\n" + "\n".join(resultados)
 
 
 # ===== Mac status / wake request =====
@@ -3936,7 +4322,23 @@ def _invocar_agente_impl(
         meta = _parse_agent_file(path)
     modelo = (modelo_override or meta.get("modelo", "claude-sonnet-4-6")).strip()
     sub_system = meta["prompt"]
-    user_msg = tarea if not contexto else f"{tarea}\n\n## Contexto adicional\n{contexto}"
+
+    # Inyectar conocimiento indexado para agentes kawiil-* (DOF/SJF context)
+    knowledge_ctx = ""
+    if nombre.startswith("kawiil-"):
+        try:
+            knowledge_ctx = _load_agent_knowledge(nombre)
+        except Exception as e:
+            log.debug(f"No pude cargar knowledge de {nombre}: {e}")
+
+    ctx_parts = []
+    if contexto:
+        ctx_parts.append(contexto)
+    if knowledge_ctx:
+        ctx_parts.append(knowledge_ctx)
+    full_contexto = "\n\n".join(ctx_parts)
+
+    user_msg = tarea if not full_contexto else f"{tarea}\n\n## Contexto adicional\n{full_contexto}"
 
     if modelo.lower().startswith("deepseek"):
         out = _invocar_agente_via_deepseek(nombre, sub_system, user_msg, modelo)
@@ -4183,6 +4585,30 @@ def execute_tool(name: str, args: dict) -> str:
             return _legal_ultimo(args["modulo"], args.get("n", 10))
         elif name == "legal_briefing":
             return _legal_briefing()
+        elif name == "legal_indexar":
+            agente = args.get("agente", "").strip()
+            forzar = bool(args.get("forzar", False))
+            limite = max(10, min(int(args.get("limite", 30)), 100))
+            if agente.lower() == "todos":
+                return _legal_indexar_todos(limite_por_agente=limite)
+            return _legal_indexar_agente(agente, forzar=forzar, limite=limite)
+        elif name == "legal_conocimiento":
+            agente = args.get("agente", "").strip()
+            idx = _knowledge_index(agente)
+            kdir = KNOWLEDGE_BASE / agente
+            resumen_file = kdir / "resumen-semanal.md"
+            parts = [
+                f"📚 Conocimiento indexado — *{agente}*",
+                f"  • Total docs: {idx.get('total', 0)}",
+                f"  • Área: {idx.get('label', '?')}",
+                f"  • Última indexación: {idx.get('last_indexed', '(nunca)') or '(nunca)'}",
+            ]
+            if resumen_file.exists():
+                resumen = resumen_file.read_text()[:3000]
+                parts.append(f"\n{resumen}")
+            else:
+                parts.append("  • Resumen semanal: no disponible aún (corre legal_indexar primero)")
+            return "\n".join(parts)
         elif name == "mac_estado":
             return _mac_estado()
         elif name == "mac_wake_request":

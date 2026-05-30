@@ -144,6 +144,11 @@ def enrich_with_ollama(raw_message: str) -> str:
 
 
 MORNING_BRIEFING_MARKER = "__morning_briefing__"
+LEGAL_INDEX_MARKER = "__legal_index__"
+
+# Archivo de control para saber cuándo se corrió la indexación legal por última vez
+LEGAL_INDEX_STAMP = HOME_OC / "state" / "legal-index-last.json"
+LEGAL_INDEX_DAYS = 7  # re-indexar cada 7 días
 
 
 # ===== Queue I/O =====
@@ -260,15 +265,52 @@ def tick():
         write_queue(to_keep)
 
 
+def _should_run_legal_index() -> bool:
+    """True si no se ha corrido indexación legal en LEGAL_INDEX_DAYS días."""
+    if not LEGAL_INDEX_STAMP.exists():
+        return True
+    try:
+        data = json.loads(LEGAL_INDEX_STAMP.read_text())
+        last = datetime.fromisoformat(data.get("last_run", "2000-01-01"))
+        return (datetime.now() - last).days >= LEGAL_INDEX_DAYS
+    except Exception:
+        return True
+
+
+def _run_legal_index():
+    """Corre indexación legal para todos los agentes kawiil-* y notifica."""
+    log.info("Iniciando indexación semanal de conocimiento legal (kawiil-*)")
+    try:
+        resultado = core._legal_indexar_todos(limite_por_agente=25)
+        # Guardar stamp
+        LEGAL_INDEX_STAMP.parent.mkdir(parents=True, exist_ok=True)
+        LEGAL_INDEX_STAMP.write_text(json.dumps({"last_run": datetime.now().isoformat()}))
+        log.info(f"Indexación legal completada: {resultado[:200]}")
+        # Notificar a Polo
+        send_telegram(f"📚 *Indexación legal semanal completada*\n\n{resultado[:1500]}")
+    except Exception as e:
+        log.exception(f"Indexación legal falló: {e}")
+        send_telegram(f"⚠️ Indexación legal semanal falló: {e}")
+
+
 def main():
     log.info("=== louis-scheduler arrancando ===")
     log.info(f"Queue: {QUEUE_FILE}")
     log.info(f"Tick cada {TICK_SECONDS}s")
+    tick_count = 0
     while True:
         try:
             tick()
         except Exception as e:
             log.exception(f"Tick falló: {e}")
+        tick_count += 1
+        # Verificar indexación legal cada hora (60 ticks × 60s = 3600s)
+        if tick_count % 60 == 0:
+            try:
+                if _should_run_legal_index():
+                    _run_legal_index()
+            except Exception as e:
+                log.exception(f"Verificación indexación legal falló: {e}")
         time.sleep(TICK_SECONDS)
 
 
