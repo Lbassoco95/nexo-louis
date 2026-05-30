@@ -36,6 +36,9 @@ else:
 SPACE = HOME_OC / "spaces" / "general"
 AGENTS_DIR = SPACE / "agents"   # sub-agentes ligeros (prompts especializados)
 ANTHROPIC_ENV_FILE = HOME_OC / ".env"
+# Bitácora de actividad de agentes — la consume el dashboard visual del gateway.
+# Cada línea es un evento JSON: {ts, evento, agente, modelo, parent, detalle}.
+AGENT_ACTIVITY_FILE = HOME_OC / "logs" / "agent-activity.jsonl"
 
 M365_SCRIPT = HOME_OC / "scripts" / "m365" / "m365.py"
 if not M365_SCRIPT.exists():
@@ -3761,6 +3764,42 @@ import re as _re
 _AGENT_NAME_RE = _re.compile(r"^[a-z][a-z0-9-]{1,40}$")
 
 
+# Stack de agentes activos en el hilo actual — permite saber qué agente invocó a
+# cuál (para dibujar las conexiones en el dashboard). Es best-effort, no thread-safe
+# estricto, suficiente para visualización.
+_AGENT_STACK: list = []
+
+
+def log_agent_activity(evento: str, agente: str, modelo: str = "", detalle: str = "") -> None:
+    """Anexa un evento a la bitácora de actividad de agentes (best-effort, nunca rompe).
+
+    evento: 'start' | 'end' | 'error' | 'created'
+    El dashboard del gateway lee este archivo para animar los círculos.
+    """
+    try:
+        parent = _AGENT_STACK[-1] if _AGENT_STACK else None
+        rec = {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "evento": evento,
+            "agente": agente,
+            "modelo": modelo,
+            "parent": parent,
+            "detalle": (detalle or "")[:200],
+        }
+        AGENT_ACTIVITY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with AGENT_ACTIVITY_FILE.open("a") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        # Rotación simple: si pasa de ~5000 líneas, deja las últimas 2000.
+        try:
+            if AGENT_ACTIVITY_FILE.stat().st_size > 2_000_000:
+                lines = AGENT_ACTIVITY_FILE.read_text().splitlines()[-2000:]
+                AGENT_ACTIVITY_FILE.write_text("\n".join(lines) + "\n")
+        except Exception:
+            pass
+    except Exception:
+        pass  # nunca dejar que la bitácora rompa la ejecución del agente
+
+
 def _crear_agente(nombre: str, especialidad: str, prompt: str, modelo: str = "claude-sonnet-4-6") -> str:
     """Registra un sub-agente en AGENTS_DIR/{nombre}.md."""
     if not _AGENT_NAME_RE.match(nombre):
@@ -3779,6 +3818,7 @@ def _crear_agente(nombre: str, especialidad: str, prompt: str, modelo: str = "cl
         f"{prompt}\n"
     )
     path.write_text(body)
+    log_agent_activity("created", nombre, modelo, especialidad)
     return f"OK: agente '{nombre}' creado en {path.name} (especialidad: {especialidad}, modelo: {modelo})"
 
 
@@ -3838,13 +3878,44 @@ def _invocar_agente(
     contexto: str = "",
     modelo_override: str | None = None,
 ) -> str:
-    """Ejecuta una sub-llamada al modelo del agente con su prompt + tarea."""
+    """Wrapper con bitácora de actividad (start/end) para el dashboard visual.
+
+    Empuja el agente al stack para que las invocaciones anidadas (un agente que
+    llama a otro vía consejo_experto_legal) queden registradas con su `parent`.
+    """
     if not _AGENT_NAME_RE.match(nombre):
         return f"ERROR: nombre '{nombre}' inválido."
     path = AGENTS_DIR / f"{nombre}.md"
     if not path.exists():
         return f"ERROR: agente '{nombre}' no existe. Usa `listar_agentes` para ver disponibles."
     meta = _parse_agent_file(path)
+    modelo_log = (modelo_override or meta.get("modelo", "claude-sonnet-4-6")).strip()
+    log_agent_activity("start", nombre, modelo_log, tarea)
+    _AGENT_STACK.append(nombre)
+    try:
+        out = _invocar_agente_impl(nombre, tarea, contexto, modelo_override, meta)
+        evento = "error" if out.startswith("ERROR") else "end"
+        log_agent_activity(evento, nombre, modelo_log, out[:200])
+        return out
+    except Exception as e:
+        log_agent_activity("error", nombre, modelo_log, str(e))
+        raise
+    finally:
+        if _AGENT_STACK and _AGENT_STACK[-1] == nombre:
+            _AGENT_STACK.pop()
+
+
+def _invocar_agente_impl(
+    nombre: str,
+    tarea: str,
+    contexto: str = "",
+    modelo_override: str | None = None,
+    meta: dict | None = None,
+) -> str:
+    """Ejecuta una sub-llamada al modelo del agente con su prompt + tarea."""
+    path = AGENTS_DIR / f"{nombre}.md"
+    if meta is None:
+        meta = _parse_agent_file(path)
     modelo = (modelo_override or meta.get("modelo", "claude-sonnet-4-6")).strip()
     sub_system = meta["prompt"]
     user_msg = tarea if not contexto else f"{tarea}\n\n## Contexto adicional\n{contexto}"
