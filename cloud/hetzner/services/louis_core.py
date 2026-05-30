@@ -4241,14 +4241,25 @@ def call_ollama(
 
 
 def call_deepseek(system_prompt: str, history: list, user_message: str, model: str | None = None) -> str | None:
+    raw = []
+    for h in history:
+        if h["role"] in ("user", "assistant") and isinstance(h["content"], str) and h["content"].strip():
+            raw.append({"role": h["role"], "content": h["content"].strip()})
+    cleaned_input = strip_override_prefix((user_message or "").strip()) or "(mensaje vacío)"
+    raw.append({"role": "user", "content": cleaned_input})
+    # Colapsa mensajes consecutivos del mismo rol (DeepSeek también rechaza secuencias inválidas)
+    hist_clean = []
+    for m in raw:
+        if hist_clean and hist_clean[-1]["role"] == m["role"]:
+            hist_clean[-1]["content"] += "\n" + m["content"]
+        else:
+            hist_clean.append(m)
+    while hist_clean and hist_clean[0]["role"] != "user":
+        hist_clean.pop(0)
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt[:50_000]})
-    for h in history:
-        if h["role"] in ("user", "assistant") and isinstance(h["content"], str) and h["content"].strip():
-            messages.append({"role": h["role"], "content": h["content"]})
-    cleaned = strip_override_prefix((user_message or "").strip()) or "(mensaje vacío)"
-    messages.append({"role": "user", "content": cleaned})
+    messages.extend(hist_clean)
     selected_model = (model or DEEPSEEK_MODEL).strip()
     if selected_model.startswith("deepseek/"):
         selected_model = selected_model.split("/", 1)[1]
@@ -4369,11 +4380,23 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
     con contenido — esto evita que se pierda texto cuando Claude devuelve
     text+tool_use en un mismo turn y después responde vacío.
     """
-    messages = []
+    # Construye mensajes colapsando consecutivos del mismo rol.
+    # Anthropic rechaza con 400 si hay dos "user" o dos "assistant" seguidos
+    # (puede pasar cuando el bridge escribe historial duplicado).
+    raw_msgs = []
     for h in history:
-        if h["role"] in ("user", "assistant") and isinstance(h["content"], str):
-            messages.append({"role": h["role"], "content": h["content"]})
-    messages.append({"role": "user", "content": user_message})
+        if h["role"] in ("user", "assistant") and isinstance(h["content"], str) and h["content"].strip():
+            raw_msgs.append({"role": h["role"], "content": h["content"].strip()})
+    raw_msgs.append({"role": "user", "content": (user_message or "").strip() or "(vacío)"})
+    messages = []
+    for m in raw_msgs:
+        if messages and messages[-1]["role"] == m["role"]:
+            messages[-1]["content"] += "\n" + m["content"]
+        else:
+            messages.append({"role": m["role"], "content": m["content"]})
+    # Asegura que el primer mensaje sea "user"
+    while messages and messages[0]["role"] != "user":
+        messages.pop(0)
     headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
     max_loops = 8
     turn_texts = []   # texto emitido por cada turn (puede ser "")
