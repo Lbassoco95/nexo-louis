@@ -117,7 +117,10 @@ log "Generando $ENV_OUT (consumido por openclaw.service Y telegram-bridge.servic
   [[ -n "${M365_YOLTIK_CLIENT_ID:-}" ]]    && echo "M365_YOLTIK_CLIENT_ID=${M365_YOLTIK_CLIENT_ID}"
   [[ -n "${M365_YOLTIK_REDIRECT_URI:-}" ]] && echo "M365_YOLTIK_REDIRECT_URI=${M365_YOLTIK_REDIRECT_URI}"
   echo "OLLAMA_HOST=http://127.0.0.1:11434"
-  echo "OLLAMA_DEFAULT_MODEL=gpt-oss:20b"
+  echo "OLLAMA_FAST_MODEL=${OLLAMA_FAST_MODEL:-llama3.1:8b}"
+  echo "OLLAMA_QUALITY_MODEL=${OLLAMA_QUALITY_MODEL:-gpt-oss:20b}"
+  # OLLAMA_DEFAULT_MODEL se mantiene por compat; apunta al rápido (chat del día a día).
+  echo "OLLAMA_DEFAULT_MODEL=${OLLAMA_FAST_MODEL:-llama3.1:8b}"
   echo "KAWIIL_AGENTS_URL=http://127.0.0.1:8000"
   [[ -n "${KAWIIL_DISPATCH_TOKEN:-}" ]]   && echo "KAWIIL_DISPATCH_TOKEN=${KAWIIL_DISPATCH_TOKEN}"
 } > "$ENV_OUT"

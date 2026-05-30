@@ -43,11 +43,13 @@ else
   nope "Docker daemon NO responde"
 fi
 
-# 4) OpenClaw systemd
+# 4) Cerebro en :3000 — binario oficial (raro) o gateway Python nativo (lo normal)
 if systemctl is-active --quiet openclaw; then
-  ok "OpenClaw service activo"
+  ok "OpenClaw native service activo"
+elif systemctl is-active --quiet openclaw-gateway; then
+  ok "OpenClaw gateway (Python nativo) activo — sin binario oficial, es lo esperado"
 else
-  nope "OpenClaw service NO activo (journalctl -u openclaw -n 30)"
+  nope "Ni openclaw ni openclaw-gateway activos (journalctl -u openclaw-gateway -n 30)"
 fi
 
 # 5) OpenClaw HTTP local
