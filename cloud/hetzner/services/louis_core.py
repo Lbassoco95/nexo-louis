@@ -2524,9 +2524,12 @@ def _legal_briefing() -> str:
 # El conocimiento se inyecta automáticamente cuando se invoca el agente.
 
 KNOWLEDGE_BASE = HOME_OC / "spaces" / "general" / "agents" / "knowledge"
-KNOWLEDGE_MAX_DOCS = 200       # docs máximos por agente
+KNOWLEDGE_MAX_DOCS = 500       # docs máximos por agente (aumentado para acumulación)
 KNOWLEDGE_CONTEXT_DOCS = 5     # docs que se inyectan en cada invocación
-KNOWLEDGE_REINDEX_DAYS = 7     # días entre re-indexados automáticos
+# Rotation state: qué agente fue el último en indexarse en background
+LEGAL_BG_ROTATION = HOME_OC / "state" / "legal-bg-rotation.json"
+# Cola de prioridad: docs urgentes a indexar antes que el batch normal
+LEGAL_BG_PRIORITY = HOME_OC / "state" / "legal-bg-priority.jsonl"
 
 # Keywords DOF/SJF por agente. Agentes no listados usan su campo 'especialidad'.
 KAWIIL_KNOWLEDGE_MAP: dict = {
@@ -2640,10 +2643,12 @@ def _summarize_for_knowledge(agente: str, titulo: str, fecha: str, fuente: str, 
         return texto[:800] + "…"
 
 
-def _legal_indexar_agente(agente: str, forzar: bool = False, limite: int = 30) -> str:
+def _legal_indexar_agente(agente: str, forzar: bool = False, limite: int = 30,
+                          background: bool = False) -> str:
     """
-    Indexa DOF/SJF para el agente dado. Guarda resúmenes en knowledge dir.
-    Si ya fue indexado recientemente (< KNOWLEDGE_REINDEX_DAYS), omite salvo forzar=True.
+    Indexa DOF/SJF para el agente. En background=True procesa lo más reciente
+    que aún no está indexado sin gate de recencia — la puerta real es already_indexed.
+    forzar=True re-indexa todo desde cero (borra el set de already_indexed).
     """
     if not _AGENT_NAME_RE.match(agente):
         return f"ERROR: nombre de agente '{agente}' inválido."
@@ -2652,69 +2657,73 @@ def _legal_indexar_agente(agente: str, forzar: bool = False, limite: int = 30) -
         return f"ERROR: agente '{agente}' no existe."
 
     idx = _knowledge_index(agente)
-    if not forzar and idx.get("last_indexed"):
+
+    # En modo manual (no background, no forzar), avisamos si no hay nada nuevo que hacer
+    if not background and not forzar and idx.get("docs") and idx.get("last_indexed"):
         try:
             last = datetime.fromisoformat(idx["last_indexed"])
-            days_ago = (datetime.now() - last).days
-            if days_ago < KNOWLEDGE_REINDEX_DAYS:
-                return (f"⏭ {agente}: ya indexado hace {days_ago}d "
+            hours_ago = int((datetime.now() - last).total_seconds() / 3600)
+            if hours_ago < 1:
+                return (f"⏭ {agente}: indexado hace {hours_ago}h "
                         f"({idx.get('total', 0)} docs). Usa forzar=true para re-indexar.")
         except Exception:
             pass
 
+    # forzar=True: empieza desde cero
+    if forzar:
+        idx["docs"] = []
+
     # Obtener keywords para este agente
     cfg = KAWIIL_KNOWLEDGE_MAP.get(agente)
     if not cfg:
-        # Inferir desde la especialidad del agente
         meta = _parse_agent_file(agent_file)
         especialidad = meta.get("especialidad", "")
         words = [w for w in especialidad.replace(",", " ").split() if len(w) > 4][:5]
-        cfg = {
-            "label": especialidad,
-            "dof": words,
-            "sjf": words,
-        }
+        cfg = {"label": especialidad, "dof": words, "sjf": words}
 
     kdir = _knowledge_dir(agente)
     docs_dir = kdir / "docs"
     nuevos = 0
-    omitidos = 0
     errores = 0
     already_indexed = set(idx.get("docs", []))
 
-    # ── Indexar desde DOF ──────────────────────────────────────────────────
-    if DOF_DB.exists():
+    # Cuántos por keyword (distribuir el límite)
+    dof_keywords = (cfg.get("dof") or [])[:4]
+    sjf_keywords = (cfg.get("sjf") or [])[:4]
+    per_kw_dof = max(1, limite // max(len(dof_keywords), 1))
+    per_kw_sjf = max(1, limite // max(len(sjf_keywords), 1))
+
+    # ── Indexar desde DOF (más recientes primero) ──────────────────────────
+    if DOF_DB.exists() and nuevos < limite:
         conn = _legal_open(DOF_DB)
-        for keyword in (cfg.get("dof") or [])[:4]:  # máx 4 keywords
+        for keyword in dof_keywords:
+            if nuevos >= limite:
+                break
             try:
                 rows = conn.execute(
-                    "SELECT n.cod_nota, n.fecha, n.titulo, n.tipo_documento, "
-                    "n.texto_plano "
+                    "SELECT n.cod_nota, n.fecha, n.titulo, n.tipo_documento, n.texto_plano "
                     "FROM notas n "
                     "WHERE n.incluido=1 AND n.texto_plano IS NOT NULL "
                     "AND length(n.texto_plano) > 200 "
                     "AND (n.titulo LIKE ? OR n.texto_plano LIKE ?) "
                     "ORDER BY n.fecha DESC LIMIT ?",
-                    (f"%{keyword}%", f"%{keyword}%", limite // len(cfg.get("dof", ["x"]) or ["x"])),
+                    (f"%{keyword}%", f"%{keyword}%", per_kw_dof * 5),
                 ).fetchall()
             except Exception as e:
-                log.warning(f"DOF query '{keyword}' falló: {e}")
+                log.warning(f"DOF bg query '{keyword}': {e}")
                 rows = []
             for r in rows:
-                doc_id = f"dof-{r['cod_nota']}"
-                if doc_id in already_indexed:
-                    omitidos += 1
-                    continue
                 if nuevos >= limite:
                     break
+                doc_id = f"dof-{r['cod_nota']}"
+                if doc_id in already_indexed:
+                    continue
                 try:
                     resumen = _summarize_for_knowledge(
                         agente, r["titulo"] or "", r["fecha"] or "", "DOF",
-                        r["texto_plano"] or ""
-                    )
+                        r["texto_plano"] or "")
                     fname = f"dof-{r['fecha'] or 'nd'}-{r['cod_nota']}.md"
-                    doc_path = docs_dir / fname
-                    doc_path.write_text(
+                    (docs_dir / fname).write_text(
                         f"# {r['titulo'] or '(sin título)'}\n"
                         f"**Fuente:** DOF | **Fecha:** {r['fecha']} | "
                         f"**Tipo:** {r['tipo_documento'] or '?'} | **ID:** {r['cod_nota']}\n\n"
@@ -2723,14 +2732,16 @@ def _legal_indexar_agente(agente: str, forzar: bool = False, limite: int = 30) -
                     already_indexed.add(doc_id)
                     nuevos += 1
                 except Exception as e:
-                    log.warning(f"Doc DOF {r['cod_nota']} falló: {e}")
+                    log.warning(f"Doc DOF {r['cod_nota']} ({agente}): {e}")
                     errores += 1
         conn.close()
 
-    # ── Indexar desde SJF ──────────────────────────────────────────────────
-    if SJF_DB.exists():
+    # ── Indexar desde SJF (más recientes primero) ──────────────────────────
+    if SJF_DB.exists() and nuevos < limite:
         conn = _legal_open(SJF_DB)
-        for keyword in (cfg.get("sjf") or [])[:4]:
+        for keyword in sjf_keywords:
+            if nuevos >= limite:
+                break
             try:
                 rows = conn.execute(
                     "SELECT t.registro_digital, t.rubro, t.epoca, t.instancia, "
@@ -2739,28 +2750,24 @@ def _legal_indexar_agente(agente: str, forzar: bool = False, limite: int = 30) -
                     "WHERE t.texto IS NOT NULL AND length(t.texto) > 200 "
                     "AND (t.rubro LIKE ? OR t.texto LIKE ? OR t.materias LIKE ?) "
                     "ORDER BY t.fecha_publicacion DESC LIMIT ?",
-                    (f"%{keyword}%", f"%{keyword}%", f"%{keyword}%",
-                     limite // len(cfg.get("sjf", ["x"]) or ["x"])),
+                    (f"%{keyword}%", f"%{keyword}%", f"%{keyword}%", per_kw_sjf * 5),
                 ).fetchall()
             except Exception as e:
-                log.warning(f"SJF query '{keyword}' falló: {e}")
+                log.warning(f"SJF bg query '{keyword}': {e}")
                 rows = []
             for r in rows:
-                doc_id = f"sjf-{r['registro_digital']}"
-                if doc_id in already_indexed:
-                    omitidos += 1
-                    continue
                 if nuevos >= limite:
                     break
+                doc_id = f"sjf-{r['registro_digital']}"
+                if doc_id in already_indexed:
+                    continue
                 try:
                     kind = "Jurisprudencia" if r["ta_tj"] == 1 else "Tesis Aislada"
                     resumen = _summarize_for_knowledge(
                         agente, r["rubro"] or "", r["fecha_publicacion"] or "", "SJF",
-                        r["texto"] or ""
-                    )
+                        r["texto"] or "")
                     fname = f"sjf-{r['fecha_publicacion'] or 'nd'}-{r['registro_digital']}.md"
-                    doc_path = docs_dir / fname
-                    doc_path.write_text(
+                    (docs_dir / fname).write_text(
                         f"# {r['rubro'] or '(sin rubro)'}\n"
                         f"**Fuente:** SJF ({kind}) | **Época:** {r['epoca'] or '?'} | "
                         f"**Instancia:** {r['instancia'] or '?'} | "
@@ -2771,15 +2778,14 @@ def _legal_indexar_agente(agente: str, forzar: bool = False, limite: int = 30) -
                     already_indexed.add(doc_id)
                     nuevos += 1
                 except Exception as e:
-                    log.warning(f"Doc SJF {r['registro_digital']} falló: {e}")
+                    log.warning(f"Doc SJF {r['registro_digital']} ({agente}): {e}")
                     errores += 1
         conn.close()
 
-    # ── Actualizar resumen semanal ──────────────────────────────────────────
+    # ── Actualizar índice y resumen ─────────────────────────────────────────
     total_docs = len(list(docs_dir.glob("*.md")))
-    _rebuild_weekly_summary(agente, kdir, docs_dir)
-
-    # ── Actualizar índice ───────────────────────────────────────────────────
+    if nuevos > 0:
+        _rebuild_weekly_summary(agente, kdir, docs_dir)
     idx.update({
         "agente": agente,
         "label": cfg.get("label", ""),
@@ -2789,11 +2795,11 @@ def _legal_indexar_agente(agente: str, forzar: bool = False, limite: int = 30) -
     })
     _knowledge_save_index(agente, idx)
 
+    if background:
+        return f"{agente}:+{nuevos}" if nuevos else f"{agente}:al-día"
     return (
         f"✅ Indexación {agente} completada:\n"
-        f"  • Nuevos docs: {nuevos}\n"
-        f"  • Ya indexados (omitidos): {omitidos}\n"
-        f"  • Errores: {errores}\n"
+        f"  • Nuevos: {nuevos} | Errores: {errores}\n"
         f"  • Total en knowledge: {total_docs}\n"
         f"  • Área: {cfg.get('label', '?')}"
     )
@@ -2851,7 +2857,7 @@ def _load_agent_knowledge(agente: str, max_chars: int = 8000) -> str:
 
 
 def _legal_indexar_todos(limite_por_agente: int = 20) -> str:
-    """Indexa todos los agentes kawiil-* disponibles. Para el scheduler semanal."""
+    """Indexa todos los agentes kawiil-*. Para el tool manual (con respuesta verbose)."""
     if not AGENTS_DIR.exists():
         return "No hay directorio de agentes."
     kawiil_files = [f for f in AGENTS_DIR.glob("kawiil-*.md")]
@@ -2867,7 +2873,107 @@ def _legal_indexar_todos(limite_por_agente: int = 20) -> str:
         except Exception as e:
             resultados.append(f"{agente}: ERROR {e}")
             log.warning(f"legal_indexar_todos {agente}: {e}")
-    return f"Indexación semanal legal ({len(kawiil_files)} agentes):\n" + "\n".join(resultados)
+    return f"Indexación manual legal ({len(kawiil_files)} agentes):\n" + "\n".join(resultados)
+
+
+# ── Prioridad: encola un tema/doc para indexación inmediata ───────────────────
+def _legal_enqueue_priority(agente: str, tema: str, razon: str = ""):
+    """Agrega a la cola de prioridad para que el bg-tick lo indexe primero."""
+    try:
+        LEGAL_BG_PRIORITY.parent.mkdir(parents=True, exist_ok=True)
+        entry = {"agente": agente, "tema": tema, "razon": razon,
+                 "ts": datetime.now().isoformat()}
+        with LEGAL_BG_PRIORITY.open("a") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        log.warning(f"_legal_enqueue_priority: {e}")
+
+
+def _legal_drain_priority() -> list[dict]:
+    """Lee y vacía la cola de prioridad. Devuelve lista de entries."""
+    if not LEGAL_BG_PRIORITY.exists():
+        return []
+    try:
+        lines = LEGAL_BG_PRIORITY.read_text().splitlines()
+        LEGAL_BG_PRIORITY.write_text("")  # vaciar
+        result = []
+        for l in lines:
+            l = l.strip()
+            if l:
+                try:
+                    result.append(json.loads(l))
+                except Exception:
+                    pass
+        return result
+    except Exception:
+        return []
+
+
+def _legal_bg_next_agent() -> str | None:
+    """
+    Devuelve el siguiente agente kawiil-* en rotación round-robin.
+    Guarda estado en LEGAL_BG_ROTATION para que persista entre ticks.
+    """
+    if not AGENTS_DIR.exists():
+        return None
+    kawiil = sorted(f.stem for f in AGENTS_DIR.glob("kawiil-*.md"))
+    if not kawiil:
+        return None
+    rot = {}
+    if LEGAL_BG_ROTATION.exists():
+        try:
+            rot = json.loads(LEGAL_BG_ROTATION.read_text())
+        except Exception:
+            pass
+    last = rot.get("last_agent", "")
+    try:
+        idx = kawiil.index(last)
+        nxt = kawiil[(idx + 1) % len(kawiil)]
+    except ValueError:
+        nxt = kawiil[0]
+    LEGAL_BG_ROTATION.parent.mkdir(parents=True, exist_ok=True)
+    LEGAL_BG_ROTATION.write_text(json.dumps(
+        {"last_agent": nxt, "ts": datetime.now().isoformat()}))
+    return nxt
+
+
+def _legal_indexar_background_tick(limite: int = 10) -> str:
+    """
+    Un tick de indexación en background — silencioso, llamado cada N minutos
+    por el scheduler. Procesa:
+      1) Cola de prioridad primero (temas urgentes / leyes recién subidas)
+      2) Siguiente agente en rotación round-robin, 10 docs más recientes sin indexar
+    Devuelve string corto para el log.
+    """
+    resultados = []
+
+    # 1) Prioridad: si hay entries en la cola, indexar esos agentes primero
+    priority = _legal_drain_priority()
+    for entry in priority[:3]:  # máx 3 prioridades por tick para no bloquear
+        agente = entry.get("agente", "")
+        if not agente or not _AGENT_NAME_RE.match(agente):
+            continue
+        if not (AGENTS_DIR / f"{agente}.md").exists():
+            continue
+        try:
+            r = _legal_indexar_agente(agente, forzar=False, limite=limite, background=True)
+            resultados.append(f"[prio] {r}")
+            log.info(f"legal bg priority: {r}")
+        except Exception as e:
+            log.warning(f"legal bg priority {agente}: {e}")
+
+    # 2) Rotación normal: siguiente agente en la lista
+    agente = _legal_bg_next_agent()
+    if agente:
+        try:
+            r = _legal_indexar_agente(agente, forzar=False, limite=limite, background=True)
+            resultados.append(f"[bg] {r}")
+            log.info(f"legal bg tick: {r}")
+        except Exception as e:
+            log.warning(f"legal bg tick {agente}: {e}")
+            resultados.append(f"[bg] {agente}: error {e}")
+
+    return " | ".join(resultados) if resultados else "bg: sin agentes"
 
 
 # ===== Mac status / wake request =====
@@ -4452,6 +4558,12 @@ def _consejo_experto_legal(area: str, pregunta: str, contexto: str = "", max_exp
 
     raw_consejo = "\n\n---\n\n".join(opiniones)
     _kawiil_central_audit(f"consejo_experto_legal area={area}", pregunta[:300]) if 'KAWIIL_CENTRAL_AUDIT_LOG' in globals() else None
+
+    # Encolar en prioridad para que el bg-indexer refuerce el conocimiento sobre este tema
+    _legal_enqueue_priority(
+        f"kawiil-{area}" if (AGENTS_DIR / f"kawiil-{area}.md").exists() else "kawiil-nelli",
+        pregunta[:200], razon=f"consulta legal area={area}"
+    )
 
     # ── MEXICANIZACIÓN OBLIGATORIA ──────────────────────────────────────────
     # Los agentes internacionales (legal-* de claude-for-legal, contexto US) son
