@@ -405,24 +405,51 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "- `legal_briefing()` — combinado SJF + DOF, ideal para el briefing matutino.\n"
         "Si Polo pregunta por el estado y la BD no se ha sincronizado todavía, dile claramente "
         "'la BD no ha llegado al VPS aún — revisa que el cron de mac-push-legal.sh esté activo en tu Mac'.\n"
+        "## ⛔ REGLA ABSOLUTA — NUNCA INVENTES DATOS LEGALES\n"
+        "JAMÁS fabriques resultados del DOF o SJF: ni títulos, ni fechas, ni números de "
+        "acuerdo/decreto, ni artículos, ni publicaciones. Si no lo obtuviste de una fuente "
+        "REAL (la BD vía `legal_buscar`, el portal vía `browser_leer`, o el conocimiento "
+        "indexado del agente), NO EXISTE para ti. Es preferible mil veces decir 'no encontré "
+        "/ no pude acceder / no está descargado todavía' que dar un resultado plausible pero "
+        "falso. Inventar una publicación del DOF es el peor error que puedes cometer: Polo "
+        "toma decisiones legales con eso. Cada dato que des debe ser trazable a su `cod_nota` "
+        "(DOF) o `registro_digital` (SJF) o a la URL exacta que leíste. Si no tienes el ID o "
+        "la URL, no lo afirmes.\n"
         "## CUANDO LA BD NO TIENE EL TEXTO (ej: publicaciones recientes sin HTML descargado)\n"
         "Si `legal_buscar` no encuentra algo reciente (la BD tiene el índice pero no el texto "
-        "completo), NO te quedes en 'no se pudo'. ACCIONA: usa el browser para traer el texto real "
-        "del portal oficial. Flujo: `browser_navegar('https://www.dof.gob.mx/index_113.php?year=AAAA&month=MM&day=DD')` "
-        "(ejemplar de un día) o la búsqueda del DOF, luego `browser_leer` para extraer el contenido, "
-        "y entrega el resultado (o un .html con el análisis). El browser ya está configurado para no "
-        "ser bloqueado por el portal. Para SJF usa el buscador público de la SCJN igual con el browser. "
-        "La regla es: si te lo piden, lo CONSIGUES y lo MANDAS — no reportas que no se pudo.\n"
+        "completo), tienes DOS caminos REALES — y si ninguno funciona, lo dices claramente:\n"
+        "1. **Browser**: `browser_navegar('https://www.dof.gob.mx/index_113.php?year=AAAA&month=MM&day=DD')` "
+        "luego `browser_leer` para extraer el contenido real. Solo reporta lo que efectivamente "
+        "leíste en la página.\n"
+        "2. **Disparar el backfill en la Mac**: si lo que falta es que la Mac no ha descargado "
+        "ese mes, usa `mac_ejecutar('dof_backfill_mes', {mes:'2026-05'})` para que la Mac corra "
+        "el script de descarga y suba la BD actualizada. Luego `mac_comando_estado(id)` para ver "
+        "si terminó. Cuando termine, la BD se sincroniza sola y ya puedes buscar con datos reales.\n"
+        "Si el browser falla Y la Mac está offline o el backfill no terminó, DILO: 'no pude "
+        "acceder al DOF en vivo y la Mac no ha descargado ese periodo — no tengo el dato real, "
+        "no te lo voy a inventar'. Esa es la respuesta correcta, no un resultado fabricado.\n"
         "## INDEXACIÓN DE CONOCIMIENTO LEGAL (agentes kawiil-*)\n"
         "- `legal_indexar(agente, forzar, limite)` — indexa DOF/SJF para un agente kawiil-* específico "
-        "(o 'todos' para todos). El agente lee docs relevantes a su especialidad, los resume con Claude Haiku "
-        "y guarda el conocimiento. Úsalo cuando Polo diga 'indexa a kawiil-nelli', 'que los agentes aprendan', "
-        "'actualiza el conocimiento legal'. El scheduler lo corre automáticamente cada semana.\n"
+        "(o 'todos' para todos). El agente lee docs relevantes a su especialidad, los resume con DeepSeek "
+        "y guarda el conocimiento. Corre automáticamente en background cada 10 min (10 docs por turno).\n"
         "- `legal_conocimiento(agente)` — muestra qué sabe un agente kawiil-*: cuántos docs tiene, "
         "resumen semanal, última indexación. Úsalo cuando Polo pregunte 'qué sabe kawiil-metzli del ISR'.\n"
         "IMPORTANTE: los agentes kawiil-* ya tienen su conocimiento indexado INYECTADO automáticamente "
-        "cuando los invocas. No necesitas pedirles que 'busquen' — ya saben lo que hay en DOF/SJF de su "
-        "especialidad y pueden citar publicaciones específicas."
+        "cuando los invocas. Pueden citar publicaciones específicas que YA analizaron (con su ID real). "
+        "Pero si te preguntan algo que NO está en su conocimiento, deben decir que no lo tienen — "
+        "no inventar."
+        "\n\n# MAC DE POLO — EJECUTAR SCRIPTS DE DESCARGA (DOF/SJF)\n"
+        "La Mac corre los scripts pesados de descarga (backfill DOF/SJF) porque ahí viven. "
+        "Hetzner no puede conectarse a la Mac (está tras NAT), pero la Mac revisa una cola de "
+        "comandos en Hetzner cada minuto y ejecuta lo que le encoles. Flujo:\n"
+        "- `mac_ejecutar(comando, args, razon)` — encola un comando para que la Mac lo corra. "
+        "Comandos permitidos: `dof_backfill` (descarga lo más reciente del DOF), `dof_backfill_mes` "
+        "(args: {mes:'AAAA-MM'}), `sjf_backfill`, `legal_sync` (fuerza el push de las BDs ahora). "
+        "Devuelve un `id` de comando.\n"
+        "- `mac_comando_estado(id)` — revisa si el comando terminó (pending/running/done/error) y su salida.\n"
+        "Si la Mac está offline (revisa `mac_estado()` primero), el comando queda encolado y "
+        "correrá cuando se prenda; avísale a Polo con `mac_wake_request(razon)`. NUNCA digas que "
+        "corriste un backfill si no confirmaste con `mac_comando_estado` que terminó 'done'."
         "\n\n# SELF-UPDATE — PUEDES EDITARTE A TI MISMO\n"
         "Tienes tools (`leer_mi_codigo`, `editar_mi_codigo`, `reiniciar_mi_servicio`, "
         "`ver_mis_backups`, `restaurar_mi_codigo`) para modificar tu propio código en /opt/openclaw/scripts/. "
@@ -1529,6 +1556,29 @@ TOOLS_DEFINITION = [
         },
     },
     {
+        "name": "mac_ejecutar",
+        "description": "Encola un comando para que la Mac de Polo lo ejecute (la Mac revisa la cola cada minuto y corre los scripts de descarga que viven ahí). ÚSALO cuando falte texto del DOF/SJF y Polo pida actualizarlo, o pida 'corre el backfill', 'descarga el DOF de mayo', 'actualiza la biblioteca'. Comandos: dof_backfill (lo más reciente), dof_backfill_mes (args {mes:'AAAA-MM'}), sjf_backfill, legal_sync (fuerza push de BDs). Devuelve un id; verifica el resultado con mac_comando_estado. NO afirmes que el backfill corrió hasta confirmar 'done'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "comando": {"type": "string", "enum": ["dof_backfill", "dof_backfill_mes", "sjf_backfill", "legal_sync"], "description": "Comando a ejecutar en la Mac."},
+                "args": {"type": "object", "description": "Argumentos. Para dof_backfill_mes: {mes:'AAAA-MM'}, ej {mes:'2026-05'}."},
+                "razon": {"type": "string", "description": "Por qué se ejecuta (queda en bitácora)."},
+            },
+            "required": ["comando"],
+        },
+    },
+    {
+        "name": "mac_comando_estado",
+        "description": "Revisa el estado/resultado de un comando encolado para la Mac. Pasa el `id` que devolvió mac_ejecutar para ver si terminó (pending/running/done/error) y su salida. Sin id, lista los últimos comandos y pendientes. ÚSALO después de mac_ejecutar para confirmar que el backfill terminó antes de reportarle a Polo.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "ID del comando (devuelto por mac_ejecutar). Vacío = resumen de los últimos."},
+            },
+        },
+    },
+    {
         "name": "browser_navegar",
         "description": "Abre una URL en el browser headless (Chromium) en Hetzner y devuelve título + URL final. Mantiene cookies/sesión entre llamadas. Default espera a networkidle (apto para SPAs React/Vue/Angular). Si la SPA es muy lenta, pasa `wait_extra_ms` para esperar más tiempo antes de leer.",
         "input_schema": {
@@ -2292,10 +2342,12 @@ def _verificar_conexiones(incluir_m365: bool = True) -> str:
         by_cat.setdefault(cat, []).append(n)
     for cat, names in by_cat.items():
         out.append(f"  {cat}: {', '.join(names)}")
-    out.append(f"\n--- Routing ---")
-    out.append(f"  Chat default: DeepSeek ({DEEPSEEK_MODEL}) — fluido, API")
-    out.append(f"  Briefing operativo: determinístico (<1s)")
-    out.append(f"  Búsqueda/tools/agentes/memoria: Claude ({CLAUDE_SONNET})")
+    out.append(f"\n--- Routing (optimizado por costo) ---")
+    out.append(f"  Chat default: DeepSeek ({DEEPSEEK_MODEL}) — fluido, API barata")
+    out.append(f"  Briefing operativo: determinístico (<1s, $0)")
+    out.append(f"  Tools/datos/correos/recordatorios: Claude Haiku ({CLAUDE_HAIKU}) — ≈1/3 de Sonnet")
+    out.append(f"  Indexación legal DOF/SJF: DeepSeek (background, 10 docs/10min)")
+    out.append(f"  PESADO → Sonnet ({CLAUDE_SONNET}): dictamen legal o prefijo /sonnet, /profundo")
     out.append(f"  /oss: Ollama {OLLAMA_QUALITY_MODEL} — local, privado")
     out.append(f"  /llama: Ollama {OLLAMA_FAST_MODEL} — local forzado")
     return "\n".join(out)
@@ -3178,6 +3230,130 @@ def _send_telegram_direct(text: str) -> None:
         urllib.request.urlopen(req, timeout=10).read()
     except Exception:
         log.exception("_send_telegram_direct falló")
+
+
+# ===== Puente de comandos Hetzner → Mac =====
+# La Mac no es alcanzable desde Hetzner (NAT). Pero la Mac SÍ se conecta a
+# Hetzner: cada minuto un launchd corre mac-command-runner.sh que lee esta cola,
+# ejecuta los comandos whitelisted localmente, y escribe el resultado de vuelta.
+MAC_CMD_QUEUE = HOME_OC / "state" / "mac-commands.jsonl"
+MAC_CMD_RESULTS = HOME_OC / "state" / "mac-command-results.jsonl"
+
+# Comandos que la Mac acepta ejecutar. El runner en la Mac tiene el mapeo real
+# a scripts; aquí solo validamos que el comando sea conocido.
+MAC_ALLOWED_COMMANDS = {
+    "dof_backfill":      "Descarga lo más reciente del DOF (HTMLs nuevos) en la Mac.",
+    "dof_backfill_mes":  "Descarga un mes específico del DOF. args: {mes:'AAAA-MM'}.",
+    "sjf_backfill":      "Continúa el backfill del SJF en la Mac.",
+    "legal_sync":        "Fuerza el push inmediato de las BDs (DOF/SJF) Mac→Hetzner.",
+}
+
+
+def _mac_enqueue_command(comando: str, args: dict | None = None, razon: str = "") -> str:
+    """Encola un comando para que la Mac lo ejecute en su próximo poll."""
+    if comando not in MAC_ALLOWED_COMMANDS:
+        permitidos = ", ".join(MAC_ALLOWED_COMMANDS.keys())
+        return f"ERROR: comando '{comando}' no permitido. Disponibles: {permitidos}"
+    # Validación específica
+    args = args or {}
+    if comando == "dof_backfill_mes":
+        mes = str(args.get("mes", "")).strip()
+        if not re.match(r"^\d{4}-\d{2}$", mes):
+            return "ERROR: dof_backfill_mes requiere args {mes:'AAAA-MM'}, ej {mes:'2026-05'}."
+    cmd_id = str(_uuid.uuid4())[:8]
+    entry = {
+        "id": cmd_id,
+        "comando": comando,
+        "args": args,
+        "razon": razon[:300],
+        "status": "pending",
+        "enqueued_at": datetime.now(TZ_CDMX).isoformat(),
+    }
+    try:
+        MAC_CMD_QUEUE.parent.mkdir(parents=True, exist_ok=True)
+        with MAC_CMD_QUEUE.open("a") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        return f"ERROR encolando comando: {e}"
+
+    # Si la Mac está offline, avisa a Polo para que la prenda
+    estado_mac = ""
+    try:
+        if MAC_HEARTBEAT_FILE.exists():
+            data = json.loads(MAC_HEARTBEAT_FILE.read_text())
+            ts = datetime.fromisoformat(data.get("ts", "").replace("Z", "+00:00"))
+            delta = int((datetime.now(timezone.utc) - ts).total_seconds())
+            if delta > 90:
+                estado_mac = (f"\n⚠️ Tu Mac parece offline (último heartbeat hace {delta//60} min). "
+                              f"El comando correrá cuando la prendas.")
+        else:
+            estado_mac = "\n⚠️ No tengo heartbeat de tu Mac — el comando correrá cuando se conecte."
+    except Exception:
+        pass
+
+    desc = MAC_ALLOWED_COMMANDS[comando]
+    return (f"📤 Comando `{comando}` encolado para la Mac (id `{cmd_id}`).\n"
+            f"  {desc}\n"
+            f"  La Mac lo recoge en ≤1 min. Revisa con `mac_comando_estado('{cmd_id}')`."
+            f"{estado_mac}")
+
+
+def _mac_comando_estado(cmd_id: str = "") -> str:
+    """Lee el resultado de un comando ejecutado en la Mac (o lista los últimos)."""
+    # Construye un índice de resultados
+    resultados = {}
+    if MAC_CMD_RESULTS.exists():
+        for line in MAC_CMD_RESULTS.read_text().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+                resultados[r.get("id")] = r
+            except Exception:
+                pass
+    # Estado de la cola (pendientes)
+    pendientes = {}
+    if MAC_CMD_QUEUE.exists():
+        for line in MAC_CMD_QUEUE.read_text().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                e = json.loads(line)
+                pendientes[e.get("id")] = e
+            except Exception:
+                pass
+
+    if cmd_id:
+        if cmd_id in resultados:
+            r = resultados[cmd_id]
+            status = r.get("status", "?")
+            salida = (r.get("output", "") or "")[:1500]
+            icon = {"done": "✅", "error": "❌", "running": "⏳"}.get(status, "•")
+            return (f"{icon} Comando `{cmd_id}` ({r.get('comando','?')}): *{status}*\n"
+                    f"  Terminó: {r.get('finished_at','?')}\n"
+                    f"  Salida:\n```\n{salida}\n```")
+        if cmd_id in pendientes:
+            e = pendientes[cmd_id]
+            return (f"⏳ Comando `{cmd_id}` ({e.get('comando','?')}): *pending* — "
+                    f"la Mac aún no lo recoge (encolado {e.get('enqueued_at','?')}).")
+        return f"❓ No encuentro el comando `{cmd_id}` ni en cola ni en resultados."
+
+    # Sin id: resumen de los últimos
+    out = ["📋 *Comandos Mac recientes:*"]
+    last_results = sorted(resultados.values(), key=lambda x: x.get("finished_at", ""), reverse=True)[:5]
+    for r in last_results:
+        icon = {"done": "✅", "error": "❌", "running": "⏳"}.get(r.get("status"), "•")
+        out.append(f"  {icon} `{r.get('id')}` {r.get('comando')} → {r.get('status')} ({r.get('finished_at','?')[:16]})")
+    pend = [e for eid, e in pendientes.items() if eid not in resultados]
+    if pend:
+        out.append("\n⏳ *Pendientes (la Mac aún no recoge):*")
+        for e in pend[:5]:
+            out.append(f"  • `{e.get('id')}` {e.get('comando')} (encolado {e.get('enqueued_at','?')[:16]})")
+    if len(out) == 1:
+        return "(no hay comandos Mac registrados todavía)"
+    return "\n".join(out)
 
 
 # ===== Browser headless (Playwright via subprocess) =====
@@ -4647,8 +4823,10 @@ def _consejo_experto_legal(area: str, pregunta: str, contexto: str = "", max_exp
         nombre = f.stem
         nombres_consultados.append(nombre)
         try:
-            log.info(f"consejo_experto_legal: consultando {nombre}")
-            resp = _invocar_agente(nombre, pregunta, contexto)
+            log.info(f"consejo_experto_legal: consultando {nombre} (referencia, Haiku)")
+            # Los agentes legal-* internacionales son SOLO referencia → Haiku (barato).
+            # La mexicanización vinculante (kawiil-nelli) sí va en Sonnet más abajo.
+            resp = _invocar_agente(nombre, pregunta, contexto, modelo_override=CLAUDE_HAIKU)
             opiniones.append(f"### {nombre}\n{resp}")
         except Exception as e:
             opiniones.append(f"### {nombre}\n(error consultando: {e})")
@@ -4822,6 +5000,10 @@ def execute_tool(name: str, args: dict) -> str:
             return _mac_estado()
         elif name == "mac_wake_request":
             return _mac_wake_request(args["razon"])
+        elif name == "mac_ejecutar":
+            return _mac_enqueue_command(args["comando"], args.get("args", {}), args.get("razon", ""))
+        elif name == "mac_comando_estado":
+            return _mac_comando_estado(args.get("id", ""))
         elif name == "browser_navegar":
             return _browser_navegar(args["url"], args.get("wait_until", "networkidle"), args.get("wait_extra_ms", 0))
         elif name == "browser_leer":
@@ -5141,13 +5323,19 @@ def call_claude_with_image(api_key: str, system_prompt: str, image_b64: str, med
     return "".join(blocks).strip() or "(sin respuesta del análisis)"
 
 
-def call_claude(api_key: str, system_prompt: str, history: list, user_message: str) -> str:
-    """Llama Claude Sonnet con tools. Loop hasta que termine.
+def call_claude(api_key: str, system_prompt: str, history: list, user_message: str,
+                model: str | None = None) -> str:
+    """Llama Claude con tools. Loop hasta que termine.
+
+    Por costo, el default es Haiku (≈1/3 de Sonnet) — suficiente para la mayoría
+    de tareas con herramientas (búsquedas, datos, recordatorios). Sonnet se reserva
+    para lo pesado (dictamen legal, /sonnet, /profundo) vía el parámetro `model`.
 
     Acumula el texto de CADA turn separadamente. Al final devuelve el último turn
     con contenido — esto evita que se pierda texto cuando Claude devuelve
     text+tool_use en un mismo turn y después responde vacío.
     """
+    model = model or CLAUDE_HAIKU
     # Construye mensajes colapsando consecutivos del mismo rol.
     # Anthropic rechaza con 400 si hay dos "user" o dos "assistant" seguidos
     # (puede pasar cuando el bridge escribe historial duplicado).
@@ -5172,7 +5360,7 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
     memory_tool_results = []  # confirmaciones append/write_memory
     for _ in range(max_loops):
         body = {
-            "model": CLAUDE_SONNET,
+            "model": model,
             "max_tokens": 4096,
             "system": system_prompt,
             "tools": TOOLS_DEFINITION,
@@ -5343,17 +5531,23 @@ def call_llm(
         cleaned = strip_override_prefix(user_message)
         return _call_claude_with_billing_check(call_haiku, api_key, system_prompt, history, cleaned), "haiku"
 
-    # Análisis / búsqueda / datos / tools → Sonnet con tools.
-    # (prefijo /sonnet, o auto: memoria, agentes legales, o cualquier keyword de herramienta)
+    # Análisis / búsqueda / datos / tools → Claude con tools.
+    # CONTROL DE COSTO: Sonnet (caro) SOLO para lo pesado — prefijo explícito
+    # (/sonnet, /profundo, /fuerte) o dictamen legal (needs_legal_sonnet).
+    # Todo lo demás que necesite tools (correos, recordatorios, kawiil-central,
+    # browser, memoria) corre en HAIKU, que soporta tool-use y cuesta ≈1/3.
     if needs_claude(user_message) or needs_sonnet_auto(user_message) or needs_tools(user_message):
-        reason = "prefijo /sonnet" if needs_claude(user_message) else (
+        usa_sonnet = needs_claude(user_message) or needs_legal_sonnet(user_message)
+        modelo_tools = CLAUDE_SONNET if usa_sonnet else CLAUDE_HAIKU
+        reason = (
+            "prefijo /sonnet" if needs_claude(user_message) else
+            "dictamen legal" if needs_legal_sonnet(user_message) else
             "escritura memoria" if needs_memory_write(user_message) else
-            "agentes legales" if needs_legal_sonnet(user_message) else
             "herramienta/datos"
         )
-        log.info(f"→ Sonnet ({CLAUDE_SONNET}) — {reason}")
+        log.info(f"→ {'Sonnet' if usa_sonnet else 'Haiku'} ({modelo_tools}) con tools — {reason}")
         cleaned = strip_override_prefix(user_message)
-        response = call_claude(api_key, system_prompt, history, cleaned) or ""
+        response = call_claude(api_key, system_prompt, history, cleaned, model=modelo_tools) or ""
         if _is_billing_error(response):
             # Sin créditos: si era una nota de memoria, sálvala en local para no perder el aprendizaje.
             if needs_memory_write(user_message):
@@ -5364,9 +5558,9 @@ def call_llm(
             if needs_sonnet_auto(user_message) and not needs_claude(user_message):
                 return _sonnet_auto_billing_msg(user_message), "sonnet-billing-error"
             return _billing_error_msg(), "sonnet-billing-error"
-        tag = "sonnet"
+        tag = "sonnet" if usa_sonnet else "haiku-tools"
         if needs_memory_write(user_message) and not needs_claude(user_message):
-            tag = "sonnet-memory"
+            tag = "haiku-memory" if not usa_sonnet else "sonnet-memory"
         elif needs_legal_sonnet(user_message) and not needs_claude(user_message):
             tag = "sonnet-legal"
         return response, tag
