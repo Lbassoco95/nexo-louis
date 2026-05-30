@@ -59,11 +59,13 @@ FFMPEG_CANDIDATES = [
 LONG_POLL_TIMEOUT = 25
 
 # ===== Logging =====
+# systemd ya redirige stdout → LOG_FILE (StandardOutput=append:…).
+# Solo necesitamos StreamHandler; agregar FileHandler también causaría duplicados.
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
-    handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler(sys.stdout)],
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
 log = logging.getLogger("telegram-bridge")
 core.log = log  # comparte logger con el core
@@ -162,6 +164,74 @@ def telegram_send_message(token: str, chat_id: str, text: str, parse_mode: str =
                 log.error(f"sendMessage falló: {e} {err_body[:200]}")
         except Exception as e:
             log.error(f"sendMessage falló: {e}")
+
+
+def _is_html_response(text: str) -> bool:
+    """True si la respuesta es HTML completo (no fragmento inline)."""
+    t = text.strip()
+    return t.startswith(("<!DOCTYPE", "<!doctype", "<html", "<HTML"))
+
+
+def _extract_html_from_fence(text: str) -> str | None:
+    """Extrae HTML de un bloque ```html ... ``` si está presente."""
+    import re
+    m = re.search(r"```(?:html)?\s*\n(<!DOCTYPE[\s\S]+?)\n```", text, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    return None
+
+
+def telegram_send_document(token: str, chat_id: str, content: bytes, filename: str, caption: str = ""):
+    """Envía bytes como archivo adjunto (HTML, PDF, TXT…) usando multipart/form-data."""
+    boundary = b"----LouisBridge0xDEAD"
+    def field(name: str, value: str) -> bytes:
+        return (
+            b"--" + boundary + b"\r\n"
+            + f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode()
+            + value.encode()
+            + b"\r\n"
+        )
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "bin"
+    mime_map = {"html": "text/html", "pdf": "application/pdf", "txt": "text/plain", "md": "text/markdown"}
+    mime = mime_map.get(ext, "application/octet-stream")
+    file_part = (
+        b"--" + boundary + b"\r\n"
+        + f'Content-Disposition: form-data; name="document"; filename="{filename}"\r\n'.encode()
+        + f"Content-Type: {mime}\r\n\r\n".encode()
+        + content
+        + b"\r\n"
+    )
+    parts = [field("chat_id", str(chat_id))]
+    if caption:
+        parts.append(field("caption", caption[:1024]))
+    parts.append(file_part)
+    parts.append(b"--" + boundary + b"--\r\n")
+    body = b"".join(parts)
+    url = f"https://api.telegram.org/bot{token}/sendDocument"
+    req = urllib.request.Request(
+        url, data=body, method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary.decode()}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read())
+            if not result.get("ok"):
+                raise RuntimeError(result)
+    except urllib.error.HTTPError as e:
+        err = e.read().decode("utf-8", errors="replace")
+        log.error(f"sendDocument falló: {e.code} {err[:300]}")
+        raise
+
+
+def telegram_send_file(token: str, chat_id: str, text: str, filename: str, caption: str = ""):
+    """Convierte texto/HTML a archivo y lo envía por Telegram."""
+    content = text.encode("utf-8")
+    try:
+        telegram_send_document(token, chat_id, content, filename, caption=caption)
+        log.info(f"→ documento enviado: {filename} ({len(content)} bytes)")
+    except Exception as e:
+        log.warning(f"sendDocument falló ({e}), enviando como texto")
+        telegram_send_message(token, chat_id, text[:4000], parse_mode=None)
 
 
 def telegram_get_file_path(token: str, file_id: str):
@@ -351,7 +421,21 @@ def process_update(update, telegram_token, chat_id, api_key, system_prompt):
     log.info(f"← {model_used} respondió ({len(response)} chars)")
     core.append_history(HISTORY_FILE, "assistant", response)
 
-    telegram_send_message(telegram_token, chat_id, response, parse_mode="Markdown")
+    # Detecta HTML completo (análisis de agentes, documentos) → envía como archivo.
+    # Acepta tanto respuesta directa <html>…</html> como bloque ```html … ```.
+    html_body = None
+    if _is_html_response(response):
+        html_body = response.strip()
+    else:
+        html_body = _extract_html_from_fence(response)
+
+    if html_body:
+        import datetime
+        fname = f"louis_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+        caption = "📄 Análisis listo (ábrelo en el navegador para mejor lectura)"
+        telegram_send_file(telegram_token, chat_id, html_body, fname, caption=caption)
+    else:
+        telegram_send_message(telegram_token, chat_id, response, parse_mode="Markdown")
 
 
 def main():
