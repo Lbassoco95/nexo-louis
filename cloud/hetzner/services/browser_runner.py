@@ -126,7 +126,14 @@ def main():
         try:
             browser = p.chromium.launch(
                 headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+                # --disable-blink-features=AutomationControlled evita que sitios como
+                # dof.gob.mx detecten el navegador como automatizado y devuelvan página
+                # en blanco. El resto son flags estándar para correr en VPS sin GPU.
+                args=[
+                    "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+                    "--disable-blink-features=AutomationControlled",
+                    "--lang=es-MX",
+                ],
             )
         except Exception as e:
             err_out(f"No pude lanzar Chromium: {e}", code="launch_failed")
@@ -137,10 +144,29 @@ def main():
                 user_agent=USER_AGENT,
                 viewport={"width": 1366, "height": 900},
                 accept_downloads=True,
+                locale="es-MX",
+                timezone_id="America/Mexico_City",
+                # Headers realistas que esperan los portales gubernamentales MX.
+                extra_http_headers={
+                    "Accept-Language": "es-MX,es;q=0.9,en;q=0.8",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                },
             )
         except Exception as e:
             browser.close()
             err_out(f"new_context falló (storage_state corrupto?): {e}", code="context_failed")
+
+        # Quita las señales de automatización que revisan los anti-bot (navigator.webdriver,
+        # window.chrome, plugins vacíos). Sin esto, dof.gob.mx y similares sirven 0 bytes.
+        try:
+            ctx.add_init_script(
+                "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
+                "window.chrome={runtime:{}};"
+                "Object.defineProperty(navigator,'languages',{get:()=>['es-MX','es','en']});"
+                "Object.defineProperty(navigator,'plugins',{get:()=>[1,2,3,4,5]});"
+            )
+        except Exception:
+            pass
 
         page = ctx.new_page()
         result = {}

@@ -404,7 +404,15 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "- `legal_ultimo(modulo, n)` — últimas N publicaciones recientes.\n"
         "- `legal_briefing()` — combinado SJF + DOF, ideal para el briefing matutino.\n"
         "Si Polo pregunta por el estado y la BD no se ha sincronizado todavía, dile claramente "
-        "'la BD no ha llegado al VPS aún — revisa que el cron de mac-push-legal.sh esté activo en tu Mac'."
+        "'la BD no ha llegado al VPS aún — revisa que el cron de mac-push-legal.sh esté activo en tu Mac'.\n"
+        "## CUANDO LA BD NO TIENE EL TEXTO (ej: publicaciones recientes sin HTML descargado)\n"
+        "Si `legal_buscar` no encuentra algo reciente (la BD tiene el índice pero no el texto "
+        "completo), NO te quedes en 'no se pudo'. ACCIONA: usa el browser para traer el texto real "
+        "del portal oficial. Flujo: `browser_navegar('https://www.dof.gob.mx/index_113.php?year=AAAA&month=MM&day=DD')` "
+        "(ejemplar de un día) o la búsqueda del DOF, luego `browser_leer` para extraer el contenido, "
+        "y entrega el resultado (o un .html con el análisis). El browser ya está configurado para no "
+        "ser bloqueado por el portal. Para SJF usa el buscador público de la SCJN igual con el browser. "
+        "La regla es: si te lo piden, lo CONSIGUES y lo MANDAS — no reportas que no se pudo."
         "\n\n# SELF-UPDATE — PUEDES EDITARTE A TI MISMO\n"
         "Tienes tools (`leer_mi_codigo`, `editar_mi_codigo`, `reiniciar_mi_servicio`, "
         "`ver_mis_backups`, `restaurar_mi_codigo`) para modificar tu propio código en /opt/openclaw/scripts/. "
@@ -437,7 +445,17 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "Cuando Polo te pida algo muy específico y repetitivo ('necesito un asistente que me ayude "
         "a redactar correos a clientes en mi tono'), considera proponer crear un agente. "
         "Tools: `crear_agente`, `listar_agentes`, `invocar_agente`. Confirma con Polo el prompt antes "
-        "de crear un agente nuevo."
+        "de crear un agente nuevo.\n"
+        "## REGLA LEGAL OBLIGATORIA — internacional como referencia, México como ley\n"
+        "Los ~92 agentes `legal-*` (claude-for-legal) son contexto EE.UU.: sirven SOLO como "
+        "REFERENCIA TÉCNICA internacional. Los agentes mexicanos (kawiil-nelli, kawiil-tepantli y "
+        "los que crees con nombres en náhuatl) son los que mandan: revisan esa referencia y producen "
+        "la versión OBLIGATORIA en México citando la norma local (CFF, LFPIORPI, LFPDPPP, LFT, CNBV, "
+        "UIF, SAT, INAI). Para CUALQUIER duda legal/regulatoria usa `consejo_experto_legal(area, "
+        "pregunta)`: trae la referencia internacional Y la mexicaniza automáticamente vía kawiil-nelli. "
+        "NUNCA entregues una conclusión legal extranjera sin mexicanizarla. Cuando crees un agente "
+        "legal nuevo, dale en su prompt esta misma doctrina (referencia internacional → versión MX "
+        "obligatoria) para que aprenda de los internacionales pero cite siempre derecho mexicano."
         "\n\n# MAC DE POLO — ESTADO Y WAKE\n"
         "La Mac de Polo manda heartbeat cada 30s a /opt/openclaw/state/mac_heartbeat.json "
         "(batería, AC power, SSID, uptime). Tools:\n"
@@ -1364,7 +1382,7 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "consejo_experto_legal",
-        "description": "Consulta a 1-3 agentes legal-* (los 92 de claude-for-legal, contexto US) sobre una pregunta. Encuentra los más relevantes según el `area`, los invoca con la pregunta+contexto, y sintetiza opiniones. Diseñado para que los agentes kawiil (cuando lleguen) o Louis mismo consulte profundidad técnica antes de responder a un cliente. NO sustituye juicio MX — adapta el aprendizaje al contexto local.",
+        "description": "Dictamen legal MEXICANIZADO. Consulta 1-3 agentes legal-* internacionales (claude-for-legal, contexto US) como REFERENCIA, y luego el agente mexicano kawiil-nelli revisa ese razonamiento y produce la versión OBLIGATORIA en México citando la norma local (CFF, LFPIORPI, LFPDPPP, LFT, CNBV, UIF, SAT, INAI), separando 'obligatorio en México' de 'buena práctica internacional'. ÚSALO para cualquier duda legal/regulatoria antes de responder a un cliente o director. La referencia internacional enseña; México es la ley que se aplica.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -4033,35 +4051,78 @@ def _consejo_experto_legal(area: str, pregunta: str, contexto: str = "", max_exp
     raw_consejo = "\n\n---\n\n".join(opiniones)
     _kawiil_central_audit(f"consejo_experto_legal area={area}", pregunta[:300]) if 'KAWIIL_CENTRAL_AUDIT_LOG' in globals() else None
 
-    # Síntesis con Haiku (rápido, barato — para resumir múltiples opiniones)
-    try:
-        api_key = load_anthropic_key()
-        sys_prompt = (
-            "Eres un asistente que sintetiza opiniones de varios expertos legales de Estados Unidos "
-            "para presentarle a un abogado MEXICANO. Tu trabajo:\n"
-            "1. Identifica los 3-5 puntos clave en común entre los expertos\n"
-            "2. Marca los puntos que requieren ADAPTACIÓN al contexto mexicano (LFPDPPP, Código Civil, leyes locales)\n"
-            "3. Lista las divergencias entre expertos (si las hay)\n"
-            "4. Cierra con un Bottom Line ejecutivo de 2-3 líneas\n"
-            "Sé conciso. Mucho contenido pero formato compacto. Usa bullets."
-        )
-        body = {
-            "model": CLAUDE_HAIKU,
-            "max_tokens": 1500,
-            "system": sys_prompt,
-            "messages": [{"role": "user", "content": f"PREGUNTA ORIGINAL:\n{pregunta}\n\nCONTEXTO:\n{contexto}\n\nOPINIONES DE EXPERTOS US:\n\n{raw_consejo[:18000]}"}],
-        }
-        headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
-        resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=60)
-        text_blocks = [b.get("text", "") for b in resp.get("content", []) if b.get("type") == "text"]
-        sintesis = "".join(text_blocks).strip() or "(sin síntesis)"
-    except Exception as e:
-        sintesis = f"(síntesis falló: {e})"
+    # ── MEXICANIZACIÓN OBLIGATORIA ──────────────────────────────────────────
+    # Los agentes internacionales (legal-* de claude-for-legal, contexto US) son
+    # SOLO REFERENCIA. Un agente MEXICANO revisa su razonamiento y produce la
+    # versión válida y OBLIGATORIA en México, citando la norma local aplicable.
+    # Si existe el agente compliance mexicano (kawiil-nelli), él hace la
+    # mexicanización (y queda registrado en el dashboard como agente trabajando).
+    tarea_mex = (
+        f"PREGUNTA ORIGINAL:\n{pregunta}\n\n"
+        f"CONTEXTO:\n{contexto or '(sin contexto adicional)'}\n\n"
+        f"REFERENCIA INTERNACIONAL (expertos US — usar SOLO como punto de partida, "
+        f"NO como respuesta final):\n\n{raw_consejo[:16000]}"
+    )
+    mex_agent = "kawiil-nelli" if (AGENTS_DIR / "kawiil-nelli.md").exists() else None
+    sintesis = None
+    if mex_agent:
+        try:
+            sintesis = _invocar_agente(mex_agent, MEXICANIZE_DOCTRINE + "\n\n" + tarea_mex, "")
+            # _invocar_agente prefija "[nombre respondió]"; lo quitamos para el render.
+            if sintesis and sintesis.startswith("["):
+                nl = sintesis.find("\n")
+                if nl > 0:
+                    sintesis = sintesis[nl:].lstrip()
+        except Exception as e:
+            sintesis = None
+            log.warning(f"mexicanización vía {mex_agent} falló: {e}")
+    if not sintesis or sintesis.startswith("ERROR"):
+        # Fallback: Claude Sonnet con la misma doctrina obligatoria.
+        try:
+            api_key = load_anthropic_key()
+            body = {
+                "model": CLAUDE_SONNET,
+                "max_tokens": 2000,
+                "system": MEXICANIZE_DOCTRINE,
+                "messages": [{"role": "user", "content": tarea_mex}],
+            }
+            headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
+            resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=90)
+            text_blocks = [b.get("text", "") for b in resp.get("content", []) if b.get("type") == "text"]
+            sintesis = "".join(text_blocks).strip() or "(sin síntesis)"
+        except Exception as e:
+            sintesis = f"(mexicanización falló: {e})"
 
-    header = f"⚖️ *Consejo de Expertos Legales US — área:* `{area}`\n"
-    header += f"*Consultados ({len(nombres_consultados)}):* " + ", ".join(f"`{n}`" for n in nombres_consultados) + "\n"
+    quien = mex_agent or "Claude (fallback)"
+    header = f"⚖️ *Dictamen legal mexicanizado — área:* `{area}`\n"
+    header += f"*Referencia internacional ({len(nombres_consultados)}):* " + ", ".join(f"`{n}`" for n in nombres_consultados) + "\n"
+    header += f"*Mexicanizado por:* `{quien}`\n"
     header += f"*Pregunta:* {pregunta[:200]}\n\n"
-    return header + "## Síntesis adaptada a México\n\n" + sintesis + "\n\n---\n\n## Opiniones individuales (para deep-dive)\n\n" + raw_consejo[:6000]
+    return header + "## Versión obligatoria en México\n\n" + sintesis + "\n\n---\n\n## Referencia internacional (para deep-dive)\n\n" + raw_consejo[:6000]
+
+
+# Doctrina que convierte la referencia internacional en la versión OBLIGATORIA en
+# México. Se inyecta tanto cuando mexicaniza kawiil-nelli como en el fallback Claude.
+MEXICANIZE_DOCTRINE = (
+    "Eres un abogado MEXICANO senior. Recibes el análisis de expertos legales "
+    "internacionales (principalmente EE.UU.) como REFERENCIA TÉCNICA, nunca como "
+    "respuesta final. Tu trabajo es REVISAR ese razonamiento y producir la versión "
+    "VÁLIDA Y OBLIGATORIA conforme al derecho mexicano. Reglas:\n"
+    "1. NUNCA copies la conclusión extranjera tal cual. Tradúcela al marco mexicano "
+    "aplicable: Constitución, CFF, LFPIORPI, LFPDPPP, LFT, Código de Comercio, CNBV, "
+    "UIF, SAT, INAI, Condusef, NOMs y la jurisprudencia SCJN/TFJA que aplique.\n"
+    "2. Separa SIEMPRE en dos bloques claros:\n"
+    "   • **OBLIGATORIO EN MÉXICO** — lo que la ley mexicana exige, citando artículo y "
+    "ordenamiento específico. Marca deadlines en negrita.\n"
+    "   • **Buena práctica internacional (opcional)** — lo que viene de la referencia US "
+    "y conviene pero no es exigible aquí.\n"
+    "3. Si la práctica extranjera NO aplica o es contraria a la norma mexicana, dilo "
+    "explícitamente ('esto NO aplica en México porque…').\n"
+    "4. Si falta una norma mexicana específica que deberías citar y no la tienes, dilo "
+    "y sugiere verificar en DOF/SJF con legal_buscar — no inventes artículos.\n"
+    "5. Cierra con un 'Bottom line' ejecutivo de 2-3 líneas para el director.\n"
+    "Formato compacto, bullets, en español de México."
+)
 
 
 def execute_tool(name: str, args: dict) -> str:
