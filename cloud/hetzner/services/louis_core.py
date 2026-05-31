@@ -177,6 +177,9 @@ TOOL_KEYWORDS = [
     r"\b(calendario|calendar|junta|juntas|reunión|reunion|reuniones|cita|citas|evento|eventos)\b",
     r"\b(manda|envía|envia|enviar|responde|responder|reenvía|reenvia|reenviar)\b",
     r"\b(slack|canal|mensaje\s+a)\b",
+    # Envío de archivos / PDFs / Dropbox (deben ir a Claude con tools, no a DeepSeek)
+    r"\b(pdf|dropbox|documento|adjunt\w+|archivo)\b",
+    r"\b(p[aá]sa(?:me|melo|lo|mela|la)?|m[aá]nda(?:me|melo|lo|mela|la)?|env[ií]a(?:me|melo|lo|mela|la)?|descarga(?:me|melo)?|mu[eé]stra(?:me|melo)?)\b",
     # Sub-agentes
     r"\b(crear|nuevo|registrar|invocar|delegar|listar)\s+(agente|sub-agente|subagente|asistente)\b",
     r"\b(asistente\s+de|asistente\s+especialista|asistente\s+especializado)\b",
