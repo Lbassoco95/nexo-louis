@@ -5565,7 +5565,10 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
     turn_texts = []   # texto emitido por cada turn (puede ser "")
     tools_executed = []  # nombres de tools ejecutados (para fallback message)
     memory_tool_results = []  # confirmaciones append/write_memory
-    for _ in range(max_loops):
+    # Detecta si la query es sobre Slack para forzar tool_choice en el primer turno
+    _SLACK_RE = re.compile(r"\b(slack|canal(es)?|dm\s+de|mensaje(s)?\s+(en|de)\s+slack)\b", re.IGNORECASE)
+    _force_tool_first = _SLACK_RE.search(user_message or "")
+    for _loop_i in range(max_loops):  # noqa: B007
         body = {
             "model": model,
             "max_tokens": 4096,
@@ -5573,6 +5576,9 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
             "tools": TOOLS_DEFINITION,
             "messages": messages,
         }
+        # Primer turno de queries Slack: forzar tool_choice para que no responda de memoria
+        if _force_tool_first and _loop_i == 0:
+            body["tool_choice"] = {"type": "tool", "name": "slack_canales"}
         try:
             resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=180)
         except Exception as e:
