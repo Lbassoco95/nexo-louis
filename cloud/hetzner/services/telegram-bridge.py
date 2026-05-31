@@ -437,6 +437,15 @@ def process_update(update, telegram_token, chat_id, api_key, system_prompt):
     else:
         telegram_send_message(telegram_token, chat_id, response, parse_mode="Markdown")
 
+    # Drena archivos encolados por tools (dropbox_enviar, dof_pdf) y los manda.
+    for content, fname, cap in core.get_pending_files():
+        try:
+            telegram_send_document(telegram_token, chat_id, content, fname, caption=cap)
+            log.info(f"📎 archivo enviado: {fname} ({len(content)} bytes)")
+        except Exception as e:
+            log.error(f"envío de archivo {fname} falló: {e}")
+            telegram_send_message(telegram_token, chat_id, f"⚠️ No pude enviarte {fname}: {e}", parse_mode=None)
+
 
 def main():
     log.info("=== Telegram bridge v3 arrancando (louis_core + Markdown fix) ===")

@@ -24,6 +24,7 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 import urllib.request
 import urllib.error
+import urllib.parse
 
 # ===== Paths =====
 # En Hetzner systemd corre como polo pero el home está protegido (ProtectSystem=full).
@@ -466,6 +467,18 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "- `slack_dm_leer(usuario, limite)` — lee DMs con un usuario.\n"
         "- `slack_canales` — solo lista canales sin leer mensajes.\n"
         "NUNCA respondas 'no tengo acceso a Slack' — SIEMPRE llama `slack_resumen` primero."
+        "\n\n# DROPBOX Y PDFs — MANDAR ARCHIVOS A POLO\n"
+        "PUEDES leer el Dropbox de Polo y mandarle archivos por Telegram. NO digas que no puedes:\n"
+        "- `dropbox_buscar(query)` — busca un archivo por nombre/contenido. Devuelve la ruta exacta.\n"
+        "- `dropbox_listar(carpeta)` — navega carpetas (vacío = raíz).\n"
+        "- `dropbox_enviar(path)` — baja el archivo de Dropbox y SE LO MANDA a Polo por Telegram. "
+        "Usa la ruta exacta que te dio dropbox_buscar/dropbox_listar.\n"
+        "- `dof_pdf(cod)` — baja el PDF OFICIAL del DOF por su cod_nota y se lo manda a Polo. "
+        "Para esto NO necesitas Dropbox ni browser — el PDF se baja directo del DOF.\n"
+        "Flujo cuando Polo pide 'pásame el PDF del DOF': usa `dof_pdf(cod)` con el cod que ya tienes "
+        "de legal_buscar. Cuando pide un documento suyo: `dropbox_buscar` → `dropbox_enviar`. "
+        "IMPORTANTE: el backfill del DOF NO guarda PDFs en Dropbox (solo texto en la BD). Para el PDF "
+        "del DOF usa SIEMPRE `dof_pdf(cod)`, no busques en Dropbox."
         "\n\n# SELF-UPDATE — PUEDES EDITARTE A TI MISMO\n"
         "Tienes tools (`leer_mi_codigo`, `editar_mi_codigo`, `reiniciar_mi_servicio`, "
         "`ver_mis_backups`, `restaurar_mi_codigo`) para modificar tu propio código en /opt/openclaw/scripts/. "
@@ -2008,6 +2021,45 @@ TOOLS_DEFINITION = [
             "required": ["usuario"],
         },
     },
+    # Dropbox + PDF del DOF
+    {
+        "name": "dropbox_buscar",
+        "description": "Busca archivos en el Dropbox de Polo por nombre o contenido. Devuelve nombre + ruta exacta. Úsala cuando Polo pida un documento/contrato/archivo que tiene guardado en Dropbox.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Texto a buscar en nombre o contenido"},
+                "limite": {"type": "integer", "default": 10},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "dropbox_listar",
+        "description": "Lista archivos y carpetas de una ruta de Dropbox (vacío = raíz). Úsala para navegar el Dropbox de Polo cuando no sabes la ruta exacta.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"carpeta": {"type": "string", "description": "Ruta ej '/Contratos' (vacío = raíz)"}},
+        },
+    },
+    {
+        "name": "dropbox_enviar",
+        "description": "Descarga un archivo de Dropbox por su ruta exacta y SE LO MANDA a Polo por Telegram. Usa la ruta (path_display) que devolvió dropbox_buscar/dropbox_listar. Úsala cuando Polo pida que le pases/mandes un archivo para revisarlo.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string", "description": "Ruta exacta del archivo en Dropbox (ej '/Contratos/acuerdo.pdf')"}},
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "dof_pdf",
+        "description": "Descarga el PDF oficial de una publicación del DOF por su cod_nota y se lo MANDA a Polo por Telegram. Usa el cod que devuelve legal_buscar (ej: 5789080). Úsala cuando Polo pida el PDF de una publicación del DOF.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"cod": {"type": "string", "description": "cod_nota de la publicación DOF"}},
+            "required": ["cod"],
+        },
+    },
     # M365 tools (mismas que antes)
     {
         "name": "m365_inbox",
@@ -3505,6 +3557,143 @@ def _slack_resumen(canales: list | None = None, msgs_por_canal: int = 10) -> str
         return "\n\n".join(sections) if sections else "No se encontraron mensajes."
     except Exception as e:
         return f"ERROR en slack_resumen: {e}"
+
+
+# ===== Cola de archivos para enviar por el canal (Telegram/Slack) =====
+# Las tools no pueden mandar archivos directo (devuelven texto). En su lugar
+# encolan (bytes, nombre, caption) aquí; el bridge los drena tras call_llm y
+# los envía con telegram_send_document.
+_PENDING_FILES: list = []
+
+
+def _queue_file(content: bytes, filename: str, caption: str = "") -> None:
+    _PENDING_FILES.append((content, filename, caption))
+
+
+def get_pending_files() -> list:
+    """Devuelve y limpia la cola de archivos pendientes de envío."""
+    files = list(_PENDING_FILES)
+    _PENDING_FILES.clear()
+    return files
+
+
+# ===== Dropbox =====
+_DROPBOX_TOKEN_CACHE = {"token": None, "expires": 0.0}
+
+
+def _dropbox_token():
+    """Obtiene un access_token de Dropbox a partir del refresh_token (cacheado)."""
+    import time
+    if _DROPBOX_TOKEN_CACHE["token"] and time.time() < _DROPBOX_TOKEN_CACHE["expires"] - 120:
+        return _DROPBOX_TOKEN_CACHE["token"], None
+    creds = load_env_file(HOME_OC / "credentials" / "dropbox.env")
+    key = creds.get("DROPBOX_APP_KEY") or os.environ.get("DROPBOX_APP_KEY", "")
+    secret = creds.get("DROPBOX_APP_SECRET") or os.environ.get("DROPBOX_APP_SECRET", "")
+    refresh = creds.get("DROPBOX_REFRESH_TOKEN") or os.environ.get("DROPBOX_REFRESH_TOKEN", "")
+    if not (key and secret and refresh):
+        return None, "ERROR: faltan credenciales Dropbox en /opt/openclaw/credentials/dropbox.env"
+    data = urllib.parse.urlencode({
+        "grant_type": "refresh_token", "refresh_token": refresh,
+        "client_id": key, "client_secret": secret,
+    }).encode()
+    req = urllib.request.Request("https://api.dropbox.com/oauth2/token", data=data, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            j = json.loads(r.read())
+    except Exception as e:
+        return None, f"ERROR refrescando token Dropbox: {e}"
+    tok = j.get("access_token")
+    if not tok:
+        return None, f"ERROR: Dropbox no devolvió access_token: {j}"
+    _DROPBOX_TOKEN_CACHE["token"] = tok
+    _DROPBOX_TOKEN_CACHE["expires"] = time.time() + float(j.get("expires_in", 14400))
+    return tok, None
+
+
+def _dropbox_buscar(query: str, limite: int = 10) -> str:
+    tok, err = _dropbox_token()
+    if err:
+        return err
+    headers = {"Authorization": f"Bearer {tok}"}
+    try:
+        j = http_post_json(
+            "https://api.dropbox.com/2/files/search_v2", headers,
+            {"query": query, "options": {"max_results": min(limite, 25)}},
+        )
+    except urllib.error.HTTPError as e:
+        return f"ERROR búsqueda Dropbox: {getattr(e, 'body', '') or e}"
+    except Exception as e:
+        return f"ERROR búsqueda Dropbox: {e}"
+    matches = j.get("matches", [])
+    if not matches:
+        return f"No encontré archivos para '{query}' en Dropbox."
+    lines = [f"Resultados Dropbox para '{query}':"]
+    for m in matches:
+        md = m.get("metadata", {}).get("metadata", {})
+        name = md.get("name", "?")
+        path = md.get("path_display") or md.get("path_lower", "")
+        lines.append(f"  {name}  →  {path}")
+    return "\n".join(lines)
+
+
+def _dropbox_listar(carpeta: str = "") -> str:
+    tok, err = _dropbox_token()
+    if err:
+        return err
+    headers = {"Authorization": f"Bearer {tok}"}
+    path = "" if (not carpeta or carpeta == "/") else carpeta
+    try:
+        j = http_post_json("https://api.dropbox.com/2/files/list_folder", headers, {"path": path})
+    except urllib.error.HTTPError as e:
+        return f"ERROR listando Dropbox: {getattr(e, 'body', '') or e}"
+    except Exception as e:
+        return f"ERROR listando Dropbox: {e}"
+    entries = j.get("entries", [])
+    if not entries:
+        return f"Carpeta '{carpeta or '/'}' vacía o no existe."
+    lines = [f"Contenido de '{carpeta or '/'}':"]
+    for ent in entries:
+        tag = "📁" if ent.get(".tag") == "folder" else "📄"
+        lines.append(f"  {tag} {ent.get('name')}  →  {ent.get('path_display', '')}")
+    return "\n".join(lines)
+
+
+def _dropbox_enviar(path: str) -> str:
+    tok, err = _dropbox_token()
+    if err:
+        return err
+    req = urllib.request.Request("https://content.dropboxapi.com/2/files/download", method="POST")
+    req.add_header("Authorization", f"Bearer {tok}")
+    # Dropbox-API-Arg debe ser ASCII; json.dumps (ensure_ascii) escapa acentos.
+    req.add_header("Dropbox-API-Arg", json.dumps({"path": path}))
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            content = r.read()
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "ignore")[:300] if hasattr(e, "read") else str(e)
+        return f"ERROR descargando '{path}' de Dropbox: {body}"
+    except Exception as e:
+        return f"ERROR descargando '{path}' de Dropbox: {e}"
+    filename = path.rsplit("/", 1)[-1] or "archivo"
+    _queue_file(content, filename, f"📄 {filename} (Dropbox)")
+    return f"Archivo '{filename}' ({len(content) // 1024} KB) descargado de Dropbox — enviándolo por Telegram."
+
+
+def _dof_pdf(cod: str) -> str:
+    """Baja el PDF oficial del DOF por cod_nota y lo encola para envío."""
+    url = f"https://www.dof.gob.mx/descarga/nota_diaria_pdf.php?cod={cod}"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Macintosh)"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            content = r.read()
+            ctype = r.headers.get("Content-Type", "")
+    except Exception as e:
+        return f"No pude bajar el PDF del DOF (cod={cod}): {e}\nURL para descargarlo manual: {url}"
+    if b"%PDF" not in content[:1024] and "pdf" not in ctype.lower():
+        return (f"El DOF no devolvió un PDF para cod={cod} (posible bloqueo anti-bot).\n"
+                f"URL para bajarlo manual: {url}")
+    _queue_file(content, f"DOF_{cod}.pdf", f"📄 DOF cod={cod}")
+    return f"PDF del DOF (cod={cod}, {len(content) // 1024} KB) descargado — enviándolo por Telegram."
 
 
 def _mac_enqueue_command(comando: str, args: dict | None = None, razon: str = "") -> str:
@@ -5357,6 +5546,14 @@ def execute_tool(name: str, args: dict) -> str:
             return _slack_leer(args["canal"], args.get("limite", 20))
         elif name == "slack_dm_leer":
             return _slack_dm_leer(args["usuario"], args.get("limite", 20))
+        elif name == "dropbox_buscar":
+            return _dropbox_buscar(args["query"], args.get("limite", 10))
+        elif name == "dropbox_listar":
+            return _dropbox_listar(args.get("carpeta", ""))
+        elif name == "dropbox_enviar":
+            return _dropbox_enviar(args["path"])
+        elif name == "dof_pdf":
+            return _dof_pdf(str(args["cod"]))
         elif name == "verificar_conexiones":
             return _verificar_conexiones(args.get("incluir_m365", True))
         elif name == "crear_agente":
