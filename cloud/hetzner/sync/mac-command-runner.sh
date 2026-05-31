@@ -93,14 +93,69 @@ while IFS= read -r line; do
   STATUS="done"
   case "$CMD" in
     dof_backfill)
-      OUTPUT=$(bash -lc "$DOF_BACKFILL_CMD" 2>&1) || STATUS="error"
+      # Classify primero, luego descarga priorizando entradas recientes (2026+)
+      OUT1=$(bash -lc "cd $HOME/dof_biblioteca && $_DOF_PY dof_biblioteca.py classify" 2>&1)
+      PATCH=$(mktemp /tmp/dof_patch_XXXXXX.py)
+      cat > "$PATCH" << PYEOF
+import importlib.util, sys, os
+os.chdir('$HOME/dof_biblioteca')
+sys.path.insert(0, '$HOME/dof_biblioteca')
+spec = importlib.util.spec_from_file_location('dof', '$HOME/dof_biblioteca/dof_biblioteca.py')
+with open(spec.origin) as _f:
+    _src = _f.read()
+# Inyecta filtro de fecha reciente + ORDER BY para priorizar 2026+
+_src = _src.replace(
+    "WHERE incluido=1 AND content_downloaded_at IS NULL",
+    "WHERE incluido=1 AND content_downloaded_at IS NULL AND fecha>='2026-01-01' ORDER BY fecha DESC"
+)
+_code = compile(_src, spec.origin, 'exec')
+_mod = type(sys)('dof')
+_mod.__file__ = spec.origin
+exec(_code, _mod.__dict__)
+_mod.main(['download-contents', '--batch', '400'])
+PYEOF
+      OUT2=$(bash -lc "$_DOF_PY $PATCH" 2>&1)
+      PATCH_EXIT=$?
+      rm -f "$PATCH"
+      [[ $PATCH_EXIT -ne 0 ]] && STATUS="error"
+      OUTPUT="[classify]
+$OUT1
+[download-contents 2026+]
+$OUT2"
       RAN_BACKFILL=1
       ;;
     dof_backfill_mes)
       if [[ -z "$MES" ]]; then
         OUTPUT="ERROR: falta args.mes"; STATUS="error"
       else
-        OUTPUT=$(bash -lc "$DOF_BACKFILL_MES_CMD $MES" 2>&1) || STATUS="error"
+        # Classify + descarga solo el mes indicado (ej: 2026-05)
+        OUT1=$(bash -lc "cd $HOME/dof_biblioteca && $_DOF_PY dof_biblioteca.py classify" 2>&1)
+        PATCH=$(mktemp /tmp/dof_patch_mes_XXXXXX.py)
+        cat > "$PATCH" << PYEOF
+import importlib.util, sys, os
+os.chdir('$HOME/dof_biblioteca')
+sys.path.insert(0, '$HOME/dof_biblioteca')
+spec = importlib.util.spec_from_file_location('dof', '$HOME/dof_biblioteca/dof_biblioteca.py')
+with open(spec.origin) as _f:
+    _src = _f.read()
+_src = _src.replace(
+    "WHERE incluido=1 AND content_downloaded_at IS NULL",
+    "WHERE incluido=1 AND content_downloaded_at IS NULL AND fecha LIKE '$MES%' ORDER BY fecha DESC"
+)
+_code = compile(_src, spec.origin, 'exec')
+_mod = type(sys)('dof')
+_mod.__file__ = spec.origin
+exec(_code, _mod.__dict__)
+_mod.main(['download-contents', '--batch', '500'])
+PYEOF
+        OUT2=$(bash -lc "$_DOF_PY $PATCH" 2>&1)
+        PATCH_EXIT=$?
+        rm -f "$PATCH"
+        [[ $PATCH_EXIT -ne 0 ]] && STATUS="error"
+        OUTPUT="[classify]
+$OUT1
+[download-contents $MES]
+$OUT2"
         RAN_BACKFILL=1
       fi
       ;;
