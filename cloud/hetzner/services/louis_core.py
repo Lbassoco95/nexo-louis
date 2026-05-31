@@ -3684,10 +3684,16 @@ def _dropbox_enviar(path: str) -> str:
 
 def _dof_pdf(cod: str) -> str:
     """Baja el PDF oficial del DOF por cod_nota y lo encola para envío."""
+    import ssl
     url = f"https://www.dof.gob.mx/descarga/nota_diaria_pdf.php?cod={cod}"
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Macintosh)"})
+    # dof.gob.mx tiene una cadena de certificados que urllib rechaza por defecto.
+    # Es un PDF público (sin credenciales), así que bypasseamos la verificación.
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
     try:
-        with urllib.request.urlopen(req, timeout=60) as r:
+        with urllib.request.urlopen(req, timeout=60, context=ctx) as r:
             content = r.read()
             ctype = r.headers.get("Content-Type", "")
     except Exception as e:
