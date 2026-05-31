@@ -459,16 +459,13 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "\n\n# SLACK — LEER CANALES Y DMs\n"
         "TIENES acceso directo a Slack. Cuando Polo pregunte qué hay en Slack, qué le mandaron, "
         "o qué pasa en un canal, USA ESTAS TOOLS — NO digas que no tienes acceso:\n"
-        "- `slack_canales` — lista todos los canales donde Louis-Nexo está invitado. ÚSALA PRIMERO "
-        "si no sabes el nombre/ID del canal.\n"
-        "- `slack_leer(canal, limite)` — lee los últimos N mensajes de un canal. canal puede ser "
-        "nombre ('general') o ID ('C08XXX'). Úsala SIEMPRE que Polo pregunte por un canal específico.\n"
-        "- `slack_dm_leer(usuario, limite)` — lee DMs entre un usuario y Louis-Nexo.\n"
-        "Flujo cuando Polo pregunta '¿qué hay en Slack?':\n"
-        "1. Llama `slack_canales` para ver qué canales tienes.\n"
-        "2. Llama `slack_leer` en los canales más relevantes (general, alertas, etc.).\n"
-        "3. Resume los mensajes importantes, mencionando quién mandó qué y cuándo.\n"
-        "NUNCA respondas 'no tengo acceso a Slack' sin haber llamado estas tools primero."
+        "- `slack_resumen(canales, msgs_por_canal)` — EN UN SOLO CALL obtiene los canales Y lee "
+        "los mensajes recientes. ES LA TOOL PRINCIPAL. Úsala SIEMPRE que Polo pregunte por Slack. "
+        "Sin argumentos lee los primeros 8 canales. Con canales=['general','cumplimiento'] lee esos específicos.\n"
+        "- `slack_leer(canal, limite)` — lee un canal específico por nombre o ID.\n"
+        "- `slack_dm_leer(usuario, limite)` — lee DMs con un usuario.\n"
+        "- `slack_canales` — solo lista canales sin leer mensajes.\n"
+        "NUNCA respondas 'no tengo acceso a Slack' — SIEMPRE llama `slack_resumen` primero."
         "\n\n# SELF-UPDATE — PUEDES EDITARTE A TI MISMO\n"
         "Tienes tools (`leer_mi_codigo`, `editar_mi_codigo`, `reiniciar_mi_servicio`, "
         "`ver_mis_backups`, `restaurar_mi_codigo`) para modificar tu propio código en /opt/openclaw/scripts/. "
@@ -1972,6 +1969,17 @@ TOOLS_DEFINITION = [
     },
     # Slack tools
     {
+        "name": "slack_resumen",
+        "description": "Lee los mensajes recientes de los canales de Slack donde Louis-Nexo está invitado. Devuelve en un solo call: lista de canales + últimos mensajes de cada uno. ÚSALA SIEMPRE que Polo pregunte qué hay en Slack, qué le mandaron, o qué pasa en algún canal. Es la tool principal para Slack.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "canales": {"type": "array", "items": {"type": "string"}, "description": "Lista de canales a leer (ej: ['general','cumplimiento']). Si se omite, lee los primeros 8 canales disponibles."},
+                "msgs_por_canal": {"type": "integer", "default": 10, "description": "Mensajes a traer por canal (máx 50)."},
+            },
+        },
+    },
+    {
         "name": "slack_canales",
         "description": "Lista los canales de Slack donde Louis-Nexo está invitado. Úsala para saber qué canales puede leer antes de llamar slack_leer.",
         "input_schema": {"type": "object", "properties": {}},
@@ -3437,6 +3445,66 @@ def _slack_dm_leer(usuario: str, limite: int = 20) -> str:
         return _slack_leer(channel_id, limite)
     except Exception as e:
         return f"ERROR leyendo DM con {usuario}: {e}"
+
+
+def _slack_resumen(canales: list | None = None, msgs_por_canal: int = 10) -> str:
+    """Lee los últimos mensajes de los canales más activos en un solo call."""
+    client, err = _slack_client()
+    if err:
+        return err
+    import datetime as _dt
+
+    def _uname(uid: str, _cache: dict = {}) -> str:
+        if uid not in _cache:
+            try:
+                r = client.users_info(user=uid)
+                _cache[uid] = r["user"].get("real_name") or r["user"].get("name") or uid
+            except Exception:
+                _cache[uid] = uid
+        return _cache[uid]
+
+    try:
+        # Obtén lista de canales donde el bot está invitado
+        resp = client.conversations_list(types="public_channel,private_channel", limit=200)
+        all_channels = [c for c in resp.get("channels", []) if c.get("is_member")]
+        if not all_channels:
+            # Si no está en ningún canal como miembro, intenta sin filtro
+            all_channels = resp.get("channels", [])
+
+        # Filtra a los solicitados o usa todos
+        if canales:
+            target = [c for c in all_channels if c.get("name", "").lower() in [x.lstrip("#").lower() for x in canales]]
+        else:
+            target = all_channels[:8]  # máximo 8 canales
+
+        if not target:
+            names = [c.get("name", c["id"]) for c in all_channels[:20]]
+            return f"El bot no está en ningún canal público de los disponibles. Canales visibles: {names}"
+
+        sections = []
+        for ch in target:
+            cid = ch["id"]
+            cname = ch.get("name", cid)
+            try:
+                history = client.conversations_history(channel=cid, limit=msgs_por_canal)
+                msgs = history.get("messages", [])
+                if not msgs:
+                    sections.append(f"#{cname}: sin mensajes recientes.")
+                    continue
+                lines = [f"#{cname} — últimos {len(msgs)} msgs:"]
+                for m in reversed(msgs):
+                    ts = float(m.get("ts", 0))
+                    dt = _dt.datetime.fromtimestamp(ts).strftime("%d/%m %H:%M")
+                    user = _uname(m.get("user", "?"))
+                    text = (m.get("text") or m.get("attachments", [{}])[0].get("fallback", "(sin texto)"))[:200]
+                    lines.append(f"  [{dt}] {user}: {text}")
+                sections.append("\n".join(lines))
+            except Exception as e:
+                sections.append(f"#{cname}: ERROR — {e}")
+
+        return "\n\n".join(sections) if sections else "No se encontraron mensajes."
+    except Exception as e:
+        return f"ERROR en slack_resumen: {e}"
 
 
 def _mac_enqueue_command(comando: str, args: dict | None = None, razon: str = "") -> str:
@@ -5281,6 +5349,8 @@ def execute_tool(name: str, args: dict) -> str:
         elif name == "restaurar_mi_codigo":
             import self_update as _su
             return _su.restaurar_mi_codigo(args["archivo"], args["backup_id"])
+        elif name == "slack_resumen":
+            return _slack_resumen(args.get("canales"), args.get("msgs_por_canal", 10))
         elif name == "slack_canales":
             return _slack_canales()
         elif name == "slack_leer":
@@ -5578,7 +5648,7 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
         }
         # Primer turno de queries Slack: forzar tool_choice para que no responda de memoria
         if _force_tool_first and _loop_i == 0:
-            body["tool_choice"] = {"type": "tool", "name": "slack_canales"}
+            body["tool_choice"] = {"type": "tool", "name": "slack_resumen"}
         try:
             resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=180)
         except Exception as e:
