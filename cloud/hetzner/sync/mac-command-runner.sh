@@ -38,9 +38,11 @@ QUEUE_REMOTE="/opt/openclaw/state/mac-commands.jsonl"
 RESULTS_REMOTE="/opt/openclaw/state/mac-command-results.jsonl"
 
 # Mapeo comando → ejecución local (sobrescribible vía env)
-DOF_BACKFILL_CMD="${DOF_BACKFILL_CMD:-cd $HOME/dof_biblioteca && python3 dof_biblioteca.py catchup}"
-DOF_BACKFILL_MES_CMD="${DOF_BACKFILL_MES_CMD:-cd $HOME/dof_biblioteca && python3 dof_biblioteca.py catchup}"
-SJF_BACKFILL_CMD="${SJF_BACKFILL_CMD:-cd $HOME/sjf_biblioteca && python3 sjf_biblioteca.py}"
+_DOF_PY="${DOF_PY:-$([ -f $HOME/dof_biblioteca/venv/bin/python3 ] && echo $HOME/dof_biblioteca/venv/bin/python3 || echo python3)}"
+_SJF_PY="${SJF_PY:-$([ -f $HOME/sjf_biblioteca/venv/bin/python3 ] && echo $HOME/sjf_biblioteca/venv/bin/python3 || echo python3)}"
+DOF_BACKFILL_CMD="${DOF_BACKFILL_CMD:-cd $HOME/dof_biblioteca && $_DOF_PY dof_biblioteca.py classify && $_DOF_PY dof_biblioteca.py download-contents --batch 300}"
+DOF_BACKFILL_MES_CMD="${DOF_BACKFILL_MES_CMD:-cd $HOME/dof_biblioteca && $_DOF_PY dof_biblioteca.py classify && $_DOF_PY dof_biblioteca.py download-contents --batch 300}"
+SJF_BACKFILL_CMD="${SJF_BACKFILL_CMD:-cd $HOME/sjf_biblioteca && $_SJF_PY sjf_biblioteca.py}"
 PUSH_LEGAL_SCRIPT="${PUSH_LEGAL_SCRIPT:-$HOME/.openclaw/scripts/mac-push-legal.sh}"
 
 # Registro local de IDs ya ejecutados (para no repetir)
