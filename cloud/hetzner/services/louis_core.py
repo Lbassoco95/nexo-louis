@@ -1957,6 +1957,36 @@ TOOLS_DEFINITION = [
             "properties": {"incluir_m365": {"type": "boolean", "default": True}},
         },
     },
+    # Slack tools
+    {
+        "name": "slack_canales",
+        "description": "Lista los canales de Slack donde Louis-Nexo está invitado. Úsala para saber qué canales puede leer antes de llamar slack_leer.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "slack_leer",
+        "description": "Lee mensajes recientes de un canal de Slack (o DM) donde Louis-Nexo está invitado. Usa 'canal' con el nombre (ej: 'general') o el ID (C…). Devuelve los últimos N mensajes con autor, fecha y texto. Úsala cuando Polo pregunte qué hay en Slack, qué le mandaron, o qué está pasando en un canal.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "canal": {"type": "string", "description": "Nombre o ID del canal (ej: 'general', 'C08XXXXX')"},
+                "limite": {"type": "integer", "default": 20, "description": "Número de mensajes a traer (máx 100)"},
+            },
+            "required": ["canal"],
+        },
+    },
+    {
+        "name": "slack_dm_leer",
+        "description": "Lee los mensajes directos (DMs) recientes del usuario indicado con Louis-Nexo. Usa el nombre de usuario o ID (U…). Útil cuando Polo pregunta qué le mandaron por DM.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "usuario": {"type": "string", "description": "Nombre o ID del usuario (ej: 'polo', 'U08XXXXX')"},
+                "limite": {"type": "integer", "default": 20},
+            },
+            "required": ["usuario"],
+        },
+    },
     # M365 tools (mismas que antes)
     {
         "name": "m365_inbox",
@@ -3301,6 +3331,99 @@ def _mac_bash_nivel(bash_cmd: str) -> str:
     if _MAC_BASH_SAFE_RE.match(bash_cmd):
         return "safe"
     return "impactful"
+
+
+def _slack_client():
+    """Devuelve un WebClient de Slack usando el token del archivo de credenciales."""
+    try:
+        from slack_sdk import WebClient
+    except ImportError:
+        return None, "ERROR: slack_sdk no instalado (pip install slack-sdk)"
+    creds_path = HOME_OC / "credentials" / "slack.env"
+    creds = load_env_file(creds_path)
+    token = creds.get("SLACK_BOT_TOKEN") or os.environ.get("SLACK_BOT_TOKEN", "")
+    if not token.startswith("xoxb-"):
+        return None, f"ERROR: SLACK_BOT_TOKEN no configurado o inválido en {creds_path}"
+    return WebClient(token=token), None
+
+
+def _slack_canales() -> str:
+    client, err = _slack_client()
+    if err:
+        return err
+    try:
+        resp = client.conversations_list(types="public_channel,private_channel,im,mpim", limit=200)
+        rows = []
+        for ch in resp.get("channels", []):
+            name = ch.get("name") or ch.get("user") or ch.get("id")
+            cid = ch["id"]
+            ctype = "DM" if ch.get("is_im") else ("privado" if ch.get("is_private") else "público")
+            rows.append(f"  {cid}  {name}  [{ctype}]")
+        return "Canales donde Louis está invitado:\n" + "\n".join(rows) if rows else "No hay canales."
+    except Exception as e:
+        return f"ERROR al listar canales Slack: {e}"
+
+
+def _slack_leer(canal: str, limite: int = 20) -> str:
+    client, err = _slack_client()
+    if err:
+        return err
+    try:
+        # Resolve name → ID si necesario
+        channel_id = canal
+        if not canal.startswith("C") and not canal.startswith("D"):
+            resp = client.conversations_list(types="public_channel,private_channel", limit=200)
+            for ch in resp.get("channels", []):
+                if ch.get("name", "").lower() == canal.lower().lstrip("#"):
+                    channel_id = ch["id"]
+                    break
+        history = client.conversations_history(channel=channel_id, limit=min(limite, 100))
+        msgs = history.get("messages", [])
+        if not msgs:
+            return f"No hay mensajes recientes en #{canal}."
+        # Resolve user IDs → nombres
+        users: dict = {}
+        def _uname(uid: str) -> str:
+            if uid not in users:
+                try:
+                    r = client.users_info(user=uid)
+                    users[uid] = r["user"].get("real_name") or r["user"].get("name") or uid
+                except Exception:
+                    users[uid] = uid
+            return users[uid]
+        import datetime as _dt
+        lines = [f"Últimos {len(msgs)} mensajes de #{canal}:"]
+        for m in reversed(msgs):
+            ts = float(m.get("ts", 0))
+            dt = _dt.datetime.fromtimestamp(ts).strftime("%d/%m %H:%M")
+            user = _uname(m.get("user", "?"))
+            text = m.get("text", "(sin texto)")[:300]
+            lines.append(f"[{dt}] {user}: {text}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"ERROR leyendo Slack #{canal}: {e}"
+
+
+def _slack_dm_leer(usuario: str, limite: int = 20) -> str:
+    client, err = _slack_client()
+    if err:
+        return err
+    try:
+        # Buscar ID del usuario por nombre si no es U...
+        uid = usuario
+        if not usuario.startswith("U"):
+            resp = client.users_list()
+            for u in resp.get("members", []):
+                if u.get("name", "").lower() == usuario.lower() or \
+                   (u.get("real_name") or "").lower() == usuario.lower():
+                    uid = u["id"]
+                    break
+        # Abrir DM
+        dm = client.conversations_open(users=uid)
+        channel_id = dm["channel"]["id"]
+        return _slack_leer(channel_id, limite)
+    except Exception as e:
+        return f"ERROR leyendo DM con {usuario}: {e}"
 
 
 def _mac_enqueue_command(comando: str, args: dict | None = None, razon: str = "") -> str:
@@ -5145,6 +5268,12 @@ def execute_tool(name: str, args: dict) -> str:
         elif name == "restaurar_mi_codigo":
             import self_update as _su
             return _su.restaurar_mi_codigo(args["archivo"], args["backup_id"])
+        elif name == "slack_canales":
+            return _slack_canales()
+        elif name == "slack_leer":
+            return _slack_leer(args["canal"], args.get("limite", 20))
+        elif name == "slack_dm_leer":
+            return _slack_dm_leer(args["usuario"], args.get("limite", 20))
         elif name == "verificar_conexiones":
             return _verificar_conexiones(args.get("incluir_m365", True))
         elif name == "crear_agente":
