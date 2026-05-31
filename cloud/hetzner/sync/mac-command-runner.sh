@@ -54,7 +54,7 @@ touch "$DONE_IDS"
 LOG_TS() { date -Iseconds; }
 
 # --- 1) Baja la cola ---
-QUEUE_LOCAL=$(mktemp /tmp/mac-cmd-queue.XXXXXX.jsonl)
+QUEUE_LOCAL=$(mktemp /tmp/mac-cmd-queue.XXXXXX)
 if ! scp $SSH_OPTS "$REMOTE:$QUEUE_REMOTE" "$QUEUE_LOCAL" 2>/dev/null; then
   # No hay cola todavía o Hetzner inalcanzable — salir limpio
   rm -f "$QUEUE_LOCAL"
@@ -65,7 +65,7 @@ fi
 push_result() {
   local json="$1"
   local tmp
-  tmp=$(mktemp /tmp/mac-cmd-result.XXXXXX.json)
+  tmp=$(mktemp /tmp/mac-cmd-result.XXXXXX)
   printf '%s\n' "$json" > "$tmp"
   # append remoto: cat local >> remoto vía ssh
   ssh $SSH_OPTS "$REMOTE" "mkdir -p /opt/openclaw/state && cat >> $RESULTS_REMOTE" < "$tmp" 2>/dev/null
@@ -95,7 +95,7 @@ while IFS= read -r line; do
     dof_backfill)
       # Classify primero, luego descarga priorizando entradas recientes (2026+)
       OUT1=$(bash -lc "cd $HOME/dof_biblioteca && $_DOF_PY dof_biblioteca.py classify" 2>&1)
-      PATCH=$(mktemp /tmp/dof_patch_XXXXXX.py)
+      PATCH=$(mktemp /tmp/dof_patch_XXXXXX)
       cat > "$PATCH" << PYEOF
 import importlib.util, sys, os
 os.chdir('$HOME/dof_biblioteca')
@@ -130,7 +130,7 @@ $OUT2"
       else
         # Classify + descarga solo el mes indicado (ej: 2026-05)
         OUT1=$(bash -lc "cd $HOME/dof_biblioteca && $_DOF_PY dof_biblioteca.py classify" 2>&1)
-        PATCH=$(mktemp /tmp/dof_patch_mes_XXXXXX.py)
+        PATCH=$(mktemp /tmp/dof_patch_mes_XXXXXX)
         cat > "$PATCH" << PYEOF
 import importlib.util, sys, os
 os.chdir('$HOME/dof_biblioteca')
