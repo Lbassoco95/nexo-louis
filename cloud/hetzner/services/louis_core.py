@@ -177,6 +177,8 @@ TOOL_KEYWORDS = [
     r"\b(calendario|calendar|junta|juntas|reunión|reunion|reuniones|cita|citas|evento|eventos)\b",
     r"\b(manda|envía|envia|enviar|responde|responder|reenvía|reenvia|reenviar)\b",
     r"\b(slack|canal|mensaje\s+a)\b",
+    # Verificación de comandos / estado real (deben ir a Claude con tools, NO a DeepSeek que inventa)
+    r"\b(resultado|resultados|se\s+hizo|se\s+subió|se\s+subio|hiciste|corrió|corrio|terminó|termino|log|logs|cola|push|commit|backfill)\b",
     # Envío de archivos / PDFs / Dropbox (deben ir a Claude con tools, no a DeepSeek)
     r"\b(pdf|dropbox|documento|adjunt\w+|archivo)\b",
     r"\b(p[aá]sa(?:me|melo|lo|mela|la)?|m[aá]nda(?:me|melo|lo|mela|la)?|env[ií]a(?:me|melo|lo|mela|la)?|descarga(?:me|melo)?|mu[eé]stra(?:me|melo)?)\b",
@@ -419,6 +421,21 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "toma decisiones legales con eso. Cada dato que des debe ser trazable a su `cod_nota` "
         "(DOF) o `registro_digital` (SJF) o a la URL exacta que leíste. Si no tienes el ID o "
         "la URL, no lo afirmes.\n"
+        "## ⛔ REGLA ABSOLUTA — NUNCA INVENTES SALIDAS DE COMANDOS NI RESULTADOS\n"
+        "Esto aplica a TODO, no solo a lo legal: salidas de comandos, contenido de archivos, "
+        "resultados de `ssh`, de `git push`, de la cola de la Mac, logs, estados de servicios. "
+        "JAMÁS narres el resultado de algo que NO ejecutaste con una tool REAL. Si Polo te pide "
+        "'corre tal comando / lee tal archivo / revisa el resultado / se hizo el push' y no tienes "
+        "una tool que lo haga de verdad, di exactamente: 'no tengo una tool para ejecutar eso, no "
+        "te puedo dar el resultado real'. NUNCA fabriques un JSON, un log, un 'push exitoso' ni una "
+        "salida plausible. Para estados/resultados reales usa SIEMPRE la tool correcta:\n"
+        "- Resultado/estado de un comando de la Mac → `mac_comando_estado` (lee el archivo REAL).\n"
+        "- Estado de Hetzner (cola de la Mac, resultados, heartbeat, logs, conteos legales) → "
+        "`hetzner_estado`.\n"
+        "- Estado de servicios/conexiones de Hetzner → `verificar_conexiones`.\n"
+        "Si confirmaste algo (ej: 'el push se hizo', 'el comando terminó', 'el archivo llegó'), debe "
+        "venir de la salida REAL de una de esas tools — si no la llamaste, NO lo afirmes. Inventar "
+        "una salida de comando es tan grave como inventar una publicación del DOF.\n"
         "## CUANDO LA BD NO TIENE EL TEXTO (ej: publicaciones recientes sin HTML descargado)\n"
         "Si `legal_buscar` no encuentra algo reciente (la BD tiene el índice pero no el texto "
         "completo), tienes DOS caminos REALES — y si ninguno funciona, lo dices claramente:\n"
@@ -1629,6 +1646,16 @@ TOOLS_DEFINITION = [
             "type": "object",
             "properties": {
                 "id": {"type": "string", "description": "ID del comando (devuelto por mac_ejecutar). Vacío = resumen de los últimos."},
+            },
+        },
+    },
+    {
+        "name": "hetzner_estado",
+        "description": "Lee estado/archivos REALES de Hetzner (el servidor de Louis). ÚSALO en vez de inventar cuando Polo pida revisar la cola de la Mac, resultados de comandos, logs, heartbeat o conteos legales. NUNCA fabriques estas salidas — llama esta tool. Opciones de `que`: cola_mac, resultados_mac, heartbeat, log_telegram, log_scheduler, legal_conteo. Sin `que` lista las opciones.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "que": {"type": "string", "description": "cola_mac | resultados_mac | heartbeat | log_telegram | log_scheduler | legal_conteo"},
             },
         },
     },
@@ -3801,6 +3828,72 @@ def _mac_enqueue_command(comando: str, args: dict | None = None, razon: str = ""
             f"{estado_mac}")
 
 
+def _hetzner_estado(que: str = "") -> str:
+    """Lee estado/archivos REALES de Hetzner (whitelist). Fuente de verdad para que
+    Louis no invente salidas. NO ejecuta bash arbitrario; solo lee lo whitelisted."""
+    que = (que or "").strip().lower()
+    logs_dir = HOME_OC / "logs"
+    opciones = {
+        "cola_mac": "Últimas entradas de la cola de comandos a la Mac (pendientes).",
+        "resultados_mac": "Últimos resultados REALES de comandos ejecutados en la Mac.",
+        "heartbeat": "Último heartbeat de la Mac (online/batería/uptime).",
+        "log_telegram": "Últimas líneas del log del bridge de Telegram.",
+        "log_scheduler": "Últimas líneas del log del scheduler.",
+        "legal_conteo": "Conteo de publicaciones DOF/SJF en la BD (total y mayo 2026).",
+    }
+    if not que or que not in opciones:
+        listado = "\n".join(f"  • {k}: {v}" for k, v in opciones.items())
+        return f"hetzner_estado — indica `que` ∈ una de estas opciones:\n{listado}"
+
+    def _tail(path, n=25):
+        if not path.exists():
+            return f"(no existe {path})"
+        lines = path.read_text(errors="ignore").splitlines()
+        return "\n".join(lines[-n:]) or "(vacío)"
+
+    if que == "cola_mac":
+        return f"Cola de comandos a la Mac (real):\n```\n{_tail(MAC_CMD_QUEUE, 15)}\n```"
+    if que == "resultados_mac":
+        return f"Resultados reales de comandos de la Mac:\n```\n{_tail(MAC_CMD_RESULTS, 15)}\n```"
+    if que == "heartbeat":
+        return _mac_estado()
+    if que == "log_telegram":
+        return f"Log telegram-bridge (real):\n```\n{_tail(logs_dir / 'telegram-bridge.log', 30)}\n```"
+    if que == "log_scheduler":
+        return f"Log scheduler (real):\n```\n{_tail(logs_dir / 'scheduler.log', 30)}\n```"
+    if que == "legal_conteo":
+        out = []
+        for nombre, db, col, tabla in (
+            ("DOF", DOF_DB, "fecha", "notas"),
+            ("SJF", SJF_DB, "fecha", None),
+        ):
+            if not db.exists():
+                out.append(f"{nombre}: BD no encontrada en {db}")
+                continue
+            try:
+                conn = _legal_open(db)
+                if nombre == "DOF":
+                    total = conn.execute("SELECT COUNT(*) FROM notas").fetchone()[0]
+                    con_txt = conn.execute(
+                        "SELECT COUNT(*) FROM notas WHERE texto_plano IS NOT NULL").fetchone()[0]
+                    may = conn.execute(
+                        "SELECT COUNT(*) FROM notas WHERE fecha LIKE '2026-05%' "
+                        "AND texto_plano IS NOT NULL").fetchone()[0]
+                    ult = conn.execute("SELECT MAX(fecha) FROM notas").fetchone()[0]
+                    out.append(f"DOF: total={total}, con texto={con_txt}, "
+                               f"mayo-2026 con texto={may}, última fecha={ult}")
+                else:
+                    # SJF: detectar tabla principal
+                    tablas = [r[0] for r in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+                    out.append(f"SJF: tablas={tablas}")
+                conn.close()
+            except Exception as e:
+                out.append(f"{nombre}: error leyendo BD — {e}")
+        return "Conteo legal (real):\n" + "\n".join(out)
+    return f"opción no reconocida: {que}"
+
+
 def _mac_comando_estado(cmd_id: str = "") -> str:
     """Lee el resultado de un comando ejecutado en la Mac (o lista los últimos)."""
     # Construye un índice de resultados
@@ -5512,6 +5605,8 @@ def execute_tool(name: str, args: dict) -> str:
             return _mac_enqueue_command(args["comando"], args.get("args", {}), args.get("razon", ""))
         elif name == "mac_comando_estado":
             return _mac_comando_estado(args.get("id", ""))
+        elif name == "hetzner_estado":
+            return _hetzner_estado(args.get("que", ""))
         elif name == "browser_navegar":
             return _browser_navegar(args["url"], args.get("wait_until", "networkidle"), args.get("wait_extra_ms", 0))
         elif name == "browser_leer":
