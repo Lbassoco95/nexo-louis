@@ -3613,11 +3613,19 @@ def _dropbox_token():
     return tok, None
 
 
+def _dropbox_member_header() -> dict:
+    """Header de selección de usuario para apps de equipo (Dropbox Business).
+    Sin él, el token de equipo no puede operar sobre los archivos de un usuario."""
+    creds = load_env_file(HOME_OC / "credentials" / "dropbox.env")
+    mid = creds.get("DROPBOX_MEMBER_ID") or os.environ.get("DROPBOX_MEMBER_ID", "")
+    return {"Dropbox-API-Select-User": mid} if mid else {}
+
+
 def _dropbox_buscar(query: str, limite: int = 10) -> str:
     tok, err = _dropbox_token()
     if err:
         return err
-    headers = {"Authorization": f"Bearer {tok}"}
+    headers = {"Authorization": f"Bearer {tok}", **_dropbox_member_header()}
     try:
         j = http_post_json(
             "https://api.dropbox.com/2/files/search_v2", headers,
@@ -3643,7 +3651,7 @@ def _dropbox_listar(carpeta: str = "") -> str:
     tok, err = _dropbox_token()
     if err:
         return err
-    headers = {"Authorization": f"Bearer {tok}"}
+    headers = {"Authorization": f"Bearer {tok}", **_dropbox_member_header()}
     path = "" if (not carpeta or carpeta == "/") else carpeta
     try:
         j = http_post_json("https://api.dropbox.com/2/files/list_folder", headers, {"path": path})
@@ -3667,6 +3675,9 @@ def _dropbox_enviar(path: str) -> str:
         return err
     req = urllib.request.Request("https://content.dropboxapi.com/2/files/download", method="POST")
     req.add_header("Authorization", f"Bearer {tok}")
+    _mid = _dropbox_member_header().get("Dropbox-API-Select-User")
+    if _mid:
+        req.add_header("Dropbox-API-Select-User", _mid)
     # Dropbox-API-Arg debe ser ASCII; json.dumps (ensure_ascii) escapa acentos.
     req.add_header("Dropbox-API-Arg", json.dumps({"path": path}))
     try:
