@@ -20,9 +20,9 @@
 #   LOUIS_SSH_KEY      ej: ~/.ssh/id_ed25519
 #
 # Comandos locales (puedes sobrescribir con env vars para apuntar a tus scripts):
-#   DOF_BACKFILL_CMD       default: cd ~/dof_biblioteca && python3 backfill.py
-#   DOF_BACKFILL_MES_CMD   default: cd ~/dof_biblioteca && python3 backfill.py --mes
-#   SJF_BACKFILL_CMD       default: cd ~/sjf_biblioteca && python3 backfill.py
+#   DOF_BACKFILL_CMD       default: cd ~/dof_biblioteca && python3 dof_biblioteca.py backfill
+#   DOF_BACKFILL_MES_CMD   default: cd ~/dof_biblioteca && python3 dof_biblioteca.py update
+#   SJF_BACKFILL_CMD       default: cd ~/sjf_biblioteca && python3 sjf_biblioteca.py
 #   PUSH_LEGAL_SCRIPT      default: ~/.openclaw/scripts/mac-push-legal.sh
 
 set -uo pipefail
@@ -38,8 +38,8 @@ QUEUE_REMOTE="/opt/openclaw/state/mac-commands.jsonl"
 RESULTS_REMOTE="/opt/openclaw/state/mac-command-results.jsonl"
 
 # Mapeo comando → ejecución local (sobrescribible vía env)
-DOF_BACKFILL_CMD="${DOF_BACKFILL_CMD:-cd $HOME/dof_biblioteca && python3 dof_biblioteca.py}"
-DOF_BACKFILL_MES_CMD="${DOF_BACKFILL_MES_CMD:-cd $HOME/dof_biblioteca && python3 dof_biblioteca.py --mes}"
+DOF_BACKFILL_CMD="${DOF_BACKFILL_CMD:-cd $HOME/dof_biblioteca && python3 dof_biblioteca.py backfill}"
+DOF_BACKFILL_MES_CMD="${DOF_BACKFILL_MES_CMD:-cd $HOME/dof_biblioteca && python3 dof_biblioteca.py update}"
 SJF_BACKFILL_CMD="${SJF_BACKFILL_CMD:-cd $HOME/sjf_biblioteca && python3 sjf_biblioteca.py}"
 PUSH_LEGAL_SCRIPT="${PUSH_LEGAL_SCRIPT:-$HOME/.openclaw/scripts/mac-push-legal.sh}"
 
@@ -78,6 +78,7 @@ while IFS= read -r line; do
   ID=$(printf '%s' "$line" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
   CMD=$(printf '%s' "$line" | python3 -c "import sys,json; print(json.load(sys.stdin).get('comando',''))" 2>/dev/null)
   MES=$(printf '%s' "$line" | python3 -c "import sys,json; print(json.load(sys.stdin).get('args',{}).get('mes',''))" 2>/dev/null)
+  BASH_CMD=$(printf '%s' "$line" | python3 -c "import sys,json; print(json.load(sys.stdin).get('args',{}).get('bash_cmd',''))" 2>/dev/null)
   [[ -z "$ID" || -z "$CMD" ]] && continue
   # ¿Ya lo ejecuté?
   grep -qxF "$ID" "$DONE_IDS" && continue
@@ -111,6 +112,14 @@ while IFS= read -r line; do
                  LOUIS_SSH_KEY="$LOUIS_SSH_KEY" bash "$PUSH_LEGAL_SCRIPT" 2>&1) || STATUS="error"
       else
         OUTPUT="ERROR: no encuentro $PUSH_LEGAL_SCRIPT"; STATUS="error"
+      fi
+      ;;
+    mac_bash)
+      if [[ -z "$BASH_CMD" ]]; then
+        OUTPUT="ERROR: falta args.bash_cmd"; STATUS="error"
+      else
+        echo "[$(LOG_TS)] bash_cmd: $BASH_CMD"
+        OUTPUT=$(bash -lc "$BASH_CMD" 2>&1) || STATUS="error"
       fi
       ;;
     *)

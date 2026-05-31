@@ -438,18 +438,24 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "cuando los invocas. Pueden citar publicaciones específicas que YA analizaron (con su ID real). "
         "Pero si te preguntan algo que NO está en su conocimiento, deben decir que no lo tienen — "
         "no inventar."
-        "\n\n# MAC DE POLO — EJECUTAR SCRIPTS DE DESCARGA (DOF/SJF)\n"
-        "La Mac corre los scripts pesados de descarga (backfill DOF/SJF) porque ahí viven. "
-        "Hetzner no puede conectarse a la Mac (está tras NAT), pero la Mac revisa una cola de "
-        "comandos en Hetzner cada minuto y ejecuta lo que le encoles. Flujo:\n"
-        "- `mac_ejecutar(comando, args, razon)` — encola un comando para que la Mac lo corra. "
-        "Comandos permitidos: `dof_backfill` (descarga lo más reciente del DOF), `dof_backfill_mes` "
-        "(args: {mes:'AAAA-MM'}), `sjf_backfill`, `legal_sync` (fuerza el push de las BDs ahora). "
-        "Devuelve un `id` de comando.\n"
-        "- `mac_comando_estado(id)` — revisa si el comando terminó (pending/running/done/error) y su salida.\n"
-        "Si la Mac está offline (revisa `mac_estado()` primero), el comando queda encolado y "
-        "correrá cuando se prenda; avísale a Polo con `mac_wake_request(razon)`. NUNCA digas que "
-        "corriste un backfill si no confirmaste con `mac_comando_estado` que terminó 'done'."
+        "\n\n# MAC DE POLO — BASH REMOTO Y SCRIPTS DE DESCARGA\n"
+        "La Mac corre scripts pesados (backfill DOF/SJF) y acepta comandos bash arbitrarios. "
+        "Hetzner no puede conectarse a la Mac (NAT), pero la Mac revisa una cola cada minuto. Herramientas:\n"
+        "- `mac_bash(bash_cmd, razon)` — ejecuta CUALQUIER bash en la Mac. Úsalo para diagnóstico, "
+        "reiniciar launchd agents, ver logs, limpiar caches, autocorregir fallas. "
+        "Niveles de seguridad auto-detectados:\n"
+        "  · safe (ls/tail/grep/launchctl list): ejecuta directo, reporta resultado.\n"
+        "  · impactful (launchctl load/unload, mkdir, cp): ANUNCIA qué harás antes de encolar.\n"
+        "  · major (rm -rf, kill -9, desactivar servicios): RAZONA el impacto, explícale a Polo, "
+        "espera confirmación explícita antes de encolar.\n"
+        "- `mac_ejecutar(comando, args, razon)` — atajos para DOF/SJF: `dof_backfill`, "
+        "`dof_backfill_mes` (args: {mes:'AAAA-MM'}), `sjf_backfill`, `legal_sync`.\n"
+        "- `mac_comando_estado(id)` — revisa si terminó (pending/running/done/error) y la salida.\n"
+        "Comandos útiles de diagnóstico Mac:\n"
+        "  `launchctl list | grep kawiil` — ver agentes activos\n"
+        "  `tail -50 ~/Library/Logs/louis-command-runner.log` — ver último ciclo del runner\n"
+        "  `launchctl unload/load ~/Library/LaunchAgents/ai.kawiil.command-runner.plist` — reiniciar runner\n"
+        "NUNCA digas que corriste algo si no confirmaste con `mac_comando_estado` que terminó 'done'."
         "\n\n# SELF-UPDATE — PUEDES EDITARTE A TI MISMO\n"
         "Tienes tools (`leer_mi_codigo`, `editar_mi_codigo`, `reiniciar_mi_servicio`, "
         "`ver_mis_backups`, `restaurar_mi_codigo`) para modificar tu propio código en /opt/openclaw/scripts/. "
@@ -1553,6 +1559,28 @@ TOOLS_DEFINITION = [
                 "razon": {"type": "string", "description": "Por qué Louis necesita la Mac prendida. Ej: 'para correr backfill SJF', 'para sync de Projects'."},
             },
             "required": ["razon"],
+        },
+    },
+    {
+        "name": "mac_bash",
+        "description": (
+            "Ejecuta CUALQUIER comando bash en la Mac de Polo (la Mac lo recoge en ≤1 min). "
+            "Úsalo para: reiniciar launchd agents, ver logs, diagnosticar agentes, limpiar caches, "
+            "autocorregir fallas, instalar paquetes, editar configs. "
+            "REGLAS DE SEGURIDAD: (1) safe (ls/cat/tail/grep/launchctl list) → ejecuta y reporta. "
+            "(2) impactful (launchctl load/unload, mkdir, cp) → anuncia qué harás ANTES de encolar. "
+            "(3) major (rm -rf, kill -9, sudo rm, desactivar servicios críticos) → razona el impacto "
+            "con detalle, explícale a Polo y espera confirmación explícita. "
+            "Verifica resultado con mac_comando_estado después de encolar."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "bash_cmd": {"type": "string", "description": "Comando bash a ejecutar en la Mac de Polo."},
+                "razon": {"type": "string", "description": "Por qué se ejecuta (queda en bitácora)."},
+                "nivel": {"type": "string", "enum": ["safe", "impactful", "major"], "description": "Nivel de impacto. Si omites, se auto-detecta."},
+            },
+            "required": ["bash_cmd", "razon"],
         },
     },
     {
@@ -3243,10 +3271,36 @@ MAC_CMD_RESULTS = HOME_OC / "state" / "mac-command-results.jsonl"
 # a scripts; aquí solo validamos que el comando sea conocido.
 MAC_ALLOWED_COMMANDS = {
     "dof_backfill":      "Descarga lo más reciente del DOF (HTMLs nuevos) en la Mac.",
-    "dof_backfill_mes":  "Descarga un mes específico del DOF. args: {mes:'AAAA-MM'}.",
+    "dof_backfill_mes":  "Descarga/actualiza DOF del mes indicado. args: {mes:'AAAA-MM'}.",
     "sjf_backfill":      "Continúa el backfill del SJF en la Mac.",
     "legal_sync":        "Fuerza el push inmediato de las BDs (DOF/SJF) Mac→Hetzner.",
+    "mac_bash":          "Ejecuta un comando bash arbitrario en la Mac. args: {bash_cmd:'...', nivel:'safe|impactful|major'}.",
 }
+
+# Clasificación de seguridad para mac_bash
+_MAC_BASH_SAFE_RE = re.compile(
+    r"^\s*(?:ls|cat|tail|head|grep|find|echo|pwd|ps|df|du|wc|sort|uniq|"
+    r"launchctl\s+list|launchctl\s+print|systemctl\s+status|journalctl|"
+    r"python3?\s+-c\s+['\"]?import|pip\s+(?:list|show|freeze)|"
+    r"which|type|env|printenv|uname|sw_vers|uptime|date|id|whoami|"
+    r"sqlite3\b.*(?:\.count\b|SELECT\b|PRAGMA\b))",
+    re.IGNORECASE,
+)
+_MAC_BASH_MAJOR_RE = re.compile(
+    r"\b(?:rm\s+-[rf]|rm\s+.*\*|sudo\s+rm|kill\s+-9|pkill|"
+    r"launchctl\s+(?:unload|remove|disable)|"
+    r">\s*/(?!tmp)|dd\s+if=|mkfs|fdisk|"
+    r"chmod\s+777|chown\s+-R\s+root)\b",
+    re.IGNORECASE,
+)
+
+def _mac_bash_nivel(bash_cmd: str) -> str:
+    """Clasifica nivel de riesgo de un comando bash."""
+    if _MAC_BASH_MAJOR_RE.search(bash_cmd):
+        return "major"
+    if _MAC_BASH_SAFE_RE.match(bash_cmd):
+        return "safe"
+    return "impactful"
 
 
 def _mac_enqueue_command(comando: str, args: dict | None = None, razon: str = "") -> str:
@@ -3260,6 +3314,12 @@ def _mac_enqueue_command(comando: str, args: dict | None = None, razon: str = ""
         mes = str(args.get("mes", "")).strip()
         if not re.match(r"^\d{4}-\d{2}$", mes):
             return "ERROR: dof_backfill_mes requiere args {mes:'AAAA-MM'}, ej {mes:'2026-05'}."
+    if comando == "mac_bash":
+        if not args.get("bash_cmd", "").strip():
+            return "ERROR: mac_bash requiere args {bash_cmd:'comando bash'}."
+        # Auto-detecta nivel si no viene
+        if "nivel" not in args:
+            args["nivel"] = _mac_bash_nivel(args["bash_cmd"])
     cmd_id = str(_uuid.uuid4())[:8]
     entry = {
         "id": cmd_id,
@@ -5000,6 +5060,11 @@ def execute_tool(name: str, args: dict) -> str:
             return _mac_estado()
         elif name == "mac_wake_request":
             return _mac_wake_request(args["razon"])
+        elif name == "mac_bash":
+            bash_cmd = args["bash_cmd"]
+            razon = args.get("razon", "")
+            nivel = args.get("nivel") or _mac_bash_nivel(bash_cmd)
+            return _mac_enqueue_command("mac_bash", {"bash_cmd": bash_cmd, "nivel": nivel}, razon)
         elif name == "mac_ejecutar":
             return _mac_enqueue_command(args["comando"], args.get("args", {}), args.get("razon", ""))
         elif name == "mac_comando_estado":
