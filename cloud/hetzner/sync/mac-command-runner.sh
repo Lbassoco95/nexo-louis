@@ -112,7 +112,8 @@ _code = compile(_src, spec.origin, 'exec')
 _mod = type(sys)('dof')
 _mod.__file__ = spec.origin
 exec(_code, _mod.__dict__)
-_mod.main(['download-contents', '--batch', '400'])
+sys.argv = ['dof_biblioteca.py', 'download-contents', '--batch', '400']
+_mod.main()
 PYEOF
       OUT2=$(bash -lc "$_DOF_PY $PATCH" 2>&1)
       PATCH_EXIT=$?
@@ -146,7 +147,8 @@ _code = compile(_src, spec.origin, 'exec')
 _mod = type(sys)('dof')
 _mod.__file__ = spec.origin
 exec(_code, _mod.__dict__)
-_mod.main(['download-contents', '--batch', '500'])
+sys.argv = ['dof_biblioteca.py', 'download-contents', '--batch', '500']
+_mod.main()
 PYEOF
         OUT2=$(bash -lc "$_DOF_PY $PATCH" 2>&1)
         PATCH_EXIT=$?
