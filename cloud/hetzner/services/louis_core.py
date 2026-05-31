@@ -3683,26 +3683,56 @@ def _dropbox_enviar(path: str) -> str:
 
 
 def _dof_pdf(cod: str) -> str:
-    """Baja el PDF oficial del DOF por cod_nota y lo encola para envío."""
-    import ssl
-    url = f"https://www.dof.gob.mx/descarga/nota_diaria_pdf.php?cod={cod}"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Macintosh)"})
-    # dof.gob.mx tiene una cadena de certificados que urllib rechaza por defecto.
-    # Es un PDF público (sin credenciales), así que bypasseamos la verificación.
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+    """Genera el documento de una publicación del DOF desde nuestra BD local
+    (texto ya descargado) y lo encola como HTML para envío por Telegram.
+
+    Más confiable que el endpoint del DOF (404/SSL/anti-bot): el contenido ya
+    está en biblioteca_dof.db para las publicaciones descargadas. El HTML se abre
+    en el navegador y se puede imprimir a PDF.
+    """
+    import html as _html
+    if not DOF_DB.exists():
+        return f"DOF: BD no encontrada en {DOF_DB}."
+    conn = _legal_open(DOF_DB)
+    if conn is None:
+        return "DOF: no pude abrir la BD."
     try:
-        with urllib.request.urlopen(req, timeout=60, context=ctx) as r:
-            content = r.read()
-            ctype = r.headers.get("Content-Type", "")
-    except Exception as e:
-        return f"No pude bajar el PDF del DOF (cod={cod}): {e}\nURL para descargarlo manual: {url}"
-    if b"%PDF" not in content[:1024] and "pdf" not in ctype.lower():
-        return (f"El DOF no devolvió un PDF para cod={cod} (posible bloqueo anti-bot).\n"
-                f"URL para bajarlo manual: {url}")
-    _queue_file(content, f"DOF_{cod}.pdf", f"📄 DOF cod={cod}")
-    return f"PDF del DOF (cod={cod}, {len(content) // 1024} KB) descargado — enviándolo por Telegram."
+        row = conn.execute(
+            "SELECT cod_nota, fecha, titulo, tipo_documento, nombre_cod_orga_uno, texto_plano "
+            "FROM notas WHERE cod_nota=?", (cod,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return (f"No encontré la publicación cod={cod} en la BD del DOF.\n"
+                f"URL oficial para verla: https://www.dof.gob.mx/nota_detalle.php?codigo={cod}")
+    texto = row["texto_plano"]
+    if not texto or not texto.strip():
+        return (f"La publicación cod={cod} está en el índice pero su texto aún no se descarga.\n"
+                f"Dispara el backfill del DOF o ábrela en: "
+                f"https://www.dof.gob.mx/nota_detalle.php?codigo={cod}")
+    titulo = row["titulo"] or f"DOF cod {cod}"
+    fecha = row["fecha"] or ""
+    tipo = row["tipo_documento"] or ""
+    organo = row["nombre_cod_orga_uno"] or ""
+    cuerpo = _html.escape(texto).replace("\n", "<br>\n")
+    doc = (
+        "<!DOCTYPE html><html lang='es'><head><meta charset='utf-8'>"
+        f"<title>{_html.escape(titulo)}</title>"
+        "<style>body{font-family:Georgia,serif;max-width:800px;margin:40px auto;"
+        "padding:0 20px;line-height:1.6;color:#1a1a1a}"
+        ".meta{color:#555;font-size:14px;border-bottom:2px solid #8b0000;"
+        "padding-bottom:12px;margin-bottom:24px}"
+        "h1{font-size:20px;color:#8b0000}.cod{color:#888;font-size:12px}</style></head><body>"
+        f"<h1>{_html.escape(titulo)}</h1>"
+        f"<div class='meta'>{_html.escape(organo)} · {_html.escape(tipo)} · "
+        f"Publicado {_html.escape(fecha)}<br><span class='cod'>DOF cod_nota: {cod}</span></div>"
+        f"<div>{cuerpo}</div></body></html>"
+    )
+    content = doc.encode("utf-8")
+    _queue_file(content, f"DOF_{cod}.html", f"📄 DOF {cod} — {titulo[:60]}")
+    return (f"Documento del DOF (cod={cod}, {len(content) // 1024} KB) generado desde la BD — "
+            f"enviándolo por Telegram. Ábrelo en el navegador para leerlo o imprimirlo a PDF.")
 
 
 def _mac_enqueue_command(comando: str, args: dict | None = None, razon: str = "") -> str:
