@@ -38,8 +38,8 @@ QUEUE_REMOTE="/opt/openclaw/state/mac-commands.jsonl"
 RESULTS_REMOTE="/opt/openclaw/state/mac-command-results.jsonl"
 
 # Mapeo comando → ejecución local (sobrescribible vía env)
-DOF_BACKFILL_CMD="${DOF_BACKFILL_CMD:-cd $HOME/dof_biblioteca && python3 dof_biblioteca.py backfill}"
-DOF_BACKFILL_MES_CMD="${DOF_BACKFILL_MES_CMD:-cd $HOME/dof_biblioteca && python3 dof_biblioteca.py update}"
+DOF_BACKFILL_CMD="${DOF_BACKFILL_CMD:-cd $HOME/dof_biblioteca && python3 dof_biblioteca.py update && python3 dof_biblioteca.py download-contents --batch 200}"
+DOF_BACKFILL_MES_CMD="${DOF_BACKFILL_MES_CMD:-cd $HOME/dof_biblioteca && python3 dof_biblioteca.py update --meses 1 && python3 dof_biblioteca.py download-contents --batch 200}"
 SJF_BACKFILL_CMD="${SJF_BACKFILL_CMD:-cd $HOME/sjf_biblioteca && python3 sjf_biblioteca.py}"
 PUSH_LEGAL_SCRIPT="${PUSH_LEGAL_SCRIPT:-$HOME/.openclaw/scripts/mac-push-legal.sh}"
 
