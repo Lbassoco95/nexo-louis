@@ -5638,12 +5638,20 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
     # Detecta si la query es sobre Slack para forzar tool_choice en el primer turno
     _SLACK_RE = re.compile(r"\b(slack|canal(es)?|dm\s+de|mensaje(s)?\s+(en|de)\s+slack)\b", re.IGNORECASE)
     _force_tool_first = _SLACK_RE.search(user_message or "")
+    # PROMPT CACHING: tools + system son idénticos entre llamadas y entre las 8
+    # vueltas del loop. Cachearlos reduce el input ~90% (cache_read ≈ 10% del
+    # precio normal). Sin esto, cada vuelta re-paga el system prompt gigante +
+    # las ~80 definiciones de tools a precio completo. Breakpoint en la última
+    # tool cachea todas las tools + system (jerarquía: tools→system→messages).
+    _tools_cached = [dict(t) for t in TOOLS_DEFINITION]
+    _tools_cached[-1] = {**_tools_cached[-1], "cache_control": {"type": "ephemeral"}}
+    _system_cached = [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
     for _loop_i in range(max_loops):  # noqa: B007
         body = {
             "model": model,
             "max_tokens": 4096,
-            "system": system_prompt,
-            "tools": TOOLS_DEFINITION,
+            "system": _system_cached,
+            "tools": _tools_cached,
             "messages": messages,
         }
         # Primer turno de queries Slack: forzar tool_choice para que no responda de memoria
@@ -5654,6 +5662,14 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
         except Exception as e:
             log.exception("Anthropic API falló")
             return f"(error llamando a Claude: {e})"
+        # Log de cache para verificar el ahorro (cache_read debe dominar tras la 1ª llamada)
+        _u = resp.get("usage", {})
+        log.info(
+            "claude usage loop=%d model=%s in=%d cache_write=%d cache_read=%d out=%d",
+            _loop_i, model, _u.get("input_tokens", 0),
+            _u.get("cache_creation_input_tokens", 0),
+            _u.get("cache_read_input_tokens", 0), _u.get("output_tokens", 0),
+        )
         content = resp.get("content", [])
         stop_reason = resp.get("stop_reason")
         assistant_blocks = []
