@@ -5275,6 +5275,132 @@ def _invocar_agente_via_deepseek(nombre: str, sub_system: str, user_msg: str, mo
     return f"[{nombre} respondió vía DeepSeek]\n\n{resp}"
 
 
+_DOC_THRESHOLD = 2500  # chars above which agent output is sent as a file
+
+
+def _md_to_html(titulo: str, agente: str, md: str) -> bytes:
+    """Convierte markdown básico a un HTML profesional para envío como documento."""
+    import html as _html
+    import re as _re
+    import datetime as _dt
+
+    def _escape(s: str) -> str:
+        return _html.escape(s)
+
+    lines = md.split("\n")
+    body_parts: list[str] = []
+    in_table = False
+    table_rows: list[str] = []
+    for line in lines:
+        # Tables
+        if _re.match(r"^\s*\|", line):
+            in_table = True
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if _re.match(r"^[\s|:-]+$", line):
+                # separator row — flush header
+                if table_rows:
+                    body_parts.append(
+                        '<table><thead><tr>'
+                        + "".join(f"<th>{_escape(c)}</th>" for c in table_rows[-1])
+                        + '</tr></thead><tbody>'
+                    )
+                    table_rows = []
+                continue
+            table_rows.append(cells)
+            continue
+        else:
+            if in_table:
+                if table_rows:
+                    # no separator found — treat as regular rows
+                    body_parts.append('<table><tbody>')
+                for row in table_rows:
+                    body_parts.append(
+                        '<tr>' + "".join(f"<td>{_escape(c)}</td>" for c in row) + '</tr>'
+                    )
+                body_parts.append('</tbody></table>')
+                table_rows = []
+                in_table = False
+
+        line_esc = _escape(line)
+        # Inline: **bold**, *italic*, `code`
+        line_esc = _re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", line_esc)
+        line_esc = _re.sub(r"\*(.+?)\*", r"<em>\1</em>", line_esc)
+        line_esc = _re.sub(r"`(.+?)`", r"<code>\1</code>", line_esc)
+        # Headers
+        m = _re.match(r"^(#{1,4})\s+(.+)", line)
+        if m:
+            lvl = len(m.group(1))
+            body_parts.append(f"<h{lvl}>{_escape(m.group(2))}</h{lvl}>")
+            continue
+        # HR
+        if _re.match(r"^---+\s*$", line):
+            body_parts.append("<hr>")
+            continue
+        # List
+        m = _re.match(r"^[-*]\s+(.+)", line)
+        if m:
+            body_parts.append(f"<li>{line_esc[line_esc.index(m.group(1)[0]):]}</li>")
+            continue
+        # Numbered list
+        m = _re.match(r"^\d+\.\s+(.+)", line)
+        if m:
+            body_parts.append(f"<li>{line_esc}</li>")
+            continue
+        # Empty line
+        if not line.strip():
+            body_parts.append("<br>")
+            continue
+        body_parts.append(f"<p>{line_esc}</p>")
+
+    # flush pending table
+    if in_table:
+        if table_rows:
+            body_parts.append('<table><tbody>')
+        for row in table_rows:
+            body_parts.append('<tr>' + "".join(f"<td>{_escape(c)}</td>" for c in row) + '</tr>')
+        body_parts.append('</tbody></table>')
+
+    body_html = "\n".join(body_parts)
+    fecha = _dt.date.today().strftime("%d/%m/%Y")
+    html = f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{_escape(titulo)}</title>
+<style>
+  body {{ font-family: 'Georgia', serif; max-width: 860px; margin: 40px auto;
+         padding: 0 24px; color: #1a1a1a; line-height: 1.7; }}
+  h1 {{ font-size: 1.6em; border-bottom: 2px solid #2c3e50; padding-bottom: 8px; color: #2c3e50; }}
+  h2 {{ font-size: 1.25em; color: #2c3e50; margin-top: 2em; border-bottom: 1px solid #ddd; padding-bottom: 4px; }}
+  h3, h4 {{ color: #34495e; margin-top: 1.5em; }}
+  table {{ border-collapse: collapse; width: 100%; margin: 1.2em 0; font-size: 0.9em; }}
+  th {{ background: #2c3e50; color: white; padding: 8px 12px; text-align: left; }}
+  td {{ border: 1px solid #ddd; padding: 7px 12px; }}
+  tr:nth-child(even) td {{ background: #f8f9fa; }}
+  code {{ background: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-size: 0.88em; }}
+  li {{ margin-bottom: 4px; }}
+  strong {{ color: #c0392b; }}
+  hr {{ border: none; border-top: 1px solid #ddd; margin: 1.5em 0; }}
+  .header {{ display: flex; justify-content: space-between; margin-bottom: 2em;
+             padding: 16px; background: #f8f9fa; border-radius: 6px; font-size: 0.85em; color: #666; }}
+  .footer {{ margin-top: 3em; padding-top: 1em; border-top: 1px solid #ddd;
+             font-size: 0.8em; color: #999; text-align: center; }}
+  @media print {{ body {{ margin: 0; padding: 20px; }} .header {{ break-inside: avoid; }} }}
+</style>
+</head>
+<body>
+<div class="header">
+  <span>Elaborado por: <strong>Louis · Kawiil</strong> — {_escape(agente)}</span>
+  <span>Fecha: {fecha}</span>
+</div>
+{body_html}
+<div class="footer">Documento generado por Louis (Kawiil) · {fecha} · Confidencial</div>
+</body>
+</html>"""
+    return html.encode("utf-8")
+
+
 def _invocar_agente(
     nombre: str,
     tarea: str,
@@ -5285,6 +5411,8 @@ def _invocar_agente(
 
     Empuja el agente al stack para que las invocaciones anidadas (un agente que
     llama a otro vía consejo_experto_legal) queden registradas con su `parent`.
+    Si el output supera _DOC_THRESHOLD chars, lo envía como archivo HTML y retorna
+    un resumen corto para que Louis no lo vomite como texto plano en Telegram.
     """
     if not _AGENT_NAME_RE.match(nombre):
         return f"ERROR: nombre '{nombre}' inválido."
@@ -5299,6 +5427,26 @@ def _invocar_agente(
         out = _invocar_agente_impl(nombre, tarea, contexto, modelo_override, meta)
         evento = "error" if out.startswith("ERROR") else "end"
         log_agent_activity(evento, nombre, modelo_log, out[:200])
+
+        # Si el informe es largo, enviarlo como archivo HTML en vez de texto
+        raw = out
+        if raw.startswith(f"[{nombre} respondió]"):
+            raw = raw[len(f"[{nombre} respondió]"):].strip()
+        if len(raw) >= _DOC_THRESHOLD and not out.startswith("ERROR"):
+            titulo = tarea[:80].strip().rstrip(".?!")
+            html_bytes = _md_to_html(titulo, nombre, raw)
+            safe_nombre = nombre.replace("/", "_")
+            filename = f"{safe_nombre}_informe.html"
+            _queue_file(html_bytes, filename,
+                        f"📄 Informe de {nombre}: {titulo[:60]}")
+            # Resumen corto para Louis (primeros 800 chars del informe)
+            preview = raw[:800].strip()
+            return (
+                f"[{nombre} respondió — informe completo enviado como archivo adjunto]\n\n"
+                f"**Vista previa (inicio del documento):**\n{preview}…\n\n"
+                f"_(El documento completo está en el archivo adjunto que ya se envió a Telegram)_"
+            )
+
         return out
     except Exception as e:
         log_agent_activity("error", nombre, modelo_log, str(e))
