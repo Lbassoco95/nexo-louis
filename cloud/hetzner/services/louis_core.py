@@ -3696,6 +3696,18 @@ def _sanitize_latin1(text: str) -> str:
     return text.encode("latin-1", errors="replace").decode("latin-1")
 
 
+def _break_long_tokens(text: str, max_len: int = 45) -> str:
+    """Parte palabras/tokens sin espacios más largos que max_len para que fpdf
+    pueda hacer wrap. Evita 'Not enough horizontal space to render a character'."""
+    out = []
+    for tok in text.split(" "):
+        while len(tok) > max_len:
+            out.append(tok[:max_len])
+            tok = tok[max_len:]
+        out.append(tok)
+    return " ".join(out)
+
+
 def _generar_pdf(titulo: str, contenido: str, agente: str = "Louis") -> bytes | None:
     """Genera un PDF a partir de contenido markdown. Retorna None si fpdf2 no está instalado."""
     try:
@@ -3705,71 +3717,79 @@ def _generar_pdf(titulo: str, contenido: str, agente: str = "Louis") -> bytes | 
     import datetime as _dt
 
     pdf = FPDF(orientation="P", unit="mm", format="A4")
-    pdf.set_margins(20, 20, 20)
-    pdf.set_auto_page_break(auto=True, margin=20)
+    margin = 20
+    pdf.set_margins(margin, margin, margin)
+    pdf.set_auto_page_break(auto=True, margin=margin)
     pdf.add_page()
+    epw = pdf.w - 2 * margin  # ancho útil (positivo garantizado)
+
+    def _cell(text: str, h: float, font_size: float, bold: bool = False, align: str = "L"):
+        """multi_cell robusto: ancho explícito, X reseteado, tokens largos partidos."""
+        pdf.set_font("Helvetica", "B" if bold else "", font_size)
+        pdf.set_x(margin)
+        safe = _break_long_tokens(_sanitize_latin1(text)) or " "
+        try:
+            pdf.multi_cell(epw, h, safe, align=align)
+        except Exception:
+            # Último recurso: trunca duro y reintenta
+            try:
+                pdf.set_x(margin)
+                pdf.multi_cell(epw, h, safe[:200] or " ", align=align)
+            except Exception:
+                pass
 
     # Portada / título
-    pdf.set_font("Helvetica", "B", 16)
-    for chunk in [titulo[i:i+70] for i in range(0, len(titulo), 70)]:
-        pdf.multi_cell(0, 10, _sanitize_latin1(chunk), align="C")
+    _cell(titulo, 10, 16, bold=True, align="C")
     pdf.ln(3)
-    pdf.set_font("Helvetica", "", 9)
     fecha = _dt.date.today().strftime("%d/%m/%Y")
-    pdf.cell(0, 6, f"Elaborado por: {_sanitize_latin1(agente)} | Kawiil | {fecha}", align="C")
-    pdf.ln(8)
+    _cell(f"Elaborado por: {agente} | Kawiil | {fecha}", 6, 9, align="C")
+    pdf.ln(2)
     pdf.set_line_width(0.5)
-    pdf.line(20, pdf.get_y(), 190, pdf.get_y())
+    pdf.line(margin, pdf.get_y(), pdf.w - margin, pdf.get_y())
     pdf.ln(6)
 
     for line in contenido.split("\n"):
-        safe = _sanitize_latin1(line)
-        if line.startswith("#### "):
-            pdf.set_font("Helvetica", "B", 10)
-            pdf.multi_cell(0, 6, safe[5:])
-            pdf.ln(1)
-        elif line.startswith("### "):
-            pdf.ln(2)
-            pdf.set_font("Helvetica", "B", 11)
-            pdf.multi_cell(0, 7, safe[4:])
-            pdf.ln(1)
-        elif line.startswith("## "):
-            pdf.ln(4)
-            pdf.set_font("Helvetica", "B", 13)
-            pdf.multi_cell(0, 8, safe[3:])
-            pdf.set_line_width(0.2)
-            pdf.line(20, pdf.get_y(), 190, pdf.get_y())
-            pdf.ln(3)
-        elif line.startswith("# "):
-            pdf.ln(5)
-            pdf.set_font("Helvetica", "B", 14)
-            pdf.multi_cell(0, 9, safe[2:])
-            pdf.ln(3)
-        elif line.strip() in ("---", "___", "***"):
-            pdf.set_line_width(0.2)
-            pdf.line(20, pdf.get_y(), 190, pdf.get_y())
-            pdf.ln(3)
-        elif line.startswith("- ") or line.startswith("* "):
-            pdf.set_font("Helvetica", "", 10)
-            pdf.multi_cell(0, 5, "  \x95 " + _sanitize_latin1(line[2:]))
-        elif len(line) > 2 and line[0].isdigit() and line[1] in (".", ")"):
-            pdf.set_font("Helvetica", "", 10)
-            pdf.multi_cell(0, 5, "  " + safe)
-        elif "|" in line:
-            cells = [c.strip() for c in line.strip().strip("|").split("|")]
-            if all(set(c).issubset(set("-: ")) for c in cells if c):
-                continue  # separador de tabla
-            n = max(len(cells), 1)
-            w = min(165 // n, 55)
-            pdf.set_font("Helvetica", "", 8)
-            for cell in cells:
-                pdf.cell(w, 5, _sanitize_latin1(cell[:40]), border=1)
-            pdf.ln()
-        elif not line.strip():
-            pdf.ln(2)
-        else:
-            pdf.set_font("Helvetica", "", 10)
-            pdf.multi_cell(0, 5, safe)
+        try:
+            if line.startswith("#### "):
+                _cell(line[5:], 6, 10, bold=True); pdf.ln(1)
+            elif line.startswith("### "):
+                pdf.ln(2); _cell(line[4:], 7, 11, bold=True); pdf.ln(1)
+            elif line.startswith("## "):
+                pdf.ln(4); _cell(line[3:], 8, 13, bold=True)
+                pdf.set_line_width(0.2)
+                pdf.line(margin, pdf.get_y(), pdf.w - margin, pdf.get_y()); pdf.ln(3)
+            elif line.startswith("# "):
+                pdf.ln(5); _cell(line[2:], 9, 14, bold=True); pdf.ln(3)
+            elif line.strip() in ("---", "___", "***"):
+                pdf.set_line_width(0.2)
+                pdf.line(margin, pdf.get_y(), pdf.w - margin, pdf.get_y()); pdf.ln(3)
+            elif line.startswith("- ") or line.startswith("* "):
+                _cell("  - " + line[2:], 5, 10)
+            elif len(line) > 2 and line[0].isdigit() and line[1] in (".", ")"):
+                _cell("  " + line, 5, 10)
+            elif "|" in line:
+                cells = [c.strip() for c in line.strip().strip("|").split("|")]
+                if all(set(c).issubset(set("-: ")) for c in cells if c):
+                    continue  # separador de tabla
+                n = max(len(cells), 1)
+                w = max(epw / n, 12)  # ancho positivo por celda
+                pdf.set_font("Helvetica", "", 8)
+                pdf.set_x(margin)
+                y0 = pdf.get_y()
+                for cell in cells:
+                    txt = _break_long_tokens(_sanitize_latin1(cell), 30)[:60]
+                    try:
+                        pdf.cell(w, 5, txt, border=1)
+                    except Exception:
+                        pass
+                pdf.ln()
+            elif not line.strip():
+                pdf.ln(2)
+            else:
+                _cell(line, 5, 10)
+        except Exception as e:
+            log.debug(f"_generar_pdf: línea omitida ({e}): {line[:60]!r}")
+            continue
 
     return bytes(pdf.output())
 
