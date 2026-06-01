@@ -2114,6 +2114,29 @@ TOOLS_DEFINITION = [
             "required": ["cod"],
         },
     },
+    {
+        "name": "generar_documento",
+        "description": (
+            "Genera un documento REAL (PDF, PowerPoint o Excel) en el servidor y se lo manda a Polo por Telegram. "
+            "Úsala cuando Polo pida un documento formal para compartir con su equipo: dictámenes, planes, reportes, "
+            "presentaciones, tablas. SIEMPRE prefiere generar el tipo correcto: PDF para documentos de texto/legal, "
+            "pptx para presentaciones, xlsx para tablas/datos financieros. "
+            "El contenido debe ser markdown completo — encabezados con #, listas con -, tablas con |."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tipo": {
+                    "type": "string",
+                    "enum": ["pdf", "pptx", "xlsx"],
+                    "description": "pdf = documento/informe/dictamen; pptx = presentación/deck; xlsx = tabla/datos",
+                },
+                "titulo": {"type": "string", "description": "Título del documento (sin extensión)"},
+                "contenido": {"type": "string", "description": "Contenido completo en markdown"},
+            },
+            "required": ["tipo", "titulo", "contenido"],
+        },
+    },
     # M365 tools (mismas que antes)
     {
         "name": "m365_inbox",
@@ -3629,6 +3652,222 @@ def get_pending_files() -> list:
     files = list(_PENDING_FILES)
     _PENDING_FILES.clear()
     return files
+
+
+# ===== Generación de documentos (PDF / PPTX / XLSX) =====
+
+def _sanitize_latin1(text: str) -> str:
+    """Convierte a latin-1 para fuentes core de fpdf (preserva acentos españoles)."""
+    return text.encode("latin-1", errors="replace").decode("latin-1")
+
+
+def _generar_pdf(titulo: str, contenido: str, agente: str = "Louis") -> bytes | None:
+    """Genera un PDF a partir de contenido markdown. Retorna None si fpdf2 no está instalado."""
+    try:
+        from fpdf import FPDF
+    except ImportError:
+        return None
+    import datetime as _dt
+
+    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_margins(20, 20, 20)
+    pdf.set_auto_page_break(auto=True, margin=20)
+    pdf.add_page()
+
+    # Portada / título
+    pdf.set_font("Helvetica", "B", 16)
+    for chunk in [titulo[i:i+70] for i in range(0, len(titulo), 70)]:
+        pdf.multi_cell(0, 10, _sanitize_latin1(chunk), align="C")
+    pdf.ln(3)
+    pdf.set_font("Helvetica", "", 9)
+    fecha = _dt.date.today().strftime("%d/%m/%Y")
+    pdf.cell(0, 6, f"Elaborado por: {_sanitize_latin1(agente)} | Kawiil | {fecha}", align="C")
+    pdf.ln(8)
+    pdf.set_line_width(0.5)
+    pdf.line(20, pdf.get_y(), 190, pdf.get_y())
+    pdf.ln(6)
+
+    for line in contenido.split("\n"):
+        safe = _sanitize_latin1(line)
+        if line.startswith("#### "):
+            pdf.set_font("Helvetica", "B", 10)
+            pdf.multi_cell(0, 6, safe[5:])
+            pdf.ln(1)
+        elif line.startswith("### "):
+            pdf.ln(2)
+            pdf.set_font("Helvetica", "B", 11)
+            pdf.multi_cell(0, 7, safe[4:])
+            pdf.ln(1)
+        elif line.startswith("## "):
+            pdf.ln(4)
+            pdf.set_font("Helvetica", "B", 13)
+            pdf.multi_cell(0, 8, safe[3:])
+            pdf.set_line_width(0.2)
+            pdf.line(20, pdf.get_y(), 190, pdf.get_y())
+            pdf.ln(3)
+        elif line.startswith("# "):
+            pdf.ln(5)
+            pdf.set_font("Helvetica", "B", 14)
+            pdf.multi_cell(0, 9, safe[2:])
+            pdf.ln(3)
+        elif line.strip() in ("---", "___", "***"):
+            pdf.set_line_width(0.2)
+            pdf.line(20, pdf.get_y(), 190, pdf.get_y())
+            pdf.ln(3)
+        elif line.startswith("- ") or line.startswith("* "):
+            pdf.set_font("Helvetica", "", 10)
+            pdf.multi_cell(0, 5, "  \x95 " + _sanitize_latin1(line[2:]))
+        elif len(line) > 2 and line[0].isdigit() and line[1] in (".", ")"):
+            pdf.set_font("Helvetica", "", 10)
+            pdf.multi_cell(0, 5, "  " + safe)
+        elif "|" in line:
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if all(set(c).issubset(set("-: ")) for c in cells if c):
+                continue  # separador de tabla
+            n = max(len(cells), 1)
+            w = min(165 // n, 55)
+            pdf.set_font("Helvetica", "", 8)
+            for cell in cells:
+                pdf.cell(w, 5, _sanitize_latin1(cell[:40]), border=1)
+            pdf.ln()
+        elif not line.strip():
+            pdf.ln(2)
+        else:
+            pdf.set_font("Helvetica", "", 10)
+            pdf.multi_cell(0, 5, safe)
+
+    return bytes(pdf.output())
+
+
+def _generar_pptx(titulo: str, contenido: str, agente: str = "Louis") -> bytes | None:
+    """Genera un PowerPoint (.pptx) desde markdown. Retorna None si python-pptx no está."""
+    try:
+        from pptx import Presentation
+        from pptx.util import Inches, Pt
+        from pptx.dml.color import RGBColor
+    except ImportError:
+        return None
+    from io import BytesIO
+    import datetime as _dt
+
+    prs = Presentation()
+    prs.slide_width = Inches(13.33)
+    prs.slide_height = Inches(7.5)
+
+    # Slide de título
+    sl = prs.slides.add_slide(prs.slide_layouts[0])
+    sl.shapes.title.text = titulo[:80]
+    ph = sl.placeholders[1]
+    ph.text = f"Kawiil | {agente} | {_dt.date.today().strftime('%d/%m/%Y')}"
+
+    current_title = ""
+    current_body: list[str] = []
+
+    def _flush():
+        nonlocal current_title, current_body
+        if not current_title and not current_body:
+            return
+        sl2 = prs.slides.add_slide(prs.slide_layouts[1])
+        sl2.shapes.title.text = (current_title or "Contenido")[:80]
+        tf = sl2.placeholders[1].text_frame
+        tf.clear()
+        for b in current_body[:18]:
+            p = tf.add_paragraph()
+            p.text = b[:180]
+        current_title = ""
+        current_body = []
+
+    for line in contenido.split("\n"):
+        if line.startswith("## ") or line.startswith("# "):
+            _flush()
+            current_title = line.lstrip("# ").strip()
+        elif line.startswith("### "):
+            current_body.append(line[4:].strip())
+        elif line.startswith("- ") or line.startswith("* "):
+            current_body.append("• " + line[2:].strip())
+        elif len(line) > 2 and line[0].isdigit() and line[1] in (".", ")"):
+            current_body.append(line.strip())
+        elif line.strip() and not line.startswith("|") and not set(line.strip()).issubset(set("-: |")):
+            current_body.append(line.strip())
+        if len(current_body) >= 18:
+            _flush()
+
+    _flush()
+
+    buf = BytesIO()
+    prs.save(buf)
+    return buf.getvalue()
+
+
+def _generar_xlsx(titulo: str, contenido: str) -> bytes | None:
+    """Genera un Excel (.xlsx) desde markdown (tablas + texto). Retorna None si openpyxl no está."""
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment
+    except ImportError:
+        return None
+    from io import BytesIO
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = titulo[:31]
+
+    dark = PatternFill(start_color="2C3E50", end_color="2C3E50", fill_type="solid")
+    white = Font(color="FFFFFF", bold=True)
+
+    row = 1
+    for line in contenido.split("\n"):
+        if line.startswith("#"):
+            cell = ws.cell(row, 1, line.lstrip("# ").strip())
+            cell.font = Font(bold=True, size=13)
+            row += 1
+        elif "|" in line:
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if all(set(c).issubset(set("-: ")) for c in cells if c):
+                continue
+            is_header = row == 1 or ws.cell(row - 1, 1).value is None
+            for col, val in enumerate(cells, 1):
+                cell = ws.cell(row, col, val)
+                col_letter = cell.column_letter
+                ws.column_dimensions[col_letter].width = max(
+                    ws.column_dimensions[col_letter].width, min(len(val) + 3, 45)
+                )
+                if is_header:
+                    cell.fill = dark
+                    cell.font = white
+            row += 1
+        elif line.strip():
+            ws.cell(row, 1, line.strip())
+            row += 1
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _generar_documento_tool(tipo: str, titulo: str, contenido: str) -> str:
+    """Genera PDF/PPTX/XLSX en el servidor y lo encola para envío por Telegram."""
+    import datetime as _dt
+    tipo = tipo.lower().strip()
+    generators = {"pdf": _generar_pdf, "pptx": _generar_pptx, "xlsx": _generar_xlsx}
+    gen = generators.get(tipo)
+    if gen is None:
+        return f"ERROR: tipo '{tipo}' no reconocido. Usa: pdf, pptx, xlsx"
+    data = gen(titulo, contenido)
+    if data is None:
+        pkg = {"pdf": "fpdf2", "pptx": "python-pptx", "xlsx": "openpyxl"}.get(tipo, tipo)
+        return (f"ERROR: librería '{pkg}' no instalada en el servidor. "
+                f"Pide a Polo que ejecute en la Mac:\n"
+                f"ssh polo@204.168.131.21 'pip3 install {pkg}'")
+    safe = titulo[:40].replace(" ", "_").replace("/", "-")
+    fname = f"{safe}_{_dt.datetime.now().strftime('%Y%m%d_%H%M')}.{tipo}"
+    captions = {
+        "pdf": "📄 PDF listo — ábrelo directo",
+        "pptx": "📊 PowerPoint listo — ábrelo en Keynote o PowerPoint",
+        "xlsx": "📊 Excel listo — ábrelo en Numbers o Excel",
+    }
+    _queue_file(data, fname, captions.get(tipo, f"📄 {titulo[:60]}"))
+    return f"✅ {tipo.upper()} generado: {fname} ({len(data):,} bytes) — enviándolo por Telegram ahora"
 
 
 # ===== Dropbox =====
@@ -5428,23 +5667,29 @@ def _invocar_agente(
         evento = "error" if out.startswith("ERROR") else "end"
         log_agent_activity(evento, nombre, modelo_log, out[:200])
 
-        # Si el informe es largo, enviarlo como archivo HTML en vez de texto
+        # Si el informe es largo, generar PDF real y encolarlo
         raw = out
         if raw.startswith(f"[{nombre} respondió]"):
             raw = raw[len(f"[{nombre} respondió]"):].strip()
         if len(raw) >= _DOC_THRESHOLD and not out.startswith("ERROR"):
             titulo = tarea[:80].strip().rstrip(".?!")
-            html_bytes = _md_to_html(titulo, nombre, raw)
+            import datetime as _dt_ag
             safe_nombre = nombre.replace("/", "_")
-            filename = f"{safe_nombre}_informe.html"
-            _queue_file(html_bytes, filename,
-                        f"📄 Informe de {nombre}: {titulo[:60]}")
-            # Resumen corto para Louis (primeros 800 chars del informe)
-            preview = raw[:800].strip()
+            fname_base = f"{safe_nombre}_{_dt_ag.datetime.now().strftime('%Y%m%d_%H%M')}"
+            # Intentar PDF primero, caer a HTML si fpdf2 no está instalado
+            pdf_bytes = _generar_pdf(titulo, raw, nombre)
+            if pdf_bytes:
+                _queue_file(pdf_bytes, f"{fname_base}.pdf", f"📄 {titulo[:60]}")
+                ext_msg = "PDF"
+            else:
+                html_bytes = _md_to_html(titulo, nombre, raw)
+                _queue_file(html_bytes, f"{fname_base}.html",
+                            f"📄 {titulo[:60]} — abre en Safari → Compartir → Imprimir → PDF")
+                ext_msg = "HTML (instala fpdf2 en el servidor para PDF nativo)"
+            preview = raw[:600].strip()
             return (
-                f"[{nombre} respondió — informe completo enviado como archivo adjunto]\n\n"
-                f"**Vista previa (inicio del documento):**\n{preview}…\n\n"
-                f"_(El documento completo está en el archivo adjunto que ya se envió a Telegram)_"
+                f"[{nombre} respondió — documento completo enviado como {ext_msg}]\n\n"
+                f"**Inicio del documento:**\n{preview}…"
             )
 
         return out
@@ -5871,6 +6116,8 @@ def execute_tool(name: str, args: dict) -> str:
             return _dropbox_enviar(args["path"])
         elif name == "dof_pdf":
             return _dof_pdf(str(args["cod"]))
+        elif name == "generar_documento":
+            return _generar_documento_tool(args["tipo"], args["titulo"], args["contenido"])
         elif name == "verificar_conexiones":
             return _verificar_conexiones(args.get("incluir_m365", True))
         elif name == "crear_agente":
