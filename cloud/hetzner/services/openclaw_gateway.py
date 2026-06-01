@@ -310,21 +310,36 @@ def _build_activity_payload() -> dict:
 
 
 class Handler(BaseHTTPRequestHandler):
+    def _safe_write(self, body: bytes):
+        """Escribe la respuesta tolerando que el cliente cierre la conexión antes
+        de tiempo (health-checks, curl con -m). Evita el BrokenPipeError que
+        ensuciaba el log y podía matar el thread del worker."""
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass  # cliente desconectó — normal en health-checks, no es error
+
     def _send_json(self, code, payload):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            return
+        self._safe_write(body)
 
     def _send_html(self, code, html: str):
         body = html.encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            return
+        self._safe_write(body)
 
     def _read_json(self):
         n = int(self.headers.get("Content-Length", "0"))
