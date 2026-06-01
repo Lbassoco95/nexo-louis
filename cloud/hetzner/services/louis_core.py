@@ -6434,6 +6434,10 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
     # Detecta si la query es sobre Slack para forzar tool_choice en el primer turno
     _SLACK_RE = re.compile(r"\b(slack|canal(es)?|dm\s+de|mensaje(s)?\s+(en|de)\s+slack)\b", re.IGNORECASE)
     _force_tool_first = _SLACK_RE.search(user_message or "")
+    # Pedido de documento (PDF/PPTX/XLSX): forzar uso de tool en el 1er turno.
+    # Solo con Sonnet (con Haiku el tool_choice forzado devolvía contenido vacío).
+    # Evita que Sonnet diga 'genero el dictamen ahora' sin llamar la tool.
+    _force_doc = needs_doc_sonnet(user_message or "") and model == CLAUDE_SONNET
     # PROMPT CACHING: tools + system son idénticos entre llamadas y entre las 8
     # vueltas del loop. Cachearlos reduce el input ~90% (cache_read ≈ 10% del
     # precio normal). Sin esto, cada vuelta re-paga el system prompt gigante +
@@ -6453,6 +6457,10 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
         # Primer turno de queries Slack: forzar tool_choice para que no responda de memoria
         if _force_tool_first and _loop_i == 0:
             body["tool_choice"] = {"type": "tool", "name": "slack_resumen"}
+        # Pedido de documento (Sonnet): forzar uso de ALGUNA tool en el 1er turno.
+        # El modelo debe llamar invocar_agente (para contenido) o generar_documento.
+        elif _force_doc and _loop_i == 0:
+            body["tool_choice"] = {"type": "any"}
         try:
             resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=180)
         except Exception as e:

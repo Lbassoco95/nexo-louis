@@ -433,18 +433,24 @@ def process_update(update, telegram_token, chat_id, api_key, system_prompt):
     log.info(f"← {model_used} respondió ({len(response)} chars)")
     core.append_history(HISTORY_FILE, "assistant", response)
 
-    # Detecta HTML completo (análisis de agentes, documentos) → envía como archivo.
-    # Acepta tanto respuesta directa <html>…</html> como bloque ```html … ```.
-    html_body = None
-    if _is_html_response(response):
-        html_body = response.strip()
-    else:
-        html_body = _extract_html_from_fence(response)
-
     import datetime as _dt_mod
 
     # Drenar archivos encolados por tools/agentes ANTES de enviar la respuesta.
     pending_files = core.get_pending_files()
+
+    # Red de seguridad: si Polo pidió un documento y el modelo escribió el contenido
+    # como texto largo PERO no llamó generar_documento (no encoló archivo), generamos
+    # el PDF aquí mismo de forma determinística. Así nunca queda en "voy a generar".
+    if not pending_files and core.needs_doc_sonnet(user_input) and len(response) > 1200:
+        try:
+            titulo = (user_input or "documento")[:70].strip().rstrip(".?!")
+            pdf = core._generar_pdf(titulo, response, "Louis")
+            if pdf:
+                fname = f"{titulo[:40].replace(' ', '_')}_{_dt_mod.datetime.now().strftime('%H%M%S')}.pdf"
+                pending_files = [(pdf, fname, f"📄 {titulo[:60]}")]
+                log.info(f"📎 PDF generado por red de seguridad: {fname} ({len(pdf)} bytes)")
+        except Exception as e:
+            log.warning(f"Red de seguridad PDF falló: {e}")
 
     # Detecta HTML completo en la respuesta (bloque ```html o <html>).
     html_body = None
@@ -457,6 +463,11 @@ def process_update(update, telegram_token, chat_id, api_key, system_prompt):
         fname = f"louis_{_dt_mod.datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
         caption = "📄 Análisis listo — abre en Safari → Compartir → Imprimir → PDF"
         telegram_send_file(telegram_token, chat_id, html_body, fname, caption=caption)
+    elif pending_files:
+        # Ya hay archivo(s) — manda un texto corto y deja que el archivo sea el entregable.
+        short = response.strip()
+        if short:
+            telegram_send_message(telegram_token, chat_id, short[:1500], parse_mode="Markdown")
     else:
         telegram_send_message(telegram_token, chat_id, response, parse_mode="Markdown")
 
