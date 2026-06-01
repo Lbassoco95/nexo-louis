@@ -43,20 +43,24 @@ ssh $SSH_OPTS "$REMOTE" "sudo mkdir -p $DEST && sudo chown -R ${LOUIS_REMOTE_USE
   ssh $SSH_OPTS "$REMOTE" "mkdir -p $DEST" 2>/dev/null || true
 
 # Sincroniza SOLO documentos de texto/ofimática (lo que Louis puede leer).
-# Excluye binarios pesados (video/audio/imágenes grandes/zip) y basura del SO.
-# --prune-empty-dirs evita subir carpetas que queden vacías tras los filtros.
+# ORDEN DE FILTROS (importante): primero excluir carpetas de código/VCS para que
+# rsync NI DESCIENDA en ellas (evita el ruido 'cannot delete non-empty directory'
+# de .git/node_modules). Luego incluir dirs restantes + los tipos de archivo.
 rsync -rz --delete --prune-empty-dirs --partial \
+  --exclude='.git' --exclude='.git/' \
+  --exclude='node_modules' --exclude='.cursor' --exclude='.vscode' \
+  --exclude='.next' --exclude='dist' --exclude='build' --exclude='venv' \
+  --exclude='.DS_Store' \
   --include='*/' \
   --include='*.md' --include='*.markdown' --include='*.txt' \
   --include='*.pdf' --include='*.docx' --include='*.doc' \
   --include='*.csv' --include='*.xlsx' --include='*.xls' \
   --include='*.pptx' --include='*.json' --include='*.rtf' \
-  --exclude='.DS_Store' --exclude='.git/' --exclude='node_modules/' \
   --exclude='*' \
   -e "ssh $SSH_OPTS" \
   "$PROJECTS_SRC/" "$REMOTE:$DEST/" \
   && echo "[$(stamp)] projects rsync OK" \
-  || echo "[$(stamp)] projects rsync FAIL (¿TCC? da Acceso a disco completo a /bin/bash)"
+  || echo "[$(stamp)] projects rsync terminó con avisos (normal si hay repos de código adentro)"
 
 # Escribe un índice simple para que Louis sepa qué proyectos y archivos hay.
 ssh $SSH_OPTS "$REMOTE" "cd $DEST 2>/dev/null && \
