@@ -2424,6 +2424,37 @@ TOOLS_DEFINITION = [
         },
     },
     {
+        "name": "m365_eliminar_evento",
+        "description": "Cancela o elimina un evento del calendario. Si Polo es el ORGANIZADOR y el evento tiene asistentes, lo CANCELA y notifica a todos los asistentes. Si es invitado, lo borra de su calendario. CONFIRMA con Polo antes de cancelar. Necesitas el event_id (sácalo con m365_calendario).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tenant": {"type": "string", "enum": TENANT_ENUM},
+                "event_id": {"type": "string"},
+                "comentario": {"type": "string", "description": "Mensaje de cancelación que reciben los asistentes (opcional)"},
+            },
+            "required": ["tenant", "event_id"],
+        },
+    },
+    {
+        "name": "m365_actualizar_evento",
+        "description": "Modifica un evento existente (cambiar hora, asunto, asistentes, lugar o descripción). Si Polo es organizador y hay asistentes, Graph les manda la actualización automáticamente. Pasa solo los campos a cambiar. Necesitas el event_id (sácalo con m365_calendario). CONFIRMA los cambios con Polo antes.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tenant": {"type": "string", "enum": TENANT_ENUM},
+                "event_id": {"type": "string"},
+                "subject": {"type": "string", "description": "Nuevo asunto/título"},
+                "inicio": {"type": "string", "description": "Nueva hora inicio YYYY-MM-DDTHH:MM CDMX"},
+                "fin": {"type": "string", "description": "Nueva hora fin YYYY-MM-DDTHH:MM CDMX"},
+                "asistentes": {"type": "string", "description": "Lista nueva de asistentes separada por comas (reemplaza la anterior)"},
+                "body": {"type": "string", "description": "Nueva descripción"},
+                "ubicacion": {"type": "string", "description": "Nuevo lugar"},
+            },
+            "required": ["tenant", "event_id"],
+        },
+    },
+    {
         "name": "m365_pendientes_evento",
         "description": "Lista SOLO las invitaciones de calendario donde Polo aún no ha respondido (notResponded). Útil cuando Polo pregunta '¿qué invitaciones tengo pendientes?'.",
         "input_schema": {
@@ -2536,6 +2567,15 @@ def _run_m365_tool(name: str, args: dict) -> str:
     elif name == "m365_responder_evento":
         cmd = ["responder-evento", tenant, args["event_id"], args["accion"],
                args.get("comentario", ""), str(args.get("send_response", True)).lower()]
+    elif name == "m365_eliminar_evento":
+        cmd = ["eliminar-evento", tenant, args["event_id"]]
+        if args.get("comentario"):
+            cmd.append(args["comentario"])
+    elif name == "m365_actualizar_evento":
+        cmd = ["actualizar-evento", tenant, args["event_id"]]
+        for campo in ("subject", "inicio", "fin", "asistentes", "body", "ubicacion"):
+            if args.get(campo):
+                cmd.append(f"{campo}={args[campo]}")
     elif name == "m365_pendientes_evento":
         cmd = ["pendientes-evento", tenant, args.get("rango", "semana")]
     elif name == "m365_mandar_correo":
