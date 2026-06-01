@@ -3905,6 +3905,83 @@ def _generar_documento_tool(tipo: str, titulo: str, contenido: str) -> str:
     return f"✅ {tipo.upper()} generado: {fname} ({len(data):,} bytes) — enviándolo por Telegram ahora"
 
 
+def _doc_tipo_de_mensaje(user_message: str) -> str:
+    """Infiere el tipo de documento pedido (pdf por default)."""
+    m = (user_message or "").lower()
+    if re.search(r"\b(pptx|powerpoint|presentaci[oó]n|deck|diapositiva)\b", m):
+        return "pptx"
+    if re.search(r"\b(excel|xlsx|hoja\s+de\s+c[aá]lculo|tabla\s+de\s+datos)\b", m):
+        return "xlsx"
+    return "pdf"
+
+
+def generar_documento_directo(api_key: str, system_prompt: str, history: list,
+                              user_message: str) -> tuple:
+    """Flujo DIRECTO y determinístico para pedidos de documento.
+
+    En vez de depender de que el modelo llame una tool (poco confiable), hace UNA
+    llamada a Sonnet pidiendo SOLO el contenido del documento en markdown, y luego
+    genera el archivo (PDF/PPTX/XLSX) en el servidor y lo encola. El modelo solo
+    escribe texto (100% confiable); la generación del archivo es nuestra.
+
+    Returns: (texto_confirmacion, model_used).
+    """
+    tipo = _doc_tipo_de_mensaje(user_message)
+    # Contexto: últimas conversaciones para que el documento use lo ya discutido.
+    ctx_msgs = []
+    for h in (history or [])[-8:]:
+        if h.get("role") in ("user", "assistant") and isinstance(h.get("content"), str) and h["content"].strip():
+            ctx_msgs.append({"role": h["role"], "content": h["content"].strip()})
+    instruccion = (
+        f"Eres el generador de documentos de Louis (Kawiil). El usuario pidió:\n«{user_message}»\n\n"
+        "Escribe AHORA el DOCUMENTO COMPLETO y FINAL en formato markdown:\n"
+        "- Usa # para el título principal, ## para secciones, ### para subsecciones.\n"
+        "- Usa - para viñetas y tablas con | columna | columna |.\n"
+        "- Incluye TODO el contenido sustantivo (marco legal, análisis, datos, cronogramas, etc.).\n"
+        "- NO escribas preámbulos ('aquí está', 'voy a generar', '¿procedo?') ni cierres "
+        "('¿algo más?', '¿lo genero?'). Empieza DIRECTO con el título (#) y termina con el "
+        "contenido del documento. NO menciones que es un PDF ni cómo se va a entregar.\n"
+        "- Profundidad profesional: este documento se compartirá con un equipo de trabajo real."
+    )
+    sys_combined = system_prompt + "\n\n" + instruccion
+    messages = ctx_msgs + [{"role": "user", "content": user_message}]
+    # Colapsa roles consecutivos (Anthropic rechaza dos del mismo rol seguidos)
+    collapsed = []
+    for m in messages:
+        if collapsed and collapsed[-1]["role"] == m["role"]:
+            collapsed[-1]["content"] += "\n" + m["content"]
+        else:
+            collapsed.append(dict(m))
+    while collapsed and collapsed[0]["role"] != "user":
+        collapsed.pop(0)
+    headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
+    body = {
+        "model": CLAUDE_SONNET,
+        "max_tokens": 8192,
+        "system": sys_combined,
+        "messages": collapsed,
+    }
+    try:
+        resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=180)
+    except Exception as e:
+        log.exception("generar_documento_directo: API falló")
+        return (f"⚠️ No pude generar el documento (error de Claude: {e}). Intenta de nuevo.", "doc-error")
+    blocks = resp.get("content", [])
+    contenido = "".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip()
+    if not contenido or len(contenido) < 200:
+        return ("⚠️ Claude no devolvió contenido suficiente para el documento. Intenta ser más específico.",
+                "doc-empty")
+    # Título: primer encabezado markdown o las primeras palabras del pedido
+    m = re.search(r"^#\s+(.+)$", contenido, re.MULTILINE)
+    titulo = (m.group(1).strip() if m else (user_message[:60].strip())).rstrip(".?!")
+    resultado = _generar_documento_tool(tipo, titulo, contenido)
+    if resultado.startswith("ERROR"):
+        return (f"⚠️ {resultado}", "doc-error")
+    log.info(f"generar_documento_directo OK: tipo={tipo} titulo={titulo[:40]} len={len(contenido)}")
+    return (f"📄 Listo: *{titulo}*\n\nTe lo mando como {tipo.upper()} aquí abajo. "
+            f"({len(contenido):,} caracteres de contenido)", f"doc-{tipo}")
+
+
 # ===== Dropbox =====
 _DROPBOX_TOKEN_CACHE = {"token": None, "expires": 0.0}
 

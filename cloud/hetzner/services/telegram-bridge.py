@@ -425,6 +425,26 @@ def process_update(update, telegram_token, chat_id, api_key, system_prompt):
 
     core.append_history(HISTORY_FILE, "user", user_input)
     history = core.load_history(HISTORY_FILE, max_turns=16)[:-1]
+
+    # Pedido de documento (PDF/PPTX/XLSX): flujo DIRECTO determinístico.
+    # No dependemos de tool-calling — Sonnet escribe el contenido, nosotros generamos
+    # el archivo. Esto garantiza la entrega del documento.
+    if core.needs_doc_sonnet(user_input):
+        log.info("→ Documento directo (Sonnet escribe contenido → PDF/PPTX/XLSX)")
+        response, model_used = core.generar_documento_directo(
+            api_key, system_prompt, history, user_input
+        )
+        core.append_history(HISTORY_FILE, "assistant", response)
+        telegram_send_message(telegram_token, chat_id, response, parse_mode="Markdown")
+        for content, fname, cap in core.get_pending_files():
+            try:
+                telegram_send_document(telegram_token, chat_id, content, fname, caption=cap)
+                log.info(f"📎 documento enviado: {fname} ({len(content)} bytes)")
+            except Exception as e:
+                log.error(f"envío de documento {fname} falló: {e}")
+                telegram_send_message(telegram_token, chat_id, f"⚠️ No pude enviarte {fname}: {e}", parse_mode=None)
+        return
+
     # Pasamos el mensaje CRUDO: call_llm detecta /sonnet, /oss, /haiku, /llama
     # y limpia el prefijo internamente antes de llamar al modelo.
     response, model_used = core.call_llm(
