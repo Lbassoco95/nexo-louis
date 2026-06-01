@@ -7,7 +7,10 @@
 #   ./mac-install-projects-sync.sh 204.168.131.21 polo ~/.ssh/id_ed25519
 #
 # IMPORTANTE (macOS/TCC): como la carpeta está en ~/Documents, launchd necesita
-# "Acceso a disco completo" para /bin/bash. El script lo recuerda al final.
+# "Acceso a disco completo". /bin/bash está protegido por SIP y macOS suele
+# ignorar el permiso TCC para él, así que usamos una COPIA propia de bash
+# (~/.openclaw/bin/louis-bash) a la que sí se le puede otorgar el permiso de
+# forma confiable. El job corre con esa copia.
 
 set -euo pipefail
 
@@ -23,15 +26,22 @@ PLIST="$LAUNCH_DIR/ai.kawiil.projects-sync.plist"
 
 INSTALL_DIR="$HOME/.openclaw/scripts"
 PUSH_SCRIPT="$INSTALL_DIR/mac-push-projects.sh"
+BIN_DIR="$HOME/.openclaw/bin"
+LOUIS_BASH="$BIN_DIR/louis-bash"
 
 [[ -f "$SOURCE_SCRIPT" ]] || { echo "✗ No encuentro $SOURCE_SCRIPT"; exit 1; }
 [[ -f "$SSH_KEY" ]] || { echo "✗ No encuentro SSH key $SSH_KEY"; exit 1; }
 
-mkdir -p "$INSTALL_DIR" "$LAUNCH_DIR" "$LOG_DIR"
+mkdir -p "$INSTALL_DIR" "$BIN_DIR" "$LAUNCH_DIR" "$LOG_DIR"
 
 cp "$SOURCE_SCRIPT" "$PUSH_SCRIPT"
 chmod +x "$PUSH_SCRIPT"
 echo "✓ Script copiado a $PUSH_SCRIPT"
+
+# Copia propia de bash (sin SIP) para que TCC/Acceso a disco completo funcione.
+cp /bin/bash "$LOUIS_BASH"
+chmod +x "$LOUIS_BASH"
+echo "✓ Copia de bash en $LOUIS_BASH (dale Acceso a disco completo a ESTE archivo)"
 
 cat > "$PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -42,7 +52,7 @@ cat > "$PLIST" <<PLIST
   <key>Label</key><string>ai.kawiil.projects-sync</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/bin/bash</string>
+    <string>$LOUIS_BASH</string>
     <string>$PUSH_SCRIPT</string>
   </array>
   <key>EnvironmentVariables</key>
@@ -67,10 +77,11 @@ launchctl load "$PLIST"
 echo "✓ Cargado en launchd — corre cada 30 min (+ inmediato ahora)"
 echo ""
 echo "⚠️  IMPORTANTE — Acceso a disco completo (TCC):"
-echo "   La carpeta está en ~/Documents, que macOS protege. Si el log muestra"
-echo "   'Operation not permitted', ve a:"
+echo "   La carpeta está en ~/Documents, que macOS protege. Debes darle"
+echo "   'Acceso a disco completo' a la copia de bash del job:"
 echo "   Ajustes del sistema → Privacidad y seguridad → Acceso a disco completo"
-echo "   y agrega /bin/bash (botón +, Cmd+Shift+G, escribe /bin/bash)."
+echo "   botón + → Cmd+Shift+G → pega:  $LOUIS_BASH"
+echo "   (deja el switch encendido). Luego: launchctl kickstart -k gui/\$(id -u)/ai.kawiil.projects-sync"
 echo ""
 echo "Ver el log:   tail -f $LOG_DIR/louis-projects-sync.log"
 echo "Forzar corrida: LOUIS_REMOTE_HOST=$HOST LOUIS_REMOTE_USER=$USER_REMOTE LOUIS_SSH_KEY=$SSH_KEY bash $PUSH_SCRIPT"
