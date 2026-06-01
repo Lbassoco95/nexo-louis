@@ -3754,7 +3754,26 @@ def _queue_file(content: bytes, filename: str, caption: str = "") -> None:
 
 # ===== Proyectos (sync desde ~/Documents/Claude/Projects de la Mac) =====
 PROJECTS_DIR = HOME_OC / "projects"
+# Carpeta donde Louis guarda lo que genera (PDFs, informes). Se sincroniza de
+# regreso a la Mac. Va con prefijo "_" para distinguirse de los proyectos de Polo.
+GENERATED_DIR = PROJECTS_DIR / "_Louis-Generados"
 _PROJ_TEXT_EXT = {".md", ".markdown", ".txt", ".csv", ".json", ".rtf"}
+
+
+def _guardar_generado(content: bytes, filename: str) -> str | None:
+    """Guarda un archivo generado en /opt/openclaw/projects/_Louis-Generados/YYYY-MM/
+    para que quede registro y se sincronice de regreso a la Mac. Devuelve la ruta
+    o None si falla (sin romper el envío por Telegram)."""
+    import datetime as _dt
+    try:
+        sub = GENERATED_DIR / _dt.date.today().strftime("%Y-%m")
+        sub.mkdir(parents=True, exist_ok=True)
+        dest = sub / filename
+        dest.write_bytes(content)
+        return str(dest)
+    except Exception as e:
+        log.warning(f"No pude guardar generado {filename}: {e}")
+        return None
 
 
 def _proyectos_listar() -> str:
@@ -4148,7 +4167,9 @@ def _generar_documento_tool(tipo: str, titulo: str, contenido: str) -> str:
         "xlsx": "📊 Excel listo — ábrelo en Numbers o Excel",
     }
     _queue_file(data, fname, captions.get(tipo, f"📄 {titulo[:60]}"))
-    return f"✅ {tipo.upper()} generado: {fname} ({len(data):,} bytes) — enviándolo por Telegram ahora"
+    saved = _guardar_generado(data, fname)
+    extra = " · guardado en Hetzner (se sincroniza a tu Mac)" if saved else ""
+    return f"✅ {tipo.upper()} generado: {fname} ({len(data):,} bytes) — enviándolo por Telegram ahora{extra}"
 
 
 def _doc_tipo_de_mensaje(user_message: str) -> str:
@@ -6038,11 +6059,13 @@ def _invocar_agente(
             pdf_bytes = _generar_pdf(titulo, raw, nombre)
             if pdf_bytes:
                 _queue_file(pdf_bytes, f"{fname_base}.pdf", f"📄 {titulo[:60]}")
+                _guardar_generado(pdf_bytes, f"{fname_base}.pdf")
                 ext_msg = "PDF"
             else:
                 html_bytes = _md_to_html(titulo, nombre, raw)
                 _queue_file(html_bytes, f"{fname_base}.html",
                             f"📄 {titulo[:60]} — abre en Safari → Compartir → Imprimir → PDF")
+                _guardar_generado(html_bytes, f"{fname_base}.html")
                 ext_msg = "HTML (instala fpdf2 en el servidor para PDF nativo)"
             preview = raw[:600].strip()
             return (

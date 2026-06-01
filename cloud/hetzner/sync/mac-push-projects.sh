@@ -46,7 +46,10 @@ ssh $SSH_OPTS "$REMOTE" "sudo mkdir -p $DEST && sudo chown -R ${LOUIS_REMOTE_USE
 # ORDEN DE FILTROS (importante): primero excluir carpetas de código/VCS para que
 # rsync NI DESCIENDA en ellas (evita el ruido 'cannot delete non-empty directory'
 # de .git/node_modules). Luego incluir dirs restantes + los tipos de archivo.
+# --filter='P _Louis-Generados/' PROTEGE la carpeta de generados de Louis para que
+# el --delete NO la borre (esos archivos solo existen en Hetzner, no en la Mac).
 rsync -rz --delete --prune-empty-dirs --partial \
+  --filter='P _Louis-Generados/' \
   --exclude='.git' --exclude='.git/' \
   --exclude='node_modules' --exclude='.cursor' --exclude='.vscode' \
   --exclude='.next' --exclude='dist' --exclude='build' --exclude='venv' \
@@ -59,8 +62,19 @@ rsync -rz --delete --prune-empty-dirs --partial \
   --exclude='*' \
   -e "ssh $SSH_OPTS" \
   "$PROJECTS_SRC/" "$REMOTE:$DEST/" \
-  && echo "[$(stamp)] projects rsync OK" \
-  || echo "[$(stamp)] projects rsync terminó con avisos (normal si hay repos de código adentro)"
+  && echo "[$(stamp)] projects push OK" \
+  || echo "[$(stamp)] projects push terminó con avisos (normal si hay repos de código adentro)"
+
+# === PULL: baja lo que Louis generó (Hetzner → Mac) ===
+# Bidireccional seguro: solo bajamos _Louis-Generados/ (namespace separado de tus
+# docs), así nunca hay conflicto con lo que tú editas en la Mac.
+GEN_LOCAL="$PROJECTS_SRC/_Louis-Generados"
+mkdir -p "$GEN_LOCAL"
+rsync -rz --partial \
+  -e "ssh $SSH_OPTS" \
+  "$REMOTE:$DEST/_Louis-Generados/" "$GEN_LOCAL/" \
+  && echo "[$(stamp)] generados pull OK (Hetzner→Mac)" \
+  || echo "[$(stamp)] generados pull: nada que bajar todavía"
 
 # Escribe un índice simple para que Louis sepa qué proyectos y archivos hay.
 ssh $SSH_OPTS "$REMOTE" "cd $DEST 2>/dev/null && \
