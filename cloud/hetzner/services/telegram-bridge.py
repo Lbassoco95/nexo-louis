@@ -429,11 +429,23 @@ def process_update(update, telegram_token, chat_id, api_key, system_prompt):
     else:
         html_body = _extract_html_from_fence(response)
 
+    import datetime as _dt_mod
     if html_body:
-        import datetime
-        fname = f"louis_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+        fname = f"louis_{_dt_mod.datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
         caption = "📄 Análisis listo (ábrelo en el navegador para mejor lectura)"
         telegram_send_file(telegram_token, chat_id, html_body, fname, caption=caption)
+    elif len(response) > 2200:
+        # Respuesta larga (plan, informe, dictamen) → archivo HTML en vez de texto cortado
+        titulo = (user_input or "Documento")[:80].strip().rstrip(".?!")
+        html_bytes = core._md_to_html(titulo, "Louis", response)
+        fname = f"louis_{_dt_mod.datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+        try:
+            telegram_send_document(telegram_token, chat_id, html_bytes, fname,
+                                   caption="📄 Te lo mando como archivo para que lo puedas compartir con el equipo (ábrelo en Safari → Compartir → Guardar como PDF)")
+            log.info(f"📎 respuesta larga enviada como archivo: {fname} ({len(html_bytes)} bytes)")
+        except Exception as e:
+            log.warning(f"No pude enviar como archivo ({e}), mandando texto")
+            telegram_send_message(telegram_token, chat_id, response, parse_mode="Markdown")
     else:
         telegram_send_message(telegram_token, chat_id, response, parse_mode="Markdown")
 
