@@ -6868,22 +6868,50 @@ def _call_claude_with_billing_check(fn, api_key, system_prompt, history, user_me
 # ===== Formatters por canal =====
 def format_for_telegram(text: str) -> str:
     """
-    Convierte Markdown estándar (lo que Claude produce) a Markdown legacy de Telegram.
-    Reglas:
-      - `**bold**` → `*bold*`
-      - Headers `#`, `##`, `###` → línea en negrita
-      - El resto se mantiene
+    Convierte Markdown estándar (lo que Claude produce) a HTML de Telegram.
+
+    Telegram legacy Markdown es frágil: un `*` o backtick desbalanceado devuelve
+    HTTP 400 y el mensaje cae a texto crudo (asteriscos literales). HTML de Telegram
+    es predecible — generamos pares de tags balanceados. Tags soportados:
+    <b> <i> <u> <s> <code> <pre> <a>.
     """
     if not text:
         return text
-    # 1) Headers a negrita en línea propia
-    text = re.sub(r"^#{1,6}\s+(.+)$", r"*\1*", text, flags=re.MULTILINE)
-    # 2) ** ** → * * (negrita). Evita captura greedy.
-    # Reemplazo de a pares: cada ** se vuelve * (más simple y correcto que regex de pares balanceados).
-    # Estrategia: ** consecutivos → un solo *
-    text = text.replace("**", "*")
-    # 3) Telegram Markdown legacy NO acepta ___ ni ~~. Lo dejamos pasar literal o lo borramos.
-    text = re.sub(r"~~(.+?)~~", r"\1", text)  # tachado: quitar
+    import html as _html
+    # 1) Proteger bloques de código ``` ``` y spans `code` (no tocar su interior)
+    placeholders: list = []
+
+    def _stash(m):
+        placeholders.append(m.group(0))
+        return f"\x00{len(placeholders)-1}\x00"
+
+    text = re.sub(r"```[\s\S]*?```", _stash, text)
+    text = re.sub(r"`[^`\n]+`", _stash, text)
+    # 2) Escapar caracteres especiales de HTML en el resto
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    # 3) Headers → negrita en su propia línea
+    text = re.sub(r"^#{1,6}\s+(.+)$", r"<b>\1</b>", text, flags=re.MULTILINE)
+    # 4) Negrita **x** y __x__
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text, flags=re.DOTALL)
+    text = re.sub(r"__(.+?)__", r"<b>\1</b>", text, flags=re.DOTALL)
+    # 5) Tachado ~~x~~
+    text = re.sub(r"~~(.+?)~~", r"<s>\1</s>", text, flags=re.DOTALL)
+    # 6) Cursiva *x* / _x_ (un solo marcador, sin pegar a palabra para no romper a*b)
+    text = re.sub(r"(?<![\w*])\*([^*\n]+?)\*(?![\w*])", r"<i>\1</i>", text)
+    text = re.sub(r"(?<![\w_])_([^_\n]+?)_(?![\w_])", r"<i>\1</i>", text)
+    # 7) Links [texto](url)
+    text = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", r'<a href="\2">\1</a>', text)
+    # 8) Restaurar code spans como <code>/<pre> (escapando su interior)
+    def _restore(m):
+        raw = placeholders[int(m.group(1))]
+        if raw.startswith("```"):
+            inner = raw.strip("`")
+            inner = _html.escape(inner)
+            return f"<pre>{inner}</pre>"
+        inner = _html.escape(raw.strip("`"))
+        return f"<code>{inner}</code>"
+
+    text = re.sub(r"\x00(\d+)\x00", _restore, text)
     return text
 
 

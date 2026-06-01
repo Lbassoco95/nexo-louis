@@ -14,6 +14,7 @@ Toda la lógica de routing, tools y M365 vive en louis_core.py
 
 import os
 import sys
+import re
 import json
 import time
 import subprocess
@@ -128,12 +129,15 @@ def telegram_get_updates(token: str, offset: int):
 
 def telegram_send_message(token: str, chat_id: str, text: str, parse_mode: str = "Markdown"):
     """
-    Manda mensaje a Telegram. Aplica format_for_telegram() para convertir
-    `**bold**` → `*bold*` (Markdown legacy de Telegram).
+    Manda mensaje a Telegram. Aplica format_for_telegram() para convertir el
+    Markdown de Claude a HTML de Telegram (más robusto que Markdown legacy).
 
-    Si el render con Markdown falla (caracteres inválidos), reintenta sin parse_mode.
+    Si el render con HTML falla, reintenta sin formato (tags removidos).
     """
-    formatted = core.format_for_telegram(text) if parse_mode else text
+    import html as _html
+    use_format = bool(parse_mode)
+    formatted = core.format_for_telegram(text) if use_format else text
+    tg_parse = "HTML" if use_format else None
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     chunks = []
     remaining = formatted
@@ -142,8 +146,8 @@ def telegram_send_message(token: str, chat_id: str, text: str, parse_mode: str =
         remaining = remaining[4000:]
     for chunk in chunks:
         body = {"chat_id": chat_id, "text": chunk, "disable_web_page_preview": True}
-        if parse_mode:
-            body["parse_mode"] = parse_mode
+        if tg_parse:
+            body["parse_mode"] = tg_parse
         try:
             core.http_post_json(url, headers={}, body=body, timeout=15)
         except urllib.error.HTTPError as e:
@@ -152,10 +156,13 @@ def telegram_send_message(token: str, chat_id: str, text: str, parse_mode: str =
                 err_body = e.read().decode("utf-8", errors="replace")
             except Exception:
                 pass
-            if parse_mode and ("parse" in err_body.lower() or "entity" in err_body.lower() or e.code == 400):
-                log.warning(f"Markdown falló ({err_body[:200]}), reintentando sin parse_mode")
+            if tg_parse and ("parse" in err_body.lower() or "entity" in err_body.lower() or e.code == 400):
+                log.warning(f"HTML falló ({err_body[:200]}), reintentando sin formato")
+                # Quitar tags HTML y desescapar entidades → texto plano legible
+                raw = re.sub(r"<[^>]+>", "", chunk)
+                raw = _html.unescape(raw)
                 body.pop("parse_mode", None)
-                body["text"] = chunk  # texto raw, no el formatted
+                body["text"] = raw
                 try:
                     core.http_post_json(url, headers={}, body=body, timeout=15)
                 except Exception as e2:
