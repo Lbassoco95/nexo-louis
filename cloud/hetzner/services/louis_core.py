@@ -177,6 +177,9 @@ TOOL_KEYWORDS = [
     r"\b(calendario|calendar|junta|juntas|reunión|reunion|reuniones|cita|citas|evento|eventos)\b",
     r"\b(manda|envía|envia|enviar|responde|responder|reenvía|reenvia|reenviar)\b",
     r"\b(slack|canal|mensaje\s+a)\b",
+    # Confirmaciones de acción (ej: tras '¿empiezo?' → 'sí/dale/hazlo') deben ir a
+    # Claude-con-tools, NO a DeepSeek (que no puede ejecutar la tool prometida).
+    r"^\s*(s[ií]|dale|h[aá]zlo|hazl[oa]|adelante|procede|proc[eé]de|confirmo|órale|orale|va\b|hágalo|hagalo|ejec[uú]talo|c[oó]rrelo|correlo)\b",
     # Verificación de comandos / estado real (deben ir a Claude con tools, NO a DeepSeek que inventa)
     r"\b(resultado|resultados|se\s+hizo|se\s+subió|se\s+subio|hiciste|corrió|corrio|terminó|termino|log|logs|cola|push|commit|backfill)\b",
     # Envío de archivos / PDFs / Dropbox (deben ir a Claude con tools, no a DeepSeek)
@@ -532,6 +535,21 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "a redactar correos a clientes en mi tono'), considera proponer crear un agente. "
         "Tools: `crear_agente`, `listar_agentes`, `invocar_agente`. Confirma con Polo el prompt antes "
         "de crear un agente nuevo.\n"
+        "## ⛔ DELEGACIÓN ES SÍNCRONA — NO EXISTE 'EN SEGUNDO PLANO'\n"
+        "`invocar_agente`/`delegar_agente` corren AL INSTANTE y te devuelven el resultado del agente "
+        "EN LA MISMA llamada. NO hay procesamiento en background, ni colas, ni 'te aviso cuando termine'. "
+        "Por lo tanto:\n"
+        "- Cuando decidas delegar (y Polo confirme si preguntaste), DEBES llamar `invocar_agente` EN ESE "
+        "MISMO TURNO y entregar el resultado real del agente. \n"
+        "- PROHIBIDO decir 'ya lo delegué', 'lo está procesando', 'te aviso cuando termine', 'en unos "
+        "minutos te paso el informe' — eso es FALSO porque no hay tarea en segundo plano. Si lo dices "
+        "sin haber llamado la tool, estás mintiendo y la tarea NUNCA se hará.\n"
+        "- Flujo correcto: Polo pide algo → (si confirmas) → llamas `invocar_agente('kawiil-X', tarea, "
+        "contexto)` → te devuelve el informe → se lo entregas a Polo en ese turno. Todo en una sola vuelta.\n"
+        "- Si el resultado es muy largo, igual lo entregas (el bridge lo manda como archivo si hace falta). "
+        "Nunca lo dejes 'pendiente'.\n"
+        "Regla de oro: si dijiste que un agente haría algo, el output de ese agente DEBE aparecer en tu "
+        "respuesta. Si no llamaste la tool, no digas que delegaste.\n"
         "## REGLA LEGAL OBLIGATORIA — internacional como referencia, México como ley\n"
         "Los ~92 agentes `legal-*` (claude-for-legal) son contexto EE.UU.: sirven SOLO como "
         "REFERENCIA TÉCNICA internacional. Los agentes mexicanos (kawiil-nelli, kawiil-tepantli y "
