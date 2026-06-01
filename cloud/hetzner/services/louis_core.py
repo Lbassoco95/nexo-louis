@@ -178,6 +178,8 @@ TOOL_KEYWORDS = [
     r"\b(léeme|leeme|abre|consulta)\s+(la|el|mi|mis)\s+(agenda|memoria|aprendizajes|learnings|important|proyectos|projects)\b",
     r"\b(amatl|atl|balam|coyolli|metztli|nelli|ollin|teocuitl|tepantli|tequitl|tlahtoani|tlahtolli|tochtli|yollotl)\b",
     r"\b(agente|agentes|despacha|dispatch|kawiil)\b",
+    # Proyectos sincronizados desde la Mac (~/Documents/Claude/Projects)
+    r"\b(proyecto|proyectos|vizum|dazon|kuali|rivium|sylon|impulso|fiatcoin|kawiilers)\b",
     r"\b(correo|correos|email|outlook|inbox|mail|carpeta|archivo|archivar|borrar|marcar)\b",
     r"\b(calendario|calendar|junta|juntas|reunión|reunion|reuniones|cita|citas|evento|eventos)\b",
     r"\b(manda|envía|envia|enviar|responde|responder|reenvía|reenvia|reenviar)\b",
@@ -1108,15 +1110,27 @@ _DOC_VERB_RE = re.compile(
     r"\b(gen[eé]ra\w*|elabora\w*|prepara\w*|arma\w*|haz\w*|hag\w*|conviert\w*|crea\w*|"
     r"entr[eé]ga\w*|p[aá]sa\w*|m[aá]nda\w*|env[ií]a\w*|comp[aá]rt\w*|dame|necesito|quiero)\b",
     re.IGNORECASE)
+# Señales de que NO es un pedido de documento sino una consulta de estado/conteo
+# (ej: "cuántas tesis con su PDF", "números totales del DOF", "cómo vamos").
+# Evita que 'necesito ... PDF' dispare la generación de un documento.
+_DOC_NEGATIVE_RE = re.compile(
+    r"\b(cu[aá]nt\w*|n[uú]mero?s?|total\w*|c[oó]mo\s+(vamos|va|van|est[aá]\w*)|"
+    r"estad[oí]stic\w*|estado\s+(del?|de\s+la)|descargad\w*|indexad\w*|organizad\w*|"
+    r"avance|conteo|resumen\s+de\s+(estado|n[uú]meros))\b",
+    re.IGNORECASE)
 
 
 def needs_doc_sonnet(user_message: str) -> bool:
-    """True si Polo pide un documento (PDF/PPTX/XLSX). Usa Sonnet — sigue
-    instrucciones de tool-calling mucho mejor que Haiku para generar_documento."""
+    """True si Polo pide GENERAR un documento (PDF/PPTX/XLSX). Usa Sonnet — sigue
+    instrucciones de tool-calling mucho mejor que Haiku para generar_documento.
+    Excluye consultas de estado/conteo (cuántas, números, descargadas) aunque
+    mencionen 'PDF', porque ésas van a las tools de estado, no al generador."""
     if not user_message:
         return False
     msg = user_message.strip()
     if msg.lower().startswith(OLLAMA_FORCE_PREFIXES):
+        return False
+    if _DOC_NEGATIVE_RE.search(msg):
         return False
     return bool(_DOC_TYPE_RE.search(msg) and _DOC_VERB_RE.search(msg))
 
@@ -2164,6 +2178,45 @@ TOOLS_DEFINITION = [
             "type": "object",
             "properties": {"cod": {"type": "string", "description": "cod_nota de la publicación DOF"}},
             "required": ["cod"],
+        },
+    },
+    {
+        "name": "proyectos_listar",
+        "description": (
+            "Lista los proyectos de Polo sincronizados desde su Mac (~/Documents/Claude/Projects): "
+            "Dazon, Vizum, Kawiil*, Yoltik*, Kuali, RIVIUM, etc. Muestra cuántos archivos tiene cada uno "
+            "y cuándo cambió por última vez. Úsala cuando Polo pregunte por sus proyectos o quieras saber "
+            "qué proyectos hay antes de leer documentos para actualizar PROJECTS.md."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "proyectos_archivos",
+        "description": (
+            "Lista los archivos dentro de un proyecto sincronizado (más recientes primero). "
+            "Úsala antes de `proyecto_leer` para saber el nombre exacto del archivo que quieres abrir."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"proyecto": {"type": "string", "description": "Nombre del proyecto (ej: 'Vizum', 'Dazon')"}},
+            "required": ["proyecto"],
+        },
+    },
+    {
+        "name": "proyecto_leer",
+        "description": (
+            "Lee el contenido de un archivo de un proyecto sincronizado (texto: .md/.txt/.csv/.json; "
+            "y .pdf si hay extracción disponible). Úsala para revisar el estado real de un proyecto y, "
+            "si Polo lo pide, actualizar PROJECTS.md con lo que encuentres. NO inventes el contenido — "
+            "léelo con esta tool."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "proyecto": {"type": "string", "description": "Nombre del proyecto (ej: 'Vizum')"},
+                "archivo": {"type": "string", "description": "Nombre o ruta del archivo dentro del proyecto"},
+            },
+            "required": ["proyecto", "archivo"],
         },
     },
     {
@@ -3697,6 +3750,102 @@ _PENDING_FILES: list = []
 
 def _queue_file(content: bytes, filename: str, caption: str = "") -> None:
     _PENDING_FILES.append((content, filename, caption))
+
+
+# ===== Proyectos (sync desde ~/Documents/Claude/Projects de la Mac) =====
+PROJECTS_DIR = HOME_OC / "projects"
+_PROJ_TEXT_EXT = {".md", ".markdown", ".txt", ".csv", ".json", ".rtf"}
+
+
+def _proyectos_listar() -> str:
+    """Lista los proyectos sincronizados y cuántos archivos tiene cada uno."""
+    if not PROJECTS_DIR.exists():
+        return ("No hay proyectos sincronizados todavía en el servidor. "
+                "El sync Mac→Hetzner (ai.kawiil.projects-sync) aún no ha corrido "
+                "o no está instalado.")
+    proyectos = sorted([d for d in PROJECTS_DIR.iterdir() if d.is_dir()])
+    if not proyectos:
+        return "La carpeta de proyectos existe pero está vacía (el sync aún no subió nada)."
+    out = [f"📁 *Proyectos sincronizados* ({len(proyectos)}):\n"]
+    for d in proyectos:
+        files = [f for f in d.rglob("*") if f.is_file()]
+        recientes = max((f.stat().st_mtime for f in files), default=0)
+        import datetime as _dt
+        fecha = _dt.datetime.fromtimestamp(recientes).strftime("%d/%m %H:%M") if recientes else "?"
+        out.append(f"• *{d.name}* — {len(files)} archivos · últ. cambio {fecha}")
+    return "\n".join(out)
+
+
+def _proyectos_archivos(proyecto: str) -> str:
+    """Lista los archivos de un proyecto (para luego leer uno con proyecto_leer)."""
+    base = PROJECTS_DIR / proyecto
+    if not base.exists() or not base.is_dir():
+        disponibles = sorted([d.name for d in PROJECTS_DIR.iterdir() if d.is_dir()]) if PROJECTS_DIR.exists() else []
+        return (f"No encuentro el proyecto «{proyecto}». Disponibles: "
+                f"{', '.join(disponibles) if disponibles else '(ninguno aún)'}")
+    files = sorted([f for f in base.rglob("*") if f.is_file() and f.name != ".DS_Store"],
+                   key=lambda f: f.stat().st_mtime, reverse=True)
+    if not files:
+        return f"El proyecto «{proyecto}» no tiene archivos sincronizados."
+    out = [f"📂 *{proyecto}* — {len(files)} archivos (más recientes primero):\n"]
+    for f in files[:60]:
+        rel = f.relative_to(base)
+        kb = f.stat().st_size / 1024
+        out.append(f"• {rel}  ({kb:.0f} KB)")
+    if len(files) > 60:
+        out.append(f"… y {len(files) - 60} más")
+    return "\n".join(out)
+
+
+def _proyecto_leer(proyecto: str, archivo: str) -> str:
+    """Lee el contenido de un archivo de texto de un proyecto.
+
+    Para archivos de texto (.md/.txt/.csv/.json) devuelve el contenido.
+    Para PDF intenta extraer texto si hay librería; si no, lo dice.
+    """
+    base = PROJECTS_DIR / proyecto
+    if not base.exists():
+        return f"No encuentro el proyecto «{proyecto}». Usa `proyectos_listar` para ver los disponibles."
+    # Resolver el archivo (match exacto o por nombre/substring)
+    target = base / archivo
+    if not target.exists():
+        candidatos = [f for f in base.rglob("*") if f.is_file() and archivo.lower() in f.name.lower()]
+        if not candidatos:
+            return (f"No encuentro «{archivo}» en {proyecto}. Usa `proyectos_archivos('{proyecto}')` "
+                    f"para ver la lista exacta.")
+        target = max(candidatos, key=lambda f: f.stat().st_mtime)
+    # Seguridad: no salir de PROJECTS_DIR
+    try:
+        target.resolve().relative_to(PROJECTS_DIR.resolve())
+    except ValueError:
+        return "Ruta inválida."
+    ext = target.suffix.lower()
+    try:
+        if ext in _PROJ_TEXT_EXT:
+            txt = target.read_text(encoding="utf-8", errors="replace")
+            if len(txt) > 12000:
+                txt = txt[:12000] + f"\n\n… (truncado, el archivo tiene {len(txt):,} caracteres)"
+            return f"📄 {proyecto}/{target.relative_to(base)}:\n\n{txt}"
+        if ext == ".pdf":
+            try:
+                from pypdf import PdfReader
+                reader = PdfReader(str(target))
+                pages = [p.extract_text() or "" for p in reader.pages[:40]]
+                txt = "\n".join(pages).strip()
+                if not txt:
+                    return f"«{target.name}» es un PDF sin texto extraíble (probablemente escaneado/imagen)."
+                if len(txt) > 12000:
+                    txt = txt[:12000] + "\n\n… (truncado)"
+                return f"📄 {proyecto}/{target.name} (PDF):\n\n{txt}"
+            except ImportError:
+                return (f"«{target.name}» es PDF. Para leer PDFs instala pypdf en el servidor: "
+                        f"pip3 install --break-system-packages pypdf")
+        return (f"«{target.name}» es {ext or 'sin extensión'} — no lo puedo leer como texto. "
+                f"Formatos legibles: {', '.join(sorted(_PROJ_TEXT_EXT))} y .pdf.")
+    except Exception as e:
+        return f"Error leyendo «{target.name}»: {e}"
+
+
 
 
 def get_pending_files() -> list:
@@ -6327,6 +6476,12 @@ def execute_tool(name: str, args: dict) -> str:
             return _dof_pdf(str(args["cod"]))
         elif name == "generar_documento":
             return _generar_documento_tool(args["tipo"], args["titulo"], args["contenido"])
+        elif name == "proyectos_listar":
+            return _proyectos_listar()
+        elif name == "proyectos_archivos":
+            return _proyectos_archivos(args["proyecto"])
+        elif name == "proyecto_leer":
+            return _proyecto_leer(args["proyecto"], args["archivo"])
         elif name == "verificar_conexiones":
             return _verificar_conexiones(args.get("incluir_m365", True))
         elif name == "crear_agente":
