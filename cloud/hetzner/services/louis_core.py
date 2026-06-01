@@ -168,6 +168,11 @@ TOOL_KEYWORDS = [
     r"\b(dónde\s+(corres|estás|vives)|donde\s+(corres|estas|vives))\b",
     r"\b(qué\s+(tienes|puedes|conectado|conexión|cuentas|servicios|herramientas|tools)|que\s+(tienes|puedes|conectado))\b",
     r"\b(host|hostname|servidor|vm|server|configuración|configuracion|setup)\b",
+    # Estado/infraestructura: deben ir a Claude-con-tools (listar_agentes, hetzner_estado,
+    # verificar_conexiones), NUNCA a DeepSeek que inventa reportes plausibles.
+    r"\b(c[oó]mo\s+est[aá]s|qu[eé]\s+(falta|tienes\s+listo|est[aá]\s+listo|hace\s+falta)|"
+    r"qu[eé]\s+(est[aá]|hay)\s+pendiente|pendientes?\s+de\s+(infra\w*|configuraci[oó]n)|"
+    r"estado\s+(actual|de\s+louis|de\s+la\s+infra\w*)|infraestructura|instalad\w+|deploy\s+key)\b",
     r"\b(actualiza|actualizar|escribe|guarda|anota|recuerda|recuérdame|recordame|registra)\b",
     r"\b(memoria|agenda|recordatorio|reminder|tarea|pendiente)\b",
     r"\b(léeme|leeme|abre|consulta)\s+(la|el|mi|mis)\s+(agenda|memoria|aprendizajes|learnings|important|proyectos|projects)\b",
@@ -440,6 +445,18 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "Si confirmaste algo (ej: 'el push se hizo', 'el comando terminó', 'el archivo llegó'), debe "
         "venir de la salida REAL de una de esas tools — si no la llamaste, NO lo afirmes. Inventar "
         "una salida de comando es tan grave como inventar una publicación del DOF.\n"
+        "## ⛔ NUNCA INVENTES ESTADO DE INFRAESTRUCTURA / INSTALACIÓN\n"
+        "Esto incluye: qué agentes están instalados, si el sync Mac↔Hetzner está activo, qué "
+        "servicios corren, qué repos/deploy keys existen, qué falta por configurar. JAMÁS generes "
+        "un 'Estado actual de Louis' ni una lista de 'pendientes de infraestructura' de memoria o "
+        "por suposición. Esos reportes plausibles pero falsos rompen la confianza (ej: decir 'los "
+        "agentes no están instalados' cuando SÍ lo están). Antes de afirmar el estado de algo:\n"
+        "- ¿Qué agentes tengo? → `listar_agentes` (lee los .md REALES instalados).\n"
+        "- ¿Estado de Hetzner / cola Mac / logs / conteos? → `hetzner_estado`.\n"
+        "- ¿Servicios y conexiones activas? → `verificar_conexiones`.\n"
+        "Si Polo pregunta 'cómo estás / qué tienes listo / qué falta / qué está instalado', PRIMERO "
+        "llamas estas tools y reportas SOLO lo que devuelven. Si una pieza no la puedes verificar con "
+        "ninguna tool, di 'no tengo cómo verificar X', NO inventes que está pendiente ni que funciona.\n"
         "## CUANDO LA BD NO TIENE EL TEXTO (ej: publicaciones recientes sin HTML descargado)\n"
         "Si `legal_buscar` no encuentra algo reciente (la BD tiene el índice pero no el texto "
         "completo), tienes DOS caminos REALES — y si ninguno funciona, lo dices claramente:\n"
