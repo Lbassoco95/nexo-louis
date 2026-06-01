@@ -183,8 +183,9 @@ TOOL_KEYWORDS = [
     # Verificación de comandos / estado real (deben ir a Claude con tools, NO a DeepSeek que inventa)
     r"\b(resultado|resultados|se\s+hizo|se\s+subió|se\s+subio|hiciste|corrió|corrio|terminó|termino|log|logs|cola|push|commit|backfill)\b",
     # Envío de archivos / PDFs / Dropbox (deben ir a Claude con tools, no a DeepSeek)
-    r"\b(pdf|dropbox|documento|adjunt\w+|archivo)\b",
-    r"\b(p[aá]sa(?:me|melo|lo|mela|la)?|m[aá]nda(?:me|melo|lo|mela|la)?|env[ií]a(?:me|melo|lo|mela|la)?|descarga(?:me|melo)?|mu[eé]stra(?:me|melo)?)\b",
+    r"\b(pdf|pptx|powerpoint|presentaci[oó]n|excel|xlsx|hoja\s+de\s+c[aá]lculo|dropbox|documento|informe|dictamen|reporte|adjunt\w+|archivo)\b",
+    r"\b(p[aá]sa(?:me|melo|lo|mela|la)?|m[aá]nda(?:me|melo|lo|mela|la)?|env[ií]a(?:me|melo|lo|mela|la)?|descarga(?:me|melo)?|mu[eé]stra(?:me|melo)?|comp[aá]rte(?:me|melo|lo)?|compart\w+|gen[eé]ra(?:me|lo)?|elabora(?:me|lo)?)\b",
+    r"\b(por\s+aqu[ií]|por\s+telegram|por\s+este\s+medio|en\s+esta\s+conversaci[oó]n)\b",
     # Sub-agentes
     r"\b(crear|nuevo|registrar|invocar|delegar|listar)\s+(agente|sub-agente|subagente|asistente)\b",
     r"\b(asistente\s+de|asistente\s+especialista|asistente\s+especializado)\b",
@@ -556,6 +557,19 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "largo, el bridge lo manda como archivo). No ofrezcas menús de 'continúo/resumo/guardo' en lugar "
         "del informe: primero entrega el informe completo, y SI QUIERES, al final ofreces resumirlo. "
         "El default es ENTREGAR, no preguntar.\n"
+        "## ⛔ DOCUMENTOS (PDF/PPTX/XLSX) — GENERA, NO PIDAS PERMISO\n"
+        "Cuando Polo pida un documento, dictamen, informe, plan, presentación o tabla 'como PDF', "
+        "'en PDF', 'documento', 'PowerPoint', 'Excel', o 'para compartir con el equipo':\n"
+        "- DEBES llamar la tool `generar_documento(tipo, titulo, contenido)` EN ESE MISMO TURNO. "
+        "El servidor genera el archivo REAL y se lo manda a Polo por Telegram automáticamente.\n"
+        "- `tipo`: 'pdf' para dictámenes/informes/planes de texto; 'pptx' para presentaciones; "
+        "'xlsx' para tablas/datos financieros.\n"
+        "- `contenido`: el documento COMPLETO en markdown (# para títulos, - para listas, | para tablas).\n"
+        "- PROHIBIDO preguntar '¿procedo a generar el PDF?', '¿lo genero ahora?', 'lo dejo listo en tu Mac'. "
+        "NUNCA digas que dejas algo 'en la Mac' — tú corres en el servidor y entregas por Telegram. "
+        "Si Polo pidió PDF, llamas `generar_documento` de inmediato. El default es GENERAR Y ENTREGAR.\n"
+        "- Flujo cuando un agente ya produjo el contenido: tomas ese texto → llamas `generar_documento` "
+        "con él → se manda el archivo. No vuelvas a delegar si ya tienes el contenido.\n"
         "## REGLA LEGAL OBLIGATORIA — internacional como referencia, México como ley\n"
         "Los ~92 agentes `legal-*` (claude-for-legal) son contexto EE.UU.: sirven SOLO como "
         "REFERENCIA TÉCNICA internacional. Los agentes mexicanos (kawiil-nelli, kawiil-tepantli y "
