@@ -393,6 +393,18 @@ def process_update(update, telegram_token, chat_id, api_key, system_prompt):
     if not user_input or not user_input.strip():
         return
 
+    # /nuevo, /reset, /limpia → borra el historial de conversación (empezar de cero)
+    if user_input.strip().lower().lstrip("/") in ("nuevo", "reset", "limpia", "limpiar", "borra historial"):
+        try:
+            if HISTORY_FILE.exists():
+                HISTORY_FILE.unlink()
+            log.info("Historial reiniciado por comando del usuario")
+        except Exception as e:
+            log.warning(f"No pude borrar historial: {e}")
+        telegram_send_message(telegram_token, chat_id,
+                              "🧹 Listo, empecé de cero. El historial anterior se borró.", parse_mode=None)
+        return
+
     if core.is_status_command(user_input):
         response = core._verificar_conexiones(incluir_m365=False)
         model_used = "status"

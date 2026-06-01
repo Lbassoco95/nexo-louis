@@ -1083,9 +1083,30 @@ def needs_legal_sonnet(user_message: str) -> bool:
     return bool(LEGAL_AUTO_SONNET_RE.search(msg))
 
 
+# Generación de documentos: tipo de archivo + verbo de acción/entrega.
+_DOC_TYPE_RE = re.compile(
+    r"\b(pdf|pptx|powerpoint|presentaci[oó]n|deck|excel|xlsx|hoja\s+de\s+c[aá]lculo|"
+    r"documento|dictamen|informe|reporte|acta\s+constitutiva)\b", re.IGNORECASE)
+_DOC_VERB_RE = re.compile(
+    r"\b(gen[eé]ra\w*|elabora\w*|prepara\w*|arma\w*|haz\w*|hag\w*|conviert\w*|crea\w*|"
+    r"entr[eé]ga\w*|p[aá]sa\w*|m[aá]nda\w*|env[ií]a\w*|comp[aá]rt\w*|dame|necesito|quiero)\b",
+    re.IGNORECASE)
+
+
+def needs_doc_sonnet(user_message: str) -> bool:
+    """True si Polo pide un documento (PDF/PPTX/XLSX). Usa Sonnet — sigue
+    instrucciones de tool-calling mucho mejor que Haiku para generar_documento."""
+    if not user_message:
+        return False
+    msg = user_message.strip()
+    if msg.lower().startswith(OLLAMA_FORCE_PREFIXES):
+        return False
+    return bool(_DOC_TYPE_RE.search(msg) and _DOC_VERB_RE.search(msg))
+
+
 def needs_sonnet_auto(user_message: str) -> bool:
-    """Ruta Sonnet sin prefijo: escritura memoria o agentes legales."""
-    return needs_memory_write(user_message) or needs_legal_sonnet(user_message)
+    """Ruta Sonnet sin prefijo: escritura memoria, agentes legales o documentos."""
+    return needs_memory_write(user_message) or needs_legal_sonnet(user_message) or needs_doc_sonnet(user_message)
 
 
 def _memory_write_billing_msg() -> str:
@@ -6413,19 +6434,6 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
     # Detecta si la query es sobre Slack para forzar tool_choice en el primer turno
     _SLACK_RE = re.compile(r"\b(slack|canal(es)?|dm\s+de|mensaje(s)?\s+(en|de)\s+slack)\b", re.IGNORECASE)
     _force_tool_first = _SLACK_RE.search(user_message or "")
-    # Detecta pedido explícito de documento (PDF/PPTX/XLSX) para FORZAR uso de tool
-    # en el primer turno — evita que el modelo responda 'voy a generar' sin llamar
-    # generar_documento (imitando refusals/¿procedo? del historial).
-    # Tipo de documento + un verbo de acción/entrega en cualquier parte del mensaje.
-    _DOC_TYPE_RE = re.compile(
-        r"\b(pdf|pptx|powerpoint|presentaci[oó]n|deck|excel|xlsx|hoja\s+de\s+c[aá]lculo|"
-        r"documento|dictamen|informe|reporte|acta\s+constitutiva)\b", re.IGNORECASE)
-    _DOC_VERB_RE = re.compile(
-        r"\b(gen[eé]ra\w*|elabora\w*|prepara\w*|arma\w*|haz\w*|hag\w*|conviert\w*|crea\w*|"
-        r"entr[eé]ga\w*|p[aá]sa\w*|m[aá]nda\w*|env[ií]a\w*|comp[aá]rt\w*|dame|necesito|quiero)\b",
-        re.IGNORECASE)
-    _um = user_message or ""
-    _force_doc = bool(_DOC_TYPE_RE.search(_um) and _DOC_VERB_RE.search(_um))
     # PROMPT CACHING: tools + system son idénticos entre llamadas y entre las 8
     # vueltas del loop. Cachearlos reduce el input ~90% (cache_read ≈ 10% del
     # precio normal). Sin esto, cada vuelta re-paga el system prompt gigante +
@@ -6445,11 +6453,6 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
         # Primer turno de queries Slack: forzar tool_choice para que no responda de memoria
         if _force_tool_first and _loop_i == 0:
             body["tool_choice"] = {"type": "tool", "name": "slack_resumen"}
-        # Pedido de documento: forzar uso de ALGUNA tool en el 1er turno (invocar_agente
-        # para conseguir contenido, o generar_documento si ya lo tiene). Sin esto el
-        # modelo dice 'voy a generar el PDF' sin llamar la tool y nunca se genera.
-        elif _force_doc and _loop_i == 0:
-            body["tool_choice"] = {"type": "any"}
         try:
             resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=180)
         except Exception as e:
@@ -6629,11 +6632,12 @@ def call_llm(
     # Todo lo demás que necesite tools (correos, recordatorios, kawiil-central,
     # browser, memoria) corre en HAIKU, que soporta tool-use y cuesta ≈1/3.
     if needs_claude(user_message) or needs_sonnet_auto(user_message) or needs_tools(user_message):
-        usa_sonnet = needs_claude(user_message) or needs_legal_sonnet(user_message)
+        usa_sonnet = needs_claude(user_message) or needs_legal_sonnet(user_message) or needs_doc_sonnet(user_message)
         modelo_tools = CLAUDE_SONNET if usa_sonnet else CLAUDE_HAIKU
         reason = (
             "prefijo /sonnet" if needs_claude(user_message) else
             "dictamen legal" if needs_legal_sonnet(user_message) else
+            "documento PDF/PPTX/XLSX" if needs_doc_sonnet(user_message) else
             "escritura memoria" if needs_memory_write(user_message) else
             "herramienta/datos"
         )
