@@ -39,9 +39,19 @@ chmod +x "$PUSH_SCRIPT"
 echo "✓ Script copiado a $PUSH_SCRIPT"
 
 # Copia propia de bash (sin SIP) para que TCC/Acceso a disco completo funcione.
+# Hay que RE-FIRMARLA ad-hoc: al copiar /bin/bash fuera del volumen del sistema
+# pierde su estatus de platform binary y macOS (AMFI) la mata por codesigning
+# (OS_REASON_CODESIGNING). La firma ad-hoc la vuelve un binario de usuario normal.
 cp /bin/bash "$LOUIS_BASH"
 chmod +x "$LOUIS_BASH"
-echo "✓ Copia de bash en $LOUIS_BASH (dale Acceso a disco completo a ESTE archivo)"
+codesign --force --sign - "$LOUIS_BASH" 2>/dev/null \
+  && echo "✓ Copia de bash firmada ad-hoc en $LOUIS_BASH" \
+  || echo "⚠️  No pude firmar $LOUIS_BASH (¿faltan Command Line Tools? xcode-select --install)"
+# Verifica que la copia realmente ejecuta antes de seguir.
+if ! "$LOUIS_BASH" -c 'exit 0' 2>/dev/null; then
+  echo "✗ La copia de bash no ejecuta (codesigning). Aborta — avísame."; exit 1
+fi
+echo "  → dale Acceso a disco completo a ESTE archivo: $LOUIS_BASH"
 
 cat > "$PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
