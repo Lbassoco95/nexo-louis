@@ -55,7 +55,11 @@ PLANTILLA_DIR = BASE_DIR / "plantilla"
 
 # API público del SJF
 API_BASE = "https://sjf2.scjn.gob.mx/services/sjftesismicroservice/api/public/tesis"
-USER_AGENT = "KawiilLegal-SJF-Biblioteca/1.0 (consulta de jurisprudencia)"
+# El WAF de la SCJN rechaza User-Agents "raros" con 403 "Acceso denegado: Formato
+# inválido". Hay que usar un UA de navegador real + Referer del sitio para pasar.
+USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+              "(KHTML, like Gecko) Version/17.0 Safari/605.1.15")
+SJF_REFERER = "https://sjf2.scjn.gob.mx/"
 
 # Tuning
 THROTTLE_MS = 100          # pausa entre lotes (corteśia)
@@ -204,7 +208,12 @@ def fetch_tesis(registro: int) -> tuple[int, dict | None]:
     # Códigos HTTP que indican "no disponible permanentemente" — no reintentar.
     PERMANENT_FAIL = (403, 404, 410)
     url = f"{API_BASE}/{registro}"
-    req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": USER_AGENT})
+    req = urllib.request.Request(url, headers={
+        "Accept": "application/json",
+        "User-Agent": USER_AGENT,
+        "Referer": SJF_REFERER,
+        "Origin": "https://sjf2.scjn.gob.mx",
+    })
     for attempt in range(1, RETRY_ATTEMPTS + 1):
         try:
             with urllib.request.urlopen(req, timeout=20) as resp:
