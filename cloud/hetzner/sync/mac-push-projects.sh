@@ -46,10 +46,13 @@ ssh $SSH_OPTS "$REMOTE" "sudo mkdir -p $DEST && sudo chown -R ${LOUIS_REMOTE_USE
 # ORDEN DE FILTROS (importante): primero excluir carpetas de código/VCS para que
 # rsync NI DESCIENDA en ellas (evita el ruido 'cannot delete non-empty directory'
 # de .git/node_modules). Luego incluir dirs restantes + los tipos de archivo.
-# --filter='P _Louis-Generados/' PROTEGE la carpeta de generados de Louis para que
-# el --delete NO la borre (esos archivos solo existen en Hetzner, no en la Mac).
+# --exclude='/_Louis-Generados/' EXCLUYE por completo la carpeta de generados de
+# Louis del push: rsync ni la sube ni la borra. Es crítico — un 'P dir/' solo
+# protege la carpeta pero NO su contenido, así que el --delete borraba los PDFs
+# que Louis genera (existen solo en Hetzner). El exclude anclado lo evita: los
+# archivos excluidos no se transfieren ni se eliminan (sin --delete-excluded).
 rsync -rz --delete --prune-empty-dirs --partial \
-  --filter='P _Louis-Generados/' \
+  --exclude='/_Louis-Generados/' \
   --exclude='.git' --exclude='.git/' \
   --exclude='node_modules' --exclude='.cursor' --exclude='.vscode' \
   --exclude='.next' --exclude='dist' --exclude='build' --exclude='venv' \
@@ -70,7 +73,9 @@ rsync -rz --delete --prune-empty-dirs --partial \
 # docs), así nunca hay conflicto con lo que tú editas en la Mac.
 GEN_LOCAL="$PROJECTS_SRC/_Louis-Generados"
 mkdir -p "$GEN_LOCAL"
-rsync -rz --partial \
+# Sin -z: openrsync (rsync nativo de macOS) puede dejar la transferencia en 0
+# bytes con compresión en descarga. Es poco volumen, no hace falta comprimir.
+rsync -r --partial --stats \
   -e "ssh $SSH_OPTS" \
   "$REMOTE:$DEST/_Louis-Generados/" "$GEN_LOCAL/" \
   && echo "[$(stamp)] generados pull OK (Hetzner→Mac)" \
