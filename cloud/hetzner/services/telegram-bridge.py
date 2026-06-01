@@ -430,29 +430,47 @@ def process_update(update, telegram_token, chat_id, api_key, system_prompt):
         html_body = _extract_html_from_fence(response)
 
     import datetime as _dt_mod
+
+    # Drenar archivos encolados por tools/agentes ANTES de decidir el formato.
+    # Así evitamos mandar doble archivo cuando _invocar_agente ya encoló uno.
+    pending_files = core.get_pending_files()
+
+    # Detecta HTML completo en la respuesta (análisis de agentes, documentos).
+    html_body = None
+    if _is_html_response(response):
+        html_body = response.strip()
+    else:
+        html_body = _extract_html_from_fence(response)
+
     if html_body:
         fname = f"louis_{_dt_mod.datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-        caption = "📄 Análisis listo (ábrelo en el navegador para mejor lectura)"
+        caption = "📄 Análisis listo — toca el archivo → Abrir en Safari para verlo formateado → Compartir → Imprimir → PDF"
         telegram_send_file(telegram_token, chat_id, html_body, fname, caption=caption)
+    elif pending_files:
+        # El agente ya encoló archivos — Louis solo manda el texto corto (preview).
+        # No generamos un segundo archivo para no duplicar.
+        telegram_send_message(telegram_token, chat_id, response, parse_mode="Markdown")
     elif len(response) > 2200:
-        # Respuesta larga (plan, informe, dictamen) → archivo HTML en vez de texto cortado
-        titulo = (user_input or "Documento")[:80].strip().rstrip(".?!")
-        html_bytes = core._md_to_html(titulo, "Louis", response)
-        fname = f"louis_{_dt_mod.datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+        # Respuesta larga directa (plan, informe, dictamen) → .txt para leer directo en Telegram.
+        # iOS Telegram abre .txt inline sin necesidad de Safari.
+        titulo = (user_input or "documento")[:60].strip().rstrip(".?!")
+        txt_bytes = response.encode("utf-8")
+        fname = f"{titulo[:40].replace(' ', '_')}_{_dt_mod.datetime.now().strftime('%H%M%S')}.txt"
         try:
-            telegram_send_document(telegram_token, chat_id, html_bytes, fname,
-                                   caption="📄 Te lo mando como archivo para que lo puedas compartir con el equipo (ábrelo en Safari → Compartir → Guardar como PDF)")
-            log.info(f"📎 respuesta larga enviada como archivo: {fname} ({len(html_bytes)} bytes)")
+            telegram_send_document(telegram_token, chat_id, txt_bytes, fname,
+                                   caption="📄 Documento completo — toca para leer. Para PDF: ábrelo en Notas o Safari → Compartir → Imprimir")
+            log.info(f"📎 respuesta larga enviada como .txt: {fname} ({len(txt_bytes)} bytes)")
         except Exception as e:
             log.warning(f"No pude enviar como archivo ({e}), mandando texto")
             telegram_send_message(telegram_token, chat_id, response, parse_mode="Markdown")
     else:
         telegram_send_message(telegram_token, chat_id, response, parse_mode="Markdown")
 
-    # Drena archivos encolados por tools (dropbox_enviar, dof_pdf) y los manda.
-    for content, fname, cap in core.get_pending_files():
+    # Manda archivos encolados por tools durante esta request (Dropbox, DOF, agentes).
+    for content, fname, cap in pending_files:
         try:
-            telegram_send_document(telegram_token, chat_id, content, fname, caption=cap)
+            telegram_send_document(telegram_token, chat_id, content, fname,
+                                   caption=cap + " — toca → Abrir en Safari para verlo formateado")
             log.info(f"📎 archivo enviado: {fname} ({len(content)} bytes)")
         except Exception as e:
             log.error(f"envío de archivo {fname} falló: {e}")
