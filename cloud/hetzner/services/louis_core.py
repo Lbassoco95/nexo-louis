@@ -3691,9 +3691,43 @@ def get_pending_files() -> list:
 
 # ===== Generación de documentos (PDF / PPTX / XLSX) =====
 
+_UNICODE_MAP = {
+    "–": "-", "—": "-", "‒": "-", "‐": "-", "‑": "-",  # dashes
+    "‘": "'", "’": "'", "‚": "'", "‛": "'",  # single quotes
+    "“": '"', "”": '"', "„": '"', "‟": '"',  # double quotes
+    "…": "...", "•": "-", "·": "-", "●": "-", "▪": "-",  # ellipsis, bullets
+    "→": "->", "←": "<-", "⇒": "=>", "↔": "<->",  # arrows
+    " ": " ", " ": " ", " ": " ", "​": "",  # spaces
+    "✓": "[OK]", "✔": "[OK]", "✗": "[X]", "✘": "[X]",  # checks
+    "€": "EUR", "™": "(TM)", "®": "(R)", "©": "(C)",
+}
+_MD_INLINE_RE = re.compile(r"(\*\*|__|\*|`|~~)")
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+_EMOJI_RE = re.compile(
+    "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF\U00002190-\U000021FF️]",
+    flags=re.UNICODE,
+)
+
+
+def _clean_text_for_pdf(text: str) -> str:
+    """Limpia markdown inline + mapea Unicode a ASCII para fuentes core de fpdf."""
+    if not text:
+        return ""
+    # Links markdown [texto](url) → texto
+    text = _MD_LINK_RE.sub(r"\1", text)
+    # Marcadores inline **bold** *italic* `code` ~~strike~~ → quitar marcadores
+    text = _MD_INLINE_RE.sub("", text)
+    # Mapeo de puntuación Unicode común
+    for u, a in _UNICODE_MAP.items():
+        text = text.replace(u, a)
+    # Emojis fuera (no renderizan en core fonts)
+    text = _EMOJI_RE.sub("", text)
+    return text
+
+
 def _sanitize_latin1(text: str) -> str:
     """Convierte a latin-1 para fuentes core de fpdf (preserva acentos españoles)."""
-    return text.encode("latin-1", errors="replace").decode("latin-1")
+    return _clean_text_for_pdf(text).encode("latin-1", errors="replace").decode("latin-1")
 
 
 def _break_long_tokens(text: str, max_len: int = 45) -> str:
@@ -3731,12 +3765,35 @@ def _generar_pdf(titulo: str, contenido: str, agente: str = "Louis") -> bytes | 
         try:
             pdf.multi_cell(epw, h, safe, align=align)
         except Exception:
-            # Último recurso: trunca duro y reintenta
             try:
                 pdf.set_x(margin)
                 pdf.multi_cell(epw, h, safe[:200] or " ", align=align)
             except Exception:
                 pass
+
+    def _render_table(rows: list):
+        """Renderiza una tabla markdown con wrap automático (API pdf.table de fpdf2)."""
+        if not rows:
+            return
+        ncols = max(len(r) for r in rows)
+        norm = [[_break_long_tokens(_sanitize_latin1(c), 60) for c in (r + [""] * (ncols - len(r)))] for r in rows]
+        pdf.set_font("Helvetica", "", 8)
+        try:
+            from fpdf.fonts import FontFace
+            head_style = FontFace(emphasis="BOLD", color=(255, 255, 255), fill_color=(44, 62, 80))
+            with pdf.table(
+                width=epw, text_align="LEFT", line_height=4.5,
+                first_row_as_headings=True, headings_style=head_style,
+            ) as table:
+                for r in norm:
+                    row = table.row()
+                    for c in r:
+                        row.cell(c or " ")
+        except Exception as e:
+            log.debug(f"_render_table falló, fallback texto ({e})")
+            for r in norm:
+                _cell(" | ".join(r), 5, 8)
+        pdf.ln(2)
 
     # Portada / título
     _cell(titulo, 10, 16, bold=True, align="C")
@@ -3748,8 +3805,25 @@ def _generar_pdf(titulo: str, contenido: str, agente: str = "Louis") -> bytes | 
     pdf.line(margin, pdf.get_y(), pdf.w - margin, pdf.get_y())
     pdf.ln(6)
 
+    table_buf: list = []  # acumula filas de tabla consecutivas
+
+    def _flush_table():
+        if table_buf:
+            _render_table(list(table_buf))
+            table_buf.clear()
+
     for line in contenido.split("\n"):
         try:
+            is_table_line = "|" in line and line.strip().startswith("|")
+            if is_table_line:
+                cells = [c.strip() for c in line.strip().strip("|").split("|")]
+                if all(set(c).issubset(set("-: ")) for c in cells if c):
+                    continue  # separador de header markdown
+                table_buf.append(cells)
+                continue
+            else:
+                _flush_table()
+
             if line.startswith("#### "):
                 _cell(line[5:], 6, 10, bold=True); pdf.ln(1)
             elif line.startswith("### "):
@@ -3763,26 +3837,11 @@ def _generar_pdf(titulo: str, contenido: str, agente: str = "Louis") -> bytes | 
             elif line.strip() in ("---", "___", "***"):
                 pdf.set_line_width(0.2)
                 pdf.line(margin, pdf.get_y(), pdf.w - margin, pdf.get_y()); pdf.ln(3)
-            elif line.startswith("- ") or line.startswith("* "):
-                _cell("  - " + line[2:], 5, 10)
+            elif line.lstrip().startswith(("- ", "* ", "> ")):
+                stripped = line.lstrip()
+                _cell("  - " + stripped[2:], 5, 10)
             elif len(line) > 2 and line[0].isdigit() and line[1] in (".", ")"):
                 _cell("  " + line, 5, 10)
-            elif "|" in line:
-                cells = [c.strip() for c in line.strip().strip("|").split("|")]
-                if all(set(c).issubset(set("-: ")) for c in cells if c):
-                    continue  # separador de tabla
-                n = max(len(cells), 1)
-                w = max(epw / n, 12)  # ancho positivo por celda
-                pdf.set_font("Helvetica", "", 8)
-                pdf.set_x(margin)
-                y0 = pdf.get_y()
-                for cell in cells:
-                    txt = _break_long_tokens(_sanitize_latin1(cell), 30)[:60]
-                    try:
-                        pdf.cell(w, 5, txt, border=1)
-                    except Exception:
-                        pass
-                pdf.ln()
             elif not line.strip():
                 pdf.ln(2)
             else:
@@ -3791,6 +3850,7 @@ def _generar_pdf(titulo: str, contenido: str, agente: str = "Louis") -> bytes | 
             log.debug(f"_generar_pdf: línea omitida ({e}): {line[:60]!r}")
             continue
 
+    _flush_table()
     return bytes(pdf.output())
 
 
