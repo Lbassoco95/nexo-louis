@@ -98,6 +98,20 @@ _STALL_RE = re.compile(
     re.IGNORECASE)
 
 
+_TOOL_LEAK_RE = re.compile(r"DSML|invoke\s+name=|tool_calls|antml:|parameter\s+name=|</?invoke>|</?parameter>", re.IGNORECASE)
+
+
+def _strip_tool_leak(text: str) -> str:
+    """Quita markup de llamadas a herramientas que el modelo a veces emite como TEXTO
+    (ej. '<| DSML | invoke name=bash>'). Nunca debe llegarle eso a Polo."""
+    if not text or not _TOOL_LEAK_RE.search(text):
+        return text
+    lines = [ln for ln in text.split("\n") if not _TOOL_LEAK_RE.search(ln)]
+    cleaned = "\n".join(lines).strip()
+    # Si tras limpiar queda casi nada, avisa en vez de mandar basura.
+    return cleaned if len(cleaned) > 15 else "Estoy ejecutando eso… dame un segundo y te confirmo el resultado."
+
+
 def _es_stall(texto: str) -> bool:
     """True si el turno parece quedarse 'a medias' (anuncia acción sin ejecutarla).
     Señales: frase de relleno, o termina anunciando con ':' sin contenido después."""
@@ -2258,6 +2272,18 @@ TOOLS_DEFINITION = [
                 "campos_extra": {"type": "object", "description": "Otros campos del schema que kawiil-central use (status default, labels, etc)"},
             },
             "required": ["titulo", "proyecto_id"],
+        },
+    },
+    {
+        "name": "kawiil_central_asignar_tarea",
+        "description": "Asigna una tarea EXISTENTE (o varias) a una persona por su NOMBRE (ej. 'Jesús García'). Resuelve el nombre al usuario correcto internamente. ÚSALA cuando Polo diga 'asigna esta tarea a X' o 'X es el responsable'. NO uses SQL crudo ni inventes shell/API. tarea_id puede traer varios ids separados por coma.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tarea_id": {"type": "string", "description": "id de la tarea (o varios ids separados por coma)"},
+                "persona": {"type": "string", "description": "Nombre o email del responsable (ej. 'Jesús García Turcott')"},
+            },
+            "required": ["tarea_id", "persona"],
         },
     },
     {
@@ -6061,6 +6087,37 @@ def _kawiil_central_resolver_usuario(conn, nombre: str) -> str | None:
     return None
 
 
+def _kawiil_central_asignar_tarea(tarea_id: str, persona: str) -> str:
+    """Asigna una o varias tareas EXISTENTES a una persona (por nombre/email).
+    Resuelve persona→profiles.user_id (assigned_to es FK a auth.users). tarea_id puede
+    ser uno o varios ids separados por coma."""
+    if not tarea_id or not persona:
+        return "❌ Necesito tarea_id y persona."
+    conn, err = _kawiil_central_pg()
+    if err:
+        return err
+    uid = _kawiil_central_resolver_usuario(conn, persona)
+    if not uid:
+        conn.close()
+        return f"❌ No encontré a '{persona}' en profiles. Dímelo como aparece en Kawiil Central (nombre o email)."
+    ids = [t.strip() for t in re.split(r"[,\s]+", tarea_id) if t.strip()]
+    try:
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("UPDATE public.tasks SET assigned_to = %s WHERE id IN ("
+                    + ",".join(["%s"] * len(ids)) + ")", [uid] + ids)
+        n = cur.rowcount
+        _kawiil_central_audit(f"asignar_tarea a {persona}", f"UPDATE tasks assigned_to={uid} ids={ids}")
+        conn.close()
+        if n == 0:
+            return f"❌ No se actualizó nada (¿ids correctos?): {ids}"
+        return f"✅ {n} tarea(s) asignada(s) a *{persona}*."
+    except Exception as e:
+        try: conn.close()
+        except Exception: pass
+        return f"❌ No pude asignar (error real): {e}"
+
+
 def _kawiil_central_crear_proyecto(name: str, client_id: str = "", area: str = "",
                                    descripcion: str = "", service_tags: str = "") -> str:
     """Crea un proyecto validando el enum `area` para no fallar con errores crípticos."""
@@ -7089,6 +7146,8 @@ def execute_tool(name: str, args: dict) -> str:
             return _kawiil_central_crear_proyecto(args["name"], args.get("client_id", ""),
                                                   args.get("area", ""), args.get("descripcion", ""),
                                                   args.get("service_tags", ""))
+        elif name == "kawiil_central_asignar_tarea":
+            return _kawiil_central_asignar_tarea(args["tarea_id"], args["persona"])
         elif name == "kawiil_central_actualizar_tarea":
             return _kawiil_central_actualizar_tarea(args["tarea_id"], args["cambios"])
         elif name == "kawiil_central_avance":
@@ -7496,7 +7555,9 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
     # Devolver el último turn con texto no vacío
     for t in reversed(turn_texts):
         if t and t.strip():
-            out = t.strip()
+            out = _strip_tool_leak(t.strip())
+            if not out:
+                continue
             if mem_confirm:
                 return f"{out}\n\n{mem_confirm}"
             return out
