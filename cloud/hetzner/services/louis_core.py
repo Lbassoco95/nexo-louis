@@ -1263,6 +1263,15 @@ def try_deterministic_memory_write(user_message: str, strict: bool = True) -> st
     if not rest:
         return None
 
+    # ¿El gatillo es un verbo de CAPTURA explícito (anota/apunta/registra/guarda/
+    # agrega)? Con esos la intención de guardar es inequívoca, así que NO exigimos
+    # ':' — garantiza que "anota llamar a Jesús mañana" se persista siempre, sin
+    # depender del modelo. 'recuérdame' NO entra aquí: va al flujo de recordatorios.
+    trigger_word = tm.group(0).strip().lower()
+    is_capture_verb = bool(re.match(
+        r"(anota|anotar|apunta|apuntar|registra|registrar|guarda|guardar|agrega|agregar)",
+        trigger_word))
+
     fname = "AGENDA.md"
     explicit_file = False
     fpm = _MEMORY_FILE_PREFIX_RE.match(rest)
@@ -1271,7 +1280,7 @@ def try_deterministic_memory_write(user_message: str, strict: bool = True) -> st
         if candidate:
             fname, explicit_file, rest = candidate, True, fpm.group(2).strip()
 
-    if strict and ":" not in user_message and not explicit_file:
+    if strict and ":" not in user_message and not explicit_file and not is_capture_verb:
         return None
 
     rest = rest.lstrip(":").strip()
