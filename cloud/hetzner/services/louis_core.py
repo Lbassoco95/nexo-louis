@@ -2265,11 +2265,12 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "kawiil_central_proyectos",
-        "description": "Lista los proyectos activos en kawiil-central. Filtro opcional por estado.",
+        "description": "Lista proyectos en kawiil-central. Filtro opcional por estado y POR CLIENTE. Para ver los proyectos de UN cliente (ej. '¿qué proyectos tiene Magnetico?'), pasa cliente='Magnetico' (insensible a acentos) — NO improvises ni adivines entre todos los proyectos. Devuelve nombre, area y status de cada uno.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "estado": {"type": "string", "description": "Filtro por estado (ej: 'activo', 'archivado')"},
+                "cliente": {"type": "string", "description": "Nombre o id del cliente para ver SOLO sus proyectos (ej. 'Magnetico')"},
                 "limit": {"type": "integer", "default": 20},
             },
         },
@@ -5926,7 +5927,7 @@ def _kawiil_central_clientes(query: str = "", limit: int = 30) -> str:
         return f"❌ Query falló: {e}"
 
 
-def _kawiil_central_proyectos(estado: str = "", limit: int = 20) -> str:
+def _kawiil_central_proyectos(estado: str = "", limit: int = 20, cliente: str = "") -> str:
     conn, err = _kawiil_central_pg()
     if err:
         return err
@@ -5939,6 +5940,28 @@ def _kawiil_central_proyectos(estado: str = "", limit: int = 20) -> str:
     cols = {r[0] for r in cur.fetchall()}
     where = []
     params = []
+    cliente_label = ""
+    # Filtro por CLIENTE (id uuid o nombre sin acentos). Determinístico: resuelve el
+    # nombre contra la tabla de clientes y filtra por client_id. Evita que Louis
+    # "adivine" entre los 197 proyectos y se contradiga (no tiene → sí → no).
+    if cliente and "client_id" in cols:
+        ids = []
+        if cliente.count("-") >= 4 and len(cliente) >= 32:
+            ids = [cliente]
+            cliente_label = cliente[:8] + "…"
+        else:
+            ct = _kawiil_central_find_table(conn, ("clients", "client", "clientes"))
+            if ct:
+                cur.execute(f"SELECT id, name FROM public.{ct}")
+                q = _strip_accents(cliente)
+                matches = [(cid, cn) for cid, cn in cur.fetchall() if q in _strip_accents(cn or "")]
+                ids = [str(cid) for cid, _ in matches]
+                cliente_label = ", ".join(cn for _, cn in matches[:3]) or cliente
+        if not ids:
+            conn.close()
+            return f"📭 No encontré al cliente '{cliente}' para filtrar proyectos."
+        where.append("client_id::text IN (" + ",".join(["%s"] * len(ids)) + ")")
+        params.extend(ids)
     if estado and ("status" in cols or "state" in cols or "estado" in cols):
         col = "status" if "status" in cols else ("state" if "state" in cols else "estado")
         where.append(f"{col} = %s")
@@ -5959,9 +5982,11 @@ def _kawiil_central_proyectos(estado: str = "", limit: int = 20) -> str:
         except Exception: pass
         return f"❌ Query falló: {e}\n  SQL: {sql}"
     if not rows:
-        return f"📭 0 proyectos en `{tabla}`."
-    out = [f"📁 *{len(rows)} proyectos* (de `{tabla}`):"]
-    priority_cols = ["id", "name", "nombre", "title", "status", "estado", "owner_id", "created_at"]
+        suf = f" del cliente '{cliente_label or cliente}'" if cliente else ""
+        return f"📭 0 proyectos{suf}."
+    titulo = f"📁 *{len(rows)} proyectos*" + (f" de *{cliente_label}*" if cliente_label else f" (de `{tabla}`)") + ":"
+    out = [titulo]
+    priority_cols = ["id", "name", "nombre", "title", "area", "status", "estado", "created_at"]
     show_cols = [c for c in priority_cols if c in colnames] or colnames[:5]
     for r in rows:
         row_dict = dict(zip(colnames, r))
@@ -6984,7 +7009,7 @@ def execute_tool(name: str, args: dict) -> str:
             return _kawiil_central_tareas(args.get("estado", ""), args.get("proyecto_id", ""),
                                           args.get("asignado_a", ""), args.get("limit", 20))
         elif name == "kawiil_central_proyectos":
-            return _kawiil_central_proyectos(args.get("estado", ""), args.get("limit", 20))
+            return _kawiil_central_proyectos(args.get("estado", ""), args.get("limit", 20), args.get("cliente", ""))
         elif name == "kawiil_central_tareas_proximas":
             return _kawiil_central_tareas_proximas(args.get("dias", 7), args.get("estado_excluir", "hecho"), args.get("asignado_a", ""))
         elif name == "kawiil_central_tarea_detalle":
