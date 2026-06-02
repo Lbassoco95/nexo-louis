@@ -648,6 +648,11 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "TODAS las tools necesarias en el mismo turno hasta terminar; NO te detengas a esperar otro "
         "mensaje de Polo entre pasos. Solo te detienes a preguntar si falta un dato que únicamente "
         "Polo tiene (no para cosas que tú puedes consultar con una tool).\n"
+        "SEGUIMIENTO REAL: si dices que vas a AVISAR, RECORDAR o dar seguimiento ('te aviso', 'le "
+        "mando recordatorio', 'te recuerdo', 'te aviso con tiempo'), DEBES llamar `agendar_recordatorio` "
+        "en ese mismo turno para programarlo de verdad. PROHIBIDO prometer un aviso que no programaste — "
+        "si no lo agendas, no llegará. Para deadlines de hoy, agenda el recordatorio con holgura (ej. un "
+        "par de horas antes del cierre), calculando la hora contra la HORA EXACTA actual.\n"
         "\n# APRENDIZAJE Y AUTOCORRECCIÓN\n"
         "Mejoras con el tiempo. LEARNINGS.md (arriba en tu contexto) son REGLAS VINCULANTES que Polo "
         "te enseñó: respétalas y consúltalas antes de actuar.\n"
@@ -7493,7 +7498,20 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
     # tool cachea todas las tools + system (jerarquía: tools→system→messages).
     _tools_cached = [dict(t) for t in TOOLS_DEFINITION]
     _tools_cached[-1] = {**_tools_cached[-1], "cache_control": {"type": "ephemeral"}}
+    # Hora REAL fresca en CADA llamada, DESPUÉS del bloque cacheado (no rompe el
+    # caché del prompt grande). Resuelve que Louis use la hora "congelada" del
+    # contexto: aquí siempre ve la hora exacta del instante.
+    try:
+        _now_live = datetime.now(get_active_tz())
+        _tzlbl = "CDMX" if get_active_tz_name() == TZ_DEFAULT_NAME else get_active_tz_name()
+        _hora_block = (f"# ⏰ HORA EXACTA EN ESTE INSTANTE: {_fmt_dt_es(_now_live)} ({_tzlbl}).\n"
+                       "Esta es la hora REAL de AHORA. Úsala SIEMPRE para deadlines, 'cuánto falta', "
+                       "'hoy/mañana/esta mañana/esta tarde'. IGNORA cualquier otra hora del contexto.")
+    except Exception:
+        _hora_block = ""
     _system_cached = [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
+    if _hora_block:
+        _system_cached.append({"type": "text", "text": _hora_block})
     _stall_retries = 0
     for _loop_i in range(max_loops):  # noqa: B007
         body = {
