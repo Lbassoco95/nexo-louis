@@ -88,10 +88,29 @@ LAST_BRIEFING_FILE = STATE_DIR / "last-briefing.json"
 # Frases de "relleno" con que el modelo a veces TERMINA el turno sin ejecutar la tool
 # (se queda esperando otro mensaje de Polo). Disparan el auto-continue anti-stall.
 _STALL_RE = re.compile(
-    r"(d[eé]jame\s+(revisar|ver|checar|consultar|buscar)|voy\s+a\s+(revisar|ver|checar|"
-    r"consultar|buscar|crear)|dame\s+un\s+momento|perm[ií]teme\s+(revisar|ver|consultar)|"
-    r"ahora\s+(reviso|lo\s+hago|checo|busco)|enseguida\s+lo\s+hago)",
+    r"(d[eé]jame\s+\w+"                                  # déjame revisar/ver/crear…
+    r"|voy\s+a\s+\w+"                                    # voy a crear/revisar/buscar…
+    r"|ahora\s+(creo|cre[oa]|registro|agrego|hago|voy|reviso|busco|checo|sigo|paso|las?\s+creo|lo\s+hago)"
+    r"|procedo\s+a|paso\s+a\s+\w+|sigo\s+con|contin[uú]o\s+con|enseguida"
+    r"|cre[oa]r?[eé]?\s+(la|el|las|los)\s+(tarea|subtarea|sub-tarea|proyecto|cliente)"
+    r"|registr[oa]r?[eé]?\s+(la|el|en|ahora)"
+    r"|dame\s+un\s+momento|perm[ií]teme|un\s+momento)",
     re.IGNORECASE)
+
+
+def _es_stall(texto: str) -> bool:
+    """True si el turno parece quedarse 'a medias' (anuncia acción sin ejecutarla).
+    Señales: frase de relleno, o termina anunciando con ':' sin contenido después."""
+    t = (texto or "").strip()
+    if not t:
+        return False
+    if _STALL_RE.search(t):
+        return True
+    # Termina con ':' (ej. "Ahora creo la tarea principal y las subtareas:") → iba a
+    # hacer/listar algo y no lo hizo. Señal fuerte de corte.
+    if t.endswith(":"):
+        return True
+    return False
 
 # ===== Zona horaria activa =====
 # Default SIEMPRE CDMX. Cambia cuando Polo viaja (tool zona_horaria). Las consultas
@@ -7364,7 +7383,7 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
     while messages and messages[0]["role"] != "user":
         messages.pop(0)
     headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
-    max_loops = 8
+    max_loops = 12  # holgura para tareas multi-paso (crear proyecto+tarea+subtareas) + anti-stall
     turn_texts = []   # texto emitido por cada turn (puede ser "")
     tools_executed = []  # nombres de tools ejecutados (para fallback message)
     memory_tool_results = []  # confirmaciones append/write_memory
@@ -7429,12 +7448,13 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
             # Red anti-stall: si terminó con "déjame revisar / voy a ver…" SIN ejecutar
             # una tool, empújalo UNA vez a continuar en este turno (proactividad) en
             # lugar de quedarse esperando otro mensaje de Polo.
-            if _stall_retries < 1 and _STALL_RE.search(turn_text or ""):
+            if _stall_retries < 3 and _es_stall(turn_text):
                 _stall_retries += 1
-                log.info("anti-stall: el modelo se detuvo en 'déjame revisar' sin tool; empujando a continuar")
+                log.info("anti-stall #%d: el modelo se detuvo sin ejecutar tool; empujando a continuar", _stall_retries)
                 messages.append({"role": "user", "content":
-                    "Hazlo AHORA en este mismo turno: ejecuta las tools necesarias y entrégame el "
-                    "resultado real. No te detengas a esperar mi respuesta."})
+                    "Continúa AHORA en este mismo turno: ejecuta YA las tools que faltan (crear "
+                    "proyecto/tarea/subtareas, etc.) hasta TERMINAR todo, y al final dame los IDs "
+                    "reales. No anuncies lo que vas a hacer; hazlo. No esperes otro mensaje mío."})
                 continue
             break
         tool_results = []
