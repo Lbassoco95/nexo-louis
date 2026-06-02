@@ -492,6 +492,14 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "Si Polo viaja o está en otra zona ('estoy en Madrid'), llama `zona_horaria` "
         "accion='set'; al regresar, accion='reset'. Para la hora de un cliente/ciudad, "
         "usa `reloj` con 'zona' o `zona_horaria` accion='consultar' (eso NO cambia la zona activa).\n"
+        "🗓️ ANCLAJE DE FECHAS (crítico — aquí te equivocas): cuando leas mensajes de Slack, "
+        "correo o notas con fechas RELATIVAS ('hoy', 'mañana', 'ayer', 'el viernes'), esas "
+        "palabras son relativas a la FECHA EN QUE SE ESCRIBIÓ el mensaje (su timestamp, ej. "
+        "'[01/06 08:16]' = 1 jun), NO a la fecha actual. Convierte SIEMPRE a fecha absoluta. "
+        "Ej: un mensaje del 1-jun que dice 'junta hoy 11:30' = junta el **1-jun**, no hoy. "
+        "ANTES de decir que algo es 'HOY' o que hay un conflicto de horario, compara la fecha "
+        "absoluta del evento contra la fecha real de hoy (de `reloj`). Si no tienes el timestamp, "
+        "di que la fecha es relativa al mensaje y no la afirmes como hoy.\n"
     )
     parts.append("\n\n# CONTEXTO DE MEMORIA (archivos vivos)\n")
     for fname in MEMORY_FILES:
