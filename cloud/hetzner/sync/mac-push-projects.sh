@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# mac-push-projects.sh — Sincroniza ~/Documents/Claude/Projects/ de la Mac → Hetzner.
-# Así Louis ve los documentos de tus proyectos (Dazon, Vizum, Kawiil*, Yoltik*, …)
-# y puede usarlos para mantener PROJECTS.md al día.
+# mac-push-projects.sh — Sincroniza ~/Documents/Claude/ de la Mac → Hetzner.
+# Así Louis ve TODOS los documentos bajo Claude (Projects/ y lo que esté suelto en
+# la raíz de Claude) de tus proyectos (Dazon, Vizum, Kawiil*, Yoltik*, …) y puede
+# usarlos para mantener PROJECTS.md al día.
+# Nota: la raíz se amplió de .../Claude/Projects a .../Claude a pedido de Polo, para
+# que Louis acceda también a documentos que viven al nivel de Claude, no solo en
+# Projects/. Solo se transfieren tipos de documento (ver filtros abajo).
 #
 # Se corre vía launchd cada 30 min (los docs no cambian más rápido).
 #
@@ -10,7 +14,7 @@
 #   LOUIS_REMOTE_USER   ej: polo
 #   LOUIS_SSH_KEY       ej: ~/.ssh/id_ed25519
 # Opcional:
-#   PROJECTS_SRC        default: ~/Documents/Claude/Projects
+#   PROJECTS_SRC        default: ~/Documents/Claude  (carpeta padre; incluye Projects/)
 #
 # Destino en Hetzner: /opt/openclaw/projects/
 # Logs locales: ~/Library/Logs/louis-projects-sync.log
@@ -25,7 +29,7 @@ set -uo pipefail
 : "${LOUIS_REMOTE_USER:?LOUIS_REMOTE_USER no definido}"
 : "${LOUIS_SSH_KEY:?LOUIS_SSH_KEY no definido}"
 
-PROJECTS_SRC="${PROJECTS_SRC:-$HOME/Documents/Claude/Projects}"
+PROJECTS_SRC="${PROJECTS_SRC:-$HOME/Documents/Claude}"
 REMOTE="${LOUIS_REMOTE_USER}@${LOUIS_REMOTE_HOST}"
 SSH_OPTS="-i $LOUIS_SSH_KEY -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -o ServerAliveInterval=30"
 DEST="/opt/openclaw/projects"

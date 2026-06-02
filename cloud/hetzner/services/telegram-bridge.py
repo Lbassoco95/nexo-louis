@@ -30,6 +30,28 @@ import urllib.error
 sys.path.insert(0, str(Path(__file__).parent))
 import louis_core as core
 
+# Frases con las que Louis "promete" producir/entregar un documento. Si aparecen en
+# su respuesta pero NO encoló ningún archivo, la red de seguridad lo genera de verdad
+# (vía el flujo directo) para que nunca quede en "voy a generar" sin entregar.
+_PROMESA_DOC_RE = re.compile(
+    r"\b(voy\s+a|te\s+(lo|los|las)|lo|los|las|ya)\s+"
+    r"(gener\w*|prepar\w*|elabor\w*|arm\w*|redact\w*|dej\w*\s+list\w*|trabaj\w*)\b"
+    r"[^.!?\n]{0,60}\b"
+    r"(documento|perfil(es)?\s+de\s+puesto|perfil(es)?|pdf|informe|reporte|dictamen|"
+    r"presentaci[oó]n|propuesta|machote|formato|plantilla|acta)\b",
+    re.IGNORECASE,
+)
+
+
+def _promete_documento(text: str) -> bool:
+    """True si la respuesta de Louis promete producir/entregar un documento pero
+    (probablemente) no lo adjuntó. Conservador: exige verbo de acción + sustantivo
+    documental cercano, para no disparar generaciones (costosas) por falsos positivos."""
+    if not text:
+        return False
+    return bool(_PROMESA_DOC_RE.search(text))
+
+
 # ===== Configuración local del bridge =====
 # Mismo patrón que louis_core: /opt/openclaw en Hetzner, ~/.openclaw en dev.
 HOME = Path.home()
@@ -478,6 +500,22 @@ def process_update(update, telegram_token, chat_id, api_key, system_prompt):
                 log.info(f"📎 PDF generado por red de seguridad: {fname} ({len(pdf)} bytes)")
         except Exception as e:
             log.warning(f"Red de seguridad PDF falló: {e}")
+
+    # Red de seguridad #2: Louis PROMETIÓ un documento (en sus palabras) pero no
+    # encoló nada — el caso "voy a generar los perfiles de puesto" y no regresa. No
+    # dependía de que tu mensaje dijera 'PDF'. Lo generamos de verdad por el flujo
+    # directo (Sonnet escribe el contenido → archivo) para cerrar el seguimiento.
+    elif not pending_files and _promete_documento(response):
+        try:
+            log.info("→ Louis prometió documento sin entregarlo; generando vía flujo directo")
+            doc_resp, _m = core.generar_documento_directo(
+                api_key, system_prompt, history, user_input
+            )
+            telegram_send_message(telegram_token, chat_id, doc_resp, parse_mode="Markdown")
+            core.append_history(HISTORY_FILE, "assistant", doc_resp)
+            pending_files = core.get_pending_files()
+        except Exception as e:
+            log.warning(f"Red de seguridad (promesa de documento) falló: {e}")
 
     # Detecta HTML completo en la respuesta (bloque ```html o <html>).
     html_body = None
