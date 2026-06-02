@@ -3928,19 +3928,38 @@ def _slack_client():
     return WebClient(token=token), None
 
 
+def _slack_all_channels(client, types="public_channel,private_channel,im,mpim"):
+    """Lista TODOS los canales PAGINANDO. Slack devuelve los canales por tandas con
+    'next_cursor' aunque pidas limit alto; sin seguir el cursor se pierden canales
+    (por eso 'cumplimiento-vizum' no aparecía). Tope de seguridad de 25 páginas."""
+    out = []
+    cursor = None
+    for _ in range(25):
+        kwargs = {"types": types, "limit": 200, "exclude_archived": True}
+        if cursor:
+            kwargs["cursor"] = cursor
+        resp = client.conversations_list(**kwargs)
+        out += resp.get("channels", [])
+        cursor = (resp.get("response_metadata") or {}).get("next_cursor")
+        if not cursor:
+            break
+    return out
+
+
 def _slack_canales() -> str:
     client, err = _slack_client()
     if err:
         return err
     try:
-        resp = client.conversations_list(types="public_channel,private_channel,im,mpim", limit=200)
+        channels = _slack_all_channels(client)
         rows = []
-        for ch in resp.get("channels", []):
+        for ch in channels:
             name = ch.get("name") or ch.get("user") or ch.get("id")
             cid = ch["id"]
             ctype = "DM" if ch.get("is_im") else ("privado" if ch.get("is_private") else "público")
-            rows.append(f"  {cid}  {name}  [{ctype}]")
-        return "Canales donde Louis está invitado:\n" + "\n".join(rows) if rows else "No hay canales."
+            miembro = "" if ch.get("is_member") or ch.get("is_im") else "  (no miembro)"
+            rows.append(f"  {cid}  {name}  [{ctype}]{miembro}")
+        return f"Canales visibles para Louis ({len(rows)}):\n" + "\n".join(rows) if rows else "No hay canales."
     except Exception as e:
         return f"ERROR al listar canales Slack: {e}"
 
@@ -3953,11 +3972,14 @@ def _slack_leer(canal: str, limite: int = 20) -> str:
         # Resolve name → ID si necesario
         channel_id = canal
         if not canal.startswith("C") and not canal.startswith("D"):
-            resp = client.conversations_list(types="public_channel,private_channel", limit=200)
-            for ch in resp.get("channels", []):
-                if ch.get("name", "").lower() == canal.lower().lstrip("#"):
+            target = canal.lower().lstrip("#")
+            channel_id = None
+            for ch in _slack_all_channels(client, "public_channel,private_channel"):
+                if ch.get("name", "").lower() == target:
                     channel_id = ch["id"]
                     break
+            if not channel_id:
+                return f"No encontré el canal '#{canal}'. Revisa el nombre o invítame con /invite @Louis."
         history = client.conversations_history(channel=channel_id, limit=min(limite, 100))
         msgs = history.get("messages", [])
         if not msgs:
@@ -4024,12 +4046,11 @@ def _slack_resumen(canales: list | None = None, msgs_por_canal: int = 10) -> str
         return _cache[uid]
 
     try:
-        # Obtén lista de canales donde el bot está invitado
-        resp = client.conversations_list(types="public_channel,private_channel", limit=200)
-        all_channels = [c for c in resp.get("channels", []) if c.get("is_member")]
+        # Obtén lista de canales donde el bot está invitado (PAGINANDO).
+        todos = _slack_all_channels(client, "public_channel,private_channel")
+        all_channels = [c for c in todos if c.get("is_member")]
         if not all_channels:
-            # Si no está en ningún canal como miembro, intenta sin filtro
-            all_channels = resp.get("channels", [])
+            all_channels = todos
 
         # Filtra a los solicitados o usa todos
         if canales:
