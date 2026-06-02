@@ -2406,6 +2406,18 @@ TOOLS_DEFINITION = [
         },
     },
     {
+        "name": "dropbox_analizar_imagen",
+        "description": "Baja una IMAGEN (png/jpg/gif/webp) de Dropbox por su ruta y la analiza con VISIÓN para EXTRAER datos de adentro (ej. de una captura de pantalla: nombre/razón social, RFC, tipo de persona, contacto, email, teléfono). Úsala cuando la información que Polo necesita está DENTRO de una captura/imagen en Dropbox (no en el nombre del archivo). Para mandar el archivo tal cual, usa dropbox_enviar.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Ruta exacta de la imagen en Dropbox (de dropbox_buscar/listar)"},
+                "pregunta": {"type": "string", "description": "Qué extraer (ej. 'datos del cliente: nombre, RFC, tipo persona, contacto, email, teléfono')"},
+            },
+            "required": ["path"],
+        },
+    },
+    {
         "name": "dof_pdf",
         "description": "Descarga el PDF oficial de una publicación del DOF por su cod_nota y se lo MANDA a Polo por Telegram. Usa el cod que devuelve legal_buscar (ej: 5789080). Úsala cuando Polo pida el PDF de una publicación del DOF.",
         "input_schema": {
@@ -4636,6 +4648,57 @@ def _dropbox_enviar(path: str) -> str:
     return f"Archivo '{filename}' ({len(content) // 1024} KB) descargado de Dropbox — enviándolo por Telegram."
 
 
+def _dropbox_download_bytes(path: str):
+    """Descarga el contenido binario de un archivo de Dropbox. (bytes, None) | (None, error)."""
+    tok, err = _dropbox_token()
+    if err:
+        return None, err
+    req = urllib.request.Request("https://content.dropboxapi.com/2/files/download", method="POST")
+    req.add_header("Authorization", f"Bearer {tok}")
+    _mid = _dropbox_member_header().get("Dropbox-API-Select-User")
+    if _mid:
+        req.add_header("Dropbox-API-Select-User", _mid)
+    req.add_header("Dropbox-API-Arg", json.dumps({"path": path}))
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            return r.read(), None
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "ignore")[:300] if hasattr(e, "read") else str(e)
+        return None, f"ERROR descargando '{path}': {body}"
+    except Exception as e:
+        return None, f"ERROR descargando '{path}': {e}"
+
+
+_IMG_MEDIA = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+              ".gif": "image/gif", ".webp": "image/webp"}
+
+
+def _dropbox_analizar_imagen(path: str, pregunta: str = "") -> str:
+    """Baja una imagen de Dropbox y la analiza con visión de Claude para EXTRAER
+    datos (RFC, razón social, contacto…). Devuelve el texto extraído."""
+    import base64
+    ext = ("." + path.rsplit(".", 1)[-1].lower()) if "." in path else ""
+    media_type = _IMG_MEDIA.get(ext)
+    if not media_type:
+        return (f"ERROR: '{ext or path}' no es imagen soportada (png/jpg/gif/webp). "
+                f"Para PDF/otros usa dropbox_enviar.")
+    data, err = _dropbox_download_bytes(path)
+    if err:
+        return err
+    if len(data) > 4_500_000:
+        return f"ERROR: imagen de {len(data):,} bytes (>4.5MB), muy grande para visión."
+    api_key = load_anthropic_key()
+    if not api_key:
+        return "ERROR: falta ANTHROPIC_API_KEY para visión."
+    b64 = base64.standard_b64encode(data).decode("ascii")
+    sys_p = ("Eres un extractor de datos. Lee la imagen (captura de pantalla) y extrae la "
+             "información solicitada de forma estructurada y LITERAL. Si un dato no aparece, "
+             "escribe 'no aparece'. No inventes ni completes datos.")
+    q = pregunta.strip() or ("Extrae todos los datos del cliente: nombre/razón social, RFC, "
+        "tipo (persona física o moral), nombre de contacto, puesto, email, teléfono, dirección.")
+    return call_claude_with_image(api_key, sys_p, b64, media_type, q)
+
+
 def _dof_pdf(cod: str) -> str:
     """Genera el documento de una publicación del DOF desde nuestra BD local
     (texto ya descargado) y lo encola como HTML para envío por Telegram.
@@ -6809,6 +6872,8 @@ def execute_tool(name: str, args: dict) -> str:
             return _dropbox_buscar(args["query"], args.get("limite", 10))
         elif name == "dropbox_listar":
             return _dropbox_listar(args.get("carpeta", ""))
+        elif name == "dropbox_analizar_imagen":
+            return _dropbox_analizar_imagen(args["path"], args.get("pregunta", ""))
         elif name == "dropbox_enviar":
             return _dropbox_enviar(args["path"])
         elif name == "dof_pdf":
