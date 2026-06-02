@@ -85,6 +85,14 @@ TZ_CDMX = timezone(timedelta(hours=-6))
 STATE_DIR = HOME_OC / "state"
 LAST_BRIEFING_FILE = STATE_DIR / "last-briefing.json"
 
+# Frases de "relleno" con que el modelo a veces TERMINA el turno sin ejecutar la tool
+# (se queda esperando otro mensaje de Polo). Disparan el auto-continue anti-stall.
+_STALL_RE = re.compile(
+    r"(d[eé]jame\s+(revisar|ver|checar|consultar|buscar)|voy\s+a\s+(revisar|ver|checar|"
+    r"consultar|buscar|crear)|dame\s+un\s+momento|perm[ií]teme\s+(revisar|ver|consultar)|"
+    r"ahora\s+(reviso|lo\s+hago|checo|busco)|enseguida\s+lo\s+hago)",
+    re.IGNORECASE)
+
 # ===== Zona horaria activa =====
 # Default SIEMPRE CDMX. Cambia cuando Polo viaja (tool zona_horaria). Las consultas
 # de horas mundiales (clientes) NO cambian la zona activa.
@@ -597,6 +605,16 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "- Correo/agenda/juntas → tools `m365_*`.\n"
         "Solo di que algo no se pudo si la tool DEVOLVIÓ un error — y entonces reporta el error textual. "
         "Está PROHIBIDO decir 'no tengo acceso' cuando existe una tool para eso.\n"
+        "\n# NO TE DETENGAS A MEDIAS — EJECUTA EN EL MISMO TURNO (proactividad)\n"
+        "Eres un asistente PROACTIVO: completas la tarea de principio a fin SIN que Polo tenga que "
+        "empujarte turno por turno. PROHIBIDO terminar un turno con frases de relleno como 'déjame "
+        "revisar…', 'voy a revisar…', 'dame un momento', 'permíteme ver…', 'ahora reviso…', "
+        "'enseguida lo hago' SIN haber llamado ya la tool. Si dices que vas a revisar/crear/buscar "
+        "algo, LLAMA LA TOOL EN ESE MISMO TURNO y entrega el resultado real. Si una acción requiere "
+        "varios pasos (ej. buscar el user_id de alguien → crear proyecto → crear tarea), encadena "
+        "TODAS las tools necesarias en el mismo turno hasta terminar; NO te detengas a esperar otro "
+        "mensaje de Polo entre pasos. Solo te detienes a preguntar si falta un dato que únicamente "
+        "Polo tiene (no para cosas que tú puedes consultar con una tool).\n"
         "\n# APRENDIZAJE Y AUTOCORRECCIÓN\n"
         "Mejoras con el tiempo. LEARNINGS.md (arriba en tu contexto) son REGLAS VINCULANTES que Polo "
         "te enseñó: respétalas y consúltalas antes de actuar.\n"
@@ -7365,6 +7383,7 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
     _tools_cached = [dict(t) for t in TOOLS_DEFINITION]
     _tools_cached[-1] = {**_tools_cached[-1], "cache_control": {"type": "ephemeral"}}
     _system_cached = [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
+    _stall_retries = 0
     for _loop_i in range(max_loops):  # noqa: B007
         body = {
             "model": model,
@@ -7407,6 +7426,16 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
         turn_texts.append(turn_text)
         messages.append({"role": "assistant", "content": assistant_blocks})
         if stop_reason != "tool_use" or not tool_calls:
+            # Red anti-stall: si terminó con "déjame revisar / voy a ver…" SIN ejecutar
+            # una tool, empújalo UNA vez a continuar en este turno (proactividad) en
+            # lugar de quedarse esperando otro mensaje de Polo.
+            if _stall_retries < 1 and _STALL_RE.search(turn_text or ""):
+                _stall_retries += 1
+                log.info("anti-stall: el modelo se detuvo en 'déjame revisar' sin tool; empujando a continuar")
+                messages.append({"role": "user", "content":
+                    "Hazlo AHORA en este mismo turno: ejecuta las tools necesarias y entrégame el "
+                    "resultado real. No te detengas a esperar mi respuesta."})
+                continue
             break
         tool_results = []
         for tc in tool_calls:
