@@ -2309,7 +2309,7 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "kawiil_central_clientes",
-        "description": "Lista clientes activos. Filtros opcionales por nombre o segmento. Muestra cuántos proyectos abiertos y tareas pendientes por cliente.",
+        "description": "Busca/lista clientes en Kawiil Central. ES LA FORMA CORRECTA de verificar si un cliente existe — búsqueda INSENSIBLE A ACENTOS y mayúsculas (encuentra 'Magnetico' aunque escribas 'Magnético'). NO uses SQL crudo con ILIKE para buscar clientes (ILIKE no ignora acentos y dirías 'no existe' por error). Si esta tool devuelve 0, recién ahí concluye que no está registrado.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -5874,6 +5874,13 @@ def _kawiil_central_pipeline(limit_por_etapa: int = 5) -> str:
         return f"❌ Pipeline query falló: {e}"
 
 
+def _strip_accents(s: str) -> str:
+    """Normaliza para comparar: minúsculas y SIN acentos (Magnético == Magnetico)."""
+    import unicodedata
+    return "".join(ch for ch in unicodedata.normalize("NFD", s or "")
+                   if unicodedata.category(ch) != "Mn").lower().strip()
+
+
 def _kawiil_central_clientes(query: str = "", limit: int = 30) -> str:
     conn, err = _kawiil_central_pg()
     if err:
@@ -5886,28 +5893,26 @@ def _kawiil_central_clientes(query: str = "", limit: int = 30) -> str:
     cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=%s", (tabla,))
     cols = {r[0] for r in cur.fetchall()}
     name_col = next((c for c in ("name", "nombre", "company", "razon_social") if c in cols), "id")
-    where = ""
-    params = []
-    if query:
-        where = f" WHERE {name_col} ILIKE %s"
-        params.append(f"%{query}%")
-    sql = f"SELECT id, {name_col} FROM public.{tabla}{where} ORDER BY {name_col} LIMIT %s"
-    params.append(limit)
     try:
-        cur.execute(sql, params)
-        rows = cur.fetchall()
+        # Traemos TODOS y filtramos en Python sin acentos (ILIKE de Postgres NO ignora
+        # acentos → 'Magnético' no encontraba 'Magnetico'). Son ~100 clientes, es barato.
+        cur.execute(f"SELECT id, {name_col} FROM public.{tabla} ORDER BY {name_col}")
+        allrows = cur.fetchall()
+        if query:
+            q = _strip_accents(query)
+            rows = [r for r in allrows if q in _strip_accents(r[1] or "")][:limit]
+        else:
+            rows = allrows[:limit]
         if not rows:
             conn.close()
             return f"📭 0 clientes para '{query}'"
         out = [f"👥 *{len(rows)} clientes*" + (f" para '{query}'" if query else "") + ":"]
-        # Count tareas/proyectos por cliente
         tabla_p = _kawiil_central_find_table(conn, ("projects", "proyectos"))
-        tabla_t = _kawiil_central_find_table(conn, ("tasks", "tareas"))
         for cid, cname in rows:
             line = f"  • `{str(cid)[:8]}…` *{cname}*"
             try:
                 if tabla_p:
-                    cur.execute(f"SELECT count(*) FROM public.{tabla_p} WHERE client_id::text = %s OR cliente_id::text = %s", (str(cid), str(cid)))
+                    cur.execute(f"SELECT count(*) FROM public.{tabla_p} WHERE client_id::text = %s", (str(cid),))
                     n = cur.fetchone()[0]
                     if n > 0: line += f"  📁{n}"
             except Exception:
