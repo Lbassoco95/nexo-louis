@@ -1119,18 +1119,33 @@ _DOC_NEGATIVE_RE = re.compile(
     r"avance|conteo|resumen\s+de\s+(estado|n[uú]meros))\b",
     re.IGNORECASE)
 
+# Señales de ACCIÓN YA REALIZADA (pasado/completado) — un REPORTE de estatus, no una
+# orden. Ej: "ya se envió el documento", "entregamos el informe", "se mandó la
+# semana pasada", "ya quedó". Sin esto, un comentario de seguimiento que mencione
+# 'documento' + un verbo de entrega disparaba (mal) la generación de un PDF basura.
+_DOC_DONE_RE = re.compile(
+    r"\bya\s+(se\s+|lo\s+|la\s+|los\s+|las\s+|le\s+)?"
+    r"(envi\w*|entreg\w*|mand\w*|gener\w*|qued\w*|termin\w*|hic\w*|hize|est[aá]\b|avis\w*)"
+    r"|\bse\s+(envi[oó]|entreg[oó]|mand[oó]|gener[oó]|avis[oó])\b"
+    r"|\b(envi[oó]|entreg[oó]|mand[oó]|gener[oó]|enviaron|entregaron|mandaron|"
+    r"enviamos|entregamos|mandamos|generamos|envi[eé]|entregu[eé]|mand[eé])\b",
+    re.IGNORECASE)
+
 
 def needs_doc_sonnet(user_message: str) -> bool:
     """True si Polo pide GENERAR un documento (PDF/PPTX/XLSX). Usa Sonnet — sigue
     instrucciones de tool-calling mucho mejor que Haiku para generar_documento.
-    Excluye consultas de estado/conteo (cuántas, números, descargadas) aunque
-    mencionen 'PDF', porque ésas van a las tools de estado, no al generador."""
+    Excluye consultas de estado/conteo (cuántas, números, descargadas) y REPORTES de
+    acción ya realizada (ya se envió/entregamos/se mandó), aunque mencionen 'PDF' o
+    'documento', porque ésos NO son pedidos de generar sino seguimiento/estatus."""
     if not user_message:
         return False
     msg = user_message.strip()
     if msg.lower().startswith(OLLAMA_FORCE_PREFIXES):
         return False
     if _DOC_NEGATIVE_RE.search(msg):
+        return False
+    if _DOC_DONE_RE.search(msg):
         return False
     return bool(_DOC_TYPE_RE.search(msg) and _DOC_VERB_RE.search(msg))
 
