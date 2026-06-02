@@ -1824,17 +1824,18 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "agendar_recordatorio",
-        "description": "Programa un recordatorio PROACTIVO — Louis lo envía al canal (Telegram default) a la hora indicada. ÚSALO siempre que Polo diga 'recuérdame', 'avísame', 'mañana a las X', 'el viernes', etc. Sé proactivo: si Polo menciona algo con fecha futura, ofrécele agendarlo. Recurrencia opcional.",
+        "description": "Programa un recordatorio PROACTIVO que Louis envía al canal a la hora indicada. ÚSALO siempre que Polo diga 'recuérdame', 'avísame', 'en X minutos', 'mañana a las X', etc. IMPORTANTE: para tiempo RELATIVO ('en 12 minutos', 'en 2 horas') usa `en_minutos` (12, 120…) y el SERVIDOR calcula la hora real — NO calcules tú la hora absoluta (te equivocas con la hora). Usa `fecha_hora` SOLO para una fecha/hora específica futura.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "mensaje": {"type": "string", "description": "Mensaje que se le enviará a Polo cuando dispare (en primera persona/segunda persona, ej: 'Junta con Carmen en 30 min')"},
-                "fecha_hora": {"type": "string", "description": "ISO 8601 con tz CDMX -06:00. Ej: '2026-05-26T08:00:00-06:00'. Si Polo dice 'mañana a las 9', calcula la fecha exacta tú."},
+                "mensaje": {"type": "string", "description": "Mensaje que se le enviará a Polo cuando dispare"},
+                "en_minutos": {"type": "integer", "description": "RELATIVO desde ahora, en minutos (ej. 12 = en 12 min, 120 = en 2 horas). El servidor calcula la hora con el reloj real. PREFIERE esto para 'en X min/horas'."},
+                "fecha_hora": {"type": "string", "description": "ISO 8601 con tz CDMX -06:00, ej '2026-06-05T09:00:00-06:00'. Solo para fecha/hora específica (no relativa)."},
                 "canal": {"type": "string", "enum": ["telegram", "slack"], "default": "telegram"},
                 "modo": {"type": "string", "enum": ["raw", "enrich"], "default": "enrich", "description": "enrich = Haiku reformula en tono Louis; raw = manda literal"},
-                "recurrencia": {"type": "string", "enum": ["daily", "weekly", "monthly", "yearly"], "description": "Opcional. 'yearly' es ideal para cumpleaños y aniversarios."},
+                "recurrencia": {"type": "string", "enum": ["daily", "weekly", "monthly", "yearly"], "description": "Opcional. 'yearly' ideal para cumpleaños/aniversarios."},
             },
-            "required": ["mensaje", "fecha_hora"],
+            "required": ["mensaje"],
         },
     },
     {
@@ -6377,9 +6378,20 @@ def _write_queue(items: list):
     tmp.replace(QUEUE_FILE)
 
 
-def _agendar_recordatorio(mensaje: str, fecha_hora: str, canal: str = "telegram",
-                          modo: str = "enrich", recurrencia: str = None) -> str:
-    """Agrega un recordatorio al queue del scheduler."""
+def _agendar_recordatorio(mensaje: str, fecha_hora: str = "", canal: str = "telegram",
+                          modo: str = "enrich", recurrencia: str = None, en_minutos: int = 0) -> str:
+    """Agrega un recordatorio al queue del scheduler.
+    Si se pasa en_minutos>0, el fire_at se calcula DEL LADO DEL SERVIDOR (reloj real),
+    así un recordatorio relativo ('en 12 min') nunca depende de que el modelo tenga
+    bien la hora. Si no, usa fecha_hora (ISO 8601)."""
+    try:
+        if en_minutos and int(en_minutos) > 0:
+            dt = datetime.now(get_active_tz()) + timedelta(minutes=int(en_minutos))
+            fecha_hora = dt.isoformat()
+    except Exception:
+        pass
+    if not fecha_hora:
+        return "ERROR: da 'en_minutos' (relativo, recomendado) o 'fecha_hora' ISO 8601."
     # Valida fecha
     try:
         dt = datetime.fromisoformat(fecha_hora)
@@ -6389,6 +6401,12 @@ def _agendar_recordatorio(mensaje: str, fecha_hora: str, canal: str = "telegram"
         # Asume CDMX
         dt = dt.replace(tzinfo=TZ_CDMX)
         fecha_hora = dt.isoformat()
+    # Protección: si el fire_at quedó en el PASADO (típico cuando el modelo calculó mal
+    # la hora), avisa en vez de encolar algo que se dispara de inmediato.
+    ahora = datetime.now(dt.tzinfo or TZ_CDMX)
+    if dt < ahora - timedelta(minutes=1):
+        return (f"ERROR: la hora {dt.strftime('%Y-%m-%d %H:%M')} ya pasó (ahora son las "
+                f"{ahora.strftime('%H:%M')}). Usa 'en_minutos' para tiempo relativo y lo calculo yo.")
     entry = {
         "id": str(_uuid.uuid4())[:8],
         "fire_at": fecha_hora,
@@ -7043,9 +7061,9 @@ def execute_tool(name: str, args: dict) -> str:
             return f"OK aprendido: {args['topic']}"
         elif name == "agendar_recordatorio":
             return _agendar_recordatorio(
-                args["mensaje"], args["fecha_hora"],
+                args["mensaje"], args.get("fecha_hora", ""),
                 args.get("canal", "telegram"), args.get("modo", "enrich"),
-                args.get("recurrencia"),
+                args.get("recurrencia"), args.get("en_minutos", 0),
             )
         elif name == "listar_recordatorios":
             return _listar_recordatorios()
