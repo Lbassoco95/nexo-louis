@@ -166,6 +166,32 @@ def _fmt_dt_es(dt) -> str:
     return f"{_DIAS_ES[dt.weekday()]} {dt.day} {_MESES_ES[dt.month - 1]} {dt.year}, {dt.strftime('%H:%M')}"
 
 
+def _reloj_tool(zona: str = "") -> str:
+    """RELOJ EN VIVO — lee la hora real del sistema en el momento de la llamada (no
+    depende del prompt, que se congela). Devuelve hora/fecha en la zona activa de
+    Polo; si se pasa 'zona', añade esa zona también."""
+    try:
+        from zoneinfo import ZoneInfo
+        _zi = True
+    except Exception:
+        _zi = False
+    activa = get_active_tz_name()
+    now_act = datetime.now(get_active_tz())
+    etq = "CDMX" if activa == TZ_DEFAULT_NAME else activa
+    out = [f"🕐 Ahora mismo: {_fmt_dt_es(now_act)} ({etq})"]
+    if activa != TZ_DEFAULT_NAME:
+        out.append(f"(En CDMX serían las {datetime.now(TZ_CDMX).strftime('%H:%M')})")
+    if zona and _zi:
+        for z in [p.strip() for p in re.split(r"[,;/]| y ", zona) if p.strip()]:
+            tzname = _resolve_tz_name(z)
+            if tzname:
+                t = datetime.now(ZoneInfo(tzname))
+                out.append(f"• {z.title()} ({tzname}): {t.strftime('%H:%M')} — {_DIAS_ES[t.weekday()]} {t.day} {_MESES_ES[t.month-1]}")
+            else:
+                out.append(f"• {z}: no reconozco esa zona")
+    return "\n".join(out)
+
+
 def _zona_horaria_tool(accion: str, zona: str = "") -> str:
     """set = cambia zona activa (viaje); reset = vuelve a CDMX; consultar = horas
     mundiales sin cambiar la zona activa."""
@@ -456,14 +482,16 @@ def load_system_prompt(channel: str = "telegram") -> str:
                   f"En CDMX serían las {_cdmx_now}. Su reloj base normal es CDMX.")
         _etq = _tz_name
     parts.append(
-        "\n\n# FECHA Y HORA ACTUAL\n"
-        f"Ahora es {_fmt_dt_es(_now)} ({_etq}).{_viaje}\n"
+        "\n\n# FECHA Y HORA\n"
+        f"Referencia al cargar contexto: {_fmt_dt_es(_now)} ({_etq}).{_viaje}\n"
+        "⚠️ ESA referencia se CONGELA y puede tener varios minutos de antigüedad. Para la "
+        "hora/fecha EXACTA de AHORA — '¿qué hora es?', '¿qué día es hoy?', '¿cuánto falta "
+        "para X?', deadlines de hoy, o ANTES de agendar — llama SIEMPRE la tool `reloj` "
+        "(lee el reloj real del sistema). NO calcules la hora de memoria.\n"
         "Zona base de Polo: CDMX (America/Mexico_City, UTC-6, SIN horario de verano). "
-        "Interpreta y reporta horas/recordatorios en la zona activa de arriba. "
-        "Si Polo dice que viaja o está en otra zona ('estoy en Madrid'), llama la tool "
-        "`zona_horaria` accion='set'. Cuando regrese, accion='reset'. Si pregunta la hora "
-        "de un cliente/ciudad ('¿qué hora es en Tokio?'), usa accion='consultar' — eso NO "
-        "cambia la zona activa.\n"
+        "Si Polo viaja o está en otra zona ('estoy en Madrid'), llama `zona_horaria` "
+        "accion='set'; al regresar, accion='reset'. Para la hora de un cliente/ciudad, "
+        "usa `reloj` con 'zona' o `zona_horaria` accion='consultar' (eso NO cambia la zona activa).\n"
     )
     parts.append("\n\n# CONTEXTO DE MEMORIA (archivos vivos)\n")
     for fname in MEMORY_FILES:
@@ -1681,6 +1709,16 @@ TOOLS_DEFINITION = [
                 "texto": {"type": "string", "description": "Palabras clave del pendiente que se completó (ej: 'Vizum CNBV comunicación', 'carta Lupita Correduría'). Se hace match flexible contra las líneas - [ ] de AGENDA."},
             },
             "required": ["texto"],
+        },
+    },
+    {
+        "name": "reloj",
+        "description": "RELOJ EN VIVO. Devuelve la fecha y hora REAL de este momento (en la zona activa de Polo, default CDMX). ÚSALO SIEMPRE que necesites la hora/fecha actual exacta: cuando Polo pregunte '¿qué hora es?', '¿qué día es hoy?', al calcular '¿cuánto falta para…?', deadlines de hoy, o antes de agendar algo. NO confíes en la hora del prompt (se congela); este tool lee el reloj real. Opcional: pasa 'zona' para incluir también la hora de otra ciudad.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "zona": {"type": "string", "description": "Opcional: ciudad/zona extra a incluir (ej. 'Tokio'). Para varias, sepáralas con comas."},
+            },
         },
     },
     {
@@ -6575,6 +6613,8 @@ def execute_tool(name: str, args: dict) -> str:
             with path.open("a") as f:
                 f.write("\n" + content + "\n")
             return f"OK agregado a {args['filename']}"
+        elif name == "reloj":
+            return _reloj_tool(args.get("zona", ""))
         elif name == "zona_horaria":
             return _zona_horaria_tool(args.get("accion", "consultar"), args.get("zona", ""))
         elif name == "completar_pendiente":
