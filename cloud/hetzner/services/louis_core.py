@@ -2211,6 +2211,21 @@ TOOLS_DEFINITION = [
         },
     },
     {
+        "name": "kawiil_central_crear_proyecto",
+        "description": "Crea un PROYECTO en kawiil-central para un cliente. USA ESTA TOOL en vez de SQL crudo (valida el enum de area y evita el error de transacción). 'area' debe ser una de: legal, contabilidad, softlanding, juicios, gestoria, cumplimiento, representacion, constitucion_nacional — o vacía. Para servicios de backoffice/control interno/organización de procesos usa 'gestoria' o deja area vacía. Necesitas el client_id (sácalo con kawiil_central_clientes). Confirma con Polo antes de crear.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Nombre del proyecto (ej. 'Backoffice y Control Interno')"},
+                "client_id": {"type": "string", "description": "id del cliente dueño del proyecto"},
+                "area": {"type": "string", "enum": ["legal", "contabilidad", "softlanding", "juicios", "gestoria", "cumplimiento", "representacion", "constitucion_nacional"]},
+                "descripcion": {"type": "string"},
+                "service_tags": {"type": "string", "description": "Etiquetas separadas por coma (ej. 'control_interno,backoffice,procesos')"},
+            },
+            "required": ["name", "client_id"],
+        },
+    },
+    {
         "name": "kawiil_central_actualizar_tarea",
         "description": "Actualiza una tarea existente — útil para mover de estado, reasignar, ajustar deadline. Pásale el id de la tarea y los campos a cambiar. Para registrar un AVANCE/comentario usa kawiil_central_avance.",
         "input_schema": {
@@ -5920,6 +5935,57 @@ def _kawiil_central_proyectos(estado: str = "", limit: int = 20) -> str:
     return "\n".join(out)
 
 
+_KC_AREAS_VALIDAS = {"legal", "contabilidad", "softlanding", "juicios", "gestoria",
+                     "cumplimiento", "representacion", "constitucion_nacional"}
+
+
+def _kawiil_central_crear_proyecto(name: str, client_id: str = "", area: str = "",
+                                   descripcion: str = "", service_tags: str = "") -> str:
+    """Crea un proyecto validando el enum `area` para no fallar con errores crípticos."""
+    if not name:
+        return "❌ Falta el nombre del proyecto."
+    area = (area or "").strip().lower()
+    if area and area not in _KC_AREAS_VALIDAS:
+        return (f"❌ area inválida: '{area}'. Usa una de: {', '.join(sorted(_KC_AREAS_VALIDAS))} "
+                f"(o déjala vacía). Para backoffice/control interno usa 'gestoria' o déjala vacía "
+                f"y describe el servicio en el nombre/service_tags.")
+    conn, err = _kawiil_central_pg()
+    if err:
+        return err
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT id FROM public.organizations LIMIT 1")
+        row = cur.fetchone()
+        if not row:
+            conn.close()
+            return "❌ No hay organización en la BD."
+        data = {"organization_id": row[0], "name": name, "status": "activo"}
+        if client_id:
+            data["client_id"] = client_id
+        if area:
+            data["area"] = area
+        if descripcion:
+            data["description"] = descripcion
+        tags = [t.strip() for t in re.split(r"[,;]", service_tags) if t.strip()] if service_tags else None
+        if tags:
+            data["service_tags"] = tags
+        cols_sql = ", ".join(data.keys())
+        placeholders = ", ".join(["%s"] * len(data))
+        sql = f"INSERT INTO public.projects ({cols_sql}) VALUES ({placeholders}) RETURNING id"
+        conn.autocommit = True
+        cur.execute(sql, list(data.values()))
+        new_id = cur.fetchone()[0]
+        _kawiil_central_audit(f"crear_proyecto: {name}", sql + " :: " + json.dumps(data, default=str))
+        conn.close()
+        return f"✅ Proyecto creado: *{name}* (id `{str(new_id)[:8]}…`)" + (f" · area={area}" if area else " · sin area")
+    except Exception as e:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return f"❌ No se pudo crear el proyecto: {e}"
+
+
 def _kawiil_central_crear_tarea(titulo: str, proyecto_id: str, descripcion: str = "",
                                  asignado_a: str = "", prioridad: str = "",
                                  deadline: str = "", campos_extra: dict = None) -> str:
@@ -6893,6 +6959,10 @@ def execute_tool(name: str, args: dict) -> str:
                                                 args.get("descripcion", ""), args.get("asignado_a", ""),
                                                 args.get("prioridad", ""), args.get("deadline", ""),
                                                 args.get("campos_extra"))
+        elif name == "kawiil_central_crear_proyecto":
+            return _kawiil_central_crear_proyecto(args["name"], args.get("client_id", ""),
+                                                  args.get("area", ""), args.get("descripcion", ""),
+                                                  args.get("service_tags", ""))
         elif name == "kawiil_central_actualizar_tarea":
             return _kawiil_central_actualizar_tarea(args["tarea_id"], args["cambios"])
         elif name == "kawiil_central_avance":
