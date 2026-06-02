@@ -453,7 +453,9 @@ def process_update(update, telegram_token, chat_id, api_key, system_prompt):
         return
 
     core.append_history(HISTORY_FILE, "user", user_input)
-    history = core.load_history(HISTORY_FILE, max_turns=16)[:-1]
+    # 28 turnos: ventana amplia para sostener tareas multi-paso (alta de clientes,
+    # proyectos y tareas en kawiil-central) sin perder el hilo entre mensajes.
+    history = core.load_history(HISTORY_FILE, max_turns=28)[:-1]
 
     # Pedido de documento (PDF/PPTX/XLSX): flujo DIRECTO determinístico.
     # No dependemos de tool-calling — Sonnet escribe el contenido, nosotros generamos
