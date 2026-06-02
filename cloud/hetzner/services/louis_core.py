@@ -6040,6 +6040,27 @@ _KC_AREAS_VALIDAS = {"legal", "contabilidad", "softlanding", "juicios", "gestori
                      "cumplimiento", "representacion", "constitucion_nacional"}
 
 
+def _kawiil_central_resolver_usuario(conn, nombre: str) -> str | None:
+    """Resuelve un nombre/email a auth user_id para asignar tareas.
+    tasks.assigned_to → auth.users; profiles.user_id ES ese id. Busca en profiles por
+    full_name/email SIN acentos. Devuelve profiles.user_id o None."""
+    if not nombre:
+        return None
+    # ¿Ya es un uuid? úsalo tal cual.
+    if nombre.count("-") >= 4 and len(nombre) >= 32:
+        return nombre
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT user_id, full_name, email FROM public.profiles WHERE user_id IS NOT NULL AND is_active IS NOT FALSE")
+        q = _strip_accents(nombre)
+        for uid, fn, em in cur.fetchall():
+            if uid and (q in _strip_accents(fn or "") or q in _strip_accents(em or "")):
+                return str(uid)
+    except Exception:
+        pass
+    return None
+
+
 def _kawiil_central_crear_proyecto(name: str, client_id: str = "", area: str = "",
                                    descripcion: str = "", service_tags: str = "") -> str:
     """Crea un proyecto validando el enum `area` para no fallar con errores crípticos."""
@@ -6113,9 +6134,13 @@ def _kawiil_central_crear_tarea(titulo: str, proyecto_id: str, descripcion: str 
             if c in cols:
                 data[c] = descripcion; break
     if asignado_a:
-        for c in ("assignee_id", "assigned_to", "asignado_a", "owner_id", "responsible"):
-            if c in cols:
-                data[c] = asignado_a; break
+        # Resuelve nombre/email → user_id (assigned_to apunta a auth.users vía
+        # profiles.user_id). Si no resuelve, se omite para no romper el FK.
+        uid = _kawiil_central_resolver_usuario(conn, asignado_a)
+        if uid:
+            for c in ("assigned_to", "assignee_id", "asignado_a", "owner_id", "responsible"):
+                if c in cols:
+                    data[c] = uid; break
     if prioridad:
         for c in ("priority", "prioridad"):
             if c in cols:
