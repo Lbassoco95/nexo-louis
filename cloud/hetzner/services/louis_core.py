@@ -84,6 +84,128 @@ OLLAMA_MEMORY_LIMITS = {
 TZ_CDMX = timezone(timedelta(hours=-6))
 STATE_DIR = HOME_OC / "state"
 LAST_BRIEFING_FILE = STATE_DIR / "last-briefing.json"
+
+# ===== Zona horaria activa =====
+# Default SIEMPRE CDMX. Cambia cuando Polo viaja (tool zona_horaria). Las consultas
+# de horas mundiales (clientes) NO cambian la zona activa.
+TZ_DEFAULT_NAME = "America/Mexico_City"
+ACTIVE_TZ_FILE = STATE_DIR / "active_tz.json"
+_DIAS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+_MESES_ES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
+# Alias amistosos → zona IANA (para que Polo diga "Madrid", "Nueva York", "Tokio").
+TZ_ALIASES = {
+    "cdmx": "America/Mexico_City", "mexico": "America/Mexico_City", "méxico": "America/Mexico_City",
+    "ciudad de mexico": "America/Mexico_City", "df": "America/Mexico_City",
+    "monterrey": "America/Monterrey", "guadalajara": "America/Mexico_City",
+    "tijuana": "America/Tijuana", "cancun": "America/Cancun", "cancún": "America/Cancun",
+    "nueva york": "America/New_York", "new york": "America/New_York", "ny": "America/New_York",
+    "nyc": "America/New_York", "miami": "America/New_York", "washington": "America/New_York",
+    "los angeles": "America/Los_Angeles", "la": "America/Los_Angeles", "california": "America/Los_Angeles",
+    "san francisco": "America/Los_Angeles", "chicago": "America/Chicago", "texas": "America/Chicago",
+    "denver": "America/Denver", "madrid": "Europe/Madrid", "españa": "Europe/Madrid",
+    "espana": "Europe/Madrid", "barcelona": "Europe/Madrid", "londres": "Europe/London",
+    "london": "Europe/London", "uk": "Europe/London", "paris": "Europe/Paris", "parís": "Europe/Paris",
+    "berlin": "Europe/Berlin", "berlín": "Europe/Berlin", "roma": "Europe/Rome", "italia": "Europe/Rome",
+    "amsterdam": "Europe/Amsterdam", "tokio": "Asia/Tokyo", "tokyo": "Asia/Tokyo",
+    "japon": "Asia/Tokyo", "japón": "Asia/Tokyo", "shanghai": "Asia/Shanghai", "china": "Asia/Shanghai",
+    "beijing": "Asia/Shanghai", "pekin": "Asia/Shanghai", "pekín": "Asia/Shanghai",
+    "hong kong": "Asia/Hong_Kong", "hongkong": "Asia/Hong_Kong", "singapur": "Asia/Singapore",
+    "seul": "Asia/Seoul", "seúl": "Asia/Seoul", "dubai": "Asia/Dubai", "dubái": "Asia/Dubai",
+    "bogota": "America/Bogota", "bogotá": "America/Bogota", "lima": "America/Lima",
+    "santiago": "America/Santiago", "buenos aires": "America/Argentina/Buenos_Aires",
+    "sao paulo": "America/Sao_Paulo", "são paulo": "America/Sao_Paulo", "brasil": "America/Sao_Paulo",
+}
+
+
+def _resolve_tz_name(nombre: str) -> str | None:
+    """Traduce un nombre amistoso o zona IANA a zona IANA válida (o None)."""
+    if not nombre:
+        return None
+    raw = nombre.strip()
+    low = raw.lower().strip(" ?¿.!")
+    if low in TZ_ALIASES:
+        return TZ_ALIASES[low]
+    try:
+        from zoneinfo import ZoneInfo
+        ZoneInfo(raw)
+        return raw
+    except Exception:
+        return None
+
+
+def get_active_tz_name() -> str:
+    try:
+        if ACTIVE_TZ_FILE.exists():
+            return json.loads(ACTIVE_TZ_FILE.read_text()).get("tz") or TZ_DEFAULT_NAME
+    except Exception:
+        pass
+    return TZ_DEFAULT_NAME
+
+
+def get_active_tz():
+    """tzinfo de la zona activa (default CDMX). Cae a TZ_CDMX si zoneinfo no está."""
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(get_active_tz_name())
+    except Exception:
+        return TZ_CDMX
+
+
+def set_active_tz(tz_name: str) -> bool:
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        ACTIVE_TZ_FILE.write_text(json.dumps(
+            {"tz": tz_name, "set_at": datetime.now(TZ_CDMX).isoformat()}, ensure_ascii=False))
+        return True
+    except Exception:
+        return False
+
+
+def _fmt_dt_es(dt) -> str:
+    """Fecha/hora en español sin depender del locale del sistema."""
+    return f"{_DIAS_ES[dt.weekday()]} {dt.day} {_MESES_ES[dt.month - 1]} {dt.year}, {dt.strftime('%H:%M')}"
+
+
+def _zona_horaria_tool(accion: str, zona: str = "") -> str:
+    """set = cambia zona activa (viaje); reset = vuelve a CDMX; consultar = horas
+    mundiales sin cambiar la zona activa."""
+    accion = (accion or "consultar").lower().strip()
+    try:
+        from zoneinfo import ZoneInfo
+    except Exception:
+        return "ERROR: zoneinfo no disponible en el servidor (instala tzdata)."
+
+    if accion in ("reset", "regreso", "regresar", "volver", "cdmx"):
+        set_active_tz(TZ_DEFAULT_NAME)
+        return f"OK: reloj de vuelta a CDMX. Ahora: {_fmt_dt_es(datetime.now(TZ_CDMX))} (CDMX)."
+
+    if accion in ("set", "cambiar", "viaje", "viajar", "estoy"):
+        tzname = _resolve_tz_name(zona)
+        if not tzname:
+            return (f"ERROR: no reconozco la zona '{zona}'. Dame ciudad (Madrid, Nueva York, "
+                    f"Tokio) o zona IANA (Europe/Madrid).")
+        set_active_tz(tzname)
+        ahi = _fmt_dt_es(datetime.now(ZoneInfo(tzname)))
+        cdmx = datetime.now(TZ_CDMX).strftime("%H:%M")
+        return (f"OK: reloj activo ahora en *{tzname}*. Ahí son {ahi}. (En CDMX: {cdmx}.) "
+                f"Avísame cuando regreses y lo regreso a CDMX.")
+
+    # consultar (horas mundiales) — NO cambia la zona activa
+    zonas = [z.strip() for z in re.split(r"[,;/]| y ", zona) if z.strip()]
+    if not zonas:
+        return "ERROR: dime qué ciudad/zona consultar (ej. 'Tokio, Madrid')."
+    out = []
+    for z in zonas:
+        tzname = _resolve_tz_name(z)
+        if not tzname:
+            out.append(f"• {z}: no reconozco esa zona")
+            continue
+        t = datetime.now(ZoneInfo(tzname))
+        out.append(f"• {z.title()} ({tzname}): {t.strftime('%H:%M')} — {_DIAS_ES[t.weekday()]} {t.day} {_MESES_ES[t.month-1]}")
+    cdmx = datetime.now(TZ_CDMX).strftime("%H:%M")
+    activa = get_active_tz_name()
+    nota = "" if activa == TZ_DEFAULT_NAME else f" | zona activa de Polo: {activa}"
+    return "Horas actuales:\n" + "\n".join(out) + f"\n(CDMX: {cdmx}{nota})"
 SESSION_HINTS_FILE = STATE_DIR / "session-hints.json"
 
 M365_HINT_RE = re.compile(
@@ -321,6 +443,28 @@ def load_system_prompt(channel: str = "telegram") -> str:
     agents = SPACE / "AGENTS.md"
     if agents.exists():
         parts.append(agents.read_text())
+    # Fecha y hora actual SIEMPRE en contexto (en la zona activa de Polo).
+    _tz_name = get_active_tz_name()
+    _now = datetime.now(get_active_tz())
+    _es_default = (_tz_name == TZ_DEFAULT_NAME)
+    if _es_default:
+        _viaje = ""
+        _etq = "CDMX"
+    else:
+        _cdmx_now = datetime.now(TZ_CDMX).strftime("%H:%M")
+        _viaje = (f" ⚠️ Polo está FUERA de CDMX (viajando, zona {_tz_name}). "
+                  f"En CDMX serían las {_cdmx_now}. Su reloj base normal es CDMX.")
+        _etq = _tz_name
+    parts.append(
+        "\n\n# FECHA Y HORA ACTUAL\n"
+        f"Ahora es {_fmt_dt_es(_now)} ({_etq}).{_viaje}\n"
+        "Zona base de Polo: CDMX (America/Mexico_City, UTC-6, SIN horario de verano). "
+        "Interpreta y reporta horas/recordatorios en la zona activa de arriba. "
+        "Si Polo dice que viaja o está en otra zona ('estoy en Madrid'), llama la tool "
+        "`zona_horaria` accion='set'. Cuando regrese, accion='reset'. Si pregunta la hora "
+        "de un cliente/ciudad ('¿qué hora es en Tokio?'), usa accion='consultar' — eso NO "
+        "cambia la zona activa.\n"
+    )
     parts.append("\n\n# CONTEXTO DE MEMORIA (archivos vivos)\n")
     for fname in MEMORY_FILES:
         path = SPACE / fname
@@ -1537,6 +1681,18 @@ TOOLS_DEFINITION = [
                 "texto": {"type": "string", "description": "Palabras clave del pendiente que se completó (ej: 'Vizum CNBV comunicación', 'carta Lupita Correduría'). Se hace match flexible contra las líneas - [ ] de AGENDA."},
             },
             "required": ["texto"],
+        },
+    },
+    {
+        "name": "zona_horaria",
+        "description": "Maneja la zona horaria de Polo y consulta horas mundiales. El default SIEMPRE es CDMX (America/Mexico_City). Usa accion='set' con la ciudad/zona cuando Polo diga que viaja o está en otra zona ('estoy en Madrid', 'ando en Nueva York', 'me fui a Tokio'). accion='reset' cuando regrese a México ('ya regresé', 'estoy de vuelta'). accion='consultar' para decir la hora actual de una o varias ciudades/clientes ('¿qué hora es en Tokio?', 'hora en Madrid y Nueva York') SIN cambiar la zona activa.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "accion": {"type": "string", "enum": ["set", "reset", "consultar"]},
+                "zona": {"type": "string", "description": "Ciudad o zona IANA (Madrid, Nueva York, Tokio, Europe/Madrid…). Para consultar varias, sepáralas con comas."},
+            },
+            "required": ["accion"],
         },
     },
     {
@@ -6419,6 +6575,8 @@ def execute_tool(name: str, args: dict) -> str:
             with path.open("a") as f:
                 f.write("\n" + content + "\n")
             return f"OK agregado a {args['filename']}"
+        elif name == "zona_horaria":
+            return _zona_horaria_tool(args.get("accion", "consultar"), args.get("zona", ""))
         elif name == "completar_pendiente":
             path = SPACE / "AGENDA.md"
             if not path.exists():
