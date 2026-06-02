@@ -7479,6 +7479,21 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
     # Asegura que el primer mensaje sea "user"
     while messages and messages[0]["role"] != "user":
         messages.pop(0)
+    # Ancla la HORA REAL dentro del ÚLTIMO mensaje del usuario (lo último que lee el
+    # modelo) para que GANE sobre cualquier hora vieja del historial — el modelo se
+    # anclaba en un "14:03" mencionado antes en la conversación e ignoraba el reloj.
+    try:
+        _now_l = datetime.now(get_active_tz())
+        _tzl = "CDMX" if get_active_tz_name() == TZ_DEFAULT_NAME else get_active_tz_name()
+        for _i in range(len(messages) - 1, -1, -1):
+            if messages[_i]["role"] == "user" and isinstance(messages[_i].get("content"), str):
+                messages[_i]["content"] = (
+                    f"[hora real AHORA: {_fmt_dt_es(_now_l)} ({_tzl}). Para horas/deadlines/"
+                    f"'cuánto falta' usa ESTA; ignora cualquier otra hora dicha antes en el chat.]\n"
+                    + messages[_i]["content"])
+                break
+    except Exception:
+        pass
     headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
     max_loops = 12  # holgura para tareas multi-paso (crear proyecto+tarea+subtareas) + anti-stall
     turn_texts = []   # texto emitido por cada turn (puede ser "")
