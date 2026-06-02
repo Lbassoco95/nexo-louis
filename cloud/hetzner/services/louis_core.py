@@ -4625,48 +4625,80 @@ def _dropbox_listar(carpeta: str = "") -> str:
 
 
 def _dropbox_enviar(path: str) -> str:
-    tok, err = _dropbox_token()
+    content, err = _dropbox_download_bytes(path)
     if err:
-        return err
-    req = urllib.request.Request("https://content.dropboxapi.com/2/files/download", method="POST")
-    req.add_header("Authorization", f"Bearer {tok}")
-    _mid = _dropbox_member_header().get("Dropbox-API-Select-User")
-    if _mid:
-        req.add_header("Dropbox-API-Select-User", _mid)
-    # Dropbox-API-Arg debe ser ASCII; json.dumps (ensure_ascii) escapa acentos.
-    req.add_header("Dropbox-API-Arg", json.dumps({"path": path}))
-    try:
-        with urllib.request.urlopen(req, timeout=120) as r:
-            content = r.read()
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", "ignore")[:300] if hasattr(e, "read") else str(e)
-        return f"ERROR descargando '{path}' de Dropbox: {body}"
-    except Exception as e:
-        return f"ERROR descargando '{path}' de Dropbox: {e}"
+        return err.replace("ERROR descargando", "ERROR descargando de Dropbox")
     filename = path.rsplit("/", 1)[-1] or "archivo"
     _queue_file(content, filename, f"📄 {filename} (Dropbox)")
     return f"Archivo '{filename}' ({len(content) // 1024} KB) descargado de Dropbox — enviándolo por Telegram."
 
 
-def _dropbox_download_bytes(path: str):
-    """Descarga el contenido binario de un archivo de Dropbox. (bytes, None) | (None, error)."""
+def _dropbox_norm_name(s: str) -> str:
+    """Normaliza espacios unicode raros (U+202F de las capturas de macOS, NBSP, etc.)
+    para comparar nombres de archivo sin que el modelo los rompa al reescribirlos."""
+    for ch in (" ", " ", " ", " ", " "):
+        s = s.replace(ch, " ")
+    return " ".join(s.split()).lower()
+
+
+def _dropbox_resolve_exact(path: str) -> str | None:
+    """Si la ruta no existe literal (p.ej. el modelo reescribió el U+202F como espacio
+    normal), busca por nombre de archivo y devuelve la ruta EXACTA del API."""
+    base = path.rsplit("/", 1)[-1]
     tok, err = _dropbox_token()
     if err:
-        return None, err
-    req = urllib.request.Request("https://content.dropboxapi.com/2/files/download", method="POST")
-    req.add_header("Authorization", f"Bearer {tok}")
-    _mid = _dropbox_member_header().get("Dropbox-API-Select-User")
-    if _mid:
-        req.add_header("Dropbox-API-Select-User", _mid)
-    req.add_header("Dropbox-API-Arg", json.dumps({"path": path}))
+        return None
+    headers = {"Authorization": f"Bearer {tok}", **_dropbox_member_header()}
     try:
-        with urllib.request.urlopen(req, timeout=120) as r:
-            return r.read(), None
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", "ignore")[:300] if hasattr(e, "read") else str(e)
-        return None, f"ERROR descargando '{path}': {body}"
-    except Exception as e:
-        return None, f"ERROR descargando '{path}': {e}"
+        j = http_post_json("https://api.dropbox.com/2/files/search_v2", headers,
+                           {"query": base, "options": {"max_results": 10}})
+    except Exception:
+        return None
+    target = _dropbox_norm_name(base)
+    matches = j.get("matches", [])
+    for m in matches:
+        md = m.get("metadata", {}).get("metadata", {})
+        p = md.get("path_display") or md.get("path_lower")
+        if p and _dropbox_norm_name(p.rsplit("/", 1)[-1]) == target:
+            return p
+    return None
+
+
+def _dropbox_download_bytes(path: str):
+    """Descarga el contenido binario de un archivo de Dropbox. (bytes, None) | (None, error).
+    Si la ruta no se encuentra (típico cuando se reescribió el U+202F de las capturas),
+    reintenta resolviendo la ruta exacta por búsqueda."""
+    def _try(p):
+        tok, err = _dropbox_token()
+        if err:
+            return None, err
+        req = urllib.request.Request("https://content.dropboxapi.com/2/files/download", method="POST")
+        req.add_header("Authorization", f"Bearer {tok}")
+        _mid = _dropbox_member_header().get("Dropbox-API-Select-User")
+        if _mid:
+            req.add_header("Dropbox-API-Select-User", _mid)
+        req.add_header("Dropbox-API-Arg", json.dumps({"path": p}))
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                return r.read(), None
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", "ignore")[:300] if hasattr(e, "read") else str(e)
+            return None, f"ERROR descargando '{p}': {body}"
+        except Exception as e:
+            return None, f"ERROR descargando '{p}': {e}"
+
+    data, err = _try(path)
+    if data is not None:
+        return data, None
+    # Reintento: resolver ruta exacta por búsqueda (arregla el U+202F reescrito).
+    if "not_found" in (err or ""):
+        exact = _dropbox_resolve_exact(path)
+        if exact and exact != path:
+            d2, e2 = _try(exact)
+            if d2 is not None:
+                return d2, None
+            return None, e2
+    return None, err
 
 
 _IMG_MEDIA = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
