@@ -7613,6 +7613,29 @@ def format_for_telegram(text: str) -> str:
     text = re.sub(r"`[^`\n]+`", _stash, text)
     # 2) Escapar caracteres especiales de HTML en el resto
     text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    # 2b) Tablas markdown → líneas legibles (Telegram NO renderiza tablas; los `|`
+    # y la fila `|---|` salían en crudo). Cada fila → celdas unidas por "  —  ".
+    def _detable_line(ln: str):
+        s = ln.strip()
+        if "|" not in s:
+            return ln
+        core_s = s.strip("|").strip()
+        # Fila separadora (|---|:--:|) → eliminar
+        if core_s and set(core_s) <= set("-:| "):
+            return None
+        cells = [c.strip() for c in s.strip("|").split("|")]
+        cells = [c for c in cells if c != ""]
+        if len(cells) >= 2:
+            return "• " + "  —  ".join(cells)
+        return ln
+    _tl = []
+    for _ln in text.split("\n"):
+        r = _detable_line(_ln)
+        if r is not None:
+            _tl.append(r)
+    text = "\n".join(_tl)
+    # 2c) Viñetas (-, *, +) → • para que no queden asteriscos/guiones sueltos.
+    text = re.sub(r"(?m)^(\s*)[-*+]\s+", r"\1• ", text)
     # 3) Headers → negrita en su propia línea
     text = re.sub(r"^#{1,6}\s+(.+)$", r"<b>\1</b>", text, flags=re.MULTILINE)
     # 4) Negrita **x** y __x__
