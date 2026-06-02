@@ -2269,6 +2269,7 @@ TOOLS_DEFINITION = [
                 "asignado_a": {"type": "string", "description": "id o email del responsable"},
                 "prioridad": {"type": "string", "enum": ["baja", "media", "alta", "urgente"]},
                 "deadline": {"type": "string", "description": "ISO 8601 date o datetime"},
+                "parent_task_id": {"type": "string", "description": "Si es SUB-TAREA, el id de la tarea padre. Se marca is_subtask=true automáticamente (así guarda las sub-tareas Kawiil Central). NO uses checklist para sub-tareas."},
                 "campos_extra": {"type": "object", "description": "Otros campos del schema que kawiil-central use (status default, labels, etc)"},
             },
             "required": ["titulo", "proyecto_id"],
@@ -6167,7 +6168,8 @@ def _kawiil_central_crear_proyecto(name: str, client_id: str = "", area: str = "
 
 def _kawiil_central_crear_tarea(titulo: str, proyecto_id: str, descripcion: str = "",
                                  asignado_a: str = "", prioridad: str = "",
-                                 deadline: str = "", campos_extra: dict = None) -> str:
+                                 deadline: str = "", campos_extra: dict = None,
+                                 parent_task_id: str = "") -> str:
     conn, err = _kawiil_central_pg()
     if err:
         return err
@@ -6198,6 +6200,12 @@ def _kawiil_central_crear_tarea(titulo: str, proyecto_id: str, descripcion: str 
             for c in ("assigned_to", "assignee_id", "asignado_a", "owner_id", "responsible"):
                 if c in cols:
                     data[c] = uid; break
+    # Sub-tarea real: parent_task_id + is_subtask=true (convención de Kawiil Central).
+    if parent_task_id:
+        if "parent_task_id" in cols:
+            data["parent_task_id"] = parent_task_id
+        if "is_subtask" in cols:
+            data["is_subtask"] = True
     if prioridad:
         for c in ("priority", "prioridad"):
             if c in cols:
@@ -7141,7 +7149,7 @@ def execute_tool(name: str, args: dict) -> str:
             return _kawiil_central_crear_tarea(args["titulo"], args["proyecto_id"],
                                                 args.get("descripcion", ""), args.get("asignado_a", ""),
                                                 args.get("prioridad", ""), args.get("deadline", ""),
-                                                args.get("campos_extra"))
+                                                args.get("campos_extra"), args.get("parent_task_id", ""))
         elif name == "kawiil_central_crear_proyecto":
             return _kawiil_central_crear_proyecto(args["name"], args.get("client_id", ""),
                                                   args.get("area", ""), args.get("descripcion", ""),
