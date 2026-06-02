@@ -401,6 +401,11 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "- VIAJES.md: viajes pasados/próximos, preferencias (aerolínea, hotel, status frecuente)\n"
         "- FINANZAS.md: notas financieras personales — pagos recurrentes, deadlines fiscales (NUNCA guardes números de cuenta o tarjetas)\n"
         "Usa `append_to_memory` cuando agregas. Usa `write_memory` solo si vas a reemplazar TODO el archivo."
+        "\n\n# CERRAR PENDIENTES — CRÍTICO PARA NO REPETIR TEMAS VIEJOS\n"
+        "Cuando Polo avise que algo YA se hizo/entregó/envió/quedó (ej. 'ya entregamos Vizum a la CNBV', "
+        "'ya se mandó la carta de Lupita', 'eso ya quedó'), DEBES llamar `completar_pendiente(texto)` con las "
+        "palabras clave para marcarlo - [x] en AGENDA. Si NO lo cierras, seguirá saliendo en cada revisión y "
+        "parecerá que 'sacas temas viejos'. Cerrar lo hecho es tan importante como anotar lo nuevo."
         "\n\n# CUANDO POLO PREGUNTE DÓNDE ESTÁS O QUÉ TIENES CONECTADO\n"
         "SIEMPRE invoca primero la tool `verificar_conexiones`. Esto te da datos EN VIVO "
         "(hostname, IP, servicios systemd activos, modelos Ollama, M365 Kawiil/Yoltik con prueba real). "
@@ -1512,6 +1517,17 @@ TOOLS_DEFINITION = [
                 "content": {"type": "string"},
             },
             "required": ["filename", "content"],
+        },
+    },
+    {
+        "name": "completar_pendiente",
+        "description": "Marca como HECHO (- [x]) un pendiente de AGENDA.md cuando Polo avisa que algo ya se hizo/entregó/envió/quedó (ej. 'ya entregué Vizum', 'ya se mandó la carta de Lupita'). Busca las líneas de pendiente abiertas que coincidan con el texto y las cierra, para que dejen de aparecer en las revisiones. ÚSALO siempre que Polo reporte algo completado — así la AGENDA se mantiene limpia y no te saca temas viejos.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "texto": {"type": "string", "description": "Palabras clave del pendiente que se completó (ej: 'Vizum CNBV comunicación', 'carta Lupita Correduría'). Se hace match flexible contra las líneas - [ ] de AGENDA."},
+            },
+            "required": ["texto"],
         },
     },
     {
@@ -6377,9 +6393,47 @@ def execute_tool(name: str, args: dict) -> str:
             return f"OK escrito {args['filename']}"
         elif name == "append_to_memory":
             path = SPACE / args["filename"]
+            content = args["content"]
+            # Dedup: evita el bug de escribir la MISMA entrada muchas veces (el
+            # JOURNAL llegó a tener 7x la misma línea). Si el cuerpo (sin la marca de
+            # fecha [YYYY-MM-DD ...]) ya está en las últimas ~40 líneas, no reescribe.
+            try:
+                if path.exists():
+                    _norm = lambda s: re.sub(r"\[\d{4}-\d{2}-\d{2}[^\]]*\]", "", s).strip().lower()
+                    nuevo = _norm(content)
+                    if nuevo and len(nuevo) > 12:
+                        recientes = path.read_text().splitlines()[-40:]
+                        if any(nuevo == _norm(l) for l in recientes):
+                            return f"(ya estaba en {args['filename']}, no dupliqué)"
+            except Exception:
+                pass
             with path.open("a") as f:
-                f.write("\n" + args["content"] + "\n")
+                f.write("\n" + content + "\n")
             return f"OK agregado a {args['filename']}"
+        elif name == "completar_pendiente":
+            path = SPACE / "AGENDA.md"
+            if not path.exists():
+                return "(AGENDA.md no existe)"
+            texto = (args.get("texto") or "").strip().lower()
+            # Palabras clave significativas (>3 letras) del texto a buscar.
+            keys = [w for w in re.findall(r"\w+", texto) if len(w) > 3]
+            if not keys:
+                return "ERROR: dame palabras clave del pendiente a cerrar"
+            lines = path.read_text().splitlines()
+            cerradas = []
+            for i, line in enumerate(lines):
+                if re.match(r"^\s*-\s*\[\s*\]\s+", line):
+                    low = line.lower()
+                    # Coincide si al menos la mitad (o 2) de las keywords están en la línea.
+                    hits = sum(1 for k in keys if k in low)
+                    if hits >= max(2, (len(keys) + 1) // 2):
+                        lines[i] = re.sub(r"\[\s*\]", "[x]", line, count=1)
+                        cerradas.append(line.strip()[:80])
+            if not cerradas:
+                return f"(no encontré pendientes abiertos que coincidan con «{texto}»)"
+            path.write_text("\n".join(lines) + ("\n" if not "\n".join(lines).endswith("\n") else ""))
+            listado = "\n".join(f"  ✓ {c}" for c in cerradas)
+            return f"OK cerré {len(cerradas)} pendiente(s):\n{listado}"
         elif name == "create_reminder":
             script = SPACE / "scripts" / "crear-recordatorio.sh"
             if not script.exists():
