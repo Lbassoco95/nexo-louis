@@ -1493,9 +1493,12 @@ _MEMORY_FILE_KEYWORDS = (
 
 _MEMORY_TRIGGER_RE = re.compile(
     r"^\s*(?:anota|anotar|agrega|agregar|registra|registrar|guarda|guardar|"
-    r"apunta|apuntar|recu[eé]rdame|recuerdame|recu[eé]rdalo|recuerdalo)\b[:\s]*",
+    r"apunta|apuntar)\b[:\s]*",
     re.IGNORECASE,
 )
+# OJO: 'recuérdame/recuérdalo' NO van aquí — eso es un RECORDATORIO (scheduler vía
+# agendar_recordatorio), no una nota en AGENDA. Si se interceptan aquí, se guardan
+# como nota y nunca disparan.
 _MEMORY_FILE_PREFIX_RE = re.compile(
     r"^(?:en|a|al)\s+(?:la\s+|el\s+|mi\s+)?([\wáéíóúñ]+)\s*:?\s*(.*)$",
     re.IGNORECASE | re.DOTALL,
