@@ -1841,7 +1841,7 @@ TOOLS_DEFINITION = [
                 "en_minutos": {"type": "integer", "description": "RELATIVO desde ahora, en minutos (ej. 12 = en 12 min, 120 = en 2 horas). El servidor calcula la hora con el reloj real. PREFIERE esto para 'en X min/horas'."},
                 "fecha_hora": {"type": "string", "description": "ISO 8601 con tz CDMX -06:00, ej '2026-06-05T09:00:00-06:00'. Solo para fecha/hora específica (no relativa)."},
                 "canal": {"type": "string", "enum": ["telegram", "slack"], "default": "telegram"},
-                "modo": {"type": "string", "enum": ["raw", "enrich"], "default": "enrich", "description": "enrich = Haiku reformula en tono Louis; raw = manda literal"},
+                "modo": {"type": "string", "enum": ["raw", "enrich"], "default": "raw", "description": "raw (DEFAULT, recomendado) = manda el mensaje EXACTO; enrich = lo reformula vía Ollama (riesgo de que lo altere, úsalo solo si quieres tono)"},
                 "recurrencia": {"type": "string", "enum": ["daily", "weekly", "monthly", "yearly"], "description": "Opcional. 'yearly' ideal para cumpleaños/aniversarios."},
             },
             "required": ["mensaje"],
@@ -6388,7 +6388,7 @@ def _write_queue(items: list):
 
 
 def _agendar_recordatorio(mensaje: str, fecha_hora: str = "", canal: str = "telegram",
-                          modo: str = "enrich", recurrencia: str = None, en_minutos: int = 0) -> str:
+                          modo: str = "raw", recurrencia: str = None, en_minutos: int = 0) -> str:
     """Agrega un recordatorio al queue del scheduler.
     Si se pasa en_minutos>0, el fire_at se calcula DEL LADO DEL SERVIDOR (reloj real),
     así un recordatorio relativo ('en 12 min') nunca depende de que el modelo tenga

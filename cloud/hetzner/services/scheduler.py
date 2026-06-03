@@ -23,6 +23,7 @@ Formato de cada entry (una por línea):
 """
 
 import os
+import re
 import sys
 import json
 import time
@@ -125,19 +126,32 @@ def send_slack(text: str, channel: str = None):
 
 
 # ===== Enrich con Ollama (sin Anthropic) =====
+# Patrones de RECHAZO/basura que Ollama a veces devuelve en vez de reformular
+# (ej. "Lo siento, no tengo permiso para reformular los datos"). Si aparecen,
+# se descarta el resultado y se manda el mensaje ORIGINAL verbatim.
+_REFUSAL_RE = re.compile(
+    r"(no tengo permiso|lo siento|no puedo (reformular|ayudar|procesar)|"
+    r"as an ai|i (cannot|can't|am sorry)|i'm sorry|no me es posible|"
+    r"no estoy autorizad|seré encantado de asistirte|en qué puedo ayudarte)",
+    re.IGNORECASE)
+
+
 def enrich_with_ollama(raw_message: str) -> str:
-    """Reformula recordatorio en tono Louis vía Ollama local."""
+    """Reformula recordatorio en tono Louis vía Ollama local. Si Ollama devuelve un
+    rechazo/basura (o algo demasiado distinto/largo), manda el mensaje ORIGINAL."""
     sys_prompt = (
-        "Eres Louis, asistente ejecutivo de Polo. Reformula recordatorios proactivos: "
-        "directo, cálido, 1-2 líneas. Telegram *negrita* legacy. NO inventes hechos."
+        "Eres Louis, asistente ejecutivo de Polo. Reformula este recordatorio en tono "
+        "directo y cálido, 1-2 líneas, en español. Telegram *negrita* legacy. NO inventes "
+        "hechos, NO pidas permiso, NO te disculpes: SOLO devuelve el recordatorio reformulado."
     )
-    user_msg = (
-        "Reformula SIN cambiar datos:\n" + raw_message[:2000]
-    )
+    user_msg = "Reformula SIN cambiar datos (devuelve solo el texto):\n" + raw_message[:2000]
     try:
         result = core.call_ollama(sys_prompt, [], user_msg, history_file=None)
-        if result and not result.startswith("⚠️"):
+        if (result and not result.startswith("⚠️")
+                and not _REFUSAL_RE.search(result)
+                and len(result) <= max(400, len(raw_message) * 3)):
             return result
+        log.warning("enrich descartado (rechazo/basura/largo); uso mensaje raw")
     except Exception as e:
         log.warning(f"Enrich Ollama falló: {e}")
     return raw_message
