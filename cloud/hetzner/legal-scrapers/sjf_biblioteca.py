@@ -455,8 +455,9 @@ def cmd_init():
     conn.close()
 
 
-def cmd_update(max_pull: int = 200):
-    """Cosecha los registros nuevos publicados desde el último max conocido."""
+def cmd_update(max_pull: int = 3000):
+    """Cosecha los registros nuevos publicados desde el último max conocido.
+    max_pull alto (3000) para cruzar huecos grandes entre publicaciones."""
     conn = db_connect()
     run_id = conn.execute(
         "INSERT INTO runs(started_at, mode) VALUES(?, 'update')",
@@ -470,8 +471,12 @@ def cmd_update(max_pull: int = 200):
     ok = miss = err = consec_404 = 0
     cursor = max_reg
     attempts = 0
-    # Vamos avanzando hasta que veamos 30 404 consecutivos (probable límite del rango actual)
-    while consec_404 < 30 and attempts < max_pull:
+    # Avanzamos hasta GAP_TOLERANCE 404 consecutivos. Los registros del SJF NO son
+    # contiguos: entre la última tesis y la siguiente publicación puede haber huecos
+    # de >100 (ej. 24-abr 2032066 → 29-may 2032185, hueco de ~119). Un corte de 30
+    # se rendía antes de alcanzar las nuevas. 800 cruza huecos reales sin escanear de más.
+    GAP_TOLERANCE = 800
+    while consec_404 < GAP_TOLERANCE and attempts < max_pull:
         cursor += 1
         attempts += 1
         status, raw = fetch_tesis(cursor)
