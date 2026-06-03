@@ -82,16 +82,20 @@ def send_telegram(text: str):
         return False
     import urllib.request
     import urllib.error
+    import html as _html
+    # format_for_telegram produce HTML → hay que enviar con parse_mode HTML (antes
+    # decía 'Markdown', por eso el briefing salía con ** y ### en crudo).
     formatted = core.format_for_telegram(text)
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    body = {"chat_id": chat_id, "text": formatted[:4000], "parse_mode": "Markdown", "disable_web_page_preview": True}
+    body = {"chat_id": chat_id, "text": formatted[:4000], "parse_mode": "HTML", "disable_web_page_preview": True}
     try:
         core.http_post_json(url, headers={}, body=body, timeout=15)
         return True
     except urllib.error.HTTPError:
-        # retry sin parse_mode
+        # Fallback: quitar tags HTML y desescapar → texto plano legible (NO el markdown crudo).
+        raw = _html.unescape(re.sub(r"<[^>]+>", "", formatted))
         body.pop("parse_mode", None)
-        body["text"] = text[:4000]
+        body["text"] = raw[:4000]
         try:
             core.http_post_json(url, headers={}, body=body, timeout=15)
             return True

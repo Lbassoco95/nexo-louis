@@ -1737,8 +1737,45 @@ def _resolve_ollama_model(user_message: str) -> tuple[str, int]:
     return OLLAMA_FAST_MODEL, OLLAMA_CHAT_TIMEOUT
 
 
+def _reason_briefing(snapshot: str) -> str | None:
+    """Briefing matutino RAZONADO por Claude Haiku (barato): prioriza y sintetiza en
+    vez de volcar la memoria cruda. None si no hay API o falla → cae a determinístico."""
+    api_key = load_anthropic_key()
+    if not api_key:
+        return None
+    hoy = _fmt_dt_es(datetime.now(get_active_tz()))
+    sys = (
+        "Eres Louis, asistente ejecutivo de Polo (CEO de Kawiil). Redacta su BRIEFING "
+        "matutino a partir de los datos de AGENDA/IMPORTANT/JOURNAL/CLIENTES de abajo. "
+        "REGLAS: saluda en 1 línea; PRIORIZA lo crítico de hoy en máx. 5 viñetas, agrupando "
+        "y descartando duplicados, ruido y entradas viejas; sé conciso y accionable; resalta "
+        "deadlines reales. NO vuelques los datos crudos, NO inventes nada que no esté en los "
+        "datos, NO repitas. Español de México. Usa **negrita** para lo clave y viñetas con '- '. "
+        "NADA de encabezados '#' ni tablas. Cierra con '¿Por dónde empezamos?'.\n\n"
+        f"Hoy es {hoy} (CDMX)."
+    )
+    headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
+    body = {
+        "model": CLAUDE_HAIKU,
+        "max_tokens": 900,
+        "system": sys,
+        "messages": [{"role": "user", "content": f"DATOS (memoria viva):\n{snapshot[:6000]}"}],
+    }
+    try:
+        resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=60)
+        txt = "".join(b.get("text", "") for b in resp.get("content", []) if b.get("type") == "text").strip()
+        return txt if len(txt) > 40 else None
+    except Exception as e:
+        log.warning(f"briefing razonado falló, uso determinístico: {e}")
+        return None
+
+
 def generate_morning_briefing() -> str:
     snap = build_operational_snapshot()
+    reasoned = _reason_briefing(snap)
+    if reasoned:
+        saludo_ts = datetime.now(TZ_CDMX).strftime("%A %d %b %Y")
+        return f"☀️ *Briefing {saludo_ts} (CDMX)*\n\n{reasoned}"
     return format_morning_briefing_deterministic(snap)
 
 
