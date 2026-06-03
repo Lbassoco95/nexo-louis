@@ -1,0 +1,11 @@
+[Unit]
+Description=Resumen semanal SJF de Louis (lunes por la mañana)
+
+[Timer]
+# Lunes 8:00 hora del server (el harvester diario ya corrió el jueves/viernes
+# anteriores, así que el lunes la edición de la semana pasada ya está en la BD).
+OnCalendar=Mon *-*-* 08:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

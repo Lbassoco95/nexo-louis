@@ -1,0 +1,16 @@
+[Unit]
+Description=Louis SJF — resumen semanal de tesis del Semanario Judicial (Telegram)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@@SYSTEM_USER@@
+Group=@@SYSTEM_USER@@
+WorkingDirectory=@@OPENCLAW_HOME@@/legal/sjf
+ExecStart=/usr/bin/python3 @@OPENCLAW_HOME@@/legal/sjf/sjf_weekly_summary.py
+StandardOutput=append:@@OPENCLAW_HOME@@/logs/sjf-weekly.log
+StandardError=append:@@OPENCLAW_HOME@@/logs/sjf-weekly.log
+SyslogIdentifier=louis-sjf-weekly
+TimeoutStartSec=300
+MemoryMax=256M
