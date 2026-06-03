@@ -1535,6 +1535,43 @@ def _resolve_memory_file_strict(token: str) -> str | None:
     return None
 
 
+_REMINDER_REL_RE = re.compile(
+    r"^\s*(?:recu[eé]rdame|recuerdame|av[ií]same|avisame|recu[eé]rdalo|recuerdalo)\b"
+    r".*?\ben\s+(\d{1,4})\s*(min(?:uto)?s?|h(?:ora)?s?)\b"
+    r"\s*(?:que|de|del|sobre|para|:|,)?\s*(.*)$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def try_deterministic_reminder(user_message: str) -> str | None:
+    """Crea un recordatorio RELATIVO ('recuérdame en N min/horas …') directo en el
+    servidor, sin pasar por el modelo. La hora la calcula el reloj real → nunca falla
+    por mala hora del modelo ni se desvía a una nota en AGENDA. None si no aplica."""
+    if not user_message:
+        return None
+    m = _REMINDER_REL_RE.match(user_message.strip())
+    if not m:
+        return None
+    n = int(m.group(1))
+    unidad = m.group(2).lower()
+    resto = (m.group(3) or "").strip().strip(":,. ").strip()
+    minutos = n * 60 if unidad.startswith("h") else n
+    if minutos <= 0 or minutos > 60 * 24 * 14:  # tope 2 semanas
+        return None
+    mensaje = resto if len(resto) >= 2 else "Recordatorio"
+    # Modo raw → texto exacto, sin Ollama.
+    res = _agendar_recordatorio(mensaje, en_minutos=minutos, modo="raw")
+    if not res.startswith("OK"):
+        return None
+    try:
+        cuando = (datetime.now(get_active_tz()) + timedelta(minutes=minutos))
+        hh = cuando.strftime("%H:%M")
+    except Exception:
+        hh = f"+{minutos}min"
+    unidad_txt = f"{n} {'hora(s)' if unidad.startswith('h') else 'min'}"
+    return f"⏰ Listo, te recuerdo en {unidad_txt} (a las {hh}): *{mensaje}*"
+
+
 def try_deterministic_memory_write(user_message: str, strict: bool = True) -> str | None:
     """Guarda una nota en memoria SIN Claude (append directo).
 
@@ -7695,6 +7732,13 @@ def call_llm(
     """
     msg = (user_message or "").strip().lower()
     first_of_day = is_first_conversation_today(history_file)
+
+    # Recordatorio relativo a prueba de fallos: "recuérdame en N min/horas …" se crea
+    # DIRECTO en el servidor (reloj real), sin depender del modelo ni de Ollama.
+    det_rem = try_deterministic_reminder(user_message)
+    if det_rem is not None:
+        _mark_last_route("recordatorio-directo")
+        return det_rem, "recordatorio-directo"
 
     # Aprendizaje a prueba de fallos: "anota en AGENDA: …" se guarda directo,
     # sin gastar créditos y aunque Anthropic esté sin saldo.
