@@ -112,6 +112,15 @@ def _strip_tool_leak(text: str) -> str:
     return cleaned if len(cleaned) > 15 else "Estoy ejecutando eso… dame un segundo y te confirmo el resultado."
 
 
+# Frases con que el modelo AFIRMA haber creado un recordatorio. Si aparecen pero no
+# llamó agendar_recordatorio, fabricó la confirmación → se le obliga a crearlo.
+_REMINDER_CLAIM_RE = re.compile(
+    r"(recordatorio\s+(creado|agendado|programado|configurado|listo)|"
+    r"agend[eé]\s+(el|tu|un)\s+recordatorio|te\s+(llegar[aá]|recordar[eé]|aviso|avisar[eé])\b|"
+    r"te\s+lo\s+recuerdo\s+(a las|el|mañana|en)|qued[oó]\s+agendado)",
+    re.IGNORECASE)
+
+
 def _es_stall(texto: str) -> bool:
     """True si el turno parece quedarse 'a medias' (anuncia acción sin ejecutarla).
     Señales: frase de relleno, o termina anunciando con ':' sin contenido después."""
@@ -7546,6 +7555,7 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
     if _hora_block:
         _system_cached.append({"type": "text", "text": _hora_block})
     _stall_retries = 0
+    _reminder_retries = 0
     for _loop_i in range(max_loops):  # noqa: B007
         body = {
             "model": model,
@@ -7598,6 +7608,18 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
                     "Continúa AHORA en este mismo turno: ejecuta YA las tools que faltan (crear "
                     "proyecto/tarea/subtareas, etc.) hasta TERMINAR todo, y al final dame los IDs "
                     "reales. No anuncies lo que vas a hacer; hazlo. No esperes otro mensaje mío."})
+                continue
+            # Recordatorio FABRICADO: dice "recordatorio creado/agendado/te llegará"
+            # pero NO llamó agendar_recordatorio → fabricó la confirmación. Obligarlo a
+            # crearlo de verdad (no dejar pasar la mentira).
+            if (_reminder_retries < 1 and _REMINDER_CLAIM_RE.search(turn_text or "")
+                    and "agendar_recordatorio" not in tools_executed):
+                _reminder_retries += 1
+                log.info("anti-fabricación: afirmó recordatorio sin llamar la tool; forzando")
+                messages.append({"role": "user", "content":
+                    "NO llamaste `agendar_recordatorio`, así que ese recordatorio NO existe. NO "
+                    "inventes que lo creaste. Llama `agendar_recordatorio` AHORA (usa en_minutos "
+                    "para tiempo relativo) y confírmame SOLO si la tool devolvió OK con su id."})
                 continue
             break
         tool_results = []
