@@ -41,7 +41,21 @@ from pathlib import Path
 # ============================================================
 HOME = Path.home()
 BASE_DIR = HOME / "sjf_biblioteca"
-DB_PATH = BASE_DIR / "biblioteca.db"
+
+# La BD que Louis LEE en el servidor vive en /opt/openclaw/legal/sjf/biblioteca.db.
+# Cuando este scraper corre en Hetzner debe escribir AHÍ (antes escribía en
+# ~/sjf_biblioteca/biblioteca.db, una BD muerta que Louis nunca leía → se estancó).
+# Orden de resolución:
+#   1) $SJF_DB_PATH si está definido (override explícito).
+#   2) /opt/openclaw/legal/sjf/biblioteca.db si existe /opt/openclaw (= servidor).
+#   3) ~/sjf_biblioteca/biblioteca.db (Mac / dev local).
+_OPENCLAW_SJF = Path("/opt/openclaw/legal/sjf/biblioteca.db")
+if os.environ.get("SJF_DB_PATH"):
+    DB_PATH = Path(os.environ["SJF_DB_PATH"])
+elif Path("/opt/openclaw").exists():
+    DB_PATH = _OPENCLAW_SJF
+else:
+    DB_PATH = BASE_DIR / "biblioteca.db"
 LOG_DIR = BASE_DIR / "logs"
 
 # Carpeta donde viven los PDFs (Dropbox). AJUSTAR si cambias de carpeta.
@@ -62,11 +76,18 @@ USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1
 SJF_REFERER = "https://sjf2.scjn.gob.mx/"
 
 # Tuning
-THROTTLE_MS = 100          # pausa entre lotes (corteśia)
+THROTTLE_MS = 400          # pausa entre peticiones (más alto = menos riesgo de WAF/429)
+THROTTLE_JITTER_MS = 250   # jitter aleatorio adicional para no parecer bot
 RETRY_ATTEMPTS = 3
 RETRY_BACKOFF = 3          # segundos
 DEFAULT_BACKFILL = 800     # tesis históricas por corrida
 DEFAULT_WORKERS = 6        # peticiones en paralelo
+
+# Si el WAF empieza a devolver 403 en cadena, NO es que los registros no existan:
+# estamos BLOQUEADOS (rate-limit / sesión caducada / headers). Tras este número de
+# 403 consecutivos abortamos la corrida con error claro, SIN marcar esos registros
+# como 404 (no envenenar la BD: son tesis reales que sí existen en el sitio).
+BLOCK_TOLERANCE_403 = 12
 
 
 # ============================================================
@@ -177,6 +198,7 @@ CREATE TABLE IF NOT EXISTS progress (
 
 def db_connect() -> sqlite3.Connection:
     BASE_DIR.mkdir(parents=True, exist_ok=True)
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
@@ -199,33 +221,82 @@ def progress_get(conn: sqlite3.Connection, key: str, default=None):
 # ============================================================
 # API DEL SJF
 # ============================================================
+# Opener con cookie-jar: el WAF de la SCJN suele exigir una cookie de sesión que se
+# obtiene al visitar el sitio. Sin ella, las peticiones secuenciales al microservicio
+# devuelven 403 "Acceso denegado". Primamos la sesión visitando el referer una vez.
+import http.cookiejar as _cookiejar
+import random as _random
+
+_COOKIE_JAR = _cookiejar.CookieJar()
+_OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_COOKIE_JAR))
+_session_primed = False
+
+
+def _prime_session() -> None:
+    """Visita el sitio del SJF para obtener cookies de sesión antes de pegarle al API.
+    Idempotente: solo la primera vez (o tras un 403 que fuerza re-prime)."""
+    global _session_primed
+    try:
+        req = urllib.request.Request(SJF_REFERER, headers={
+            "User-Agent": USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        })
+        with _OPENER.open(req, timeout=20) as resp:
+            resp.read(2048)  # consumir un poco para cerrar bien
+        _session_primed = True
+        log.info("Sesión SJF primada (cookies: %d)", len(_COOKIE_JAR))
+    except Exception as e:
+        log.warning("No pude primar sesión SJF (%s); sigo sin cookie", e)
+        _session_primed = True  # no reintentar en bucle
+
+
+def _sleep_throttle() -> None:
+    time.sleep(THROTTLE_MS / 1000 + _random.uniform(0, THROTTLE_JITTER_MS / 1000))
+
+
 def fetch_tesis(registro: int) -> tuple[int, dict | None]:
     """Devuelve (status, dict|None) para un registro digital.
 
-    Códigos 403/404/410 se tratan como PERMANENTES (registro no disponible vía API
-    público). Se devuelven inmediatamente sin reintentar. Otros HTTPError sí se reintentan.
+    Distinción CLAVE:
+      - 404 / 410  → PERMANENTE: el registro no existe. No reintentar.
+      - 403        → BLOQUEADO por el WAF (no "no existe"): reintentar con backoff y
+                     re-primar la sesión. Si persiste, se devuelve 403 para que el
+                     caller decida (NO se marca como 404 — son tesis reales).
+      - otros      → transitorio: reintentar.
     """
-    # Códigos HTTP que indican "no disponible permanentemente" — no reintentar.
-    PERMANENT_FAIL = (403, 404, 410)
+    global _session_primed
+    PERMANENT_FAIL = (404, 410)
+    if not _session_primed:
+        _prime_session()
     url = f"{API_BASE}/{registro}"
-    req = urllib.request.Request(url, headers={
-        "Accept": "application/json",
-        "User-Agent": USER_AGENT,
-        "Referer": SJF_REFERER,
-        "Origin": "https://sjf2.scjn.gob.mx",
-    })
+
+    def _mk_req():
+        return urllib.request.Request(url, headers={
+            "Accept": "application/json",
+            "User-Agent": USER_AGENT,
+            "Referer": SJF_REFERER,
+            "Origin": "https://sjf2.scjn.gob.mx",
+            "X-Requested-With": "XMLHttpRequest",
+        })
+
     for attempt in range(1, RETRY_ATTEMPTS + 1):
         try:
-            with urllib.request.urlopen(req, timeout=20) as resp:
+            with _OPENER.open(_mk_req(), timeout=20) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 return resp.status, data
         except urllib.error.HTTPError as e:
             if e.code in PERMANENT_FAIL:
-                # No reintentar; el API no va a servir este registro.
-                # Log al nivel info la primera vez, no warning (no es bug).
-                if attempt == 1:
-                    log.info(f"HTTP {e.code} en registro {registro} (permanente, no se reintenta)")
+                # Genuinamente no existe — no reintentar.
                 return e.code, None
+            if e.code == 403:
+                # BLOQUEO del WAF, no ausencia. Re-primar sesión y reintentar.
+                log.warning(f"HTTP 403 (bloqueo WAF) en registro {registro} intento {attempt}")
+                if attempt < RETRY_ATTEMPTS:
+                    _session_primed = False  # forzar re-prime de cookies
+                    time.sleep(RETRY_BACKOFF * attempt)
+                    _prime_session()
+                    continue
+                return 403, None
             log.warning(f"HTTP {e.code} en registro {registro} intento {attempt}: {e}")
             if attempt < RETRY_ATTEMPTS:
                 time.sleep(RETRY_BACKOFF * attempt)
@@ -468,7 +539,8 @@ def cmd_update(max_pull: int = 3000):
     max_reg = conn.execute("SELECT COALESCE(MAX(registro_digital),0) FROM tesis").fetchone()[0]
     log.info("Update: empezando desde registro %d", max_reg + 1)
 
-    ok = miss = err = consec_404 = 0
+    ok = miss = err = consec_404 = consec_403 = 0
+    blocked = False
     cursor = max_reg
     attempts = 0
     # Avanzamos hasta GAP_TOLERANCE 404 consecutivos. Los registros del SJF NO son
@@ -491,17 +563,33 @@ def cmd_update(max_pull: int = 3000):
                 )
             ok += 1
             consec_404 = 0
+            consec_403 = 0
             log.info("[update +%d] %s — %s", ok, cursor, t.get("rubro", "")[:80])
-        elif status in (403, 404, 410):
-            # 403/404/410 son permanentes — registro no disponible vía API público
+        elif status == 403:
+            # NO es "no existe": el WAF nos está bloqueando. NO marcamos 404 (no
+            # envenenamos la BD). Si se acumulan, abortamos en vez de reportar éxito falso.
+            consec_403 += 1
+            if consec_403 >= BLOCK_TOLERANCE_403:
+                blocked = True
+                log.error(
+                    "WAF bloqueando: %d HTTP 403 consecutivos desde registro %d. "
+                    "Abortando SIN marcar 404 (son tesis reales). Reintentar más tarde "
+                    "o con mayor throttle / IP distinta.",
+                    consec_403, cursor - consec_403 + 1,
+                )
+                break
+        elif status in (404, 410):
+            # Genuinamente no disponible — registro inexistente.
             mark_404(conn, cursor)
             miss += 1
             consec_404 += 1
+            consec_403 = 0
         else:
             err += 1
+            consec_403 = 0
         if attempts % 25 == 0:
             conn.commit()
-        time.sleep(THROTTLE_MS / 1000)
+        _sleep_throttle()
     conn.commit()
     progress_set(conn, "last_update_at", dt.datetime.now().isoformat(timespec="seconds"))
     conn.execute(
@@ -510,8 +598,14 @@ def cmd_update(max_pull: int = 3000):
         (dt.datetime.now().isoformat(timespec="seconds"), attempts, ok, miss, err, run_id),
     )
     conn.commit()
-    log.info("Update terminado: +%d nuevas, %d 404s, %d errores", ok, miss, err)
+    if blocked:
+        log.error("Update ABORTADO por bloqueo WAF: +%d nuevas antes del bloqueo, %d 404s, %d errores", ok, miss, err)
+    else:
+        log.info("Update terminado: +%d nuevas, %d 404s, %d errores", ok, miss, err)
     conn.close()
+    # Señal de salida distinta de 0 para que el systemd timer / cron registre el fallo.
+    if blocked:
+        raise SystemExit(2)
 
 
 def cmd_backfill(batch: int = DEFAULT_BACKFILL, workers: int = DEFAULT_WORKERS):
@@ -542,7 +636,7 @@ def cmd_backfill(batch: int = DEFAULT_BACKFILL, workers: int = DEFAULT_WORKERS):
         c -= 1
     final_cursor = c
 
-    ok = miss = err = 0
+    ok = miss = err = blocked_403 = 0
     t0 = time.time()
 
     # Fetch en paralelo
@@ -577,13 +671,16 @@ def cmd_backfill(batch: int = DEFAULT_BACKFILL, workers: int = DEFAULT_WORKERS):
                     (str(pdf), reg),
                 )
             ok += 1
-        elif status in (403, 404, 410):
-            # 403/404/410 son permanentes — registro no disponible vía API público
+        elif status in (404, 410):
+            # Genuinamente no disponible — registro inexistente.
             mark_404(conn, reg)
             miss += 1
+        elif status == 403:
+            # Bloqueo WAF — NO marcar 404 (es tesis real). Contar para avisar al final.
+            blocked_403 += 1
         else:
             err += 1
-        if (ok + miss + err) % 50 == 0:
+        if (ok + miss + err + blocked_403) % 50 == 0:
             conn.commit()
 
     progress_set(conn, "backfill_cursor", final_cursor)
@@ -595,6 +692,9 @@ def cmd_backfill(batch: int = DEFAULT_BACKFILL, workers: int = DEFAULT_WORKERS):
     )
     conn.commit()
     elapsed = time.time() - t0
+    if blocked_403:
+        log.warning("Backfill: %d registros devolvieron 403 (bloqueo WAF) — NO marcados 404, "
+                    "reintentar más tarde.", blocked_403)
     log.info("Backfill terminado en %.1fs: +%d nuevas, %d 404s, %d errores. Cursor en %d",
              elapsed, ok, miss, err, final_cursor)
     conn.close()
