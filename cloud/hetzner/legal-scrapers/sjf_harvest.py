@@ -32,6 +32,7 @@ import json
 import logging
 import os
 import random
+import sqlite3
 import sys
 import time
 import urllib.error
@@ -46,6 +47,9 @@ SCRAPER_PATH = os.environ.get("SJF_SCRAPER") or next(
     ) if Path(p).exists()),
     "/opt/openclaw/legal/sjf/sjf_biblioteca.py",
 )
+# BD que Louis LEE. El harvester escribe AQUÍ directamente (no vía el scraper, cuyo
+# DB_PATH lo revierte el sync de la Mac).
+DB_PATH = os.environ.get("SJF_DB_PATH", "/opt/openclaw/legal/sjf/biblioteca.db")
 API_BASE = "https://sjf2.scjn.gob.mx/services/sjftesismicroservice/api/public/tesis"
 SEMANAL_QS = "?isSemanal=true&hostName=https://sjf2.scjn.gob.mx"
 SJF_REFERER = "https://sjf2.scjn.gob.mx/"
@@ -147,9 +151,18 @@ def _load_scraper():
 def main() -> int:
     sjf = _load_scraper()
     _prime()
-    conn = sjf.db_connect()
+    # IMPORTANTE: abrimos NUESTRA conexión a la BD que Louis lee (DB_PATH), en vez de
+    # usar sjf.db_connect(). El scraper sincronizado desde la Mac tiene su DB_PATH
+    # apuntando a ~/sjf_biblioteca/biblioteca.db (y el sync revierte cualquier parche),
+    # así que escribir vía su db_connect mandaba los datos al archivo equivocado.
+    # normalize_tesis/upsert_tesis son puras (reciben la conexión), así que las
+    # reutilizamos con NUESTRA conexión al archivo correcto.
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    if hasattr(sjf, "SCHEMA"):
+        conn.executescript(sjf.SCHEMA)  # asegura tablas (idempotente; ya existen)
     max_reg = conn.execute("SELECT COALESCE(MAX(registro_digital),0) FROM tesis").fetchone()[0]
-    log.info("Update SJF: desde registro %d", max_reg + 1)
+    log.info("Update SJF en %s: desde registro %d", DB_PATH, max_reg + 1)
 
     ok = miss = consec_404 = consec_403 = 0
     blocked = False

@@ -74,6 +74,19 @@ def _esc(s: str) -> str:
     return html.escape((s or "").strip())
 
 
+_MESES = ["", "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
+          "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+
+
+def _fecha_es(iso: str) -> str:
+    """'2026-05-29' -> '29 de mayo de 2026'. Si no parsea, devuelve el original."""
+    try:
+        y, m, d = iso[:10].split("-")
+        return f"{int(d)} de {_MESES[int(m)]} de {y}"
+    except Exception:
+        return iso
+
+
 def build_summary(dias: int | None) -> str | None:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -102,23 +115,36 @@ def build_summary(dias: int | None) -> str | None:
     conn.close()
 
     if not rows:
-        return (f"⚖️ <b>Semanario Judicial</b>\nSin tesis nuevas en {etiqueta}. "
-                f"La biblioteca está al día.")
+        return (f"⚖️ <b>Semanario Judicial de la Federación</b>\n"
+                f"Sin tesis nuevas en {_fecha_es(etiqueta)}. La biblioteca está al día.")
 
-    lineas = [f"⚖️ <b>Semanario Judicial — {etiqueta}</b>",
-              f"<b>{len(rows)}</b> tesis publicadas.\n"]
+    # Agrupar por instancia (Pleno, Salas, Tribunales…) para un resumen legible.
+    orden = ["Pleno de la Suprema Corte", "Primera Sala", "Segunda Sala",
+             "Plenos Regionales", "Tribunales Colegiados", "Tribunal Colegiado de Apelación"]
+    def _rank(inst: str) -> int:
+        for i, k in enumerate(orden):
+            if k.lower() in (inst or "").lower():
+                return i
+        return len(orden)
+    grupos: dict[str, list] = {}
     for r in rows:
-        rubro = _esc(r["rubro"])[:130]
-        reg = r["registro_digital"]
-        url = DETALLE_URL.format(reg)
-        linea = f"• <a href=\"{url}\">{reg}</a> — {rubro}"
-        # corta si nos pasamos del límite
-        if sum(len(x) for x in lineas) + len(linea) > MAX_LEN - 80:
-            faltan = len(rows) - (len(lineas) - 2)
-            lineas.append(f"\n… y {faltan} más. Búscalas en el SJF.")
-            break
-        lineas.append(linea)
-    return "\n".join(lineas)
+        grupos.setdefault((r["instancia"] or "Otras").strip(), []).append(r)
+
+    lineas = [f"⚖️ <b>Semanario Judicial de la Federación</b>",
+              f"📅 Edición del <b>{_fecha_es(etiqueta)}</b> · <b>{len(rows)}</b> tesis y jurisprudencias\n"]
+    for inst in sorted(grupos, key=_rank):
+        items = grupos[inst]
+        lineas.append(f"<b>{_esc(inst)}</b> ({len(items)})")
+        for r in items:
+            rubro = _esc(r["rubro"]).rstrip(". ")[:150]
+            reg = r["registro_digital"]
+            linea = f"• {rubro} — <a href=\"{DETALLE_URL.format(reg)}\">{reg}</a>"
+            if sum(len(x) for x in lineas) + len(linea) > MAX_LEN - 90:
+                lineas.append("\n… (resumen recortado por longitud; revisa el SJF para el resto)")
+                return "\n".join(lineas)
+            lineas.append(linea)
+        lineas.append("")  # separador entre grupos
+    return "\n".join(lineas).rstrip()
 
 
 def main() -> int:
