@@ -74,6 +74,9 @@ API_BASE = "https://sjf2.scjn.gob.mx/services/sjftesismicroservice/api/public/te
 USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
               "(KHTML, like Gecko) Version/17.0 Safari/605.1.15")
 SJF_REFERER = "https://sjf2.scjn.gob.mx/"
+# Query param que el portal usa para servir las tesis NUEVAS del Semanario.
+# Sin esto, las publicaciones recientes (época 12ª) devuelven 404 aunque existan.
+SEMANAL_QS = "?isSemanal=true&hostName=https://sjf2.scjn.gob.mx"
 
 # Tuning
 THROTTLE_MS = 400          # pausa entre peticiones (más alto = menos riesgo de WAF/429)
@@ -254,21 +257,13 @@ def _sleep_throttle() -> None:
     time.sleep(THROTTLE_MS / 1000 + _random.uniform(0, THROTTLE_JITTER_MS / 1000))
 
 
-def fetch_tesis(registro: int) -> tuple[int, dict | None]:
-    """Devuelve (status, dict|None) para un registro digital.
-
-    Distinción CLAVE:
-      - 404 / 410  → PERMANENTE: el registro no existe. No reintentar.
-      - 403        → BLOQUEADO por el WAF (no "no existe"): reintentar con backoff y
-                     re-primar la sesión. Si persiste, se devuelve 403 para que el
-                     caller decida (NO se marca como 404 — son tesis reales).
-      - otros      → transitorio: reintentar.
-    """
+def _fetch_one(url: str, registro: int) -> tuple[int, dict | None]:
+    """Una petición al API con retry/backoff y manejo de 403 (bloqueo WAF).
+    404/410 → permanente. 403 → re-prima sesión y reintenta. Otros → reintenta."""
     global _session_primed
     PERMANENT_FAIL = (404, 410)
     if not _session_primed:
         _prime_session()
-    url = f"{API_BASE}/{registro}"
 
     def _mk_req():
         return urllib.request.Request(url, headers={
@@ -286,10 +281,8 @@ def fetch_tesis(registro: int) -> tuple[int, dict | None]:
                 return resp.status, data
         except urllib.error.HTTPError as e:
             if e.code in PERMANENT_FAIL:
-                # Genuinamente no existe — no reintentar.
                 return e.code, None
             if e.code == 403:
-                # BLOQUEO del WAF, no ausencia. Re-primar sesión y reintentar.
                 log.warning(f"HTTP 403 (bloqueo WAF) en registro {registro} intento {attempt}")
                 if attempt < RETRY_ATTEMPTS:
                     _session_primed = False  # forzar re-prime de cookies
@@ -305,6 +298,43 @@ def fetch_tesis(registro: int) -> tuple[int, dict | None]:
             if attempt < RETRY_ATTEMPTS:
                 time.sleep(RETRY_BACKOFF * attempt)
     return 0, None
+
+
+def fetch_tesis(registro: int) -> tuple[int, dict | None]:
+    """Devuelve (status, dict|None) para un registro digital.
+
+    CLAVE (descubierto 03-jun-2026): las tesis NUEVAS del Semanario solo las
+    sirve el API con el query param `?isSemanal=true&hostName=...` (es lo que usa
+    el frontend en /detalle/tesis/{id}). Sin el parámetro, las publicaciones
+    recientes (época 12ª, post-consolidación) devuelven 404 aunque SÍ existan.
+    Las tesis viejas ya consolidadas salen sin el parámetro.
+
+    Estrategia: pedimos primero con `isSemanal=true` (cubre lo nuevo); si da 404,
+    reintentamos sin parámetro (cubre lo histórico ya consolidado). Solo si AMBAS
+    variantes dan 404 el registro es genuinamente inexistente.
+
+    Distinción de status:
+      - 404 / 410 (en ambas variantes) → PERMANENTE: el registro no existe.
+      - 403 → BLOQUEADO por el WAF (no "no existe"): se devuelve para que el
+              caller NO lo marque como 404 (son tesis reales).
+    """
+    base = f"{API_BASE}/{registro}"
+    # 1) variante semanal (publicaciones nuevas) — la que usa el portal
+    status, data = _fetch_one(base + SEMANAL_QS, registro)
+    if status == 200 and data:
+        return 200, data
+    if status == 403:
+        return 403, None
+    # 2) fallback: variante consolidada (histórico) — sin query param
+    status2, data2 = _fetch_one(base, registro)
+    if status2 == 200 and data2:
+        return 200, data2
+    if status2 == 403:
+        return 403, None
+    # ambas no-200: devolvemos el peor-caso informativo (404 si alguna lo fue)
+    if 404 in (status, status2) or 410 in (status, status2):
+        return 404, None
+    return status2 or status or 0, None
 
 
 def strip_html(s: str) -> str:
