@@ -241,6 +241,31 @@ else
   warn "scheduler.py no copiado — sin recordatorios ni briefing automático"
 fi
 
+# Harvester legal SJF — actualiza las tesis del Semanario Judicial (timer diario).
+# Causa raíz del estancamiento (jun-2026): no existía timer y el scraper no usaba
+# el parámetro ?isSemanal=true. Aquí instalamos el harvester corregido + su timer.
+log "[7b] Instalando harvester SJF + timer diario"
+mkdir -p /opt/openclaw/legal/sjf
+for f in sjf_harvest.py sjf_biblioteca.py; do
+  if [[ -f "legal-scrapers/${f}" ]]; then
+    install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" "legal-scrapers/${f}" "/opt/openclaw/legal/sjf/${f}"
+  fi
+done
+if [[ -f services/sjf-update.service && -f services/sjf-update.timer ]]; then
+  sed -e "s|@@SYSTEM_USER@@|${SYSTEM_USER}|g" -e "s|@@OPENCLAW_HOME@@|/opt/openclaw|g" \
+      services/sjf-update.service > /etc/systemd/system/sjf-update.service
+  install -m 0644 services/sjf-update.timer /etc/systemd/system/sjf-update.timer
+  systemctl daemon-reload
+  systemctl enable --now sjf-update.timer
+  if systemctl is-active --quiet sjf-update.timer; then
+    ok "sjf-update.timer activo (diario 13:30 server) — harvester en /opt/openclaw/legal/sjf/"
+  else
+    warn "sjf-update.timer no levantó — systemctl status sjf-update.timer"
+  fi
+else
+  warn "units sjf-update.{service,timer} no encontrados — SJF no se actualizará solo"
+fi
+
 # ── 8) Seeds: agentes + briefing matutino (idempotentes) ──────
 log "[8/8] Sembrando agentes y briefing matutino"
 export SYSTEM_USER HOME_OC=/opt/openclaw

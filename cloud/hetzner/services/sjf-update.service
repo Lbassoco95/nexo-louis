@@ -1,0 +1,23 @@
+[Unit]
+Description=Louis SJF harvester — actualiza tesis del Semanario Judicial
+Documentation=https://github.com/Lbassoco95/kawiil-agents
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@@SYSTEM_USER@@
+Group=@@SYSTEM_USER@@
+WorkingDirectory=@@OPENCLAW_HOME@@/legal/sjf
+ExecStart=/usr/bin/python3 @@OPENCLAW_HOME@@/legal/sjf/sjf_harvest.py
+StandardOutput=append:@@OPENCLAW_HOME@@/logs/sjf-update.log
+StandardError=append:@@OPENCLAW_HOME@@/logs/sjf-update.log
+SyslogIdentifier=louis-sjf
+
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+ReadWritePaths=@@OPENCLAW_HOME@@
+MemoryMax=512M
+TasksMax=64
+TimeoutStartSec=1800
