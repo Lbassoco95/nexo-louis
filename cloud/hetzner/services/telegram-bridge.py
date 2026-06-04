@@ -17,6 +17,7 @@ import sys
 import re
 import json
 import time
+import hashlib
 import subprocess
 import tempfile
 import shutil
@@ -138,7 +139,7 @@ def telegram_get_updates(token: str, offset: int):
     params = {
         "offset": offset,
         "timeout": LONG_POLL_TIMEOUT,
-        "allowed_updates": json.dumps(["message"]),
+        "allowed_updates": json.dumps(["message", "callback_query"]),
     }
     full = f"{url}?{urlencode(params)}"
     try:
@@ -323,6 +324,118 @@ def transcribe_audio(audio_ogg: Path) -> str:
 
 
 # ===== Main loop =====
+# ═══════════════════════════════════════════════════════════════════════════
+# PANEL DE PENDIENTES CON BOTONES (callback_query) — control directo sin LLM.
+# Un clic = marca '- [x]' en AGENDA.md (operación a archivo, 0 tokens del modelo).
+# ═══════════════════════════════════════════════════════════════════════════
+import html as _htmlmod
+
+_AGENDA = core.SPACE / "AGENDA.md"
+
+
+def _agenda_open_items(limit=24):
+    """[(hash8, texto)] de los pendientes abiertos '- [ ]' de la AGENDA general."""
+    if not _AGENDA.exists():
+        return []
+    out = []
+    for line in _AGENDA.read_text().splitlines():
+        m = re.match(r"^\s*-\s*\[\s*\]\s+(.+)", line)
+        if m:
+            out.append((hashlib.md5(line.encode("utf-8")).hexdigest()[:8], m.group(1).strip()))
+            if len(out) >= limit:
+                break
+    return out
+
+
+def _agenda_mark_done(h8):
+    """Marca '- [x]' la línea cuyo md5[:8] coincide. Devuelve el texto cerrado o None."""
+    if not _AGENDA.exists():
+        return None
+    lines = _AGENDA.read_text().splitlines()
+    for i, line in enumerate(lines):
+        if re.match(r"^\s*-\s*\[\s*\]\s+", line) and hashlib.md5(line.encode("utf-8")).hexdigest()[:8] == h8:
+            lines[i] = re.sub(r"\[\s*\]", "[x]", line, count=1)
+            _AGENDA.write_text("\n".join(lines) + "\n")
+            return re.sub(r"^\s*-\s*\[x\]\s+", "", lines[i]).strip()
+    return None
+
+
+def _agenda_panel():
+    """Devuelve (texto_html, reply_markup) con los pendientes y un botón por cada uno."""
+    items = _agenda_open_items()
+    if not items:
+        return "✅ <b>AGENDA</b> — sin pendientes abiertos. ¡Vas al día!", None
+    lines = ["📋 <b>Pendientes abiertos</b> — toca el número para cerrarlo:\n"]
+    row, keyboard = [], []
+    for i, (h, txt) in enumerate(items, 1):
+        lines.append(f"<b>{i}.</b> {_htmlmod.escape(txt)[:110]}")
+        row.append({"text": f"✅ {i}", "callback_data": f"done:{h}"})
+        if len(row) == 4:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([{"text": "🔄 Actualizar", "callback_data": "panel"}])
+    return "\n".join(lines), {"inline_keyboard": keyboard}
+
+
+def telegram_send_panel(token, chat_id, text, reply_markup=None):
+    body = {"chat_id": chat_id, "text": text[:4000], "parse_mode": "HTML",
+            "disable_web_page_preview": True}
+    if reply_markup:
+        body["reply_markup"] = reply_markup
+    try:
+        core.http_post_json(f"https://api.telegram.org/bot{token}/sendMessage",
+                            headers={}, body=body, timeout=15)
+    except Exception as e:
+        log.error(f"send_panel falló: {e}")
+
+
+def telegram_answer_callback(token, cbq_id, text=""):
+    try:
+        core.http_post_json(f"https://api.telegram.org/bot{token}/answerCallbackQuery",
+                            headers={}, body={"callback_query_id": cbq_id, "text": text[:200]}, timeout=10)
+    except Exception as e:
+        log.warning(f"answerCallback falló: {e}")
+
+
+def telegram_edit(token, chat_id, message_id, text, reply_markup=None):
+    body = {"chat_id": chat_id, "message_id": message_id, "text": text[:4000],
+            "parse_mode": "HTML", "disable_web_page_preview": True}
+    if reply_markup:
+        body["reply_markup"] = reply_markup
+    try:
+        core.http_post_json(f"https://api.telegram.org/bot{token}/editMessageText",
+                            headers={}, body=body, timeout=15)
+    except Exception as e:
+        log.warning(f"editMessageText falló: {e}")
+
+
+def handle_callback(cbq, token, chat_id):
+    """Maneja los clics de botones SIN pasar por el modelo (operación directa)."""
+    data = cbq.get("data") or ""
+    cbq_id = cbq.get("id")
+    m = cbq.get("message") or {}
+    mid = m.get("message_id")
+    cid = str((m.get("chat") or {}).get("id") or "")
+    if cid != str(chat_id):
+        telegram_answer_callback(token, cbq_id, "No autorizado")
+        return
+    if data == "panel":
+        txt, mk = _agenda_panel()
+        telegram_edit(token, chat_id, mid, txt, mk)
+        telegram_answer_callback(token, cbq_id, "Actualizado")
+        return
+    if data.startswith("done:"):
+        cerrado = _agenda_mark_done(data.split(":", 1)[1])
+        telegram_answer_callback(token, cbq_id,
+                                 f"✅ Hecho: {cerrado[:40]}" if cerrado else "Ya estaba cerrado o cambió")
+        txt, mk = _agenda_panel()
+        telegram_edit(token, chat_id, mid, txt, mk)
+        return
+    telegram_answer_callback(token, cbq_id, "")
+
+
 def process_update(update, telegram_token, chat_id, api_key, system_prompt):
     msg = update.get("message")
     if not msg:
@@ -333,6 +446,11 @@ def process_update(update, telegram_token, chat_id, api_key, system_prompt):
         return
 
     text = msg.get("text")
+    # Comando directo (sin LLM): panel de pendientes con botones.
+    if text and text.strip().lower() in ("/agenda", "/pendientes", "pendientes", "/tareas", "/hoy"):
+        ptxt, pmk = _agenda_panel()
+        telegram_send_panel(telegram_token, chat_id, ptxt, pmk)
+        return
     voice = msg.get("voice")
     audio = msg.get("audio")
     caption = msg.get("caption")
@@ -573,6 +691,13 @@ def main():
                 update_id = update["update_id"]
                 offset = update_id + 1
                 set_offset(offset)
+                # Clic de botón → manejo directo, sin modelo ni tokens.
+                if update.get("callback_query"):
+                    try:
+                        handle_callback(update["callback_query"], telegram_token, chat_id)
+                    except Exception:
+                        log.exception("Error en callback")
+                    continue
                 if msgs_since_reload >= 5:
                     system_prompt = core.load_system_prompt(channel="telegram")
                     msgs_since_reload = 0
