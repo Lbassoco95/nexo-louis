@@ -631,12 +631,32 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "- SALUD.md: citas médicas pendientes, exámenes, medicamentos\n"
         "- VIAJES.md: viajes pasados/próximos, preferencias (aerolínea, hotel, status frecuente)\n"
         "- FINANZAS.md: notas financieras personales — pagos recurrentes, deadlines fiscales (NUNCA guardes números de cuenta o tarjetas)\n"
-        "Usa `append_to_memory` cuando agregas. Usa `write_memory` solo si vas a reemplazar TODO el archivo."
+        "Usa `append_to_memory` SOLO para algo NUEVO. Usa `write_memory` solo si vas a reemplazar TODO el archivo."
+        "\n\n# EDITAR EN SU LUGAR — NO APILES NI DUPLIQUES (CRÍTICO)\n"
+        "Cuando Polo CORRIGE o ACTUALIZA algo ya anotado (cambia un responsable, fecha, nombre de cliente, "
+        "un dato), DEBES editar la línea existente con `reemplazar_pendiente(viejo, nuevo)` — NUNCA agregues "
+        "una línea nueva ni crees secciones tipo 'HOJA NUEVA / ACTUALIZACIÓN <hora>'. Apilar duplica y se "
+        "contradice (ej. el mismo cliente dos veces con datos distintos). Regla: novedad → append_to_memory; "
+        "corrección → reemplazar_pendiente; completado → completar_pendiente. La AGENDA debe quedar con UNA "
+        "sola versión vigente de cada cosa.\n"
+        "\n# NO CONFIRMES SIN HABER ESCRITO (CERO 'YA QUEDÓ' FALSOS)\n"
+        "PROHIBIDO decir 'anotado', 'corregido', 'actualizado', 'listo', 'ya quedó' si NO llamaste la tool "
+        "de memoria en este turno y devolvió OK. Confirma SOLO lo que la tool reportó: si devolvió 'no "
+        "encontré la línea', dilo y vuelve a intentar — no inventes éxito. Lo mismo para recordatorios: si "
+        "Polo te pide cambiar la hora, usa la tool de recordatorio y confirma con lo que devolvió, no de palabra."
         "\n\n# CERRAR PENDIENTES — CRÍTICO PARA NO REPETIR TEMAS VIEJOS\n"
         "Cuando Polo avise que algo YA se hizo/entregó/envió/quedó (ej. 'ya entregamos Vizum a la CNBV', "
         "'ya se mandó la carta de Lupita', 'eso ya quedó'), DEBES llamar `completar_pendiente(texto)` con las "
         "palabras clave para marcarlo - [x] en AGENDA. Si NO lo cierras, seguirá saliendo en cada revisión y "
         "parecerá que 'sacas temas viejos'. Cerrar lo hecho es tan importante como anotar lo nuevo."
+        "\n\n# PROACTIVIDAD: REVISA AVANCES EN LOS DOCUMENTOS — NO SEAS SOLO REACTIVO\n"
+        "Cuando un pendiente sea un ENTREGABLE (perfil de puesto, escrito, carta, dictamen, contrato, "
+        "presentación, reporte), NO lo reportes a ciegas como 'sin empezar': PRIMERO revisa si ya hay avance "
+        "en los documentos de Polo — `dropbox_buscar` / `dropbox_analizar_imagen` y M365/OneDrive — y dilo "
+        "proactivamente. Ej.: en vez de 'pendiente: perfil Jefe de Fábrica', di 'vi un borrador del perfil de "
+        "Jefe de Fábrica en Dropbox del 2-jun, ¿lo reviso/continúo?'. En el briefing y en `/agenda`, marca lo "
+        "que YA tiene avance documental vs lo que no. Si no encuentras nada, dilo ('no veo borrador aún'), no "
+        "inventes que existe. Tu trabajo es ADELANTARTE: ver el estado real, no esperar a que Polo te lo diga."
         "\n\n# USA TUS TOOLS — NUNCA digas 'no puedo' sin intentar\n"
         "Tienes acceso REAL a Dropbox, Kawiil Central (clientes/proyectos/tareas y SQL), M365 "
         "(correo/calendario), agentes, browser y más. ANTES de decir 'no tengo acceso', 'no puedo' "
@@ -1905,6 +1925,18 @@ TOOLS_DEFINITION = [
                 "texto": {"type": "string", "description": "Palabras clave del pendiente que se completó (ej: 'Vizum CNBV comunicación', 'carta Lupita Correduría'). Se hace match flexible contra las líneas - [ ] de AGENDA."},
             },
             "required": ["texto"],
+        },
+    },
+    {
+        "name": "reemplazar_pendiente",
+        "description": "CORRIGE/ACTUALIZA un pendiente existente de AGENDA.md EDITÁNDOLO en su lugar (no crea líneas nuevas ni 'hojas nuevas'). ÚSALO cuando Polo corrige un dato de algo ya anotado (ej. 'Casandra no es de Habib, es RPC de Fernando', 'el cliente es Joshui no Dazon', cambia un responsable/fecha). Busca la línea que coincida con `viejo` y la reemplaza COMPLETA por `nuevo`. Así no se duplica ni se contradice la AGENDA. Si necesitas AGREGAR algo nuevo usa append_to_memory; si algo se completó usa completar_pendiente.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "viejo": {"type": "string", "description": "Palabras clave de la línea EXISTENTE a corregir (match flexible contra las líneas de AGENDA). Ej: 'Casandra Habib'."},
+                "nuevo": {"type": "string", "description": "El texto COMPLETO que debe quedar en esa línea (sin el '- [ ]', se conserva el estado de la casilla). Ej: 'Casandra — RPC a cargo de Fernando (vence 5-jun)'."},
+            },
+            "required": ["viejo", "nuevo"],
         },
     },
     {
@@ -7143,6 +7175,33 @@ def execute_tool(name: str, args: dict) -> str:
             path.write_text("\n".join(lines) + ("\n" if not "\n".join(lines).endswith("\n") else ""))
             listado = "\n".join(f"  ✓ {c}" for c in cerradas)
             return f"OK cerré {len(cerradas)} pendiente(s):\n{listado}"
+        elif name == "reemplazar_pendiente":
+            path = SPACE / "AGENDA.md"
+            if not path.exists():
+                return "(AGENDA.md no existe)"
+            viejo = (args.get("viejo") or "").strip().lower()
+            nuevo = (args.get("nuevo") or "").strip()
+            keys = [w for w in re.findall(r"\w+", viejo) if len(w) > 3]
+            if not keys or not nuevo:
+                return "ERROR: dame palabras clave de la línea a corregir (viejo) y el texto nuevo"
+            lines = path.read_text().splitlines()
+            # candidata = línea con más keywords (prioriza pendientes - [ ]/- [x])
+            mejor_i, mejor_hits = -1, 0
+            for i, line in enumerate(lines):
+                low = line.lower()
+                hits = sum(1 for k in keys if k in low)
+                if hits > mejor_hits and hits >= max(2, (len(keys) + 1) // 2):
+                    mejor_i, mejor_hits = i, hits
+            if mejor_i < 0:
+                return f"(no encontré una línea que coincida con «{viejo}» — usa append_to_memory si es algo nuevo)"
+            orig = lines[mejor_i]
+            # conserva el prefijo de checkbox/viñeta y su indentación
+            mpref = re.match(r"^(\s*-\s*\[[ xX]\]\s+|\s*-\s+|\s*)", orig)
+            prefijo = mpref.group(1) if mpref else "- [ ] "
+            antes = orig.strip()
+            lines[mejor_i] = f"{prefijo}{nuevo}"
+            path.write_text("\n".join(lines) + "\n")
+            return f"OK corregí la línea en su lugar:\n  antes: {antes[:90]}\n  ahora: {lines[mejor_i].strip()[:90]}"
         elif name == "create_reminder":
             script = SPACE / "scripts" / "crear-recordatorio.sh"
             if not script.exists():
