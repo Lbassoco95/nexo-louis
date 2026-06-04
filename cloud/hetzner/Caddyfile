@@ -44,6 +44,36 @@
     }
 }
 
+# ── Cerebro Kawiil (MCP Server) ────────────────────────────
+{$CEREBRO_DOMAIN} {
+    encode zstd gzip
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options    "nosniff"
+        Referrer-Policy           "no-referrer"
+        -Server
+    }
+
+    # Cerebro Kawiil corre nativo en el host, en localhost:CEREBRO_PORT
+    reverse_proxy 127.0.0.1:{$CEREBRO_PORT} {
+        # SSE requiere flush inmediato para que el connector de Claude funcione
+        flush_interval -1
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    log {
+        output file /data/logs/cerebro.log {
+            roll_size 10mb
+            roll_keep 5
+            roll_keep_for 720h
+        }
+    }
+}
+
 # ── kawiil-agents (FastAPI) ─────────────────────────────────
 {$AGENTS_DOMAIN} {
     encode zstd gzip
