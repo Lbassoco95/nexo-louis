@@ -1,19 +1,36 @@
 #!/usr/bin/env python3
-"""Boletin DIARIO del DOF -> documento HTML adjunto a Telegram (estilo boletin).
-Toma la edicion publicada mas reciente (fecha valida <= hoy), agrupa por
-dependencia (nombre_cod_orga_uno) y lista cada nota con su tipo y link al DOF.
-Solo dato duro de la BD; cero interpretacion."""
-import datetime as dt, html, os, sqlite3, sys, urllib.request, uuid
+"""Boletin DIARIO del DOF -> documento HTML adjunto a Telegram, CURADO POR IMPACTO.
+
+Destaca los documentos que importan (leyes, decretos, reglamentos, acuerdos,
+circulares, lineamientos, NOMs, reglas, resoluciones, convenios, modificaciones,
+reformas… = los que cambian normas/tramites/administracion publica), agrupados
+por dependencia con su tipo y link. El "mar" (avisos judiciales, edictos,
+convocatorias, balances) NO se detalla: se IDENTIFICA y se cuenta por categoria.
+
+Clasificacion = coincidencia de patron sobre la etiqueta oficial del documento
+(el DOF nombra cada nota por su tipo al inicio del titulo) + la dependencia.
+Dato duro; cero interpretacion de contenido.
+"""
+import datetime as dt, html, json, os, re, sqlite3, sys, urllib.request, uuid
 from pathlib import Path
 
 DB = os.environ.get("DOF_DB_PATH", "/opt/openclaw/legal/dof/biblioteca_dof.db")
 CREDS = os.environ.get("TELEGRAM_CREDS", "/opt/openclaw/credentials/telegram.env")
-# Detalle de la nota en el DOF: requiere codigo + fecha dd/mm/yyyy
 URL = "https://www.dof.gob.mx/nota_detalle.php?codigo={cod}&fecha={f}"
 MES = ["", "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
        "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 EDIC = {"MAT": "Matutina", "VES": "Vespertina", "EXT": "Extraordinaria"}
+
+# Tipos de documento RELEVANTES (impactan norma/tramite/administracion/ciudadania).
+# Se evalua contra el inicio del titulo (el DOF estandariza el tipo en mayusculas).
+RELEVANTE_RE = re.compile(
+    r"^\s*(LEY|C[OÓ]DIGO|DECRETO|REGLAMENTO|ACUERDO|CIRCULAR|LINEAMIENTOS?|"
+    r"NORMA|REGLAS|MANUAL|ESTATUTO|RESOLUCI[OÓ]N|DISPOSICIONES?|CONVENIO|"
+    r"MODIFICACI[OÓ]N|REFORMA|ANEXO|POL[IÍ]TICA|PROGRAMA|PLAN|DECLARATORIA|"
+    r"ESTRATEGIA|BASES|TARIFA|ESTÁNDAR|ESTANDAR|CONDICIONES GENERALES)\b", re.I)
+# Dependencias/secciones que son "el mar" (no se detalla, solo se cuenta).
+DEP_RUIDO = ("AVISOS JUDICIALES", "AVISOS GENERALES", "PARTICULARES")
 
 
 def esc(s):
@@ -34,6 +51,26 @@ def fecha_ddmmyyyy(iso):
         return f"{d}/{m}/{y}"
     except Exception:
         return iso
+
+
+def clasifica(r):
+    """Devuelve ('relevante', None) o ('resto', categoria)."""
+    dep = (r["nombre_cod_orga_uno"] or "").upper()
+    tit = (r["titulo"] or "").strip()
+    up = tit.upper()
+    if any(j in dep for j in DEP_RUIDO):
+        return "resto", "Avisos judiciales y generales"
+    if RELEVANTE_RE.match(tit):
+        return "relevante", None
+    if up.startswith("EDICTO"):
+        return "resto", "Edictos"
+    if up.startswith(("CONVOCATORIA", "LICITACI", "FALLO", "FE DE ERRATAS")):
+        return "resto", "Convocatorias / Licitaciones / Fe de erratas"
+    if up.startswith(("BALANCE", "ESTADO DE", "ESTADOS FINANC", "ESTADO FINANC")):
+        return "resto", "Estados financieros / Balances"
+    if up.startswith("AVISO"):
+        return "resto", "Avisos"
+    return "resto", "Otros documentos"
 
 
 def creds():
@@ -77,7 +114,6 @@ def send_msg(text):
     token, chat = creds()
     if not token or not chat:
         return False
-    import json
     body = json.dumps({"chat_id": chat, "text": text[:3900], "parse_mode": "HTML",
                        "disable_web_page_preview": True}).encode("utf-8")
     req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage",
@@ -89,13 +125,12 @@ def send_msg(text):
         return False
 
 
-def build_html(rows, fecha):
+def build_html(relevantes, resto_counts, total, fecha):
     fl = fecha_larga(fecha)
     ddmm = fecha_ddmmyyyy(fecha)
     hoy = dt.datetime.now().strftime("%d/%m/%Y %H:%M")
-    # agrupar por dependencia (orden: por # de notas desc, luego alfabetico)
     grupos = {}
-    for r in rows:
+    for r in relevantes:
         dep = (r["nombre_cod_orga_uno"] or r["seccion"] or "Otros").strip() or "Otros"
         grupos.setdefault(dep, []).append(r)
     orden = sorted(grupos, key=lambda d: (-len(grupos[d]), d.lower()))
@@ -115,30 +150,42 @@ def build_html(rows, fecha):
                 f'<td>{etag}{ttag}<span class="t">{esc(r["titulo"]).rstrip(". ")}</span></td></tr>')
         secc.append(f'<h2>{esc(dep)} <span class="c">({len(it)})</span></h2>'
                     f'<table><tbody>{"".join(filas)}</tbody></table>')
-    body = "\n".join(secc)
+    body = "\n".join(secc) or '<p class="vacio">Sin documentos normativos relevantes en esta edición.</p>'
+
+    n_rel = len(relevantes)
+    n_resto = sum(resto_counts.values())
+    resto_li = "".join(f"<li>{esc(cat)}: <strong>{n}</strong></li>"
+                       for cat, n in sorted(resto_counts.items(), key=lambda x: -x[1]))
+    resto_block = (f'<h2 class="resto">Resto identificado (no detallado) — {n_resto}</h2>'
+                   f'<ul class="rl">{resto_li}</ul>') if n_resto else ""
+
     doc = f"""<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>DOF — {esc(fl)}</title><style>
 body{{font-family:'Georgia',serif;max-width:900px;margin:40px auto;padding:0 24px;color:#1a1a1a;line-height:1.6}}
 h1{{font-size:1.55em;border-bottom:3px solid #0b5d2e;padding-bottom:8px;color:#0b5d2e}}
 h2{{font-size:1.1em;color:#2c3e50;margin-top:1.6em;border-bottom:1px solid #ddd;padding-bottom:4px}}
+h2.resto{{color:#888;border-bottom:1px dashed #ccc;margin-top:2.2em}}
 .c{{color:#999;font-weight:normal;font-size:.82em}}
 table{{border-collapse:collapse;width:100%;margin:.4em 0}}
 td{{border-bottom:1px solid #eee;padding:6px 9px;vertical-align:top}}
 td.cod{{width:78px;font-size:.85em;white-space:nowrap}}
 td.cod a{{color:#0b5d2e;text-decoration:none;font-weight:bold}}
 .t{{font-size:.93em}}
-.tag{{font-size:.68em;font-weight:bold;background:#e8e8e8;color:#555;padding:1px 6px;border-radius:4px;margin-right:4px}}
+.tag{{font-size:.68em;font-weight:bold;background:#dff0e4;color:#0b5d2e;padding:1px 6px;border-radius:4px;margin-right:4px}}
 .ed{{font-size:.68em;font-weight:bold;background:#0b5d2e;color:#fff;padding:1px 6px;border-radius:4px;margin-right:4px}}
+.rl{{color:#777;font-size:.9em;columns:2}} .rl li{{margin-bottom:3px}}
 .hd{{display:flex;justify-content:space-between;margin-bottom:1.2em;padding:14px 16px;background:#f4f7f5;border-radius:6px;font-size:.85em;color:#666}}
 .resumen{{background:#f4f7f5;border-left:4px solid #0b5d2e;padding:10px 14px;margin:1em 0;font-size:.95em}}
+.vacio{{color:#888;font-style:italic}}
 .ft{{margin-top:3em;padding-top:1em;border-top:1px solid #ddd;font-size:.8em;color:#999;text-align:center}}
 </style></head><body>
 <div class="hd"><span>Elaborado por: <strong>Louis · Kawiil</strong> — Diario Oficial de la Federación</span><span>Generado: {hoy}</span></div>
 <h1>📰 Diario Oficial — {esc(fl)}</h1>
-<div class="resumen"><strong>{len(rows)}</strong> publicaciones en <strong>{len(grupos)}</strong> dependencias. Da clic en el código para abrir la nota en el DOF.</div>
+<div class="resumen"><strong>{n_rel}</strong> documentos normativos relevantes (leyes, decretos, acuerdos, reglamentos, circulares, lineamientos…) de un total de <strong>{total}</strong> publicaciones. El resto ({n_resto}) son avisos/edictos/convocatorias — identificados abajo. Da clic en el código para abrir la nota en el DOF.</div>
 {body}
-<div class="ft">Documento generado por Louis (Kawiil) · {hoy} · Fuente: Diario Oficial de la Federación (SEGOB)</div>
+{resto_block}
+<div class="ft">Documento generado por Louis (Kawiil) · {hoy} · Fuente: Diario Oficial de la Federación (SEGOB) · Clasificación por tipo oficial del documento.</div>
 </body></html>"""
     return doc.encode("utf-8")
 
@@ -149,13 +196,10 @@ def main():
         return 1
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
-    # fecha valida mas reciente (descarta fechas futuras mal parseadas)
-    fecha = conn.execute(
-        "SELECT MAX(fecha) FROM notas WHERE fecha <= date('now')").fetchone()[0]
+    fecha = conn.execute("SELECT MAX(fecha) FROM notas WHERE fecha <= date('now')").fetchone()[0]
     if not fecha:
         print("Sin fechas validas", file=sys.stderr)
         return 1
-    # dedup: no reenviar la misma edicion si ya se mando (timer diario; DOF no publica findes)
     state = Path(os.environ.get("DOF_STATE", "/opt/openclaw/state/dof_last_sent.txt"))
     last_sent = state.read_text().strip() if state.exists() else ""
     if fecha == last_sent and "--force" not in sys.argv:
@@ -168,14 +212,22 @@ def main():
     conn.close()
     if not rows:
         send_msg(f"📰 <b>DOF</b> — sin notas para {fecha_larga(fecha)}.")
-        print("Sin notas")
         return 0
+
+    relevantes, resto_counts = [], {}
+    for r in rows:
+        clase, cat = clasifica(r)
+        if clase == "relevante":
+            relevantes.append(r)
+        else:
+            resto_counts[cat] = resto_counts.get(cat, 0) + 1
+
     fl = fecha_larga(fecha)
-    deps = len({(r["nombre_cod_orga_uno"] or r["seccion"] or "Otros") for r in rows})
     caption = (f"📰 <b>Diario Oficial</b> — {esc(fl)}\n"
-               f"{len(rows)} publicaciones en {deps} dependencias. Detalle por dependencia en el adjunto.")
+               f"<b>{len(relevantes)}</b> documentos relevantes (leyes/decretos/acuerdos/circulares…) "
+               f"de {len(rows)} publicaciones. Detalle por dependencia en el adjunto.")
     fname = f"DOF_{fecha.replace('-', '')}.html"
-    ok = send_doc(build_html(rows, fecha), fname, caption)
+    ok = send_doc(build_html(relevantes, resto_counts, len(rows), fecha), fname, caption)
     if ok:
         try:
             state.parent.mkdir(parents=True, exist_ok=True)
