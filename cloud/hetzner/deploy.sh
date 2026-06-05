@@ -37,7 +37,7 @@ require_env() {
   # shellcheck disable=SC1091
   source .env
   set +a
-  for var in LOUIS_DOMAIN AGENTS_DOMAIN ACME_EMAIL SYSTEM_USER ANTHROPIC_API_KEY; do
+  for var in LOUIS_DOMAIN AGENTS_DOMAIN CEREBRO_DOMAIN ACME_EMAIL SYSTEM_USER ANTHROPIC_API_KEY; do
     [[ -n "${!var:-}" ]] || fail ".env: variable $var está vacía"
   done
 }
@@ -57,7 +57,7 @@ done
 if $ROLLBACK; then
   require_root
   log "Rollback: deteniendo servicios"
-  systemctl stop openclaw 2>/dev/null || true
+  systemctl stop openclaw telegram-bridge slack-bridge cerebro-kawiil 2>/dev/null || true
   docker compose down 2>/dev/null || true
   ok "Servicios detenidos. Datos en /opt/openclaw y volúmenes Docker INTACTOS."
   exit 0
@@ -153,9 +153,9 @@ ok "Cron registrado: $CRON_FILE"
 # Los .py de cloud/hetzner/services/ (versión repo) van a /opt/openclaw/scripts/
 # para que los systemd units los encuentren. Esto sobreescribe versiones viejas
 # del seed (Mac) — el repo es source-of-truth para la lógica del bridge.
-log "[6b] Copiando servicios louis_core + telegram-bridge + slack-bridge + m365 al runtime"
+log "[6b] Copiando servicios louis_core + telegram-bridge + slack-bridge + m365 + cerebro-kawiil al runtime"
 mkdir -p /opt/openclaw/scripts /opt/openclaw/scripts/m365 /opt/openclaw/logs
-for svc in louis_core.py telegram-bridge.py slack-bridge.py; do
+for svc in louis_core.py telegram-bridge.py slack-bridge.py cerebro_kawiil_mcp.py; do
   if [[ -f "services/${svc}" ]]; then
     install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" "services/${svc}" "/opt/openclaw/scripts/${svc}"
   fi
@@ -163,13 +163,27 @@ done
 if [[ -f "services/m365.py" ]]; then
   install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" "services/m365.py" "/opt/openclaw/scripts/m365/m365.py"
 fi
-chown -R "$SYSTEM_USER":"$SYSTEM_USER" /opt/openclaw/scripts /opt/openclaw/logs
+# Copiar almacén de entregables (solo el README y la estructura; los .md de producción no van en repo)
+ENTREGABLES_DIR="/opt/openclaw/entregables"
+if [[ ! -d "$ENTREGABLES_DIR" ]]; then
+  mkdir -p "${ENTREGABLES_DIR}/_briefs"
+  if [[ -f "entregables/README.md" ]]; then
+    install -m 0644 -o "$SYSTEM_USER" -g "$SYSTEM_USER" "entregables/README.md" "${ENTREGABLES_DIR}/README.md"
+  fi
+fi
+chown -R "$SYSTEM_USER":"$SYSTEM_USER" /opt/openclaw/scripts /opt/openclaw/logs "${ENTREGABLES_DIR}"
 ok "Scripts en /opt/openclaw/scripts/"
 
-# ── 7) Bridges systemd units (Telegram + Slack) ──────────────
-log "[7/7] Instalando units de bridges (telegram + slack)"
+# ── 6c) Instalar dependencias del Cerebro Kawiil ─────────────
+log "[6c] Instalando dependencias Python del Cerebro Kawiil"
+if [[ -f "bootstrap/07-cerebro-kawiil.sh" ]]; then
+  bash bootstrap/07-cerebro-kawiil.sh
+fi
+
+# ── 7) Bridges systemd units (Telegram + Slack + Cerebro Kawiil) ─────────
+log "[7/7] Instalando units de bridges (telegram + slack + cerebro-kawiil)"
 ENV_OUT="/opt/openclaw/openclaw.env"
-for unit in telegram-bridge slack-bridge; do
+for unit in telegram-bridge slack-bridge cerebro-kawiil; do
   if [[ -f "services/${unit}.service" ]]; then
     sed \
       -e "s|@@SYSTEM_USER@@|${SYSTEM_USER}|g" \
@@ -203,12 +217,28 @@ else
   warn "slack-bridge.py aún no copiado al seed — sin arrancar"
 fi
 
+# Cerebro Kawiil: arranca si hay token configurado
+if [[ -f /opt/openclaw/scripts/cerebro_kawiil_mcp.py ]]; then
+  if [[ -n "${CEREBRO_KAWIIL_TOKEN:-}" ]]; then
+    systemctl enable --now cerebro-kawiil
+    ok "cerebro-kawiil activo en 127.0.0.1:${CEREBRO_PORT:-4040}"
+  else
+    warn "cerebro-kawiil: CEREBRO_KAWIIL_TOKEN no configurado en .env"
+    warn "Configura el token y corre: sudo systemctl enable --now cerebro-kawiil"
+  fi
+else
+  warn "cerebro_kawiil_mcp.py aún no copiado al seed — sin arrancar"
+fi
+
 # ── Done ──────────────────────────────────────────────────────
 echo ""
 ok "Deploy completo."
 echo ""
 echo "Próximos pasos:"
-echo "  1. Apunta DNS de $LOUIS_DOMAIN y $AGENTS_DOMAIN a $(hostname -I | awk '{print $1}')"
+echo "  1. Apunta DNS de $LOUIS_DOMAIN, $AGENTS_DOMAIN y ${CEREBRO_DOMAIN:-cerebro.kawiil.mx} a $(hostname -I | awk '{print $1}')"
 echo "  2. Espera ~60s a que Caddy obtenga el certificado TLS"
 echo "  3. Corre: ./verify.sh"
 echo "  4. Desde tu Mac: cd .../yoltik-ai-setup/cloud/hetzner/sync && ./mac-install.sh $LOUIS_DOMAIN $SYSTEM_USER"
+echo "  5. Conecta Cerebro Kawiil en Claude.ai → Settings → Connectors:"
+echo "     URL: https://${CEREBRO_DOMAIN:-cerebro.kawiil.mx}/sse"
+echo "     Token: el valor de CEREBRO_KAWIIL_TOKEN en tu .env"
