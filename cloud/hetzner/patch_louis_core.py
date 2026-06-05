@@ -428,6 +428,63 @@ def execute_tool(name: str, args: dict) -> str:  # noqa: F811
     src = src.rstrip("\n") + "\n" + PATCH_BLOCK
     changes.append("bloque completo cerebro-kawiil (append)")
 
+# ── 4) Helpers de telegram-bridge que pueden faltar en versiones antiguas ─────
+HELPERS_MARKER = "# ── PATCH: telegram-helpers ──"
+
+if HELPERS_MARKER not in src and "def is_status_command" not in src:
+    HELPERS_BLOCK = '''
+
+# ── PATCH: telegram-helpers ──
+# Funciones requeridas por telegram-bridge.py ausentes en versiones antiguas del core.
+
+STATUS_COMMAND_RE = re.compile(
+    r"^(?:/status|status|estado|verifica(?:r)?\\s+conexiones?)\\s*$",
+    re.IGNORECASE,
+)
+
+AGENTS_LIST_COMMAND_RE = re.compile(
+    r"^(?:/agentes|agentes|lista\\s+agentes|listar\\s+agentes|cu[aá]ntos\\s+agentes)\\s*$",
+    re.IGNORECASE,
+)
+
+
+def is_status_command(user_message: str) -> bool:
+    return bool(STATUS_COMMAND_RE.match((user_message or "").strip()))
+
+
+def is_agents_list_command(user_message: str) -> bool:
+    return bool(AGENTS_LIST_COMMAND_RE.match((user_message or "").strip()))
+
+
+def format_agents_list_compact(max_names: int = 15) -> str:
+    """Lista agentes registrados sin LLM (OpenClaw / spaces/general/agents/)."""
+    if not AGENTS_DIR.exists():
+        return "No hay carpeta de agentes en el VPS. Corre import-legal-agents.sh."
+    files = sorted(AGENTS_DIR.glob("*.md"))
+    if not files:
+        return "No hay sub-agentes registrados."
+    legal = [f.stem for f in files if f.stem.startswith("legal-")]
+    custom = [f.stem for f in files if not f.stem.startswith("legal-")]
+    lines = [
+        f"*Agentes OpenClaw* \\u2014 {len(files)} registrados",
+        f"  \\u2022 Legales (claude-for-legal): {len(legal)}",
+        f"  \\u2022 Personalizados: {len(custom)}",
+        "",
+        "*Ejemplos:*",
+    ]
+    for name in (legal[: max_names - 2] + custom[:2])[:max_names]:
+        lines.append(f"  \\u2022 `{name}`")
+    if len(files) > max_names:
+        lines.append(f"  \\u2026 y {len(files) - max_names} m\\u00e1s")
+    lines.extend([
+        "",
+        "Listado completo: `/sonnet lista mis agentes`",
+    ])
+    return "\\n".join(lines)
+'''
+    src = src.rstrip("\n") + "\n" + HELPERS_BLOCK
+    changes.append("telegram-helpers (is_status_command, is_agents_list_command, format_agents_list_compact)")
+
 # ── Verificar sintaxis ─────────────────────────────────────────────────────
 try:
     ast.parse(src)
