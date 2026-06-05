@@ -22,9 +22,14 @@ Variables de entorno:
 
 import os
 import re
+import base64
+import hashlib
+import html as _html
+import secrets
 import sqlite3
 import sys
 import time
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -35,7 +40,7 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.routing import Mount, Route
 
 # ── Configuración ──────────────────────────────────────────────────────────
@@ -93,15 +98,170 @@ mcp = FastMCP(
 )
 
 
+# ── OAuth shim ─────────────────────────────────────────────────────────────
+# Los connectors de Claude exigen OAuth (con Dynamic Client Registration +
+# PKCE). Este shim implementa el flujo mínimo: Claude registra un cliente,
+# manda al usuario a /authorize, donde el server pide el TOKEN del Cerebro
+# (Bearer estático). Si es correcto, emite un code y luego en /token devuelve
+# el propio Bearer como access_token (que el middleware ya valida). Así el
+# acceso queda protegido por el mismo token, pero hablando OAuth con Claude.
+
+_oauth_clients: dict[str, dict] = {}   # client_id -> metadata
+_oauth_codes: dict[str, dict] = {}     # code -> {challenge, redirect_uri, exp}
+
+
+def _base_url(request: Request) -> str:
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme or "https")
+    host = request.headers.get("host", request.url.netloc)
+    return f"{proto}://{host}"
+
+
+async def oauth_protected_resource(request: Request) -> JSONResponse:
+    base = _base_url(request)
+    return JSONResponse({
+        "resource": base,
+        "authorization_servers": [base],
+        "bearer_methods_supported": ["header"],
+    })
+
+
+async def oauth_metadata(request: Request) -> JSONResponse:
+    base = _base_url(request)
+    return JSONResponse({
+        "issuer": base,
+        "authorization_endpoint": f"{base}/authorize",
+        "token_endpoint": f"{base}/token",
+        "registration_endpoint": f"{base}/register",
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code"],
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none", "client_secret_post"],
+        "scopes_supported": ["cerebro"],
+    })
+
+
+async def oauth_register(request: Request) -> JSONResponse:
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    client_id = "cl_" + secrets.token_hex(16)
+    meta = {
+        "client_id": client_id,
+        "redirect_uris": body.get("redirect_uris", []),
+        "token_endpoint_auth_method": "none",
+        "grant_types": ["authorization_code"],
+        "response_types": ["code"],
+        "client_id_issued_at": int(time.time()),
+    }
+    for k in ("client_name", "scope", "redirect_uris"):
+        if k in body:
+            meta[k] = body[k]
+    _oauth_clients[client_id] = meta
+    return JSONResponse(meta, status_code=201)
+
+
+_AUTHORIZE_FORM = """<!doctype html><html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cerebro Kawiil — Autorizar</title><style>
+body{{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#0b5d2e;color:#fff;
+display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}}
+.card{{background:#fff;color:#1a1a1a;max-width:380px;padding:32px;border-radius:14px;
+box-shadow:0 10px 40px rgba(0,0,0,.3)}}
+h1{{font-size:1.3em;margin:0 0 6px}} p{{color:#555;font-size:.92em;line-height:1.5}}
+input{{width:100%;box-sizing:border-box;padding:12px;margin:14px 0;border:1px solid #ccc;
+border-radius:8px;font-size:1em}}
+button{{width:100%;padding:12px;background:#0b5d2e;color:#fff;border:0;border-radius:8px;
+font-size:1em;font-weight:bold;cursor:pointer}}
+.err{{color:#c0392b;font-size:.9em}}
+</style></head><body><div class="card">
+<h1>🧠 Cerebro Kawiil</h1>
+<p>Pega el <b>token del Cerebro</b> para autorizar la conexión con Claude.</p>
+{error}
+<form method="post" action="/authorize">{fields}
+<input type="password" name="token" placeholder="Token del Cerebro Kawiil" autofocus required>
+<button type="submit">Autorizar conexión</button>
+</form></div></body></html>"""
+
+
+def _render_authorize(params: dict, error: str = "") -> HTMLResponse:
+    fields = ""
+    for k in ("client_id", "redirect_uri", "state", "code_challenge",
+              "code_challenge_method", "response_type", "scope"):
+        v = _html.escape(params.get(k, "") or "")
+        fields += f'<input type="hidden" name="{k}" value="{v}">'
+    err_html = f'<p class="err">{_html.escape(error)}</p>' if error else ""
+    return HTMLResponse(_AUTHORIZE_FORM.format(fields=fields, error=err_html))
+
+
+async def oauth_authorize(request: Request) -> HTMLResponse:
+    return _render_authorize(dict(request.query_params))
+
+
+async def oauth_authorize_post(request: Request):
+    form = await request.form()
+    params = {k: form.get(k, "") for k in (
+        "client_id", "redirect_uri", "state", "code_challenge",
+        "code_challenge_method", "response_type", "scope")}
+    token = form.get("token", "")
+    if not BEARER_TOKEN or token != BEARER_TOKEN:
+        return _render_authorize(params, error="Token inválido. Intenta de nuevo.")
+    redirect_uri = params["redirect_uri"]
+    if not redirect_uri:
+        return JSONResponse({"error": "invalid_request", "error_description": "missing redirect_uri"}, status_code=400)
+    code = secrets.token_urlsafe(32)
+    _oauth_codes[code] = {
+        "challenge": params.get("code_challenge", ""),
+        "redirect_uri": redirect_uri,
+        "exp": time.time() + 300,
+    }
+    sep = "&" if "?" in redirect_uri else "?"
+    loc = f"{redirect_uri}{sep}code={urllib.parse.quote(code)}"
+    if params.get("state"):
+        loc += f"&state={urllib.parse.quote(params['state'])}"
+    return RedirectResponse(loc, status_code=302)
+
+
+async def oauth_token(request: Request) -> JSONResponse:
+    form = await request.form()
+    if form.get("grant_type", "") != "authorization_code":
+        return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
+    rec = _oauth_codes.pop(form.get("code", ""), None)
+    if not rec or rec["exp"] < time.time():
+        return JSONResponse({"error": "invalid_grant"}, status_code=400)
+    # PKCE S256
+    if rec.get("challenge"):
+        verifier = form.get("code_verifier", "")
+        digest = hashlib.sha256(verifier.encode()).digest()
+        calc = base64.urlsafe_b64encode(digest).decode().rstrip("=")
+        if calc != rec["challenge"]:
+            return JSONResponse({"error": "invalid_grant", "error_description": "PKCE mismatch"}, status_code=400)
+    return JSONResponse({
+        "access_token": BEARER_TOKEN,
+        "token_type": "Bearer",
+        "expires_in": 31536000,
+        "scope": "cerebro",
+    })
+
+
 # ── Auth middleware ────────────────────────────────────────────────────────
+_OPEN_PATHS = ("/health", "/", "/authorize", "/token", "/register")
+
+
 class BearerAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if request.url.path in ("/health", "/"):
+        path = request.url.path
+        if path in _OPEN_PATHS or path.startswith("/.well-known"):
             return await call_next(request)
         if BEARER_TOKEN:
             auth = request.headers.get("Authorization", "")
             if not auth.startswith("Bearer ") or auth[7:] != BEARER_TOKEN:
-                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+                base = _base_url(request)
+                return JSONResponse(
+                    {"error": "Unauthorized"}, status_code=401,
+                    headers={"WWW-Authenticate":
+                             f'Bearer resource_metadata="{base}/.well-known/oauth-protected-resource"'},
+                )
         return await call_next(request)
 
 
@@ -606,6 +766,16 @@ def build_app() -> Starlette:
     return Starlette(
         routes=[
             Route("/health", health_endpoint),
+            # OAuth shim (discovery + DCR + authorize + token)
+            Route("/.well-known/oauth-protected-resource", oauth_protected_resource),
+            Route("/.well-known/oauth-protected-resource/{rest:path}", oauth_protected_resource),
+            Route("/.well-known/oauth-authorization-server", oauth_metadata),
+            Route("/.well-known/oauth-authorization-server/{rest:path}", oauth_metadata),
+            Route("/.well-known/openid-configuration", oauth_metadata),
+            Route("/register", oauth_register, methods=["POST"]),
+            Route("/authorize", oauth_authorize, methods=["GET"]),
+            Route("/authorize", oauth_authorize_post, methods=["POST"]),
+            Route("/token", oauth_token, methods=["POST"]),
             Mount("/", app=mcp.sse_app()),
         ],
         middleware=[Middleware(BearerAuthMiddleware)],
