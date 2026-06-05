@@ -489,21 +489,26 @@ def format_agents_list_compact(max_names: int = 15) -> str:
 CALL_LLM_MARKER = "# ── PATCH: call_llm-history_file ──"
 
 if CALL_LLM_MARKER not in src:
-    import inspect as _inspect
-    # Detectar si la función ya acepta history_file inspeccionando el texto
-    if "def call_llm(" in src and "history_file" not in src:
-        CALL_LLM_BLOCK = '''
+    # Buscar específicamente en la firma de call_llm (load_history también usa
+    # history_file como param, por eso no podemos buscar en todo el archivo)
+    _pos = src.find("def call_llm(")
+    if _pos >= 0:
+        _sig_chunk = src[_pos:_pos + 300]
+        _paren_end = _sig_chunk.find(")")
+        _call_llm_sig = _sig_chunk[:_paren_end + 1] if _paren_end >= 0 else _sig_chunk
+        if "history_file" not in _call_llm_sig:
+            CALL_LLM_BLOCK = '''
 
 # ── PATCH: call_llm-history_file ──
-# telegram-bridge.py llama call_llm(..., history_file=...) pero la versión antigua no lo acepta.
+# telegram-bridge.py llama call_llm(..., history_file=...) pero la version antigua no lo acepta.
 _orig_call_llm = call_llm
 
 
 def call_llm(api_key, system_prompt, history, user_message, history_file=None):  # noqa: F811
     return _orig_call_llm(api_key, system_prompt, history, user_message)
 '''
-        src = src.rstrip("\n") + "\n" + CALL_LLM_BLOCK
-        changes.append("call_llm wrapper (history_file kwarg)")
+            src = src.rstrip("\n") + "\n" + CALL_LLM_BLOCK
+            changes.append("call_llm wrapper (history_file kwarg)")
 
 # ── Verificar sintaxis ─────────────────────────────────────────────────────
 try:
