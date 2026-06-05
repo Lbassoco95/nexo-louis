@@ -36,6 +36,7 @@ from typing import Optional
 
 import uvicorn
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -95,6 +96,10 @@ mcp = FastMCP(
         "Los writes (registrar, marcar_hecho, dispatch) tienen respuesta corta.\n"
         "Principio: datos duros, sin interpretación."
     ),
+    # Detrás de Caddy con dominio propio: el Host no es localhost. Desactivamos
+    # la protección anti DNS-rebinding del transporte SSE (ya protegemos con el
+    # Bearer token + TLS de Caddy), si no rechaza con "Request validation failed".
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
 )
 
 
