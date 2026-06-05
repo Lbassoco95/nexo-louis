@@ -13,6 +13,8 @@ services:
     environment:
       LOUIS_DOMAIN: ${LOUIS_DOMAIN}
       AGENTS_DOMAIN: ${AGENTS_DOMAIN}
+      CEREBRO_DOMAIN: ${CEREBRO_DOMAIN:-cerebro.kawiil.mx}
+      CEREBRO_PORT: ${CEREBRO_PORT:-4040}
       ACME_EMAIL: ${ACME_EMAIL}
       OPENCLAW_PORT: ${OPENCLAW_PORT:-3000}
     healthcheck:

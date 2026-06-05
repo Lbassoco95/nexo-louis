@@ -41,6 +41,10 @@ ANTHROPIC_ENV_FILE = HOME_OC / ".env"
 # Cada línea es un evento JSON: {ts, evento, agente, modelo, parent, detalle}.
 AGENT_ACTIVITY_FILE = HOME_OC / "logs" / "agent-activity.jsonl"
 
+# ── Cerebro Kawiil — almacén compartido Cowork ↔ Louis ──────────────────
+ENTREGABLES_PATH = Path(os.environ.get("ENTREGABLES_PATH", str(HOME_OC / "entregables")))
+BRIEFS_PATH = ENTREGABLES_PATH / "_briefs"
+
 M365_SCRIPT = HOME_OC / "scripts" / "m365" / "m365.py"
 if not M365_SCRIPT.exists():
     M365_SCRIPT = HOME_OC / "scripts" / "m365.py"
@@ -1123,10 +1127,257 @@ def build_operational_snapshot(compact: bool = True) -> str:
     else:
         lines.append("(vacío)")
 
+    # Cerebro Kawiil: una línea compacta sobre estado de entregables
+    cerebro_sum = _cerebro_entregables_snapshot()
+    if cerebro_sum:
+        lines.append(f"\n*CEREBRO Kawiil — Entregables*\n{cerebro_sum}")
+
     body = "\n".join(lines)
     if not compact:
         return f"{meta}\n\n{body}"
     return body
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CEREBRO KAWIIL — helpers de lectura directa del almacén compartido
+# Louis lee del disco local (0 tokens). Cowork escribe vía MCP.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _cerebro_parsear_fm(path: Path) -> dict:
+    """Lee el frontmatter YAML de un entregable/brief. Tolerante a errores."""
+    meta: dict = {"archivo": path.name, "titulo": path.stem, "estado": "desconocido"}
+    try:
+        content = path.read_text(encoding="utf-8")
+        m = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
+        if m:
+            for line in m.group(1).splitlines():
+                if ":" in line:
+                    k, _, v = line.partition(":")
+                    meta[k.strip()] = v.strip()
+    except Exception:
+        pass
+    return meta
+
+
+def _cerebro_listar(estado: str = "", cliente: str = "") -> str:
+    """Lista entregables del almacén compartido. Respuesta compacta."""
+    if not ENTREGABLES_PATH.exists():
+        return f"Cerebro no disponible en {ENTREGABLES_PATH}. ¿Ya se desplegó?"
+    items = []
+    for f in sorted(ENTREGABLES_PATH.glob("*.md")):
+        if f.name.startswith("_"):
+            continue
+        meta = _cerebro_parsear_fm(f)
+        if estado and meta.get("estado", "").lower() != estado.lower():
+            continue
+        if cliente and cliente.lower() not in meta.get("cliente", "").lower():
+            continue
+        icono = {"borrador": "📝", "listo": "✅", "en_vobo": "🔄",
+                 "aprobado": "✔️", "archivado": "📦"}.get(meta.get("estado", ""), "❓")
+        items.append(
+            f"{icono} {meta.get('titulo', f.stem)} | "
+            f"{meta.get('cliente','?')} | {meta.get('estado','?')} | "
+            f"{meta.get('fecha_actualizacion','?')}"
+        )
+    briefs_path = BRIEFS_PATH
+    n_briefs = len(list(briefs_path.glob("*.md"))) if briefs_path.exists() else 0
+    if not items:
+        return f"Sin entregables{(' estado='+estado) if estado else ''}. Briefs pendientes: {n_briefs}"
+    return "\n".join(items) + f"\n(Total: {len(items)} | Briefs pendientes: {n_briefs})"
+
+
+def _cerebro_proyecto_estado(nombre: str) -> str:
+    """Devuelve el frontmatter de un entregable específico. Sin cuerpo = barato."""
+    if not ENTREGABLES_PATH.exists():
+        return "Cerebro no disponible."
+    termino = nombre.lower()
+    for f in ENTREGABLES_PATH.glob("*.md"):
+        if f.name.startswith("_"):
+            continue
+        meta = _cerebro_parsear_fm(f)
+        if termino in f.stem.lower() or termino in meta.get("titulo", "").lower():
+            lineas = [f"Entregable: {meta.get('titulo', f.stem)}"]
+            for campo in ("cliente", "estado", "vobo", "responsable",
+                          "fecha_creacion", "fecha_actualizacion"):
+                if campo in meta:
+                    lineas.append(f"  {campo}: {meta[campo]}")
+            return "\n".join(lineas)
+    return f"No encontrado: «{nombre}»"
+
+
+def _cerebro_crear_brief(tarea: str, cliente: str, insumos: str = "",
+                         urgencia: str = "normal", contexto: str = "") -> str:
+    """
+    Crea un brief de dispatch en el almacén compartido y envía notificación
+    inmediata a Polo por Telegram ('brief listo, ábrelo en Cowork').
+    """
+    BRIEFS_PATH.mkdir(parents=True, exist_ok=True)
+    ahora = datetime.now(TZ_CDMX)
+    fecha = ahora.strftime("%Y-%m-%d")
+    slug  = re.sub(r"[^a-z0-9]+", "-", tarea.lower()).strip("-")[:55]
+    filepath = BRIEFS_PATH / f"{fecha}-brief-{slug}.md"
+
+    # Contexto AGENDA relevante (solo líneas que mencionen tarea o cliente)
+    agenda_txt = ""
+    agenda_f = SPACE / "AGENDA.md"
+    if agenda_f.exists():
+        lineas = agenda_f.read_text(encoding="utf-8").splitlines()
+        relevantes = [l for l in lineas if tarea.lower()[:20] in l.lower()
+                      or cliente.lower()[:15] in l.lower()][:6]
+        agenda_txt = "\n".join(relevantes) if relevantes else "(sin entradas relevantes)"
+
+    # Entregables previos del mismo cliente
+    previos = []
+    if ENTREGABLES_PATH.exists():
+        for f in ENTREGABLES_PATH.glob("*.md"):
+            if not f.name.startswith("_"):
+                meta = _cerebro_parsear_fm(f)
+                if cliente.lower() in meta.get("cliente", "").lower():
+                    previos.append(
+                        f"  • {meta.get('titulo', f.stem)} ({meta.get('estado','?')})"
+                    )
+
+    content = (
+        f"---\ntipo: brief_dispatch\ntarea: {tarea}\ncliente: {cliente}\n"
+        f"urgencia: {urgencia}\nestado: pendiente\npreparado_por: Louis\n"
+        f"fecha_creacion: {fecha} {ahora.strftime('%H:%M')}\n---\n\n"
+        f"# Brief: {tarea}\n\n"
+        f"Cliente: {cliente} | Urgencia: {urgencia}\n\n"
+        f"## Tarea\n{tarea}\n\n"
+        f"## Insumos\n{insumos or 'Consultar acervo legal y memoria según aplique.'}\n\n"
+        f"## Entregables previos del cliente\n"
+        + ("\n".join(previos) if previos else "  (ninguno)") +
+        f"\n\n## AGENDA relevante\n{agenda_txt}\n\n"
+        f"## Contexto adicional\n{contexto or '(ninguno)'}\n\n"
+        f"## Pasos para Cowork\n"
+        f"1. Revisar insumos y entregables previos\n"
+        f"2. `legal_buscar()` si aplica\n"
+        f"3. Producir entregable\n"
+        f"4. `entregable_registrar()` + `entregable_actualizar_estado('listo')`\n"
+    )
+    filepath.write_text(content, encoding="utf-8")
+
+    # Notificación inmediata vía Telegram (scheduler la toma en el próximo tick)
+    try:
+        notif = (
+            f"📋 *Brief listo en Cerebro Kawiil*\n"
+            f"Tarea: {tarea}\nCliente: {cliente} | Urgencia: {urgencia}\n"
+            f"Ábrelo en Cowork para tomarlo."
+        )
+        _encolar_notificacion(notif, canal="telegram")
+    except Exception:
+        pass  # la notificación es best-effort
+
+    return (
+        f"✅ Brief: _briefs/{filepath.name}\n"
+        f"Urgencia: {urgencia} | Previos del cliente: {len(previos)}\n"
+        f"Polo fue notificado por Telegram."
+    )
+
+
+def _cerebro_sync_agenda() -> str:
+    """
+    Compara los pendientes abiertos de AGENDA.md con el estado real en el
+    cerebro. Devuelve las discrepancias encontradas y encola una notificación
+    si hay algo que Louis reportaba como pendiente pero ya está listo.
+    """
+    agenda_f = SPACE / "AGENDA.md"
+    if not agenda_f.exists():
+        return "AGENDA.md no disponible."
+    if not ENTREGABLES_PATH.exists():
+        return f"Cerebro no disponible en {ENTREGABLES_PATH}."
+
+    # Construir índice: titulo/stem → estado del cerebro
+    indice: dict[str, str] = {}
+    for f in ENTREGABLES_PATH.glob("*.md"):
+        if not f.name.startswith("_"):
+            meta = _cerebro_parsear_fm(f)
+            titulo = meta.get("titulo", f.stem).lower()
+            indice[titulo] = meta.get("estado", "?")
+            # También indexar por palabras clave del stem
+            for palabra in f.stem.lower().split("-"):
+                if len(palabra) > 4:
+                    indice.setdefault(palabra, meta.get("estado", "?"))
+
+    # Buscar pendientes de AGENDA que ya estén en el cerebro como listo/aprobado
+    agenda_txt = agenda_f.read_text(encoding="utf-8")
+    pendientes = [l.strip() for l in agenda_txt.splitlines()
+                  if re.match(r"^\s*-\s*\[\s*\]\s+", l)]
+
+    discrepancias = []
+    for pend in pendientes:
+        texto = re.sub(r"^\s*-\s*\[\s*\]\s+", "", pend).lower()
+        for titulo_cerebro, estado_cerebro in indice.items():
+            if len(titulo_cerebro) > 4 and titulo_cerebro in texto:
+                if estado_cerebro in ("listo", "aprobado", "en_vobo"):
+                    discrepancias.append(
+                        f"• AGENDA dice pendiente → Cerebro dice «{estado_cerebro}»:\n"
+                        f"  AGENDA: {pend}\n"
+                        f"  Cerebro: {titulo_cerebro} ({estado_cerebro})"
+                    )
+                break
+
+    if not discrepancias:
+        return (
+            f"Sincronización OK. {len(pendientes)} pendientes en AGENDA, "
+            f"ninguno contradice el estado del Cerebro."
+        )
+
+    reporte = "\n".join(discrepancias)
+    # Notificar a Polo
+    try:
+        _encolar_notificacion(
+            f"🔄 *Cerebro Kawiil — discrepancias detectadas*\n\n{reporte[:800]}\n\n"
+            f"Louis puede actualizar AGENDA con `agenda_marcar_hecho()` si ya está listo.",
+            canal="telegram",
+        )
+    except Exception:
+        pass
+
+    return f"⚠️ {len(discrepancias)} discrepancia(s):\n\n{reporte}"
+
+
+def _encolar_notificacion(mensaje: str, canal: str = "telegram") -> None:
+    """Encola una notificación inmediata (fire_at = ahora) al scheduler."""
+    REMINDERS_DIR.mkdir(parents=True, exist_ok=True)
+    import uuid as _u
+    entry = {
+        "id": str(_u.uuid4())[:8],
+        "fire_at": datetime.now(TZ_CDMX).isoformat(),
+        "message": mensaje,
+        "channel": canal,
+        "mode": "raw",
+        "recurrence": None,
+        "created_at": datetime.now(TZ_CDMX).isoformat(),
+        "source": "cerebro",
+    }
+    try:
+        queue = _read_queue()
+    except Exception:
+        queue = []
+    queue.append(entry)
+    _write_queue(queue)
+
+
+def _cerebro_entregables_snapshot() -> str:
+    """
+    Resumen ultra-compacto del cerebro para incrustar en build_operational_snapshot().
+    Una sola línea por estado. Sin coste extra en tokens.
+    """
+    if not ENTREGABLES_PATH.exists():
+        return ""
+    conteo: dict[str, int] = {}
+    for f in ENTREGABLES_PATH.glob("*.md"):
+        if not f.name.startswith("_"):
+            meta = _cerebro_parsear_fm(f)
+            e = meta.get("estado", "?")
+            conteo[e] = conteo.get(e, 0) + 1
+    if not conteo:
+        return ""
+    partes = [f"{e}:{n}" for e, n in sorted(conteo.items())]
+    n_briefs = len(list(BRIEFS_PATH.glob("*.md"))) if BRIEFS_PATH.exists() else 0
+    briefs_str = f" | briefs_dispatch:{n_briefs}" if n_briefs else ""
+    return " | ".join(partes) + briefs_str
 
 
 def is_first_conversation_today(history_file: Path | None) -> bool:
@@ -3022,6 +3273,65 @@ TOOLS_DEFINITION = [
             },
             "required": ["tenant", "to", "subject", "body"],
         },
+    },
+    # ── Cerebro Kawiil ───────────────────────────────────────────────────────
+    {
+        "name": "cerebro_listar",
+        "description": (
+            "Lista los entregables del almacén compartido Cowork↔Louis. "
+            "Filtrar por estado (borrador/listo/en_vobo/aprobado/archivado) y/o cliente. "
+            "Usar para saber qué ya se produjo en Cowork antes de reportar algo como pendiente."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "estado": {"type": "string", "description": "Filtrar por estado. Dejar vacío para todos."},
+                "cliente": {"type": "string", "description": "Filtrar por nombre de cliente."},
+            },
+        },
+    },
+    {
+        "name": "cerebro_proyecto_estado",
+        "description": (
+            "Devuelve el estado detallado (frontmatter) de un entregable específico. "
+            "Usar cuando se necesita confirmar el estado real de un proyecto concreto."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "nombre": {"type": "string", "description": "Nombre o título del entregable."},
+            },
+            "required": ["nombre"],
+        },
+    },
+    {
+        "name": "cerebro_crear_brief",
+        "description": (
+            "Crea un brief de dispatch en el cerebro para que Cowork produzca un entregable. "
+            "Notifica a Polo por Telegram inmediatamente ('brief listo, ábrelo en Cowork'). "
+            "Usar cuando Louis identifica trabajo que debe delegarse a Cowork."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tarea": {"type": "string", "description": "Descripción de lo que Cowork debe producir."},
+                "cliente": {"type": "string", "description": "Cliente al que corresponde el entregable."},
+                "insumos": {"type": "string", "description": "Documentos, datos o contexto disponibles para producir el entregable."},
+                "urgencia": {"type": "string", "enum": ["baja", "normal", "alta", "urgente"], "default": "normal"},
+                "contexto": {"type": "string", "description": "Contexto adicional relevante."},
+            },
+            "required": ["tarea", "cliente"],
+        },
+    },
+    {
+        "name": "cerebro_sync_agenda",
+        "description": (
+            "Compara los pendientes abiertos de AGENDA.md con el estado real del cerebro. "
+            "Detecta lo que Louis reporta como 'pendiente' pero ya está 'listo' o 'aprobado' en Cowork. "
+            "Notifica a Polo por Telegram si hay discrepancias. "
+            "Usar en briefing matutino o cuando Polo pregunta por el estado de proyectos."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
     },
 ]
 
@@ -7408,6 +7718,18 @@ def execute_tool(name: str, args: dict) -> str:
             )
         elif name == "consejo_experto_legal":
             return _consejo_experto_legal(args["area"], args["pregunta"], args.get("contexto", ""), args.get("max_expertos", 3))
+        elif name == "cerebro_listar":
+            return _cerebro_listar(args.get("estado", ""), args.get("cliente", ""))
+        elif name == "cerebro_proyecto_estado":
+            return _cerebro_proyecto_estado(args["nombre"])
+        elif name == "cerebro_crear_brief":
+            return _cerebro_crear_brief(
+                args["tarea"], args["cliente"],
+                args.get("insumos", ""), args.get("urgencia", "normal"),
+                args.get("contexto", ""),
+            )
+        elif name == "cerebro_sync_agenda":
+            return _cerebro_sync_agenda()
         elif name.startswith("m365_"):
             return _run_m365_tool(name, args)
         else:

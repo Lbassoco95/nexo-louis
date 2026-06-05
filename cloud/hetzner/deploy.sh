@@ -158,7 +158,7 @@ mkdir -p /opt/openclaw/scripts /opt/openclaw/scripts/m365 /opt/openclaw/logs
 # TODOS los .py que el runtime importa o ejecuta. Si falta alguno, las tools que
 # dependen de él fallan en silencio (self_update → ImportError; browser_* → error).
 for svc in louis_core.py telegram-bridge.py slack-bridge.py scheduler.py \
-           openclaw_gateway.py self_update.py browser_runner.py; do
+           openclaw_gateway.py self_update.py browser_runner.py cerebro_kawiil_mcp.py; do
   if [[ -f "services/${svc}" ]]; then
     install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" "services/${svc}" "/opt/openclaw/scripts/${svc}"
   fi
@@ -178,7 +178,7 @@ ok "Scripts en /opt/openclaw/scripts/"
 # ── 7) Bridges systemd units (Telegram + Slack) ──────────────
 log "[7/8] Instalando units (telegram + slack + scheduler + gateway)"
 ENV_OUT="/opt/openclaw/openclaw.env"
-for unit in telegram-bridge slack-bridge scheduler openclaw-gateway; do
+for unit in telegram-bridge slack-bridge scheduler openclaw-gateway cerebro-kawiil; do
   if [[ -f "services/${unit}.service" ]]; then
     sed \
       -e "s|@@SYSTEM_USER@@|${SYSTEM_USER}|g" \
@@ -187,6 +187,14 @@ for unit in telegram-bridge slack-bridge scheduler openclaw-gateway; do
       "services/${unit}.service" > "/etc/systemd/system/${unit}.service"
   fi
 done
+
+# Cerebro Kawiil: almacén compartido de entregables (Cowork ↔ Louis)
+if [[ ! -d /opt/openclaw/entregables ]]; then
+  mkdir -p /opt/openclaw/entregables/_briefs
+  [[ -f "entregables/README.md" ]] && \
+    install -m 0644 -o "$SYSTEM_USER" -g "$SYSTEM_USER" "entregables/README.md" /opt/openclaw/entregables/README.md
+  chown -R "$SYSTEM_USER":"$SYSTEM_USER" /opt/openclaw/entregables
+fi
 
 systemctl daemon-reload
 
