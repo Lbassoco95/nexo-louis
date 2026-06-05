@@ -7505,11 +7505,21 @@ def execute_tool(name: str, args: dict) -> str:
             if mejor_i < 0:
                 return f"(no encontré una línea que coincida con «{viejo}» — usa append_to_memory si es algo nuevo)"
             orig = lines[mejor_i]
-            # conserva el prefijo de checkbox/viñeta y su indentación
-            mpref = re.match(r"^(\s*-\s*\[[ xX]\]\s+|\s*-\s+|\s*)", orig)
-            prefijo = mpref.group(1) if mpref else "- [ ] "
+            # El modelo a veces incluye su propio checkbox en `nuevo` (ej. "- [x] ...").
+            # Detéctalo para honrar el estado, y límpialo para NO duplicar prefijos.
+            mnew = re.match(r"^\s*-\s*\[([ xX])\]\s+", nuevo)
+            nuevo_limpio = re.sub(r"^\s*-\s*\[[ xX]\]\s+|^\s*-\s+", "", nuevo).strip()
+            indent_m = re.match(r"^(\s*)", orig)
+            indent = indent_m.group(1) if indent_m else ""
+            if mnew:
+                # usa el estado que pidió el modelo en `nuevo`
+                prefijo = f"{indent}- [{mnew.group(1).lower()}] "
+            else:
+                # conserva el prefijo/estado original de la línea
+                mpref = re.match(r"^(\s*-\s*\[[ xX]\]\s+|\s*-\s+|\s*)", orig)
+                prefijo = mpref.group(1) if mpref else "- [ ] "
             antes = orig.strip()
-            lines[mejor_i] = f"{prefijo}{nuevo}"
+            lines[mejor_i] = f"{prefijo}{nuevo_limpio}"
             path.write_text("\n".join(lines) + "\n")
             return f"OK corregí la línea en su lugar:\n  antes: {antes[:90]}\n  ahora: {lines[mejor_i].strip()[:90]}"
         elif name == "create_reminder":
