@@ -485,6 +485,26 @@ def format_agents_list_compact(max_names: int = 15) -> str:
     src = src.rstrip("\n") + "\n" + HELPERS_BLOCK
     changes.append("telegram-helpers (is_status_command, is_agents_list_command, format_agents_list_compact)")
 
+# ── 5) call_llm wrapper para aceptar history_file kwarg ──────────────────────
+CALL_LLM_MARKER = "# ── PATCH: call_llm-history_file ──"
+
+if CALL_LLM_MARKER not in src:
+    import inspect as _inspect
+    # Detectar si la función ya acepta history_file inspeccionando el texto
+    if "def call_llm(" in src and "history_file" not in src:
+        CALL_LLM_BLOCK = '''
+
+# ── PATCH: call_llm-history_file ──
+# telegram-bridge.py llama call_llm(..., history_file=...) pero la versión antigua no lo acepta.
+_orig_call_llm = call_llm
+
+
+def call_llm(api_key, system_prompt, history, user_message, history_file=None):  # noqa: F811
+    return _orig_call_llm(api_key, system_prompt, history, user_message)
+'''
+        src = src.rstrip("\n") + "\n" + CALL_LLM_BLOCK
+        changes.append("call_llm wrapper (history_file kwarg)")
+
 # ── Verificar sintaxis ─────────────────────────────────────────────────────
 try:
     ast.parse(src)
