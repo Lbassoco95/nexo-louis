@@ -5094,10 +5094,28 @@ def _generar_xlsx(titulo: str, contenido: str) -> bytes | None:
     return buf.getvalue()
 
 
+def _limpiar_contenido_doc(texto: str) -> str:
+    """Quita HTML/CSS/código que un agente pudo meter en su respuesta. El formato
+    visual lo arma el sistema (PDF/HTML), no el agente — si el agente escribe un
+    <!DOCTYPE>...</style>, aquí se elimina para no renderizar código en crudo."""
+    if not texto:
+        return texto
+    t = texto
+    t = re.sub(r"```[a-zA-Z]*\n.*?```", "", t, flags=re.DOTALL)   # bloques ```...```
+    t = t.replace("```", "")
+    t = re.sub(r"<style[^>]*>.*?</style>", "", t, flags=re.DOTALL | re.IGNORECASE)
+    t = re.sub(r"<script[^>]*>.*?</script>", "", t, flags=re.DOTALL | re.IGNORECASE)
+    t = re.sub(r"<!DOCTYPE[^>]*>", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"</?(html|head|body|meta|title|link)[^>]*>", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    return t.strip()
+
+
 def _generar_documento_tool(tipo: str, titulo: str, contenido: str, agente: str = "Louis") -> str:
     """Genera PDF/HTML/PPTX/XLSX en el servidor y lo encola para envío por Telegram."""
     import datetime as _dt
     tipo = tipo.lower().strip()
+    contenido = _limpiar_contenido_doc(contenido)   # el formato lo arma el sistema, no el agente
     generators = {"pdf": _generar_pdf, "pptx": _generar_pptx, "xlsx": _generar_xlsx,
                   "html": _generar_html}
     gen = generators.get(tipo)
@@ -7641,7 +7659,11 @@ MEXICANIZE_DOCTRINE = (
     "4. Si falta una norma mexicana específica que deberías citar y no la tienes, dilo "
     "y sugiere verificar en DOF/SJF con legal_buscar — no inventes artículos.\n"
     "5. Cierra con un 'Bottom line' ejecutivo de 2-3 líneas para el director.\n"
-    "Formato compacto, bullets, en español de México."
+    "Formato compacto, bullets, en español de México.\n"
+    "FORMATO DE SALIDA (CRÍTICO): responde SOLO con el análisis en MARKDOWN simple — "
+    "encabezados con ##, viñetas con -, tablas con | columna |. PROHIBIDO escribir HTML, "
+    "etiquetas <style>/<html>/<div>, CSS, JavaScript o bloques de código ```html. El diseño "
+    "visual (HTML/PDF) lo genera el sistema a partir de tu markdown; tú NO lo armes."
 )
 
 
