@@ -4681,9 +4681,22 @@ def _slack_resumen(canales: list | None = None, msgs_por_canal: int = 10) -> str
 # encolan (bytes, nombre, caption) aquí; el bridge los drena tras call_llm y
 # los envía con telegram_send_document.
 _PENDING_FILES: list = []
+_QUEUED_HASHES: set = set()
 
 
 def _queue_file(content: bytes, filename: str, caption: str = "") -> None:
+    # Dedupe: no encolar el MISMO archivo dos veces (evita el bug de mandar
+    # el mismo PDF 3 veces). Compara por hash del contenido.
+    import hashlib as _hl
+    try:
+        h = _hl.sha256(content).hexdigest()
+    except Exception:
+        h = None
+    if h and h in _QUEUED_HASHES:
+        log.info(f"_queue_file: omito duplicado {filename}")
+        return
+    if h:
+        _QUEUED_HASHES.add(h)
     _PENDING_FILES.append((content, filename, caption))
 
 
