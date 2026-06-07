@@ -3027,8 +3027,8 @@ TOOLS_DEFINITION = [
             "properties": {
                 "tipo": {
                     "type": "string",
-                    "enum": ["pdf", "pptx", "xlsx"],
-                    "description": "pdf = documento/informe/dictamen; pptx = presentación/deck; xlsx = tabla/datos",
+                    "enum": ["pdf", "html", "pptx", "xlsx"],
+                    "description": "pdf = documento/informe/dictamen; html = documento INTERACTIVO (colapsables+buscador, cuando pidan HTML/interactivo); pptx = presentación/deck; xlsx = tabla/datos",
                 },
                 "titulo": {"type": "string", "description": "Título del documento (sin extensión)"},
                 "contenido": {"type": "string", "description": "Contenido completo en markdown"},
@@ -5097,10 +5097,11 @@ def _generar_documento_tool(tipo: str, titulo: str, contenido: str) -> str:
     """Genera PDF/PPTX/XLSX en el servidor y lo encola para envío por Telegram."""
     import datetime as _dt
     tipo = tipo.lower().strip()
-    generators = {"pdf": _generar_pdf, "pptx": _generar_pptx, "xlsx": _generar_xlsx}
+    generators = {"pdf": _generar_pdf, "pptx": _generar_pptx, "xlsx": _generar_xlsx,
+                  "html": _generar_html}
     gen = generators.get(tipo)
     if gen is None:
-        return f"ERROR: tipo '{tipo}' no reconocido. Usa: pdf, pptx, xlsx"
+        return f"ERROR: tipo '{tipo}' no reconocido. Usa: pdf, html, pptx, xlsx"
     data = gen(titulo, contenido)
     if data is None:
         pkg = {"pdf": "fpdf2", "pptx": "python-pptx", "xlsx": "openpyxl"}.get(tipo, tipo)
@@ -5111,6 +5112,7 @@ def _generar_documento_tool(tipo: str, titulo: str, contenido: str) -> str:
     fname = f"{safe}_{_dt.datetime.now().strftime('%Y%m%d_%H%M')}.{tipo}"
     captions = {
         "pdf": "📄 PDF listo — ábrelo directo",
+        "html": "🌐 HTML interactivo — ábrelo en el navegador (secciones colapsables + buscador)",
         "pptx": "📊 PowerPoint listo — ábrelo en Keynote o PowerPoint",
         "xlsx": "📊 Excel listo — ábrelo en Numbers o Excel",
     }
@@ -5127,6 +5129,8 @@ def _doc_tipo_de_mensaje(user_message: str) -> str:
         return "pptx"
     if re.search(r"\b(excel|xlsx|hoja\s+de\s+c[aá]lculo|tabla\s+de\s+datos)\b", m):
         return "xlsx"
+    if re.search(r"\b(html|interactiv\w+|p[aá]gina\s+web|micrositio|en\s+l[ií]nea)\b", m):
+        return "html"
     return "pdf"
 
 
@@ -7100,6 +7104,7 @@ def _md_to_html(titulo: str, agente: str, md: str) -> bytes:
     body_parts: list[str] = []
     in_table = False
     table_rows: list[str] = []
+    open_section = False  # ¿hay un <details> de sección abierto?
     for line in lines:
         # Tables
         if _re.match(r"^\s*\|", line):
@@ -7139,7 +7144,18 @@ def _md_to_html(titulo: str, agente: str, md: str) -> bytes:
         m = _re.match(r"^(#{1,4})\s+(.+)", line)
         if m:
             lvl = len(m.group(1))
-            body_parts.append(f"<h{lvl}>{_escape(m.group(2))}</h{lvl}>")
+            txt = _escape(m.group(2))
+            if lvl == 1:
+                body_parts.append(f"<h1>{txt}</h1>")
+            elif lvl == 2:
+                # cada sección H2 = bloque colapsable (interactivo, sin JS)
+                if open_section:
+                    body_parts.append("</div></details>")
+                body_parts.append(
+                    f'<details class="sec" open><summary>{txt}</summary><div class="sec-body">')
+                open_section = True
+            else:
+                body_parts.append(f"<h{lvl}>{txt}</h{lvl}>")
             continue
         # HR
         if _re.match(r"^---+\s*$", line):
@@ -7169,6 +7185,9 @@ def _md_to_html(titulo: str, agente: str, md: str) -> bytes:
             body_parts.append('<tr>' + "".join(f"<td>{_escape(c)}</td>" for c in row) + '</tr>')
         body_parts.append('</tbody></table>')
 
+    if open_section:
+        body_parts.append("</div></details>")
+
     body_html = "\n".join(body_parts)
     fecha = _dt.date.today().strftime("%d/%m/%Y")
     html = f"""<!DOCTYPE html>
@@ -7195,7 +7214,20 @@ def _md_to_html(titulo: str, agente: str, md: str) -> bytes:
              padding: 16px; background: #f8f9fa; border-radius: 6px; font-size: 0.85em; color: #666; }}
   .footer {{ margin-top: 3em; padding-top: 1em; border-top: 1px solid #ddd;
              font-size: 0.8em; color: #999; text-align: center; }}
-  @media print {{ body {{ margin: 0; padding: 20px; }} .header {{ break-inside: avoid; }} }}
+  details.sec {{ border: 1px solid #e3e6ea; border-radius: 8px; margin: 12px 0; padding: 0 14px; background: #fff; }}
+  details.sec[open] {{ box-shadow: 0 1px 6px rgba(0,0,0,.05); }}
+  details.sec > summary {{ cursor: pointer; font-size: 1.2em; font-weight: bold; color: #2c3e50;
+             padding: 12px 0; list-style: none; }}
+  details.sec > summary::-webkit-details-marker {{ display: none; }}
+  details.sec > summary::before {{ content: "▸ "; color: #1f4e79; }}
+  details.sec[open] > summary::before {{ content: "▾ "; }}
+  .sec-body {{ padding-bottom: 12px; }}
+  .toolbar {{ position: sticky; top: 0; background: #fff; padding: 10px 0; margin-bottom: 8px;
+             border-bottom: 1px solid #eee; display: flex; gap: 8px; flex-wrap: wrap; z-index: 5; }}
+  .toolbar input {{ flex: 1; min-width: 140px; padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; font-size: .95em; }}
+  .toolbar button {{ padding: 8px 12px; border: 0; border-radius: 6px; background: #1f4e79; color: #fff; font-size: .85em; cursor: pointer; }}
+  @media print {{ body {{ margin: 0; padding: 20px; }} .header, .toolbar {{ break-inside: avoid; }}
+             .toolbar {{ display: none; }} details.sec {{ border: none; }} }}
 </style>
 </head>
 <body>
@@ -7203,11 +7235,32 @@ def _md_to_html(titulo: str, agente: str, md: str) -> bytes:
   <span>Elaborado por: <strong>Louis · Kawiil</strong> — {_escape(agente)}</span>
   <span>Fecha: {fecha}</span>
 </div>
+<div class="toolbar">
+  <input id="q" placeholder="🔎 Buscar en el documento…" oninput="filtra()">
+  <button onclick="toggleAll(true)">Expandir todo</button>
+  <button onclick="toggleAll(false)">Colapsar todo</button>
+</div>
 {body_html}
 <div class="footer">Documento generado por Louis (Kawiil) · {fecha} · Confidencial</div>
+<script>
+function toggleAll(o){{document.querySelectorAll('details.sec').forEach(function(d){{d.open=o;}});}}
+function filtra(){{var q=(document.getElementById('q').value||'').toLowerCase();
+  document.querySelectorAll('details.sec').forEach(function(d){{
+    var hit=!q||d.textContent.toLowerCase().indexOf(q)>=0;
+    d.style.display=hit?'':'none'; if(hit&&q){{d.open=true;}}}});}}
+</script>
 </body>
 </html>"""
     return html.encode("utf-8")
+
+
+def _generar_html(titulo: str, contenido: str) -> bytes | None:
+    """Genera HTML interactivo (colapsables + buscador) desde markdown. Sin libs externas."""
+    try:
+        return _md_to_html(titulo, "Louis", contenido)
+    except Exception as e:
+        log.warning(f"_generar_html falló: {e}")
+        return None
 
 
 def _invocar_agente(
