@@ -1386,7 +1386,8 @@ def _generar_visual_gamma(texto: str, formato: str = "social",
     script = HOME_OC / "scripts" / "gamma_gen.py"
     if not script.exists():
         return f"ERROR: no encuentro gamma_gen.py en {script}"
-    cmd = ["/usr/bin/python3", str(script), texto, "--format", formato, "--export", export]
+    # --telegram: gamma_gen descarga el PNG al instante y lo adjunta (el link firmado caduca)
+    cmd = ["/usr/bin/python3", str(script), texto, "--format", formato, "--export", export, "--telegram"]
     if instrucciones:
         cmd += ["--instr", instrucciones]
     try:
@@ -1395,12 +1396,9 @@ def _generar_visual_gamma(texto: str, formato: str = "social",
         return f"ERROR al generar el visual: {e}"
     out = (r.stdout or "") + "\n" + (r.stderr or "")
     g = re.search(r"gammaUrl:\s*(\S+)", out)
-    e = re.search(r"exportUrl:\s*(\S+)", out)
     if g:
-        msg = f"🎨 Visual generado con Gamma:\n• Ver/editar: {g.group(1)}"
-        if e:
-            msg += f"\n• Descargar ({export}): {e.group(1)}"
-        return msg
+        return (f"🎨 Listo: te mandé la imagen como archivo aquí en el chat. "
+                f"Para ajustarla, ábrela/edítala en Gamma: {g.group(1)}")
     return f"No se pudo generar el visual. Detalle:\n{out.strip()[-400:]}"
 
 
