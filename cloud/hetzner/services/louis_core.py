@@ -1380,6 +1380,30 @@ def _cerebro_entregables_snapshot() -> str:
     return " | ".join(partes) + briefs_str
 
 
+def _generar_visual_gamma(texto: str, formato: str = "social",
+                          export: str = "png", instrucciones: str = "") -> str:
+    """Llama a gamma_gen.py (API de Gamma) y devuelve los enlaces. Server-side."""
+    script = HOME_OC / "scripts" / "gamma_gen.py"
+    if not script.exists():
+        return f"ERROR: no encuentro gamma_gen.py en {script}"
+    cmd = ["/usr/bin/python3", str(script), texto, "--format", formato, "--export", export]
+    if instrucciones:
+        cmd += ["--instr", instrucciones]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except Exception as e:
+        return f"ERROR al generar el visual: {e}"
+    out = (r.stdout or "") + "\n" + (r.stderr or "")
+    g = re.search(r"gammaUrl:\s*(\S+)", out)
+    e = re.search(r"exportUrl:\s*(\S+)", out)
+    if g:
+        msg = f"🎨 Visual generado con Gamma:\n• Ver/editar: {g.group(1)}"
+        if e:
+            msg += f"\n• Descargar ({export}): {e.group(1)}"
+        return msg
+    return f"No se pudo generar el visual. Detalle:\n{out.strip()[-400:]}"
+
+
 def is_first_conversation_today(history_file: Path | None) -> bool:
     if not history_file or not history_file.exists():
         return True
@@ -3332,6 +3356,27 @@ TOOLS_DEFINITION = [
             "Usar en briefing matutino o cuando Polo pregunta por el estado de proyectos."
         ),
         "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "generar_visual_gamma",
+        "description": (
+            "Genera un VISUAL/diseño con Gamma (posts de Instagram/redes, presentaciones, "
+            "documentos, infografías) y devuelve el enlace para ver/editar + el archivo PNG/PDF. "
+            "ÚSALO cuando Polo pida una imagen, post, publicación, infografía, presentación o diseño. "
+            "NO intentes abrir el sitio gamma.app (lo bloquea Cloudflare): esta tool usa la API oficial. "
+            "Para posts de redes usa formato 'social'. Pon la marca en 'instrucciones' "
+            "(ej. 'Kawiil MX, azul #1a6ef5, profesional')."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "texto": {"type": "string", "description": "Contenido/tema del diseño (el copy o las instrucciones de qué generar)."},
+                "formato": {"type": "string", "enum": ["social", "presentation", "document", "webpage"], "default": "social"},
+                "export": {"type": "string", "enum": ["png", "pdf", "pptx"], "default": "png"},
+                "instrucciones": {"type": "string", "description": "Notas de marca/estilo (colores, tono, marca)."},
+            },
+            "required": ["texto"],
+        },
     },
 ]
 
@@ -7740,6 +7785,10 @@ def execute_tool(name: str, args: dict) -> str:
             )
         elif name == "cerebro_sync_agenda":
             return _cerebro_sync_agenda()
+        elif name == "generar_visual_gamma":
+            return _generar_visual_gamma(
+                args["texto"], args.get("formato", "social"),
+                args.get("export", "png"), args.get("instrucciones", ""))
         elif name.startswith("m365_"):
             return _run_m365_tool(name, args)
         else:
