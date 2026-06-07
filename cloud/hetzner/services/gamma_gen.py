@@ -20,6 +20,8 @@ from pathlib import Path
 API_BASE = "https://public-api.gamma.app/v1.0/generations"
 CREDS_TG = os.environ.get("TELEGRAM_CREDS", "/opt/openclaw/credentials/telegram.env")
 CREDS_GAMMA = os.environ.get("GAMMA_CREDS", "/opt/openclaw/credentials/gamma.env")
+UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
 
 def _read_env(path, key):
@@ -43,8 +45,7 @@ def _req(method, url, key, body=None):
     req = urllib.request.Request(url, data=data, method=method, headers={
         "X-API-KEY": key, "Content-Type": "application/json", "Accept": "application/json",
         # Cloudflare (error 1010) veta el UA de urllib; usamos uno de navegador.
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"})
+        "User-Agent": UA})
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
             return r.status, json.loads(r.read().decode("utf-8") or "{}")
@@ -100,9 +101,14 @@ def generar(texto, fmt, export, cards, dim, instr, theme="", img_style=""):
     return {"ok": False, "msg": "Timeout esperando la generación (>4 min)"}
 
 
-def telegram(texto):
+def _tg_creds():
     tok = _read_env(CREDS_TG, "TELEGRAM_BOT_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
     chat = _read_env(CREDS_TG, "TELEGRAM_CHAT_ID") or os.environ.get("TELEGRAM_CHAT_ID")
+    return tok, chat
+
+
+def telegram(texto):
+    tok, chat = _tg_creds()
     if not tok or not chat:
         return False
     body = json.dumps({"chat_id": chat, "text": texto[:3900], "parse_mode": "HTML",
@@ -113,6 +119,41 @@ def telegram(texto):
         urllib.request.urlopen(req, timeout=20).read(); return True
     except Exception:
         return False
+
+
+def _descargar(url):
+    """Descarga el export (URL firmada que expira) AHORA que está fresca."""
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        return r.read()
+
+
+def telegram_doc(url, filename, caption):
+    """Descarga el archivo y lo manda como DOCUMENTO a Telegram (no link que caduca)."""
+    tok, chat = _tg_creds()
+    if not tok or not chat:
+        return False
+    try:
+        content = _descargar(url)
+    except Exception as e:
+        return telegram(caption + f"\n⚠️ No pude bajar el archivo ({e}); link (puede caducar): {url}")
+    import uuid as _u
+    b = "----L" + _u.uuid4().hex
+    mime = "image/png" if filename.lower().endswith(".png") else "application/octet-stream"
+    parts = []
+    for n, v in (("chat_id", str(chat)), ("caption", caption), ("parse_mode", "HTML")):
+        parts += [f"--{b}".encode(), f'Content-Disposition: form-data; name="{n}"'.encode(),
+                  b"", v.encode("utf-8")]
+    parts += [f"--{b}".encode(),
+              f'Content-Disposition: form-data; name="document"; filename="{filename}"'.encode(),
+              f"Content-Type: {mime}".encode(), b"", content, f"--{b}--".encode(), b""]
+    req = urllib.request.Request(f"https://api.telegram.org/bot{tok}/sendDocument",
+                                 data=b"\r\n".join(parts),
+                                 headers={"Content-Type": f"multipart/form-data; boundary={b}"})
+    try:
+        urllib.request.urlopen(req, timeout=60).read(); return True
+    except Exception as e:
+        return telegram(caption + f"\n⚠️ No pude adjuntar el archivo ({e}); link: {url}")
 
 
 def main():
@@ -136,14 +177,19 @@ def main():
     if not res["ok"]:
         print("❌ " + res["msg"])
         return 1
-    msg = (f"🎨 <b>Gamma listo</b>\n"
-           f"Ver/editar: {res.get('gammaUrl')}\n"
-           f"Descargar ({a.export}): {res.get('exportUrl')}")
+    gamma_url = res.get("gammaUrl")
+    export_url = res.get("exportUrl")
     print("✅ OK")
-    print("gammaUrl:", res.get("gammaUrl"))
-    print("exportUrl:", res.get("exportUrl"))
+    print("gammaUrl:", gamma_url)
+    print("exportUrl:", export_url)
     if a.telegram:
-        telegram(msg)
+        cap = f"🎨 <b>Gamma listo</b>\nVer/editar: {gamma_url}"
+        if export_url:
+            # descarga el archivo AHORA (el link firmado caduca) y lo adjunta
+            fn = f"gamma_{res.get('gammaId','post')}.{a.export}"
+            telegram_doc(export_url, fn, cap)
+        else:
+            telegram(cap)
         print("Enviado a Telegram")
     return 0
 
