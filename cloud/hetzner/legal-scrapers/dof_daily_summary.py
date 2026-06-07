@@ -191,6 +191,11 @@ td.cod a{{color:#0b5d2e;text-decoration:none;font-weight:bold}}
 
 
 def main():
+    # El DOF no publica sábado/domingo: el boletín DIARIO descansa esos días.
+    # (El backfill histórico es otro proceso y sigue corriendo.) --force lo ignora.
+    if dt.datetime.now().weekday() >= 5 and "--force" not in sys.argv:
+        print("Fin de semana: el DOF no publica; boletín diario omitido.")
+        return 0
     if not Path(DB).exists():
         print(f"ERROR: no existe {DB}", file=sys.stderr)
         return 1
