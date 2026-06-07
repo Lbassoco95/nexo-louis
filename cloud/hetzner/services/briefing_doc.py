@@ -66,6 +66,15 @@ def fetch_eventos(rango):
             eventos += parse_m365(out, tenant)
         except Exception as e:
             err += f"[{tenant}: {e}] "
+    # dedup: el mismo evento puede estar en ambos calendarios (ej. "Comida")
+    vistos, unicos = set(), []
+    for e in eventos:
+        clave = (e.get("inicio", ""), e.get("fin", ""), re.sub(r"\s+", " ", e.get("asunto", "").lower()).strip())
+        if clave in vistos:
+            continue
+        vistos.add(clave)
+        unicos.append(e)
+    eventos = unicos
     # ordenar por hora de inicio
     eventos.sort(key=lambda e: e.get("inicio", "9999"))
     return eventos, err.strip()
