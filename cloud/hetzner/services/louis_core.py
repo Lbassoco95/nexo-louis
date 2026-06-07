@@ -8144,8 +8144,9 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
         try:
             resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=180)
         except Exception as e:
-            log.exception("Anthropic API falló")
-            return f"(error llamando a Claude: {e})"
+            detalle = (getattr(e, "body", "") or "")[:600]
+            log.exception("Anthropic API falló: %s", detalle)
+            return f"(error llamando a Claude: {e}" + (f" — {detalle}" if detalle else "") + ")"
         # Log de cache para verificar el ahorro (cache_read debe dominar tras la 1ª llamada)
         _u = resp.get("usage", {})
         log.info(
