@@ -14,7 +14,7 @@ Fuentes de verdad:
   • Calendario: m365.py calendario <tenant> <hoy|manana>  (kawiil + yoltik)
   • Pendientes: líneas '- [ ]' de AGENDA.md
 """
-import datetime as dt, html, json, os, re, subprocess, sys, urllib.request, uuid
+import base64, datetime as dt, html, json, os, re, subprocess, sys, urllib.request, uuid
 from pathlib import Path
 
 HOME_OC = Path(os.environ.get("OPENCLAW_HOME", "/opt/openclaw"))
@@ -30,6 +30,23 @@ DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "doming
 MES = ["", "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
        "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 TZ = dt.timezone(dt.timedelta(hours=-6))  # CDMX
+
+# ── Marca Kawiil ──────────────────────────────────────────────────────────
+BRAND_DIR = Path(os.environ.get("BRAND_DIR", str(HOME_OC / "assets" / "brand")))
+KAWIIL_AZUL = "#1a6ef5"   # azul brillante (wordmark)
+KAWIIL_MARINO = "#0a1a8c"  # azul marino (isotipo)
+
+
+def logo_data_uri(brand="kawiil", archivo="usos_kawiil_1.png"):
+    """Devuelve el logo como data URI base64 para incrustar en el HTML. '' si no está."""
+    p = BRAND_DIR / brand / archivo
+    try:
+        if p.exists():
+            b64 = base64.b64encode(p.read_bytes()).decode("ascii")
+            return f"data:image/png;base64,{b64}"
+    except Exception:
+        pass
+    return ""
 
 
 def esc(s):
@@ -163,25 +180,28 @@ def build_html(eventos, pend, fecha_obj, rango, err):
     else:
         pend_html = '<h2>📌 Pendientes</h2><p class="vacio">Sin pendientes abiertos en AGENDA.</p>'
     nota = f'<p class="warn">⚠️ No pude leer parte del calendario: {esc(err)}</p>' if err else ""
+    logo = logo_data_uri()
+    logo_img = f'<img src="{logo}" alt="Kawiil" class="logo">' if logo else '<strong>KAWIIL MX</strong>'
     doc = f"""<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Agenda — {esc(fl)}</title><style>
 body{{font-family:'Georgia',serif;max-width:860px;margin:32px auto;padding:0 22px;color:#1a1a1a;line-height:1.55}}
-h1{{font-size:1.5em;border-bottom:3px solid #1f4e79;padding-bottom:8px;color:#1f4e79}}
-h2{{font-size:1.1em;color:#2c3e50;margin-top:1.5em;border-bottom:1px solid #ddd;padding-bottom:4px}}
+h1{{font-size:1.5em;border-bottom:3px solid {KAWIIL_AZUL};padding-bottom:8px;color:{KAWIIL_MARINO}}}
+h2{{font-size:1.1em;color:{KAWIIL_MARINO};margin-top:1.5em;border-bottom:1px solid #ddd;padding-bottom:4px}}
 table{{border-collapse:collapse;width:100%;margin:.5em 0}}
-th{{text-align:left;font-size:.78em;text-transform:uppercase;letter-spacing:.04em;color:#888;border-bottom:2px solid #1f4e79;padding:6px 9px}}
+th{{text-align:left;font-size:.78em;text-transform:uppercase;letter-spacing:.04em;color:#888;border-bottom:2px solid {KAWIIL_AZUL};padding:6px 9px}}
 td{{border-bottom:1px solid #eee;padding:9px;vertical-align:top}}
-td.h{{white-space:nowrap;font-weight:bold;color:#1f4e79;width:96px;font-size:.92em}}
+td.h{{white-space:nowrap;font-weight:bold;color:{KAWIIL_AZUL};width:96px;font-size:.92em}}
 td.t{{font-size:.72em;color:#999;text-transform:capitalize;width:64px}}
 .sub{{font-size:.8em;color:#777;margin-top:2px}}
-.on{{font-size:.66em;font-weight:bold;background:#1f4e79;color:#fff;padding:1px 6px;border-radius:4px}}
+.on{{font-size:.66em;font-weight:bold;background:{KAWIIL_AZUL};color:#fff;padding:1px 6px;border-radius:4px}}
 .pend li{{margin-bottom:5px}} .pend{{font-size:.95em}}
 .vacio{{color:#888;font-style:italic}} .warn{{color:#b35900;font-size:.85em}}
-.hd{{display:flex;justify-content:space-between;margin-bottom:1em;padding:12px 15px;background:#eef3f8;border-radius:6px;font-size:.84em;color:#666}}
+.hd{{display:flex;align-items:center;justify-content:space-between;margin-bottom:1em;padding:12px 16px;background:#eef3fb;border-radius:8px;font-size:.84em;color:#666;border-left:5px solid {KAWIIL_AZUL}}}
+.hd .logo{{height:30px;width:auto}}
 .ft{{margin-top:2.5em;padding-top:1em;border-top:1px solid #ddd;font-size:.78em;color:#999;text-align:center}}
 </style></head><body>
-<div class="hd"><span><strong>Louis · Kawiil</strong> — Agenda del día</span><span>Generado: {gen} CDMX</span></div>
+<div class="hd"><span>{logo_img}</span><span>Agenda del día · Generado: {gen} CDMX</span></div>
 <h1>🗓️ Agenda — {esc(fl)}</h1>
 {nota}
 <h2>⏰ Calendario ({len(eventos)} eventos)</h2>

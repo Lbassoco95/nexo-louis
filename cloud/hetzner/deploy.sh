@@ -196,6 +196,14 @@ if [[ ! -d /opt/openclaw/entregables ]]; then
   chown -R "$SYSTEM_USER":"$SYSTEM_USER" /opt/openclaw/entregables
 fi
 
+# Kit de marca (logos Kawiil/Yoltik) para brandear documentos HTML
+if [[ -d "assets/brand" ]]; then
+  mkdir -p /opt/openclaw/assets
+  cp -r assets/brand /opt/openclaw/assets/
+  chown -R "$SYSTEM_USER":"$SYSTEM_USER" /opt/openclaw/assets
+  ok "Kit de marca en /opt/openclaw/assets/brand"
+fi
+
 systemctl daemon-reload
 
 # Telegram: arranca si el script existe y hay credencial
