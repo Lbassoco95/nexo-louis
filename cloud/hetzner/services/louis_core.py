@@ -7153,6 +7153,60 @@ def _invocar_agente_via_deepseek(nombre: str, sub_system: str, user_msg: str, mo
 _DOC_THRESHOLD = 2500  # chars above which agent output is sent as a file
 
 
+_DOC_JS = r"""
+function toggleAll(o){document.querySelectorAll('details.sec').forEach(function(d){d.open=o;});}
+function filtra(){var q=(document.getElementById('q').value||'').toLowerCase();
+  document.querySelectorAll('details.sec').forEach(function(d){
+    var hit=!q||d.textContent.toLowerCase().indexOf(q)>=0;
+    d.style.display=hit?'':'none'; if(hit&&q){d.open=true;}});}
+// Renderizador de markdown -> HTML (para las respuestas del chat: tablas, negritas, listas)
+function inl(s){
+  s=s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  s=s.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>');
+  s=s.replace(/\*(.+?)\*/g,'<em>$1</em>');
+  s=s.replace(/`(.+?)`/g,'<code>$1</code>');
+  return s;
+}
+function mdToHtml(md){
+  var lines=(md||'').split('\n'); var out=[]; var i=0; var m;
+  while(i<lines.length){
+    var ln=lines[i];
+    if(/^\s*\|/.test(ln)){
+      var rows=[]; while(i<lines.length && /^\s*\|/.test(lines[i])){ rows.push(lines[i]); i++; }
+      var h='<table>'; var first=true;
+      for(var r=0;r<rows.length;r++){
+        if(/^[\s|:\-]+$/.test(rows[r])){ continue; }
+        var cells=rows[r].trim().replace(/^\||\|$/g,'').split('|');
+        var tag=first?'th':'td'; first=false;
+        h+='<tr>'+cells.map(function(c){return '<'+tag+'>'+inl(c.trim())+'</'+tag+'>';}).join('')+'</tr>';
+      }
+      out.push(h+'</table>'); continue;
+    }
+    if(m=ln.match(/^(#{1,4})\s+(.+)/)){ var l=m[1].length; out.push('<h'+l+'>'+inl(m[2])+'</h'+l+'>'); i++; continue; }
+    if(/^\s*>\s?/.test(ln)){ out.push('<blockquote>'+inl(ln.replace(/^\s*>\s?/,''))+'</blockquote>'); i++; continue; }
+    if(/^---+\s*$/.test(ln)){ out.push('<hr>'); i++; continue; }
+    if(ln.match(/^\s*[-*]\s+(.+)/)){ var it=[]; while(i<lines.length && (m=lines[i].match(/^\s*[-*]\s+(.+)/))){ it.push('<li>'+inl(m[1])+'</li>'); i++; } out.push('<ul>'+it.join('')+'</ul>'); continue; }
+    if(ln.match(/^\s*\d+\.\s+(.+)/)){ var it2=[]; while(i<lines.length && (m=lines[i].match(/^\s*\d+\.\s+(.+)/))){ it2.push('<li>'+inl(m[1])+'</li>'); i++; } out.push('<ol>'+it2.join('')+'</ol>'); continue; }
+    if(ln.trim()===''){ i++; continue; }
+    out.push('<p>'+inl(ln)+'</p>'); i++;
+  }
+  return out.join('');
+}
+function add(role,txt,isMd){var c=document.getElementById('conv');var d=document.createElement('div');d.className='msg '+role;if(isMd){d.innerHTML=mdToHtml(txt);}else{d.textContent=txt;}c.appendChild(d);return d;}
+async function preg(){
+  var i=document.getElementById('cq');var q=(i.value||'').trim();if(!q)return;
+  i.value='';add('user',q,false);var t=add('bot','pensando…',false);
+  try{
+    var h={'Content-Type':'application/json'};if(CHAT_TOKEN){h['Authorization']='Bearer '+CHAT_TOKEN;}
+    var r=await fetch(CHAT_URL,{method:'POST',headers:h,body:JSON.stringify({messages:[{role:'user',content:'Contexto (análisis previo del documento):\n'+CTX+'\n\nPregunta de seguimiento: '+q}]})});
+    var j=await r.json();
+    var a=(j.choices&&j.choices[0]&&j.choices[0].message&&j.choices[0].message.content)||j.error||'(sin respuesta)';
+    t.className='msg bot'; t.innerHTML=mdToHtml(a);
+  }catch(e){t.textContent='No pude conectar ('+e+'). Abre este HTML en un navegador, no en el visor de Telegram.';}
+}
+"""
+
+
 def _md_to_html(titulo: str, agente: str, md: str) -> bytes:
     """Convierte markdown básico a un HTML profesional para envío como documento."""
     import html as _html
@@ -7219,6 +7273,11 @@ def _md_to_html(titulo: str, agente: str, md: str) -> bytes:
             else:
                 body_parts.append(f"<h{lvl}>{txt}</h{lvl}>")
             continue
+        # Blockquote / nota (> ...)
+        if _re.match(r"^\s*>\s?", line):
+            inner = _re.sub(r"^\s*&gt;\s?", "", line_esc)
+            body_parts.append(f"<blockquote>{inner}</blockquote>")
+            continue
         # HR
         if _re.match(r"^---+\s*$", line):
             body_parts.append("<hr>")
@@ -7258,6 +7317,9 @@ def _md_to_html(titulo: str, agente: str, md: str) -> bytes:
     _chat_url = _os.environ.get("CHAT_ENDPOINT", "https://louis.kawiil.mx/v1/chat/completions")
     _chat_token = _os.environ.get("OPENCLAW_GATEWAY_TOKEN", "")
     _ctx_json = _json.dumps((md or "")[:4000])
+    script_js = (f'const CHAT_URL={_json.dumps(_chat_url)};'
+                 f'const CHAT_TOKEN={_json.dumps(_chat_token)};'
+                 f'const CTX={_ctx_json};') + _DOC_JS
     html = f"""<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -7294,6 +7356,11 @@ def _md_to_html(titulo: str, agente: str, md: str) -> bytes:
              border-bottom: 1px solid #eee; display: flex; gap: 8px; flex-wrap: wrap; z-index: 5; }}
   .toolbar input {{ flex: 1; min-width: 140px; padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; font-size: .95em; }}
   .toolbar button {{ padding: 8px 12px; border: 0; border-radius: 6px; background: #1f4e79; color: #fff; font-size: .85em; cursor: pointer; }}
+  blockquote {{ margin: 12px 0; padding: 10px 14px; background: #eef3fb; border-left: 4px solid #1f4e79;
+             border-radius: 0 8px 8px 0; color: #34495e; font-style: normal; }}
+  .msg.bot table {{ font-size: .85em; margin: 8px 0; }}
+  .msg.bot h2, .msg.bot h3 {{ font-size: 1.05em; margin: 8px 0 4px; border: none; color: #1f4e79; }}
+  .msg.bot ul, .msg.bot ol {{ margin: 4px 0 4px 18px; }}
   .chat {{ margin-top: 2.5em; border-top: 2px solid #1f4e79; padding-top: 1em; }}
   .chat h2 {{ border: none; margin-top: 0; }}
   #conv {{ margin: 10px 0; display: flex; flex-direction: column; }}
@@ -7328,28 +7395,7 @@ def _md_to_html(titulo: str, agente: str, md: str) -> bytes:
   <p style="font-size:.78em;color:#999;margin-top:6px">Ábrelo en un navegador (Safari/Chrome) para que el chat y los botones funcionen — el visor de Telegram bloquea el JavaScript.</p>
 </div>
 <div class="footer">Documento generado por Louis (Kawiil) · {fecha} · Confidencial</div>
-<script>
-function toggleAll(o){{document.querySelectorAll('details.sec').forEach(function(d){{d.open=o;}});}}
-function filtra(){{var q=(document.getElementById('q').value||'').toLowerCase();
-  document.querySelectorAll('details.sec').forEach(function(d){{
-    var hit=!q||d.textContent.toLowerCase().indexOf(q)>=0;
-    d.style.display=hit?'':'none'; if(hit&&q){{d.open=true;}}}});}}
-const CHAT_URL="{_chat_url}";
-const CHAT_TOKEN="{_chat_token}";
-const CTX={_ctx_json};
-function add(role,txt){{var c=document.getElementById('conv');var d=document.createElement('div');d.className='msg '+role;d.textContent=txt;c.appendChild(d);return d;}}
-async function preg(){{
-  var i=document.getElementById('cq');var q=(i.value||'').trim();if(!q)return;
-  i.value='';add('user',q);var t=add('bot','pensando…');
-  try{{
-    var h={{'Content-Type':'application/json'}};if(CHAT_TOKEN){{h['Authorization']='Bearer '+CHAT_TOKEN;}}
-    var r=await fetch(CHAT_URL,{{method:'POST',headers:h,body:JSON.stringify({{messages:[{{role:'user',content:'Contexto (análisis previo del documento):\\n'+CTX+'\\n\\nPregunta de seguimiento: '+q}}]}})}});
-    var j=await r.json();
-    var a=(j.choices&&j.choices[0]&&j.choices[0].message&&j.choices[0].message.content)||j.error||'(sin respuesta)';
-    t.textContent=a;
-  }}catch(e){{t.textContent='No pude conectar ('+e+'). Abre este HTML en un navegador, no en el visor de Telegram.';}}
-}}
-</script>
+<script>{script_js}</script>
 </body>
 </html>"""
     return html.encode("utf-8")
