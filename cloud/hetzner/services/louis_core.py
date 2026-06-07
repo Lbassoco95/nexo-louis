@@ -5094,8 +5094,8 @@ def _generar_xlsx(titulo: str, contenido: str) -> bytes | None:
     return buf.getvalue()
 
 
-def _generar_documento_tool(tipo: str, titulo: str, contenido: str) -> str:
-    """Genera PDF/PPTX/XLSX en el servidor y lo encola para envío por Telegram."""
+def _generar_documento_tool(tipo: str, titulo: str, contenido: str, agente: str = "Louis") -> str:
+    """Genera PDF/HTML/PPTX/XLSX en el servidor y lo encola para envío por Telegram."""
     import datetime as _dt
     tipo = tipo.lower().strip()
     generators = {"pdf": _generar_pdf, "pptx": _generar_pptx, "xlsx": _generar_xlsx,
@@ -5103,7 +5103,8 @@ def _generar_documento_tool(tipo: str, titulo: str, contenido: str) -> str:
     gen = generators.get(tipo)
     if gen is None:
         return f"ERROR: tipo '{tipo}' no reconocido. Usa: pdf, html, pptx, xlsx"
-    data = gen(titulo, contenido)
+    # pdf y html muestran "Elaborado por: … {agente}"; pptx/xlsx no usan agente
+    data = gen(titulo, contenido, agente) if tipo in ("pdf", "html") else gen(titulo, contenido)
     if data is None:
         pkg = {"pdf": "fpdf2", "pptx": "python-pptx", "xlsx": "openpyxl"}.get(tipo, tipo)
         return (f"ERROR: librería '{pkg}' no instalada en el servidor. "
@@ -5135,6 +5136,22 @@ def _doc_tipo_de_mensaje(user_message: str) -> str:
     return "pdf"
 
 
+_LEGAL_ANALISIS_RE = re.compile(
+    r"\b(an[aá]lisis|dictamen|opini[oó]n)\b.{0,40}\b(legal|jur[ií]dic\w+|derecho|normativ\w+|"
+    r"regulaci[oó]n|cumplimiento)\b", re.IGNORECASE | re.DOTALL)
+_LEGAL_FUERTE_RE = re.compile(
+    r"\b(marca\s+registrada|propiedad\s+intelectual|derechos?\s+de\s+autor|impi|profeco|cnbv|"
+    r"lfda|lfppi|amparo|jurisprudencia|tesis\s+(aislada|jurisprudencial)|infracci[oó]n\s+(legal|administrativa))\b",
+    re.IGNORECASE)
+
+
+def _es_analisis_legal(msg: str) -> bool:
+    """True si el pedido es un ANÁLISIS/dictamen legal (para armarlo con el flujo
+    multi-agente, no de un solo tiro). No matchea 'redacta un contrato' (eso es plantilla)."""
+    m = (msg or "")
+    return bool(_LEGAL_ANALISIS_RE.search(m) or _LEGAL_FUERTE_RE.search(m))
+
+
 def generar_documento_directo(api_key: str, system_prompt: str, history: list,
                               user_message: str) -> tuple:
     """Flujo DIRECTO y determinístico para pedidos de documento.
@@ -5152,6 +5169,31 @@ def generar_documento_directo(api_key: str, system_prompt: str, history: list,
     for h in (history or [])[-8:]:
         if h.get("role") in ("user", "assistant") and isinstance(h.get("content"), str) and h["content"].strip():
             ctx_msgs.append({"role": h["role"], "content": h["content"].strip()})
+
+    # ── DOCUMENTO LEGAL: armarlo DESDE la investigación multi-agente ──────────
+    # Agentes internacionales = referencia → agente mexicano (kawiil-nelli) mexicaniza.
+    # Así el doc lleva análisis riguroso + cita real (no un solo tiro genérico), y se
+    # acredita al agente que lo produjo.
+    if _es_analisis_legal(user_message):
+        ctx_txt = "\n".join(c["content"] for c in ctx_msgs[-4:]) if ctx_msgs else ""
+        try:
+            analisis = _consejo_experto_legal(area="", pregunta=user_message, contexto=ctx_txt)
+        except Exception as e:
+            analisis = ""
+            log.warning(f"doc legal: consejo_experto_legal falló: {e}")
+        if analisis and not analisis.startswith("ERROR") and len(analisis) > 300:
+            mt = re.search(r"^#\s+(.+)$", analisis, re.MULTILINE)
+            titulo = (mt.group(1).strip() if mt else ("Análisis legal — " + user_message[:50])).rstrip(".?!")
+            agente_credito = "Agentes legales Kawiil → kawiil-nelli (mexicanización)"
+            resultado = _generar_documento_tool(tipo, titulo, analisis, agente_credito)
+            if resultado.startswith("ERROR"):
+                return (f"⚠️ {resultado}", "doc-error")
+            log.info(f"doc legal multi-agente OK: tipo={tipo} titulo={titulo[:40]}")
+            return (f"⚖️ Listo: *{titulo}*\n\nAnálisis multi-agente (referencia internacional → "
+                    f"mexicanizado por kawiil-nelli). Te lo mando como {tipo.upper()} aquí abajo.",
+                    f"doc-legal-{tipo}")
+        # si el flujo legal no dio contenido suficiente, cae al flujo normal de abajo
+
     instruccion = (
         f"Eres el generador de documentos de Louis (Kawiil). El usuario pidió:\n«{user_message}»\n\n"
         "Escribe AHORA el DOCUMENTO COMPLETO y FINAL en formato markdown:\n"
@@ -7255,10 +7297,10 @@ function filtra(){{var q=(document.getElementById('q').value||'').toLowerCase();
     return html.encode("utf-8")
 
 
-def _generar_html(titulo: str, contenido: str) -> bytes | None:
+def _generar_html(titulo: str, contenido: str, agente: str = "Louis") -> bytes | None:
     """Genera HTML interactivo (colapsables + buscador) desde markdown. Sin libs externas."""
     try:
-        return _md_to_html(titulo, "Louis", contenido)
+        return _md_to_html(titulo, agente, contenido)
     except Exception as e:
         log.warning(f"_generar_html falló: {e}")
         return None
