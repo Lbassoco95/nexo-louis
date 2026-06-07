@@ -5177,7 +5177,8 @@ def generar_documento_directo(api_key: str, system_prompt: str, history: list,
     if _es_analisis_legal(user_message):
         ctx_txt = "\n".join(c["content"] for c in ctx_msgs[-4:]) if ctx_msgs else ""
         try:
-            analisis = _consejo_experto_legal(area="", pregunta=user_message, contexto=ctx_txt)
+            analisis = _consejo_experto_legal(area="", pregunta=user_message, contexto=ctx_txt,
+                                              incluir_referencia=False)
         except Exception as e:
             analisis = ""
             log.warning(f"doc legal: consejo_experto_legal falló: {e}")
@@ -7204,10 +7205,12 @@ def _md_to_html(titulo: str, agente: str, md: str) -> bytes:
         if _re.match(r"^---+\s*$", line):
             body_parts.append("<hr>")
             continue
-        # List
+        # List — quita el marcador '- '/'* ' del INICIO de line_esc (robusto;
+        # no usar .index() sobre el texto ya escapado: rompía con caracteres especiales).
         m = _re.match(r"^[-*]\s+(.+)", line)
         if m:
-            body_parts.append(f"<li>{line_esc[line_esc.index(m.group(1)[0]):]}</li>")
+            li = _re.sub(r"^\s*[-*]\s+", "", line_esc)
+            body_parts.append(f"<li>{li}</li>")
             continue
         # Numbered list
         m = _re.match(r"^\d+\.\s+(.+)", line)
@@ -7461,7 +7464,8 @@ _LEGAL_AREA_PREFIXES = {
 }
 
 
-def _consejo_experto_legal(area: str, pregunta: str, contexto: str = "", max_expertos: int = 3) -> str:
+def _consejo_experto_legal(area: str, pregunta: str, contexto: str = "", max_expertos: int = 3,
+                           incluir_referencia: bool = True) -> str:
     """Encuentra agentes legal-* relevantes, los invoca y sintetiza."""
     max_expertos = max(1, min(int(max_expertos or 3), 5))
     area = (area or "general").lower().strip()
@@ -7572,7 +7576,12 @@ def _consejo_experto_legal(area: str, pregunta: str, contexto: str = "", max_exp
     header += f"*Referencia internacional ({len(nombres_consultados)}):* " + ", ".join(f"`{n}`" for n in nombres_consultados) + "\n"
     header += f"*Mexicanizado por:* `{quien}`\n"
     header += f"*Pregunta:* {pregunta[:200]}\n\n"
-    return header + "## Versión obligatoria en México\n\n" + sintesis + "\n\n---\n\n## Referencia internacional (para deep-dive)\n\n" + raw_consejo[:6000]
+    salida = header + "## Versión obligatoria en México\n\n" + sintesis
+    # La "referencia internacional" (agentes legal-* US) suele ser ruido para el
+    # entregable; solo se incluye cuando se pide explícitamente (deep-dive en Telegram).
+    if incluir_referencia:
+        salida += "\n\n---\n\n## Referencia internacional (para deep-dive)\n\n" + raw_consejo[:6000]
+    return salida
 
 
 # Doctrina que convierte la referencia internacional en la versión OBLIGATORIA en
