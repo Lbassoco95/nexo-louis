@@ -8099,6 +8099,52 @@ def call_claude_with_image(api_key: str, system_prompt: str, image_b64: str, med
     return "".join(blocks).strip() or "(sin respuesta del análisis)"
 
 
+def _sanitize_tool_blocks(messages: list) -> list:
+    """Garantiza el protocolo tool_use→tool_result que exige Anthropic.
+
+    Quita `tool_use` colgados (sin su `tool_result` en el siguiente mensaje) y
+    `tool_result` huérfanos (sin su `tool_use` en el mensaje previo). Evita el
+    400 'tool_use ids were found without tool_result blocks'. No toca mensajes
+    de texto normales.
+    """
+    out: list = []
+    for i, m in enumerate(messages):
+        content = m.get("content")
+        role = m.get("role")
+        if not isinstance(content, list):
+            out.append(m)
+            continue
+        if role == "assistant":
+            tu_ids = [b.get("id") for b in content
+                      if isinstance(b, dict) and b.get("type") == "tool_use"]
+            if tu_ids:
+                nxt = messages[i + 1] if i + 1 < len(messages) else None
+                res_ids = set()
+                if nxt and nxt.get("role") == "user" and isinstance(nxt.get("content"), list):
+                    res_ids = {b.get("tool_use_id") for b in nxt["content"]
+                               if isinstance(b, dict) and b.get("type") == "tool_result"}
+                if not all(t in res_ids for t in tu_ids):
+                    # falta algún tool_result → quita los tool_use de este turno
+                    content = [b for b in content
+                               if not (isinstance(b, dict) and b.get("type") == "tool_use")]
+                    if not content:
+                        continue  # turno vacío → omitir
+        elif role == "user":
+            prev = out[-1] if out else None
+            prev_ids = set()
+            if prev and prev.get("role") == "assistant" and isinstance(prev.get("content"), list):
+                prev_ids = {b.get("id") for b in prev["content"]
+                            if isinstance(b, dict) and b.get("type") == "tool_use"}
+            new_content = [b for b in content
+                           if not (isinstance(b, dict) and b.get("type") == "tool_result"
+                                   and b.get("tool_use_id") not in prev_ids)]
+            if not new_content:
+                continue  # todos los tool_result eran huérfanos → omitir
+            content = new_content
+        out.append({**m, "content": content})
+    return out
+
+
 def call_claude(api_key: str, system_prompt: str, history: list, user_message: str,
                 model: str | None = None) -> str:
     """Llama Claude con tools. Loop hasta que termine.
@@ -8185,7 +8231,7 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
             "max_tokens": 4096,
             "system": _system_cached,
             "tools": _tools_cached,
-            "messages": messages,
+            "messages": _sanitize_tool_blocks(messages),
         }
         # Primer turno de queries Slack: forzar tool_choice para que no responda de memoria
         if _force_tool_first and _loop_i == 0:
