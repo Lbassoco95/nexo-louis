@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Boletin semanal SJF -> documento HTML adjunto a Telegram (estilo DOF).
 Agrupado POR MATERIA; cada tesis etiquetada como Jurisprudencia o Tesis."""
-import datetime as dt, html, os, sqlite3, sys, urllib.request, uuid
+import datetime as dt, html, json, os, sqlite3, sys, urllib.request, uuid
 from pathlib import Path
 
 DB = os.environ.get("SJF_DB_PATH", "/opt/openclaw/legal/sjf/biblioteca.db")
@@ -67,6 +67,21 @@ def send_doc(content, fname, caption):
         return False
 
 
+def send_msg(text):
+    token, chat = creds()
+    if not token or not chat:
+        return False
+    body = json.dumps({"chat_id": chat, "text": text[:3900], "parse_mode": "HTML",
+                       "disable_web_page_preview": True}).encode("utf-8")
+    req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage",
+                                 data=body, headers={"Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(req, timeout=20).read()
+        return True
+    except Exception:
+        return False
+
+
 def mrank(m):
     ml = m.lower()
     for i, k in enumerate(MORD):
@@ -121,7 +136,7 @@ td.reg a{{color:#8B1A2E;text-decoration:none;font-weight:bold}}
 .ft{{margin-top:3em;padding-top:1em;border-top:1px solid #ddd;font-size:.8em;color:#999;text-align:center}}
 </style></head><body>
 <div class="hd"><span>Elaborado por: <strong>Louis · Kawiil</strong> — Semanario Judicial de la Federación</span><span>Generado: {hoy}</span></div>
-<h1>⚖️ Semanario Judicial — Edición del {esc(fx)}</h1>
+<h1>⚖️ Semanario Judicial — {esc(fx)}</h1>
 <div class="resumen"><strong>{len(rows)}</strong> publicaciones: <strong>{n_jur}</strong> jurisprudencias · <strong>{n_tes}</strong> tesis aisladas. Organizadas por materia. Da clic en el registro para el detalle en el SJF.</div>
 {body}
 <div class="ft">Documento generado por Louis (Kawiil) · {hoy} · Fuente: SCJN · Nota: una tesis con varias materias aparece en cada una.</div>
@@ -135,21 +150,31 @@ def main():
         return 1
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
-    last = conn.execute("SELECT substr(MAX(fecha_publicacion),1,10) FROM tesis").fetchone()[0]
-    if not last:
-        print("BD vacía", file=sys.stderr)
-        return 1
+    # Ventana de la SEMANA PASADA: lo PUBLICADO en los últimos 7 días.
+    # (El backfill histórico mete tesis con fecha_publicacion vieja → no entran aquí.)
+    hasta = dt.date.today()
+    desde = hasta - dt.timedelta(days=7)
     rows = conn.execute(
         "SELECT registro_digital,rubro,ta_tj,tipo_tesis,materias,fecha_publicacion "
-        "FROM tesis WHERE substr(fecha_publicacion,1,10)=? ORDER BY registro_digital ASC",
-        (last,)).fetchall()
+        "FROM tesis WHERE substr(fecha_publicacion,1,10) >= ? AND substr(fecha_publicacion,1,10) <= ? "
+        "ORDER BY fecha_publicacion DESC, registro_digital ASC",
+        (desde.isoformat(), hasta.isoformat())).fetchall()
     conn.close()
-    fx = fecha_es(last)
+    # Etiqueta de rango legible: "1 al 5 de junio de 2026"
+    if desde.month == hasta.month:
+        etiqueta = f"{desde.day} al {hasta.day} de {MES[hasta.month]} de {hasta.year}"
+    else:
+        etiqueta = f"{desde.day} de {MES[desde.month]} al {hasta.day} de {MES[hasta.month]} de {hasta.year}"
+    if not rows:
+        send_msg(f"⚖️ <b>Semanario Judicial</b> — sin publicaciones nuevas la semana del {esc(etiqueta)}. "
+                 f"(El Semanario publica los jueves; si no hubo edición, no hay tesis nuevas.)")
+        print("Sin publicaciones esta semana")
+        return 0
     n_jur = sum(1 for r in rows if es_juris(r))
-    caption = (f"⚖️ <b>Semanario Judicial</b> — edición del {esc(fx)}\n"
+    caption = (f"⚖️ <b>Semanario Judicial</b> — semana del {esc(etiqueta)}\n"
                f"{len(rows)} publicaciones ({n_jur} jurisprudencias · {len(rows) - n_jur} tesis), por materia. Detalle en el adjunto.")
-    fname = f"Semanario_SJF_{last.replace('-', '')}.html"
-    ok = send_doc(build_html(rows, last), fname, caption)
+    fname = f"Semanario_SJF_{desde.isoformat().replace('-', '')}_{hasta.isoformat().replace('-', '')}.html"
+    ok = send_doc(build_html(rows, etiqueta), fname, caption)
     print("Enviado" if ok else "Falló el envío")
     return 0 if ok else 1
 
