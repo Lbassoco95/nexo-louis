@@ -84,27 +84,34 @@ def parse_m365(text, tenant):
     cur = None
     for raw in (text or "").splitlines():
         ln = raw.rstrip()
-        m = re.match(r"^\[(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})\s*(?:→|->)\s*(\d{2}:\d{2})\]\s*(.*)$", ln)
+        # El formato real trae un emoji de estatus al inicio (👑/✓/etc.) ANTES del [fecha].
+        m = re.match(r"^.*?\[(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})\s*(?:→|->)\s*(\d{2}:\d{2})\]\s*(.*)$", ln)
         if m:
             if cur:
                 eventos.append(cur)
             fecha, ini, fin, resto = m.group(1), m.group(2), m.group(3), m.group(4)
-            online = False
             resto = resto.strip()
-            mo = re.match(r"^\[([^\]]+)\]\s*(.*)$", resto)  # tag tipo [En línea]
+            mo = re.match(r"^\[([^\]]+)\]\s*(.*)$", resto)  # tag opcional tipo [En línea]
+            online = False
             if mo:
-                online = "línea" in mo.group(1).lower() or "online" in mo.group(1).lower() or "teams" in mo.group(1).lower()
+                online = any(k in mo.group(1).lower() for k in ("línea", "online", "teams"))
                 resto = mo.group(2).strip()
+            if "🎥" in resto:                       # 🎥 = junta en línea (Teams)
+                online = True
+                resto = resto.replace("🎥", "").strip()
             cur = {"fecha": fecha, "inicio": ini, "fin": fin, "asunto": resto,
                    "lugar": "", "org": "", "asistentes": "", "online": online, "tenant": tenant}
         elif cur:
             s = ln.strip()
             if s.startswith("📍"):
                 cur["lugar"] = s[1:].strip()
+                if "teams" in cur["lugar"].lower():
+                    cur["online"] = True
             elif s.startswith("👤"):
                 cur["org"] = s[1:].strip()
             elif s.startswith("👥"):
                 cur["asistentes"] = s[1:].strip()
+            # 📨 (mi respuesta) e id=... se ignoran
     if cur:
         eventos.append(cur)
     return eventos
