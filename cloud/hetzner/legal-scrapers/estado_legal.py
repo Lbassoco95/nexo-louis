@@ -61,13 +61,19 @@ def _dias(iso):
 
 
 def _miles(n):
-    return f"{n:,}".replace(",", ",") if isinstance(n, int) else str(n)
+    return f"{n:,}" if isinstance(n, int) else str(n)
+
+
+def _pct(n, d):
+    return (n / d * 100) if d else 0
 
 
 def main():
     cutoff = (dt.datetime.now() - dt.timedelta(days=7)).isoformat()
+    semana_ini = (dt.date.today() - dt.timedelta(days=7)).isoformat()
     hoy = dt.date.today().strftime("%d/%m/%Y")
     L = [f"📊 <b>Estado de descargas legales</b> — semana al {hoy}\n"]
+    sjf_txt = dof_txt = 0.0  # para el bloque de deep learning
 
     # ── SJF ──────────────────────────────────────────────────────────
     if Path(SJF_DB).exists():
@@ -77,37 +83,57 @@ def main():
             universo = int(universo)
         except Exception:
             universo = SJF_UNIVERSO
-        pct = (total / universo * 100) if universo else 0
-        ult = _q1(SJF_DB, "SELECT substr(MAX(fecha_publicacion),1,10) FROM tesis") or "—"
+        faltan = max(universo - total, 0)
+        ult = _q1(SJF_DB, "SELECT substr(MAX(fecha_publicacion),1,10) FROM tesis WHERE fecha_publicacion!=''") or "—"
         dias = _dias(ult)
-        sem = _q1(SJF_DB, "SELECT COUNT(*) FROM tesis WHERE fetched_at >= ?", (cutoff,)) or 0
+        nuevas = _q1(SJF_DB, "SELECT COUNT(*) FROM tesis WHERE substr(fecha_publicacion,1,10) >= ?", (semana_ini,)) or 0
+        bajadas = _q1(SJF_DB, "SELECT COUNT(*) FROM tesis WHERE fetched_at >= ?", (cutoff,)) or 0
+        backfill_n = max(bajadas - nuevas, 0)
         cur = _q1(SJF_DB, "SELECT value FROM progress WHERE key='backfill_cursor'")
-        # al dia: el SJF publica semanal (jueves); <=10 dias = al dia
-        ok = "✅ al día" if (dias is not None and dias <= 10) else f"⚠️ atrasado {dias}d" if dias is not None else "—"
+        epoca_old = _q1(SJF_DB, "SELECT epoca FROM tesis WHERE epoca IS NOT NULL AND epoca!='' ORDER BY registro_digital ASC LIMIT 1") or "—"
+        con_texto = _q1(SJF_DB, "SELECT COUNT(*) FROM tesis WHERE texto IS NOT NULL AND texto!=''") or 0
+        con_pdf = _q1(SJF_DB, "SELECT COUNT(*) FROM tesis WHERE pdf_generated IN (1,'1')") or 0
+        sjf_txt = _pct(con_texto, total)
+        ok = "✅ al día" if (dias is not None and dias <= 10) else (f"⚠️ atrasado {dias}d" if dias is not None else "—")
         L.append("⚖️ <b>SJF (Semanario Judicial)</b>")
-        L.append(f"• Acervo: <b>{_miles(total)}</b> / {_miles(universo)} ({pct:.1f}%)")
-        L.append(f"• Última publicación: <b>{ult}</b> — {ok}")
-        L.append(f"• Descargadas esta semana: <b>{_miles(sem)}</b>")
-        L.append(f"• Backfill histórico: cursor en <b>{cur or '—'}</b> (rellenando épocas anteriores)\n")
+        L.append(f"• Acervo: <b>{_miles(total)}</b> / {_miles(universo)} ({_pct(total, universo):.1f}%) — faltan <b>{_miles(faltan)}</b> hacia atrás")
+        L.append(f"• Al día: última publicación <b>{ult}</b> {ok} · {nuevas} nuevas esta semana")
+        L.append(f"• Histórico (backfill): <b>{_miles(backfill_n)}</b> esta semana · frontera registro {cur or '—'} (época más antigua: {epoca_old})")
+        L.append(f"• Indexación: <b>{sjf_txt:.0f}%</b> con texto · <b>{_pct(con_pdf, total):.0f}%</b> con PDF\n")
     else:
         L.append("⚖️ <b>SJF</b>: BD no encontrada\n")
 
     # ── DOF ──────────────────────────────────────────────────────────
     if Path(DOF_DB).exists():
         total = _q1(DOF_DB, "SELECT COUNT(*) FROM notas") or 0
-        ult = _q1(DOF_DB, "SELECT MAX(fecha) FROM notas WHERE fecha <= date('now')") or "—"
+        validas = _q1(DOF_DB, "SELECT COUNT(*) FROM notas WHERE fecha BETWEEN '1900-01-01' AND date('now')") or 0
+        invalidas = max(total - validas, 0)
+        ult = _q1(DOF_DB, "SELECT MAX(fecha) FROM notas WHERE fecha BETWEEN '1900-01-01' AND date('now')") or "—"
+        n_ult = _q1(DOF_DB, "SELECT COUNT(*) FROM notas WHERE fecha=?", (ult,)) or 0
         dias = _dias(ult)
-        sem = _q1(DOF_DB, "SELECT COUNT(*) FROM notas WHERE fetched_at >= ?", (cutoff,)) or 0
-        # al dia: publica diario habil; <=3 dias (cubre findes) = al dia
-        ok = "✅ al día" if (dias is not None and dias <= 3) else f"⚠️ atrasado {dias}d" if dias is not None else "—"
+        early = _q1(DOF_DB, "SELECT MIN(fecha) FROM notas WHERE fecha >= '1900-01-01'") or "—"
+        nuevas = _q1(DOF_DB, "SELECT COUNT(*) FROM notas WHERE fecha BETWEEN ? AND date('now')", (semana_ini,)) or 0
+        bajadas = _q1(DOF_DB, "SELECT COUNT(*) FROM notas WHERE fetched_at >= ?", (cutoff,)) or 0
+        backfill_n = max(bajadas - nuevas, 0)
+        con_texto = _q1(DOF_DB, "SELECT COUNT(*) FROM notas WHERE texto_plano IS NOT NULL AND texto_plano!=''") or 0
+        con_pdf = _q1(DOF_DB, "SELECT COUNT(*) FROM notas WHERE pdf_path IS NOT NULL AND pdf_path!=''") or 0
+        dof_txt = _pct(con_texto, validas)
+        ok = "✅ al día" if (dias is not None and dias <= 4) else (f"⚠️ atrasado {dias}d" if dias is not None else "—")
         L.append("📰 <b>DOF (Diario Oficial)</b>")
-        L.append(f"• Acervo: <b>{_miles(total)}</b> notas")
-        L.append(f"• Última edición: <b>{ult}</b> — {ok}")
-        L.append(f"• Descargadas esta semana: <b>{_miles(sem)}</b>\n")
+        sucio = f" · <i>{invalidas} con fecha inválida (a depurar)</i>" if invalidas else ""
+        L.append(f"• Acervo: <b>{_miles(validas)}</b> notas válidas{sucio}")
+        L.append(f"• Cobertura temporal: {early} → {ult}")
+        L.append(f"• Al día: última edición <b>{ult}</b> ({n_ult} notas) {ok} · {nuevas} esta semana")
+        L.append(f"• Histórico (backfill): <b>{_miles(backfill_n)}</b> esta semana")
+        L.append(f"• Indexación: <b>{dof_txt:.0f}%</b> con texto · <b>{_pct(con_pdf, validas):.0f}%</b> con PDF\n")
     else:
         L.append("📰 <b>DOF</b>: BD no encontrada\n")
 
-    L.append("<i>Mantengo ambas al día y sigo llenando lo histórico en automático.</i>")
+    # ── Rumbo al deep learning ───────────────────────────────────────
+    L.append("🧠 <b>Indexación / análisis (rumbo a deep learning)</b>")
+    L.append(f"• SJF: {'✅ texto e índices casi completos' if sjf_txt >= 90 else f'⚠️ {sjf_txt:.0f}% con texto'}")
+    L.append(f"• DOF: {'✅ listo' if dof_txt >= 90 else f'⚠️ solo {dof_txt:.0f}% con texto — falta extraer el histórico'}")
+    L.append("\n<i>Al día con lo nuevo; sigo bajando y almacenando el histórico en automático.</i>")
     ok = send_msg("\n".join(L))
     print("Enviado" if ok else "Falló el envío")
     return 0 if ok else 1
