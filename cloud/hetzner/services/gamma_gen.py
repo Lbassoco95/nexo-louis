@@ -41,7 +41,10 @@ def api_key():
 def _req(method, url, key, body=None):
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(url, data=data, method=method, headers={
-        "X-API-KEY": key, "Content-Type": "application/json", "Accept": "application/json"})
+        "X-API-KEY": key, "Content-Type": "application/json", "Accept": "application/json",
+        # Cloudflare (error 1010) veta el UA de urllib; usamos uno de navegador.
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"})
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
             return r.status, json.loads(r.read().decode("utf-8") or "{}")
