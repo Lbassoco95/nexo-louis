@@ -55,7 +55,15 @@ def _req(method, url, key, body=None):
         return 0, {"error": str(e)}
 
 
-def generar(texto, fmt, export, cards, dim, instr):
+def listar_themes():
+    key = api_key()
+    if not key:
+        return {"ok": False, "msg": f"Falta GAMMA_API_KEY (env o {CREDS_GAMMA})"}
+    st, r = _req("GET", "https://public-api.gamma.app/v1.0/themes", key)
+    return {"ok": st == 200, "status": st, "raw": r}
+
+
+def generar(texto, fmt, export, cards, dim, instr, theme="", img_style=""):
     key = api_key()
     if not key:
         return {"ok": False, "msg": f"Falta GAMMA_API_KEY (env o {CREDS_GAMMA})"}
@@ -68,6 +76,10 @@ def generar(texto, fmt, export, cards, dim, instr):
     }
     if instr:
         body["additionalInstructions"] = instr
+    if theme:
+        body["themeName"] = theme          # nombre o ID del theme de marca (logo+colores)
+    if img_style:
+        body["imageOptions"] = {"source": "aiGenerated", "style": img_style}
     if fmt == "social" and dim:
         body["cardOptions"] = {"dimensions": dim}
     st, resp = _req("POST", API_BASE, key, body)
@@ -105,15 +117,22 @@ def telegram(texto):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("texto")
+    ap.add_argument("texto", nargs="?", default="")
     ap.add_argument("--format", default="social", choices=["social", "presentation", "document", "webpage"])
     ap.add_argument("--export", default="png", choices=["png", "pdf", "pptx"])
     ap.add_argument("--cards", type=int, default=1)
     ap.add_argument("--dim", default="1x1", choices=["1x1", "4x5", "9x16"])
     ap.add_argument("--instr", default="")
+    ap.add_argument("--theme", default="", help="nombre o ID del theme de marca (logo+colores)")
+    ap.add_argument("--img-style", dest="img_style", default="", help="estilo de las imágenes IA")
+    ap.add_argument("--list-themes", action="store_true", help="lista los themes del workspace y sale")
     ap.add_argument("--telegram", action="store_true")
     a = ap.parse_args()
-    res = generar(a.texto, a.format, a.export, a.cards, a.dim, a.instr)
+    if a.list_themes:
+        r = listar_themes()
+        print(json.dumps(r.get("raw", {}), ensure_ascii=False, indent=2)[:2000])
+        return 0
+    res = generar(a.texto, a.format, a.export, a.cards, a.dim, a.instr, a.theme, a.img_style)
     if not res["ok"]:
         print("❌ " + res["msg"])
         return 1
