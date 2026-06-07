@@ -1710,8 +1710,9 @@ def needs_legal_sonnet(user_message: str) -> bool:
 
 # Generación de documentos: tipo de archivo + verbo de acción/entrega.
 _DOC_TYPE_RE = re.compile(
-    r"\b(pdf|pptx|powerpoint|presentaci[oó]n|deck|excel|xlsx|hoja\s+de\s+c[aá]lculo|"
-    r"documento|dictamen|informe|reporte|acta\s+constitutiva)\b", re.IGNORECASE)
+    r"\b(pdf|html|interactiv\w+|p[aá]gina\s+web|micrositio|pptx|powerpoint|presentaci[oó]n|"
+    r"deck|excel|xlsx|hoja\s+de\s+c[aá]lculo|"
+    r"documento|dictamen|informe|reporte|an[aá]lisis|acta\s+constitutiva)\b", re.IGNORECASE)
 _DOC_VERB_RE = re.compile(
     r"\b(gen[eé]ra\w*|elabora\w*|prepara\w*|arma\w*|haz\w*|hag\w*|conviert\w*|crea\w*|"
     r"entr[eé]ga\w*|p[aá]sa\w*|m[aá]nda\w*|env[ií]a\w*|comp[aá]rt\w*|dame|necesito|quiero)\b",
