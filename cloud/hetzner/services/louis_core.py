@@ -7153,6 +7153,19 @@ def _invocar_agente_via_deepseek(nombre: str, sub_system: str, user_msg: str, mo
 _DOC_THRESHOLD = 2500  # chars above which agent output is sent as a file
 
 
+def _celda_clase(texto: str) -> str:
+    """Clasifica una celda de tabla por su contenido para colorearla (look dashboard).
+    Rojo = no/prohibido/alto; ámbar = depende/medio/gris; verde = sí/permitido/bajo."""
+    t = (texto or "").strip().lower()
+    if any(k in t for k in ("❌", "🚫", "🔴", "no pueden", "prohib", "ilegal", "infracci", " alto", "alto ", "no aplica")) or t in ("no", "alto"):
+        return "c-bad"
+    if any(k in t for k in ("⚠", "🟡", "depende", "medio", "gris", "revisar", "condicion")) or t in ("medio", "depende"):
+        return "c-warn"
+    if any(k in t for k in ("✅", "✔", "🟢", "permitid", "sí pued", "si pued", " bajo", "bajo ", "legal", "procede")) or t in ("sí", "si", "bajo", "legal"):
+        return "c-ok"
+    return ""
+
+
 _DOC_JS = r"""
 function toggleAll(o){document.querySelectorAll('details.sec').forEach(function(d){d.open=o;});}
 function filtra(){var q=(document.getElementById('q').value||'').toLowerCase();
@@ -7220,6 +7233,7 @@ def _md_to_html(titulo: str, agente: str, md: str) -> bytes:
     body_parts: list[str] = []
     in_table = False
     table_rows: list[str] = []
+    table_open = False    # ¿ya se abrió <table> (por el header)?
     open_section = False  # ¿hay un <details> de sección abierto?
     for line in lines:
         # Tables
@@ -7235,21 +7249,22 @@ def _md_to_html(titulo: str, agente: str, md: str) -> bytes:
                         + '</tr></thead><tbody>'
                     )
                     table_rows = []
+                    table_open = True
                 continue
             table_rows.append(cells)
             continue
         else:
             if in_table:
-                if table_rows:
-                    # no separator found — treat as regular rows
+                if not table_open:
                     body_parts.append('<table><tbody>')
                 for row in table_rows:
                     body_parts.append(
-                        '<tr>' + "".join(f"<td>{_escape(c)}</td>" for c in row) + '</tr>'
+                        '<tr>' + "".join(f'<td class="{_celda_clase(c)}">{_escape(c)}</td>' for c in row) + '</tr>'
                     )
                 body_parts.append('</tbody></table>')
                 table_rows = []
                 in_table = False
+                table_open = False
 
         line_esc = _escape(line)
         # Inline: **bold**, *italic*, `code`
@@ -7298,14 +7313,24 @@ def _md_to_html(titulo: str, agente: str, md: str) -> bytes:
         if not line.strip():
             body_parts.append("<br>")
             continue
+        # Callout / estado: línea que empieza con ✅/❌/⚠️… → tarjeta de color (look dashboard)
+        mc = _re.match(r"^\s*(✅|✔️|✔|❌|🚫|🔴|⚠️|⚠|🚨|🟡|🟢|💰|📌)", line)
+        if mc:
+            g = mc.group(1)
+            cls = ("call-ok" if g in ("✅", "✔️", "✔", "🟢")
+                   else "call-bad" if g in ("❌", "🚫", "🔴")
+                   else "call-warn" if g in ("⚠️", "⚠", "🚨", "🟡")
+                   else "call-info")
+            body_parts.append(f'<div class="callout {cls}">{line_esc}</div>')
+            continue
         body_parts.append(f"<p>{line_esc}</p>")
 
     # flush pending table
     if in_table:
-        if table_rows:
+        if not table_open:
             body_parts.append('<table><tbody>')
         for row in table_rows:
-            body_parts.append('<tr>' + "".join(f"<td>{_escape(c)}</td>" for c in row) + '</tr>')
+            body_parts.append('<tr>' + "".join(f'<td class="{_celda_clase(c)}">{_escape(c)}</td>' for c in row) + '</tr>')
         body_parts.append('</tbody></table>')
 
     if open_section:
@@ -7358,6 +7383,14 @@ def _md_to_html(titulo: str, agente: str, md: str) -> bytes:
   .toolbar button {{ padding: 8px 12px; border: 0; border-radius: 6px; background: #1f4e79; color: #fff; font-size: .85em; cursor: pointer; }}
   blockquote {{ margin: 12px 0; padding: 10px 14px; background: #eef3fb; border-left: 4px solid #1f4e79;
              border-radius: 0 8px 8px 0; color: #34495e; font-style: normal; }}
+  td.c-ok {{ background: #e8f5e9 !important; }}
+  td.c-warn {{ background: #fff8e1 !important; }}
+  td.c-bad {{ background: #fdecea !important; }}
+  .callout {{ border-radius: 8px; padding: 11px 15px; margin: 10px 0; border-left: 5px solid #888; font-size: .96em; }}
+  .callout.call-ok {{ background: #e8f5e9; border-left-color: #2e7d32; }}
+  .callout.call-bad {{ background: #fdecea; border-left-color: #c62828; }}
+  .callout.call-warn {{ background: #fff8e1; border-left-color: #f9a825; }}
+  .callout.call-info {{ background: #e3f2fd; border-left-color: #1f4e79; }}
   .msg.bot table {{ font-size: .85em; margin: 8px 0; }}
   .msg.bot h2, .msg.bot h3 {{ font-size: 1.05em; margin: 8px 0 4px; border: none; color: #1f4e79; }}
   .msg.bot ul, .msg.bot ol {{ margin: 4px 0 4px 18px; }}
