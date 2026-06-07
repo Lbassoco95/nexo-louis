@@ -7236,6 +7236,10 @@ def _md_to_html(titulo: str, agente: str, md: str) -> bytes:
 
     body_html = "\n".join(body_parts)
     fecha = _dt.date.today().strftime("%d/%m/%Y")
+    import os as _os, json as _json
+    _chat_url = _os.environ.get("CHAT_ENDPOINT", "https://louis.kawiil.mx/v1/chat/completions")
+    _chat_token = _os.environ.get("OPENCLAW_GATEWAY_TOKEN", "")
+    _ctx_json = _json.dumps((md or "")[:4000])
     html = f"""<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -7272,8 +7276,17 @@ def _md_to_html(titulo: str, agente: str, md: str) -> bytes:
              border-bottom: 1px solid #eee; display: flex; gap: 8px; flex-wrap: wrap; z-index: 5; }}
   .toolbar input {{ flex: 1; min-width: 140px; padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; font-size: .95em; }}
   .toolbar button {{ padding: 8px 12px; border: 0; border-radius: 6px; background: #1f4e79; color: #fff; font-size: .85em; cursor: pointer; }}
+  .chat {{ margin-top: 2.5em; border-top: 2px solid #1f4e79; padding-top: 1em; }}
+  .chat h2 {{ border: none; margin-top: 0; }}
+  #conv {{ margin: 10px 0; display: flex; flex-direction: column; }}
+  .msg {{ padding: 9px 13px; border-radius: 12px; margin: 6px 0; max-width: 88%; white-space: pre-wrap; font-size: .95em; }}
+  .msg.user {{ background: #1f4e79; color: #fff; align-self: flex-end; }}
+  .msg.bot {{ background: #eef3fb; color: #1a1a1a; align-self: flex-start; }}
+  .chat-in {{ display: flex; gap: 8px; }}
+  .chat-in input {{ flex: 1; padding: 11px; border: 1px solid #ccc; border-radius: 8px; font-size: 1em; }}
+  .chat-in button {{ padding: 11px 16px; border: 0; border-radius: 8px; background: #1f4e79; color: #fff; cursor: pointer; }}
   @media print {{ body {{ margin: 0; padding: 20px; }} .header, .toolbar {{ break-inside: avoid; }}
-             .toolbar {{ display: none; }} details.sec {{ border: none; }} }}
+             .toolbar, .chat {{ display: none; }} details.sec {{ border: none; }} }}
 </style>
 </head>
 <body>
@@ -7287,6 +7300,15 @@ def _md_to_html(titulo: str, agente: str, md: str) -> bytes:
   <button onclick="toggleAll(false)">Colapsar todo</button>
 </div>
 {body_html}
+<div class="chat">
+  <h2>💬 Pregúntale a Louis sobre este análisis</h2>
+  <div id="conv"></div>
+  <div class="chat-in">
+    <input id="cq" placeholder="Escribe tu pregunta de seguimiento…" onkeydown="if(event.key==='Enter')preg()">
+    <button onclick="preg()">Preguntar</button>
+  </div>
+  <p style="font-size:.78em;color:#999;margin-top:6px">Ábrelo en un navegador (Safari/Chrome) para que el chat y los botones funcionen — el visor de Telegram bloquea el JavaScript.</p>
+</div>
 <div class="footer">Documento generado por Louis (Kawiil) · {fecha} · Confidencial</div>
 <script>
 function toggleAll(o){{document.querySelectorAll('details.sec').forEach(function(d){{d.open=o;}});}}
@@ -7294,6 +7316,21 @@ function filtra(){{var q=(document.getElementById('q').value||'').toLowerCase();
   document.querySelectorAll('details.sec').forEach(function(d){{
     var hit=!q||d.textContent.toLowerCase().indexOf(q)>=0;
     d.style.display=hit?'':'none'; if(hit&&q){{d.open=true;}}}});}}
+const CHAT_URL="{_chat_url}";
+const CHAT_TOKEN="{_chat_token}";
+const CTX={_ctx_json};
+function add(role,txt){{var c=document.getElementById('conv');var d=document.createElement('div');d.className='msg '+role;d.textContent=txt;c.appendChild(d);return d;}}
+async function preg(){{
+  var i=document.getElementById('cq');var q=(i.value||'').trim();if(!q)return;
+  i.value='';add('user',q);var t=add('bot','pensando…');
+  try{{
+    var h={{'Content-Type':'application/json'}};if(CHAT_TOKEN){{h['Authorization']='Bearer '+CHAT_TOKEN;}}
+    var r=await fetch(CHAT_URL,{{method:'POST',headers:h,body:JSON.stringify({{messages:[{{role:'user',content:'Contexto (análisis previo del documento):\\n'+CTX+'\\n\\nPregunta de seguimiento: '+q}}]}})}});
+    var j=await r.json();
+    var a=(j.choices&&j.choices[0]&&j.choices[0].message&&j.choices[0].message.content)||j.error||'(sin respuesta)';
+    t.textContent=a;
+  }}catch(e){{t.textContent='No pude conectar ('+e+'). Abre este HTML en un navegador, no en el visor de Telegram.';}}
+}}
 </script>
 </body>
 </html>"""

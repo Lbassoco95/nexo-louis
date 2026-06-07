@@ -324,11 +324,24 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             return
         self._safe_write(body)
+
+    def do_OPTIONS(self):
+        # Preflight CORS: el chat embebido en los HTML llama desde otro origen/file://
+        try:
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        except Exception:
+            pass
 
     def _send_html(self, code, html: str):
         body = html.encode("utf-8")
