@@ -7215,6 +7215,7 @@ def _invocar_agente(
     tarea: str,
     contexto: str = "",
     modelo_override: str | None = None,
+    enviar_doc: bool = True,
 ) -> str:
     """Wrapper con bitácora de actividad (start/end) para el dashboard visual.
 
@@ -7241,7 +7242,10 @@ def _invocar_agente(
         raw = out
         if raw.startswith(f"[{nombre} respondió]"):
             raw = raw[len(f"[{nombre} respondió]"):].strip()
-        if len(raw) >= _DOC_THRESHOLD and not out.startswith("ERROR"):
+        # Solo el TOP-LEVEL manda documento. Las invocaciones internas (pasos de un
+        # flujo multi-agente, p.ej. consejo_experto_legal) NO mandan doc por agente:
+        # devuelven texto para que el flujo consolide en UN solo entregable.
+        if enviar_doc and len(raw) >= _DOC_THRESHOLD and not out.startswith("ERROR"):
             titulo = tarea[:80].strip().rstrip(".?!")
             import datetime as _dt_ag
             safe_nombre = nombre.replace("/", "_")
@@ -7411,7 +7415,7 @@ def _consejo_experto_legal(area: str, pregunta: str, contexto: str = "", max_exp
             log.info(f"consejo_experto_legal: consultando {nombre} (referencia, Haiku)")
             # Los agentes legal-* internacionales son SOLO referencia → Haiku (barato).
             # La mexicanización vinculante (kawiil-nelli) sí va en Sonnet más abajo.
-            resp = _invocar_agente(nombre, pregunta, contexto, modelo_override=CLAUDE_HAIKU)
+            resp = _invocar_agente(nombre, pregunta, contexto, modelo_override=CLAUDE_HAIKU, enviar_doc=False)
             opiniones.append(f"### {nombre}\n{resp}")
         except Exception as e:
             opiniones.append(f"### {nombre}\n(error consultando: {e})")
@@ -7441,7 +7445,7 @@ def _consejo_experto_legal(area: str, pregunta: str, contexto: str = "", max_exp
     sintesis = None
     if mex_agent:
         try:
-            sintesis = _invocar_agente(mex_agent, MEXICANIZE_DOCTRINE + "\n\n" + tarea_mex, "")
+            sintesis = _invocar_agente(mex_agent, MEXICANIZE_DOCTRINE + "\n\n" + tarea_mex, "", enviar_doc=False)
             # _invocar_agente prefija "[nombre respondió]"; lo quitamos para el render.
             if sintesis and sintesis.startswith("["):
                 nl = sintesis.find("\n")
