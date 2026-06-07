@@ -201,7 +201,9 @@ def main():
         return 1
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
-    fecha = conn.execute("SELECT MAX(fecha) FROM notas WHERE fecha <= date('now')").fetchone()[0]
+    # La edición del DÍA HÁBIL ANTERIOR (fecha < hoy): el lunes reporta el viernes,
+    # el martes el lunes, etc. Cada edición se reporta a la mañana siguiente.
+    fecha = conn.execute("SELECT MAX(fecha) FROM notas WHERE fecha < date('now')").fetchone()[0]
     if not fecha:
         print("Sin fechas validas", file=sys.stderr)
         return 1

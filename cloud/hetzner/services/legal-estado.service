@@ -1,0 +1,16 @@
+[Unit]
+Description=Louis — reporte de avance de descargas legales (SJF + DOF) a Telegram
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@@SYSTEM_USER@@
+Group=@@SYSTEM_USER@@
+WorkingDirectory=@@OPENCLAW_HOME@@/legal
+ExecStart=/usr/bin/python3 @@OPENCLAW_HOME@@/legal/estado_legal.py
+StandardOutput=append:@@OPENCLAW_HOME@@/logs/legal-estado.log
+StandardError=append:@@OPENCLAW_HOME@@/logs/legal-estado.log
+SyslogIdentifier=louis-legal-estado
+TimeoutStartSec=300
+MemoryMax=256M

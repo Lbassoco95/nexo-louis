@@ -1,0 +1,11 @@
+[Unit]
+Description=Dispara el boletín diario del DOF (lunes a viernes, mañana CDMX)
+
+[Timer]
+# El DOF no publica fines de semana. Reportamos la edición del día hábil anterior:
+# lunes da el viernes, martes da el lunes, etc. El script además omite sáb/dom.
+OnCalendar=Mon..Fri *-*-* 09:00:00 America/Mexico_City
+Persistent=true
+
+[Install]
+WantedBy=timers.target
