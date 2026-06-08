@@ -139,9 +139,12 @@ def notificar_kawiil_central(titulo, cuerpo, tipo):
 
 
 def build_html(relevantes, resto_counts, total, fecha):
+    # Motor HTML interactivo ÚNICO (mismo look que el análisis legal y el SJF).
+    if "/opt/openclaw/scripts" not in sys.path:
+        sys.path.insert(0, "/opt/openclaw/scripts")
+    import louis_html as LH
     fl = fecha_larga(fecha)
     ddmm = fecha_ddmmyyyy(fecha)
-    hoy = dt.datetime.now().strftime("%d/%m/%Y %H:%M")
     grupos = {}
     for r in relevantes:
         dep = (r["nombre_cod_orga_uno"] or r["seccion"] or "Otros").strip() or "Otros"
@@ -160,47 +163,38 @@ def build_html(relevantes, resto_counts, total, fecha):
             link = URL.format(cod=cod, f=ddmm)
             filas.append(
                 f'<tr><td class="cod"><a href="{link}">{cod}</a></td>'
-                f'<td>{etag}{ttag}<span class="t">{esc(r["titulo"]).rstrip(". ")}</span></td></tr>')
-        secc.append(f'<h2>{esc(dep)} <span class="c">({len(it)})</span></h2>'
-                    f'<table><tbody>{"".join(filas)}</tbody></table>')
-    body = "\n".join(secc) or '<p class="vacio">Sin documentos normativos relevantes en esta edición.</p>'
+                f'<td>{etag}{ttag}{esc(r["titulo"]).rstrip(". ")}</td></tr>')
+        secc.append(
+            f'<details class="sec" open><summary>{esc(dep)} '
+            f'<span class="c">({len(it)})</span></summary><div class="sec-body">'
+            f'<table><tbody>{"".join(filas)}</tbody></table></div></details>')
+    body = "\n".join(secc) or '<p style="color:#888;font-style:italic">Sin documentos normativos relevantes en esta edición.</p>'
 
     n_rel = len(relevantes)
     n_resto = sum(resto_counts.values())
-    resto_li = "".join(f"<li>{esc(cat)}: <strong>{n}</strong></li>"
-                       for cat, n in sorted(resto_counts.items(), key=lambda x: -x[1]))
-    resto_block = (f'<h2 class="resto">Resto identificado (no detallado) — {n_resto}</h2>'
-                   f'<ul class="rl">{resto_li}</ul>') if n_resto else ""
+    if n_resto:
+        resto_li = "".join(f"<li>{esc(cat)}: <strong>{n}</strong></li>"
+                           for cat, n in sorted(resto_counts.items(), key=lambda x: -x[1]))
+        body += (f'<details class="sec"><summary>Resto identificado (no detallado) '
+                 f'<span class="c">({n_resto})</span></summary><div class="sec-body">'
+                 f'<ul>{resto_li}</ul></div></details>')
 
-    doc = f"""<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DOF — {esc(fl)}</title><style>
-body{{font-family:'Georgia',serif;max-width:900px;margin:40px auto;padding:0 24px;color:#1a1a1a;line-height:1.6}}
-h1{{font-size:1.55em;border-bottom:3px solid #0b5d2e;padding-bottom:8px;color:#0b5d2e}}
-h2{{font-size:1.1em;color:#2c3e50;margin-top:1.6em;border-bottom:1px solid #ddd;padding-bottom:4px}}
-h2.resto{{color:#888;border-bottom:1px dashed #ccc;margin-top:2.2em}}
-.c{{color:#999;font-weight:normal;font-size:.82em}}
-table{{border-collapse:collapse;width:100%;margin:.4em 0}}
-td{{border-bottom:1px solid #eee;padding:6px 9px;vertical-align:top}}
-td.cod{{width:78px;font-size:.85em;white-space:nowrap}}
-td.cod a{{color:#0b5d2e;text-decoration:none;font-weight:bold}}
-.t{{font-size:.93em}}
-.tag{{font-size:.68em;font-weight:bold;background:#dff0e4;color:#0b5d2e;padding:1px 6px;border-radius:4px;margin-right:4px}}
-.ed{{font-size:.68em;font-weight:bold;background:#0b5d2e;color:#fff;padding:1px 6px;border-radius:4px;margin-right:4px}}
-.rl{{color:#777;font-size:.9em;columns:2}} .rl li{{margin-bottom:3px}}
-.hd{{display:flex;justify-content:space-between;margin-bottom:1.2em;padding:14px 16px;background:#f4f7f5;border-radius:6px;font-size:.85em;color:#666}}
-.resumen{{background:#f4f7f5;border-left:4px solid #0b5d2e;padding:10px 14px;margin:1em 0;font-size:.95em}}
-.vacio{{color:#888;font-style:italic}}
-.ft{{margin-top:3em;padding-top:1em;border-top:1px solid #ddd;font-size:.8em;color:#999;text-align:center}}
-</style></head><body>
-<div class="hd"><span>Elaborado por: <strong>Louis · Kawiil</strong> — Diario Oficial de la Federación</span><span>Generado: {hoy}</span></div>
-<h1>📰 Diario Oficial — {esc(fl)}</h1>
-<div class="resumen"><strong>{n_rel}</strong> documentos normativos relevantes (leyes, decretos, acuerdos, reglamentos, circulares, lineamientos…) de un total de <strong>{total}</strong> publicaciones. El resto ({n_resto}) son avisos/edictos/convocatorias — identificados abajo. Da clic en el código para abrir la nota en el DOF.</div>
-{body}
-{resto_block}
-<div class="ft">Documento generado por Louis (Kawiil) · {hoy} · Fuente: Diario Oficial de la Federación (SEGOB) · Clasificación por tipo oficial del documento.</div>
-</body></html>"""
-    return doc.encode("utf-8")
+    resumen = (f"<strong>{n_rel}</strong> documentos normativos relevantes "
+               f"(leyes, decretos, acuerdos, reglamentos, circulares, lineamientos…) "
+               f"de un total de <strong>{total}</strong> publicaciones. "
+               f"El resto ({n_resto}) son avisos/edictos/convocatorias. "
+               f"Da clic en el código para abrir la nota en el DOF.")
+    # Contexto compacto para el chat embebido (preguntar sobre el DOF del día).
+    ctx = (f"Boletín DOF del {fl}: {n_rel} documentos normativos relevantes de "
+           f"{total} publicaciones.\n"
+           + "\n".join(f"- [{(r['tipo_nota_raw'] or '').strip()}] "
+                       f"{(r['titulo'] or '').strip()}" for r in relevantes[:120]))
+    return LH.render_page(
+        f"📰 Diario Oficial — {fl}", "Diario Oficial de la Federación",
+        body, ctx_md=ctx, con_chat=True, resumen=resumen,
+        chat_titulo="💬 Pregúntale a Louis sobre el DOF de hoy",
+        fuente="Fuente: Diario Oficial de la Federación (SEGOB)")
+
 
 
 def main():

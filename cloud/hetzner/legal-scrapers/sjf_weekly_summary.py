@@ -104,8 +104,11 @@ def mrank(m):
 
 
 def build_html(rows, etiqueta):
+    # Motor HTML interactivo ÚNICO (mismo look que el análisis legal y el DOF).
+    if "/opt/openclaw/scripts" not in sys.path:
+        sys.path.insert(0, "/opt/openclaw/scripts")
+    import louis_html as LH
     fx = fecha_es(etiqueta)
-    hoy = dt.date.today().strftime("%d/%m/%Y")
     n_jur = sum(1 for r in rows if es_juris(r))
     n_tes = len(rows) - n_jur
     # agrupar por materia (una tesis con varias materias aparece en cada una)
@@ -124,37 +127,27 @@ def build_html(rows, etiqueta):
             f'<tr><td class="reg"><a href="{URL.format(r["registro_digital"])}">{r["registro_digital"]}</a></td>'
             f'<td><span class="tag {"j" if es_juris(r) else "t"}">'
             f'{"Jurisprudencia" if es_juris(r) else "Tesis"}</span> '
-            f'<span class="rubro">{esc(r["rubro"]).rstrip(". ")}</span></td></tr>'
+            f'{esc(r["rubro"]).rstrip(". ")}</td></tr>'
             for r in it)
         secc.append(
-            f'<h2>{esc(mat)} <span class="c">({len(it)} · {nj} jur / {len(it) - nj} tesis)</span></h2>'
-            f'<table><tbody>{filas}</tbody></table>')
-    body = "\n".join(secc)
-    doc = f"""<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Semanario Judicial — {esc(fx)}</title><style>
-body{{font-family:'Georgia',serif;max-width:900px;margin:40px auto;padding:0 24px;color:#1a1a1a;line-height:1.65}}
-h1{{font-size:1.6em;border-bottom:3px solid #8B1A2E;padding-bottom:8px;color:#8B1A2E}}
-h2{{font-size:1.2em;color:#2c3e50;margin-top:1.8em;border-bottom:1px solid #ddd;padding-bottom:4px}}
-.c{{color:#999;font-weight:normal;font-size:.82em}}
-table{{border-collapse:collapse;width:100%;margin:.5em 0}}
-td{{border-bottom:1px solid #eee;padding:7px 10px;vertical-align:top}}
-td.reg{{width:88px;font-size:.9em;white-space:nowrap}}
-td.reg a{{color:#8B1A2E;text-decoration:none;font-weight:bold}}
-.rubro{{font-size:.95em}}
-.tag{{font-size:.7em;font-weight:bold;padding:1px 6px;border-radius:4px;margin-right:4px;white-space:nowrap}}
-.tag.j{{background:#8B1A2E;color:#fff}} .tag.t{{background:#e8e8e8;color:#555}}
-.hd{{display:flex;justify-content:space-between;margin-bottom:1.2em;padding:14px 16px;background:#f8f9fa;border-radius:6px;font-size:.85em;color:#666}}
-.resumen{{background:#f8f9fa;border-left:4px solid #8B1A2E;padding:10px 14px;margin:1em 0;font-size:.95em}}
-.ft{{margin-top:3em;padding-top:1em;border-top:1px solid #ddd;font-size:.8em;color:#999;text-align:center}}
-</style></head><body>
-<div class="hd"><span>Elaborado por: <strong>Louis · Kawiil</strong> — Semanario Judicial de la Federación</span><span>Generado: {hoy}</span></div>
-<h1>⚖️ Semanario Judicial — {esc(fx)}</h1>
-<div class="resumen"><strong>{len(rows)}</strong> publicaciones: <strong>{n_jur}</strong> jurisprudencias · <strong>{n_tes}</strong> tesis aisladas. Organizadas por materia. Da clic en el registro para el detalle en el SJF.</div>
-{body}
-<div class="ft">Documento generado por Louis (Kawiil) · {hoy} · Fuente: SCJN · Nota: una tesis con varias materias aparece en cada una.</div>
-</body></html>"""
-    return doc.encode("utf-8")
+            f'<details class="sec" open><summary>{esc(mat)} '
+            f'<span class="c">({len(it)} · {nj} jur / {len(it) - nj} tesis)</span></summary>'
+            f'<div class="sec-body"><table><tbody>{filas}</tbody></table></div></details>')
+    body = "\n".join(secc) or '<p style="color:#888;font-style:italic">Sin publicaciones nuevas.</p>'
+
+    resumen = (f"<strong>{len(rows)}</strong> publicaciones: <strong>{n_jur}</strong> "
+               f"jurisprudencias · <strong>{n_tes}</strong> tesis aisladas. "
+               f"Organizadas por materia. Da clic en el registro para el detalle en el SJF.")
+    ctx = (f"Semanario Judicial, semana del {fx}: {len(rows)} publicaciones "
+           f"({n_jur} jurisprudencias, {n_tes} tesis).\n"
+           + "\n".join(f"- [{'Jurisprudencia' if es_juris(r) else 'Tesis'}] "
+                       f"{(r['rubro'] or '').strip()}" for r in rows[:120]))
+    return LH.render_page(
+        f"⚖️ Semanario Judicial — {fx}", "Semanario Judicial de la Federación",
+        body, ctx_md=ctx, con_chat=True, resumen=resumen,
+        chat_titulo="💬 Pregúntale a Louis sobre estas tesis",
+        fuente="Fuente: SCJN — Semanario Judicial de la Federación")
+
 
 
 def main():
