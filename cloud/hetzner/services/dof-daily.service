@@ -13,4 +13,4 @@ StandardOutput=append:@@OPENCLAW_HOME@@/logs/dof-daily.log
 StandardError=append:@@OPENCLAW_HOME@@/logs/dof-daily.log
 SyslogIdentifier=louis-dof-daily
 TimeoutStartSec=300
-MemoryMax=256M
+MemoryMax=512M

@@ -13,4 +13,4 @@ StandardOutput=append:@@OPENCLAW_HOME@@/logs/sjf-weekly.log
 StandardError=append:@@OPENCLAW_HOME@@/logs/sjf-weekly.log
 SyslogIdentifier=louis-sjf-weekly
 TimeoutStartSec=300
-MemoryMax=256M
+MemoryMax=512M
