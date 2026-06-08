@@ -1,0 +1,10 @@
+[Unit]
+Description=Dispara el harvest del DOF (ediciones recientes) — diario, mañana CDMX
+
+[Timer]
+OnCalendar=*-*-* 08:30:00 America/Mexico_City
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

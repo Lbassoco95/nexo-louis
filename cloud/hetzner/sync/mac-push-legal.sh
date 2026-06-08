@@ -90,10 +90,16 @@ if [[ -d "$SJF_LOGS" ]]; then
 fi
 
 # === DOF ===
+# El servidor ahora corre la extracción del DOF (download-contents/generate-pdfs)
+# y es la FUENTE DE LA VERDAD. El push desde la Mac queda DESACTIVADO por defecto
+# para no sobreescribir el avance del servidor. LOUIS_PUSH_DOF=1 para reactivar.
+PUSH_DOF="${LOUIS_PUSH_DOF:-0}"
 DOF_DB="$HOME/dof_biblioteca/biblioteca_dof.db"
 DOF_LOGS="$HOME/dof_biblioteca/logs"
 DOF_SNAPSHOT="$SNAPSHOT_DIR/biblioteca_dof.db"
-if [[ -f "$DOF_DB" ]]; then
+if [[ "$PUSH_DOF" != "1" ]]; then
+  echo "[$(stamp)] DOF push DESACTIVADO (servidor es la fuente de la verdad). LOUIS_PUSH_DOF=1 para reactivar."
+elif [[ -f "$DOF_DB" ]]; then
   SIZE=$(du -h "$DOF_DB" | cut -f1)
   echo "[$(stamp)] DOF snapshot $DOF_DB ($SIZE) → $DOF_SNAPSHOT"
   if snapshot_db "$DOF_DB" "$DOF_SNAPSHOT"; then
