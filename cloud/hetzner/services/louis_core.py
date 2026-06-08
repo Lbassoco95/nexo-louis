@@ -3039,10 +3039,11 @@ TOOLS_DEFINITION = [
     {
         "name": "generar_documento",
         "description": (
-            "Genera un documento REAL (PDF, PowerPoint o Excel) en el servidor y se lo manda a Polo por Telegram. "
+            "Genera un documento REAL en el servidor y se lo manda a Polo por Telegram. "
             "Úsala cuando Polo pida un documento formal para compartir con su equipo: dictámenes, planes, reportes, "
-            "presentaciones, tablas. SIEMPRE prefiere generar el tipo correcto: PDF para documentos de texto/legal, "
-            "pptx para presentaciones, xlsx para tablas/datos financieros. "
+            "presentaciones, tablas. EL FORMATO POR DEFECTO ES HTML interactivo (el estándar de Kawiil: dashboard "
+            "colapsable + buscador + chat embebido). SOLO usa otro formato si Polo lo pide explícitamente: "
+            "'en word' → docx (editable); 'en pdf' → pdf; 'presentación/deck' → pptx; 'excel/tabla de datos' → xlsx. "
             "El contenido debe ser markdown completo — encabezados con #, listas con -, tablas con |."
         ),
         "input_schema": {
@@ -3050,8 +3051,8 @@ TOOLS_DEFINITION = [
             "properties": {
                 "tipo": {
                     "type": "string",
-                    "enum": ["pdf", "html", "pptx", "xlsx"],
-                    "description": "pdf = documento/informe/dictamen; html = documento INTERACTIVO (colapsables+buscador, cuando pidan HTML/interactivo); pptx = presentación/deck; xlsx = tabla/datos",
+                    "enum": ["html", "docx", "pdf", "pptx", "xlsx"],
+                    "description": "html = DEFAULT, documento interactivo (colapsables+buscador+chat); docx = Word editable (cuando pidan 'en word'); pdf = PDF fijo (cuando pidan 'en pdf'); pptx = presentación/deck; xlsx = tabla/datos",
                 },
                 "titulo": {"type": "string", "description": "Título del documento (sin extensión)"},
                 "contenido": {"type": "string", "description": "Contenido completo en markdown"},
@@ -5116,6 +5117,85 @@ def _generar_xlsx(titulo: str, contenido: str) -> bytes | None:
     return buf.getvalue()
 
 
+def _generar_docx(titulo: str, contenido: str, agente: str = "Louis") -> bytes | None:
+    """Genera un Word (.docx) desde markdown (encabezados, negritas, tablas, listas).
+    Retorna None si python-docx no está instalado."""
+    try:
+        from docx import Document
+        from docx.shared import Pt, RGBColor
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+    except ImportError:
+        return None
+    from io import BytesIO
+    import datetime as _dt
+
+    doc = Document()
+    h = doc.add_heading(titulo[:120], level=0)
+    sub = doc.add_paragraph()
+    run = sub.add_run(f"Elaborado por Louis · Kawiil — {agente} · {_dt.date.today().strftime('%d/%m/%Y')}")
+    run.italic = True
+    run.font.size = Pt(9)
+    run.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
+
+    def _add_richtext(par, text):
+        # **negrita** y *itálica* básicas
+        for seg in re.split(r"(\*\*.+?\*\*|\*.+?\*)", text):
+            if not seg:
+                continue
+            if seg.startswith("**") and seg.endswith("**"):
+                par.add_run(seg[2:-2]).bold = True
+            elif seg.startswith("*") and seg.endswith("*"):
+                par.add_run(seg[1:-1]).italic = True
+            else:
+                par.add_run(seg)
+
+    lines = contenido.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        # Tabla markdown
+        if re.match(r"^\s*\|", line):
+            tbl_lines = []
+            while i < len(lines) and re.match(r"^\s*\|", lines[i]):
+                tbl_lines.append(lines[i]); i += 1
+            filas = [[c.strip() for c in ln.strip().strip("|").split("|")]
+                     for ln in tbl_lines if not re.match(r"^[\s|:\-]+$", ln)]
+            if filas:
+                t = doc.add_table(rows=0, cols=len(filas[0]))
+                t.style = "Light Grid Accent 1"
+                for fi, fila in enumerate(filas):
+                    cells = t.add_row().cells
+                    for ci, val in enumerate(fila[:len(cells)]):
+                        cells[ci].text = val
+                        if fi == 0:
+                            for p in cells[ci].paragraphs:
+                                for r in p.runs:
+                                    r.bold = True
+            continue
+        m = re.match(r"^(#{1,4})\s+(.+)", line)
+        if m:
+            doc.add_heading(m.group(2).strip(), level=min(len(m.group(1)), 4))
+            i += 1; continue
+        if re.match(r"^---+\s*$", line):
+            doc.add_paragraph().add_run("―" * 20)
+            i += 1; continue
+        m = re.match(r"^\s*[-*]\s+(.+)", line)
+        if m:
+            _add_richtext(doc.add_paragraph(style="List Bullet"), m.group(1))
+            i += 1; continue
+        m = re.match(r"^\s*\d+\.\s+(.+)", line)
+        if m:
+            _add_richtext(doc.add_paragraph(style="List Number"), m.group(1))
+            i += 1; continue
+        if line.strip():
+            _add_richtext(doc.add_paragraph(), line.strip())
+        i += 1
+
+    buf = BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
 def _limpiar_contenido_doc(texto: str) -> str:
     """Quita HTML/CSS/código que un agente pudo meter en su respuesta. El formato
     visual lo arma el sistema (PDF/HTML), no el agente — si el agente escribe un
@@ -5137,16 +5217,18 @@ def _generar_documento_tool(tipo: str, titulo: str, contenido: str, agente: str 
     """Genera PDF/HTML/PPTX/XLSX en el servidor y lo encola para envío por Telegram."""
     import datetime as _dt
     tipo = tipo.lower().strip()
+    if tipo == "word":
+        tipo = "docx"
     contenido = _limpiar_contenido_doc(contenido)   # el formato lo arma el sistema, no el agente
     generators = {"pdf": _generar_pdf, "pptx": _generar_pptx, "xlsx": _generar_xlsx,
-                  "html": _generar_html}
+                  "html": _generar_html, "docx": _generar_docx}
     gen = generators.get(tipo)
     if gen is None:
-        return f"ERROR: tipo '{tipo}' no reconocido. Usa: pdf, html, pptx, xlsx"
-    # pdf y html muestran "Elaborado por: … {agente}"; pptx/xlsx no usan agente
-    data = gen(titulo, contenido, agente) if tipo in ("pdf", "html") else gen(titulo, contenido)
+        return f"ERROR: tipo '{tipo}' no reconocido. Usa: html, pdf, word/docx, pptx, xlsx"
+    # pdf/html/docx muestran "Elaborado por: … {agente}"; pptx/xlsx no usan agente
+    data = gen(titulo, contenido, agente) if tipo in ("pdf", "html", "docx") else gen(titulo, contenido)
     if data is None:
-        pkg = {"pdf": "fpdf2", "pptx": "python-pptx", "xlsx": "openpyxl"}.get(tipo, tipo)
+        pkg = {"pdf": "fpdf2", "pptx": "python-pptx", "xlsx": "openpyxl", "docx": "python-docx"}.get(tipo, tipo)
         return (f"ERROR: librería '{pkg}' no instalada en el servidor. "
                 f"Pide a Polo que ejecute en la Mac:\n"
                 f"ssh polo@204.168.131.21 'pip3 install {pkg}'")
@@ -5154,7 +5236,8 @@ def _generar_documento_tool(tipo: str, titulo: str, contenido: str, agente: str 
     fname = f"{safe}_{_dt.datetime.now().strftime('%Y%m%d_%H%M')}.{tipo}"
     captions = {
         "pdf": "📄 PDF listo — ábrelo directo",
-        "html": "🌐 HTML interactivo — ábrelo en el navegador (secciones colapsables + buscador)",
+        "html": "🌐 HTML interactivo — ábrelo en el navegador (secciones colapsables + buscador + chat)",
+        "docx": "📝 Word listo — ábrelo en Word o Pages (editable)",
         "pptx": "📊 PowerPoint listo — ábrelo en Keynote o PowerPoint",
         "xlsx": "📊 Excel listo — ábrelo en Numbers o Excel",
     }
@@ -5165,15 +5248,20 @@ def _generar_documento_tool(tipo: str, titulo: str, contenido: str, agente: str 
 
 
 def _doc_tipo_de_mensaje(user_message: str) -> str:
-    """Infiere el tipo de documento pedido (pdf por default)."""
+    """Infiere el formato del documento pedido. Default = HTML interactivo
+    (el estándar de Kawiil). Polo puede pedir otro formato explícito por Telegram
+    (word/pdf/excel/powerpoint) y se respeta."""
     m = (user_message or "").lower()
+    if re.search(r"\b(word|docx|documento\s+de\s+word|editable|en\s+word)\b", m):
+        return "docx"
     if re.search(r"\b(pptx|powerpoint|presentaci[oó]n|deck|diapositiva)\b", m):
         return "pptx"
     if re.search(r"\b(excel|xlsx|hoja\s+de\s+c[aá]lculo|tabla\s+de\s+datos)\b", m):
         return "xlsx"
-    if re.search(r"\b(html|interactiv\w+|p[aá]gina\s+web|micrositio|en\s+l[ií]nea)\b", m):
-        return "html"
-    return "pdf"
+    if re.search(r"\bpdf\b", m):
+        return "pdf"
+    # Default: HTML interactivo (dashboard + buscador + chat). Aplica a todo.
+    return "html"
 
 
 _LEGAL_ANALISIS_RE = re.compile(
