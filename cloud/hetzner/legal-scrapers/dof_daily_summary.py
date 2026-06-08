@@ -172,12 +172,22 @@ def build_html(relevantes, resto_counts, total, fecha, rows=None):
 
     n_rel = len(relevantes)
     n_resto = sum(resto_counts.values())
+    n_deps = len(grupos)
     if n_resto:
         resto_li = "".join(f"<li>{esc(cat)}: <strong>{n}</strong></li>"
                            for cat, n in sorted(resto_counts.items(), key=lambda x: -x[1]))
         body += (f'<details class="sec"><summary>Resto identificado (no detallado) '
                  f'<span class="c">({n_resto})</span></summary><div class="sec-body">'
                  f'<ul>{resto_li}</ul></div></details>')
+
+    # Tarjetas KPI arriba (dashboard, no lista)
+    kpis = LH.kpi_cards([
+        {"value": total, "label": "Publicaciones del día"},
+        {"value": n_rel, "label": "Normativas relevantes", "sub": "leyes/decretos/acuerdos…"},
+        {"value": n_resto, "label": "Avisos / edictos", "sub": "el 'mar', no detallado"},
+        {"value": n_deps, "label": "Dependencias", "sub": "con documento relevante"},
+    ])
+    body = kpis + body
 
     resumen = (f"<strong>{n_rel}</strong> documentos normativos relevantes "
                f"(leyes, decretos, acuerdos, reglamentos, circulares, lineamientos…) "

@@ -135,6 +135,15 @@ def build_html(rows, etiqueta):
             f'<div class="sec-body"><table><tbody>{filas}</tbody></table></div></details>')
     body = "\n".join(secc) or '<p style="color:#888;font-style:italic">Sin publicaciones nuevas.</p>'
 
+    # Tarjetas KPI arriba (dashboard, no lista)
+    kpis = LH.kpi_cards([
+        {"value": len(rows), "label": "Publicaciones de la semana"},
+        {"value": n_jur, "label": "Jurisprudencias", "sub": "criterio obligatorio"},
+        {"value": n_tes, "label": "Tesis aisladas", "sub": "criterio orientador"},
+        {"value": len(grupos), "label": "Materias"},
+    ])
+    body = kpis + body
+
     resumen = (f"<strong>{len(rows)}</strong> publicaciones: <strong>{n_jur}</strong> "
                f"jurisprudencias · <strong>{n_tes}</strong> tesis aisladas. "
                f"Organizadas por materia. Da clic en el registro para el detalle en el SJF.")
