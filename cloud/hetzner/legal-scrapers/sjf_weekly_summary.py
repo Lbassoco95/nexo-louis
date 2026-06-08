@@ -82,6 +82,19 @@ def send_msg(text):
         return False
 
 
+def notificar_kawiil_central(titulo, cuerpo, tipo):
+    """Best-effort: avisa en el app de Kawiil Central (solo a Polo por defecto).
+    No rompe el boletín si falla (import o BD)."""
+    try:
+        if "/opt/openclaw/scripts" not in sys.path:
+            sys.path.insert(0, "/opt/openclaw/scripts")
+        import louis_core as L
+        r = L._kawiil_central_notificar(titulo=titulo, cuerpo=cuerpo, para="", tipo=tipo)
+        print(f"Kawiil Central: {r}")
+    except Exception as e:
+        print(f"WARN: no notifiqué a Kawiil Central: {e}", file=sys.stderr)
+
+
 def mrank(m):
     ml = m.lower()
     for i, k in enumerate(MORD):
@@ -175,6 +188,13 @@ def main():
                f"{len(rows)} publicaciones ({n_jur} jurisprudencias · {len(rows) - n_jur} tesis), por materia. Detalle en el adjunto.")
     fname = f"Semanario_SJF_{desde.isoformat().replace('-', '')}_{hasta.isoformat().replace('-', '')}.html"
     ok = send_doc(build_html(rows, etiqueta), fname, caption)
+    if ok:
+        notificar_kawiil_central(
+            titulo=f"Semanario Judicial — semana del {etiqueta}",
+            cuerpo=(f"{len(rows)} publicaciones ({n_jur} jurisprudencias · "
+                    f"{len(rows) - n_jur} tesis), organizadas por materia. "
+                    f"El detalle llegó al Telegram de Louis."),
+            tipo="sjf_semanal")
     print("Enviado" if ok else "Falló el envío")
     return 0 if ok else 1
 

@@ -125,6 +125,19 @@ def send_msg(text):
         return False
 
 
+def notificar_kawiil_central(titulo, cuerpo, tipo):
+    """Best-effort: avisa en el app de Kawiil Central (solo a Polo por defecto).
+    No rompe el boletín si falla (import o BD)."""
+    try:
+        if "/opt/openclaw/scripts" not in sys.path:
+            sys.path.insert(0, "/opt/openclaw/scripts")
+        import louis_core as L
+        r = L._kawiil_central_notificar(titulo=titulo, cuerpo=cuerpo, para="", tipo=tipo)
+        print(f"Kawiil Central: {r}")
+    except Exception as e:
+        print(f"WARN: no notifiqué a Kawiil Central: {e}", file=sys.stderr)
+
+
 def build_html(relevantes, resto_counts, total, fecha):
     fl = fecha_larga(fecha)
     ddmm = fecha_ddmmyyyy(fecha)
@@ -241,6 +254,12 @@ def main():
             state.write_text(fecha)
         except Exception as e:
             print(f"WARN: no guardé estado: {e}", file=sys.stderr)
+        notificar_kawiil_central(
+            titulo=f"DOF — {fl}",
+            cuerpo=(f"{len(relevantes)} documentos normativos relevantes "
+                    f"(leyes/decretos/acuerdos/circulares…) de {len(rows)} publicaciones. "
+                    f"El detalle por dependencia llegó al Telegram de Louis."),
+            tipo="dof_resumen")
     print("Enviado" if ok else "Falló el envío")
     return 0 if ok else 1
 
