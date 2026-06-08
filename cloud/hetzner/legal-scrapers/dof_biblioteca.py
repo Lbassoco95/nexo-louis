@@ -53,9 +53,15 @@ from pathlib import Path
 # CONFIGURACIÓN
 # ============================================================
 HOME = Path.home()
-BASE_DIR = HOME / "dof_biblioteca"
-DB_PATH = BASE_DIR / "biblioteca_dof.db"
+# BASE_DIR configurable por env (en el servidor: /opt/openclaw/legal/dof) para usar
+# la BD autoritativa del server, no una nueva en ~/dof_biblioteca.
+BASE_DIR = Path(os.environ.get("DOF_BASE_DIR", str(HOME / "dof_biblioteca")))
+DB_PATH = Path(os.environ.get("DOF_DB_PATH", str(BASE_DIR / "biblioteca_dof.db")))
 LOG_DIR = BASE_DIR / "logs"
+
+# Carpeta donde se guardan los PDFs individuales por nota (configurable; en el
+# servidor a /opt/openclaw/legal/dof/pdfs para consulta offline / Ollama).
+PDF_OUT_DIR = Path(os.environ.get("DOF_PDF_DIR", str(BASE_DIR / "pdfs")))
 
 # Carpeta de archivos en Dropbox
 DROPBOX_BASE = Path(
@@ -63,7 +69,9 @@ DROPBOX_BASE = Path(
     "LEGAL, CONSTITUCIONES, CORPORATIVO CLIENTES/DOF"
 )
 DIR_LEYES = DROPBOX_BASE / "leyes_federales"
-DIR_PUBLICACIONES = DROPBOX_BASE / "publicaciones_diarias"
+# Publicaciones (PDFs por nota): configurable por env. En el servidor →
+# DOF_PDF_DIR (/opt/openclaw/legal/dof/pdfs); en la Mac, el Dropbox de siempre.
+DIR_PUBLICACIONES = Path(os.environ.get("DOF_PDF_DIR", str(DROPBOX_BASE / "publicaciones_diarias")))
 DIR_TRATADOS = DROPBOX_BASE / "tratados_internacionales"
 
 # Endpoints API
