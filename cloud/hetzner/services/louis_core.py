@@ -5659,24 +5659,22 @@ def _dof_nota_texto(cod: str) -> str:
                                 + t[:6000] + ("\n\n…(texto truncado; pide más si lo necesitas)" if len(t) > 6000 else ""))
     except Exception as e:
         log.warning(f"dof_nota_texto BD: {e}")
-    # 2) En vivo (HTTP ligero, sin browser)
-    url = f"https://www.dof.gob.mx/nota_detalle_popup.php?codigo={cod}"
-    ua = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-          "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+    # 2) En vivo — reusa el fetch PROBADO del scraper (host/headers correctos:
+    # http://diariooficial.gob.mx/nota_detalle_popup.php). Mi URL propia daba URLError.
+    txt = ""
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": ua})
-        with urllib.request.urlopen(req, timeout=25) as r:
-            html_raw = r.read().decode("utf-8", "replace")
+        dof_dir = os.environ.get("DOF_SCRIPT_DIR", "/opt/openclaw/legal/dof")
+        if dof_dir not in sys.path:
+            sys.path.insert(0, dof_dir)
+        import dof_biblioteca as _dofb
+        html_raw = _dofb.fetch_nota_html(int(cod))
+        if html_raw:
+            txt = (_dofb.html_to_text(html_raw) or "").strip()
     except Exception as e:
-        return (f"⚠️ No pude bajar la nota {cod} en vivo ({type(e).__name__}). "
-                f"Ábrela en: https://www.dof.gob.mx/nota_detalle.php?codigo={cod}")
-    txt = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", html_raw)
-    txt = re.sub(r"(?s)<[^>]+>", " ", txt)
-    txt = _html.unescape(txt)
-    txt = re.sub(r"[ \t\xa0]+", " ", txt)
-    txt = re.sub(r"\n\s*\n+", "\n\n", txt).strip()
-    if len(txt) < 80:
-        return (f"⚠️ La nota {cod} no devolvió texto legible (puede ser solo imagen/PDF). "
+        log.warning(f"dof_nota_texto live: {e}")
+    if not txt or len(txt) < 80:
+        return (f"⚠️ La nota {cod} aún no está descargada y no pude bajarla en vivo "
+                f"(quizá es solo imagen/PDF o el DOF no respondió). "
                 f"Ábrela en: https://www.dof.gob.mx/nota_detalle.php?codigo={cod}")
     return (f"📄 Nota DOF cód {cod} (descargada en vivo del DOF):\n\n"
             + txt[:6000] + ("\n\n…(texto truncado)" if len(txt) > 6000 else ""))
