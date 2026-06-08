@@ -974,6 +974,12 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "- `kawiil_central_query(sql, razon)` — SQL libre con guardrails. Para casos donde los wrappers "
         "no embonan con el schema real. PERMITIDO: SELECT/INSERT/UPDATE. BLOQUEADO: DROP/TRUNCATE/ALTER. "
         "DELETE requiere 'DELETE_CONFIRM' en razón Y confirmación explícita de Polo.\n"
+        "- `kawiil_central_notificar(titulo, cuerpo?, para?, tipo?)` — crea una notificación REAL en el "
+        "app (le aparece a la persona en su campana) + deja rastro en activity_log. ÚSALA para que el "
+        "EQUIPO se entere de un avance sin que Polo copie/pegue: cuando termines un análisis legal, el "
+        "resumen DOF, el reporte SJF, o cuando Polo diga 'avísale al equipo' / 'notifica a X'. `para` vacío "
+        "= solo Polo; `para='equipo'` = todos los activos; o nombres/emails separados por coma. NO uses "
+        "SQL crudo para esto.\n"
         "\n"
         "FLUJO RECOMENDADO cuando Polo te dice algo como 'avancé X' o 'creemos tarea para Y':\n"
         "1. Si es la primera vez de la sesión, llama `kawiil_central_estado()` para verificar conectividad "
@@ -2761,6 +2767,22 @@ TOOLS_DEFINITION = [
                 "porcentaje": {"type": "integer", "description": "% de avance (opcional)"},
             },
             "required": ["tarea_id", "texto"],
+        },
+    },
+    {
+        "name": "kawiil_central_notificar",
+        "description": "Avisa al equipo dentro del app de Kawiil Central creando una notificación REAL (les aparece en su campana). ÚSALA cuando completes un avance que el equipo debe ver: resumen DOF diario, reporte SJF semanal, análisis legal terminado, briefing, o cuando Polo diga 'avísale al equipo' / 'notifica a X'. NO uses SQL crudo. `para`: nombre o email tal como aparece en Kawiil Central (varios separados por coma), o 'equipo' para todos los usuarios activos. Si lo dejas vacío, solo le llega a Polo (evita spamear al equipo por defecto). Pon un título corto y el detalle en `cuerpo`.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "titulo": {"type": "string", "description": "Título corto del aviso (ej. 'Resumen DOF — viernes 6 jun')"},
+                "cuerpo": {"type": "string", "description": "Detalle/cuerpo de la notificación (opcional pero recomendado)"},
+                "para": {"type": "string", "description": "Destinatarios: nombre(s)/email(s) separados por coma, o 'equipo' para todos. Vacío = solo Polo."},
+                "tipo": {"type": "string", "description": "Categoría de la notificación (default 'ai_update'). Ej: 'dof_resumen', 'sjf_semanal', 'legal_analisis', 'briefing'."},
+                "entity_type": {"type": "string", "description": "Opcional: tipo de entidad relacionada (ej. 'task', 'project') para enlazar."},
+                "entity_id": {"type": "string", "description": "Opcional: id (uuid) de la entidad relacionada."},
+            },
+            "required": ["titulo"],
         },
     },
     {
@@ -6932,6 +6954,109 @@ def _kawiil_central_avance(tarea_id: str, texto: str, porcentaje: int = None) ->
     return "❌ No encontré tabla de comentarios/updates ni campo notes/history en tareas. Crea la estructura en kawiil-central primero, o usa kawiil_central_query con SQL específico."
 
 
+def _kawiil_central_notificar(titulo: str, cuerpo: str = "", para: str = "",
+                              tipo: str = "ai_update", entity_type: str = "",
+                              entity_id: str = "", registrar_actividad: bool = True) -> str:
+    """Crea notificaciones en Kawiil Central (una fila por usuario en `notifications`)
+    para que al equipo le aparezca el aviso en el app. También deja rastro en `activity_log`.
+    `para`: nombre/email/uuid (varios separados por coma) o 'equipo'/'todos' para todos los
+    usuarios activos. Vacío = solo Polo (no spamea al equipo)."""
+    if not titulo:
+        return "❌ Falta el título de la notificación."
+    conn, err = _kawiil_central_pg()
+    if err:
+        return err
+    try:
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM public.organizations LIMIT 1")
+        row = cur.fetchone()
+        if not row:
+            conn.close()
+            return "❌ No hay organización en la BD."
+        org_id = row[0]
+
+        def _todos_activos():
+            cur.execute("SELECT user_id FROM public.profiles WHERE user_id IS NOT NULL AND is_active IS NOT FALSE")
+            return [str(r[0]) for r in cur.fetchall()]
+
+        destinatarios: list[str] = []
+        no_resueltos: list[str] = []
+        para_norm = (para or "").strip().lower()
+        EQUIPO = ("equipo", "todos", "team", "all", "todo el equipo")
+        if not para_norm:
+            uid = _kawiil_central_resolver_usuario(conn, "polo") or _kawiil_central_resolver_usuario(conn, "leopoldo")
+            if uid:
+                destinatarios = [uid]
+        elif para_norm in EQUIPO:
+            destinatarios = _todos_activos()
+        else:
+            for tok in re.split(r"[,;]", para):
+                tok = tok.strip()
+                if not tok:
+                    continue
+                if tok.lower() in EQUIPO:
+                    destinatarios.extend(_todos_activos())
+                    continue
+                uid = _kawiil_central_resolver_usuario(conn, tok)
+                if uid:
+                    destinatarios.append(uid)
+                else:
+                    no_resueltos.append(tok)
+        destinatarios = list(dict.fromkeys(destinatarios))  # dedup, preserva orden
+        if not destinatarios:
+            conn.close()
+            extra = f" (no resolví: {', '.join(no_resueltos)})" if no_resueltos else ""
+            return (f"❌ No resolví destinatarios para '{para}'{extra}. Usa el nombre/email como "
+                    f"aparece en Kawiil Central, o 'equipo' para todos.")
+
+        tipo = (tipo or "ai_update").strip()
+        all_cols = ["user_id", "type", "title", "organization_id"]
+        tail_cols, tail_vals = [], []
+        if cuerpo:
+            tail_cols.append("body"); tail_vals.append(cuerpo)
+        if entity_type:
+            tail_cols.append("entity_type"); tail_vals.append(entity_type)
+        if entity_id:
+            tail_cols.append("entity_id"); tail_vals.append(entity_id)
+        all_cols += tail_cols
+        ph = ", ".join(["%s"] * len(all_cols))
+        n = 0
+        for uid in destinatarios:
+            cur.execute(f"INSERT INTO public.notifications ({', '.join(all_cols)}) VALUES ({ph})",
+                        [uid, tipo, titulo, org_id] + tail_vals)
+            n += 1
+
+        if registrar_actividad:
+            det = {"source": "louis", "title": titulo}
+            if cuerpo:
+                det["body"] = cuerpo[:500]
+            try:
+                if entity_id:
+                    cur.execute(
+                        "INSERT INTO public.activity_log (organization_id, entity_type, entity_id, action, details) "
+                        "VALUES (%s, %s, %s, %s, %s)",
+                        (org_id, entity_type or "ai_update", entity_id, "louis_notificacion", json.dumps(det)))
+                else:
+                    cur.execute(
+                        "INSERT INTO public.activity_log (organization_id, entity_type, entity_id, action, details) "
+                        "VALUES (%s, %s, gen_random_uuid(), %s, %s)",
+                        (org_id, entity_type or "ai_update", "louis_notificacion", json.dumps(det)))
+            except Exception:
+                log.exception("activity_log insert falló (no crítico)")
+
+        _kawiil_central_audit(f"notificar '{titulo}' → {n} user(s)", f"type={tipo} para={para or 'polo'}")
+        conn.close()
+        aviso = f"✅ Notificación enviada a {n} persona(s) en Kawiil Central: *{titulo}*"
+        if no_resueltos:
+            aviso += f"\n⚠️ No resolví (no notificados): {', '.join(no_resueltos)}"
+        return aviso
+    except Exception as e:
+        try: conn.close()
+        except Exception: pass
+        return f"❌ No pude crear la notificación (error real): {e}"
+
+
 # ===== Recordatorios (scheduler queue) =====
 import uuid as _uuid
 
@@ -7989,6 +8114,11 @@ def execute_tool(name: str, args: dict) -> str:
             return _kawiil_central_actualizar_tarea(args["tarea_id"], args["cambios"])
         elif name == "kawiil_central_avance":
             return _kawiil_central_avance(args["tarea_id"], args["texto"], args.get("porcentaje"))
+        elif name == "kawiil_central_notificar":
+            return _kawiil_central_notificar(
+                args["titulo"], args.get("cuerpo", ""), args.get("para", ""),
+                args.get("tipo", "ai_update"), args.get("entity_type", ""),
+                args.get("entity_id", ""))
         elif name == "leer_mi_codigo":
             import self_update as _su
             return _su.leer_mi_codigo(args["archivo"], args.get("offset", 0), args.get("limit", 200))
