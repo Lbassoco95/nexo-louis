@@ -19,6 +19,30 @@ import re as _re
 import os as _os
 import json as _json
 import datetime as _dt
+import base64 as _b64
+from pathlib import Path as _Path
+
+# Directorio de assets de marca (logos). En el server: /opt/openclaw/assets/brand/kawiil
+BRAND_DIR = _Path(_os.environ.get("LOUIS_BRAND_DIR", "/opt/openclaw/assets/brand/kawiil"))
+_LOGO_CACHE: dict = {}
+
+
+def _logo_uri(nombre: str = "Manik_1.png") -> str:
+    """Devuelve el logo como data URI (base64) para embeberlo SIN depender de red.
+    Manik_1.png = isotipo BLANCO (para fondos oscuros, ej. el header azul).
+    Devuelve '' si no encuentra el archivo (el header cae a texto '✦ Kawiil')."""
+    if nombre in _LOGO_CACHE:
+        return _LOGO_CACHE[nombre]
+    uri = ""
+    try:
+        p = BRAND_DIR / nombre
+        if p.exists():
+            b = p.read_bytes()
+            uri = "data:image/png;base64," + _b64.b64encode(b).decode("ascii")
+    except Exception:
+        uri = ""
+    _LOGO_CACHE[nombre] = uri
+    return uri
 
 # ── Marca Kawiil ──────────────────────────────────────────────────────────
 BRAND = {
@@ -120,7 +144,8 @@ def _css(accent: str, accent_dark: str) -> str:
              padding: 14px 18px; background: linear-gradient(90deg,{accent_dark},{accent}); border-radius: 8px;
              font-size: 0.85em; color: #eaf1ff; }}
   .header strong {{ color: #fff; }}
-  .header .brand {{ font-size: 1.15em; font-weight: bold; color: #fff; letter-spacing: .5px; }}
+  .header .brand {{ font-size: 1.15em; font-weight: bold; color: #fff; letter-spacing: .5px; display: inline-flex; align-items: center; gap: 9px; }}
+  .header .brand img.logo {{ height: 30px; width: auto; display: block; }}
   .resumen {{ background: #eef3fb; border-left: 4px solid {accent}; padding: 11px 15px; margin: 1em 0; font-size: .95em; border-radius: 0 8px 8px 0; }}
   .footer {{ margin-top: 3em; padding-top: 1em; border-top: 1px solid #ddd;
              font-size: 0.8em; color: #999; text-align: center; }}
@@ -206,6 +231,9 @@ def render_page(titulo: str, agente: str, body_html: str, *,
 </div>"""
 
     fuente_ft = f" · {esc(fuente)}" if fuente else ""
+    logo = _logo_uri("Manik_1.png")
+    brand_html = (f'<img class="logo" src="{logo}" alt="Kawiil"><span>Kawiil</span>'
+                  if logo else "✦ Kawiil")
     return f"""<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -216,7 +244,7 @@ def render_page(titulo: str, agente: str, body_html: str, *,
 </head>
 <body>
 <div class="header">
-  <span class="brand">✦ Kawiil</span>
+  <span class="brand">{brand_html}</span>
   <span>Elaborado por <strong>Louis</strong> — {esc(agente)} · {fecha}</span>
 </div>
 <div class="toolbar">

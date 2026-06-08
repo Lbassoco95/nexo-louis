@@ -138,7 +138,7 @@ def notificar_kawiil_central(titulo, cuerpo, tipo):
         print(f"WARN: no notifiqué a Kawiil Central: {e}", file=sys.stderr)
 
 
-def build_html(relevantes, resto_counts, total, fecha):
+def build_html(relevantes, resto_counts, total, fecha, rows=None):
     # Motor HTML interactivo ÚNICO (mismo look que el análisis legal y el SJF).
     if "/opt/openclaw/scripts" not in sys.path:
         sys.path.insert(0, "/opt/openclaw/scripts")
@@ -184,11 +184,15 @@ def build_html(relevantes, resto_counts, total, fecha):
                f"de un total de <strong>{total}</strong> publicaciones. "
                f"El resto ({n_resto}) son avisos/edictos/convocatorias. "
                f"Da clic en el código para abrir la nota en el DOF.")
-    # Contexto compacto para el chat embebido (preguntar sobre el DOF del día).
+    # Contexto para el chat embebido: TODAS las publicaciones del día (relevantes +
+    # resto con su título), para que el chat pueda responder qué se publicó/descargó.
+    fuente_ctx = rows if rows is not None else relevantes
     ctx = (f"Boletín DOF del {fl}: {n_rel} documentos normativos relevantes de "
-           f"{total} publicaciones.\n"
-           + "\n".join(f"- [{(r['tipo_nota_raw'] or '').strip()}] "
-                       f"{(r['titulo'] or '').strip()}" for r in relevantes[:120]))
+           f"{total} publicaciones totales (las {total} incluyen relevantes + "
+           f"avisos/edictos/convocatorias). Lista completa de publicaciones del día:\n"
+           + "\n".join(f"- [{(r['tipo_nota_raw'] or '').strip() or 'doc'}] "
+                       f"{(r['titulo'] or '').strip()} (cód {r['cod_nota']})"
+                       for r in fuente_ctx[:200]))
     return LH.render_page(
         f"📰 Diario Oficial — {fl}", "Diario Oficial de la Federación",
         body, ctx_md=ctx, con_chat=True, resumen=resumen,
@@ -241,7 +245,7 @@ def main():
                f"<b>{len(relevantes)}</b> documentos relevantes (leyes/decretos/acuerdos/circulares…) "
                f"de {len(rows)} publicaciones. Detalle por dependencia en el adjunto.")
     fname = f"DOF_{fecha.replace('-', '')}.html"
-    ok = send_doc(build_html(relevantes, resto_counts, len(rows), fecha), fname, caption)
+    ok = send_doc(build_html(relevantes, resto_counts, len(rows), fecha, rows), fname, caption)
     if ok:
         try:
             state.parent.mkdir(parents=True, exist_ok=True)
