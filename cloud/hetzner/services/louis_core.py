@@ -2998,6 +2998,15 @@ TOOLS_DEFINITION = [
         },
     },
     {
+        "name": "dof_nota",
+        "description": "Trae el TEXTO de una nota específica del DOF por su código (ej. 5496518) para LEERLA y responder. Primero busca en la BD local; si no está descargada, la baja EN VIVO del DOF por HTTP ligero (NO el browser pesado que el DOF bloquea). ÚSALA cuando pregunten 'qué dice la nota X', 'el del ayuntamiento', 'el contenido del código N', o para revisar un aviso/edicto/acuerdo puntual. Devuelve el texto, no un archivo (para eso usa dof_pdf).",
+        "input_schema": {
+            "type": "object",
+            "properties": {"cod": {"type": "string", "description": "código de la nota del DOF (numérico, ej. 5496518)"}},
+            "required": ["cod"],
+        },
+    },
+    {
         "name": "proyectos_listar",
         "description": (
             "Lista los proyectos de Polo sincronizados desde su Mac (~/Documents/Claude/Projects): "
@@ -5622,6 +5631,57 @@ def _dof_pdf(cod: str) -> str:
             f"enviándolo por Telegram. Ábrelo en el navegador para leerlo o imprimirlo a PDF.")
 
 
+def _dof_nota_texto(cod: str) -> str:
+    """Devuelve el TEXTO de una nota del DOF por código, para LEERLA/responder en chat.
+    1) Busca en la BD local (texto ya descargado). 2) Si no está, la baja EN VIVO del
+    endpoint ligero del DOF (nota_detalle_popup.php) por HTTP directo — NO el browser
+    pesado, que el DOF bloquea. Devuelve texto plano (truncado)."""
+    import html as _html
+    cod = str(cod).strip()
+    if not cod.isdigit():
+        return f"❌ Código inválido: '{cod}'. Debe ser numérico (ej. 5496518)."
+    titulo = fecha = ""
+    # 1) BD local
+    try:
+        if DOF_DB.exists():
+            conn = _legal_open(DOF_DB)
+            if conn is not None:
+                row = conn.execute(
+                    "SELECT titulo, fecha, texto_plano FROM notas WHERE cod_nota=?", (cod,)
+                ).fetchone()
+                conn.close()
+                if row:
+                    titulo = row["titulo"] or ""
+                    fecha = row["fecha"] or ""
+                    t = (row["texto_plano"] or "").strip()
+                    if len(t) > 80:
+                        return (f"📄 *{titulo or cod}* (DOF {fecha}, cód {cod}) — texto de la BD local:\n\n"
+                                + t[:6000] + ("\n\n…(texto truncado; pide más si lo necesitas)" if len(t) > 6000 else ""))
+    except Exception as e:
+        log.warning(f"dof_nota_texto BD: {e}")
+    # 2) En vivo (HTTP ligero, sin browser)
+    url = f"https://www.dof.gob.mx/nota_detalle_popup.php?codigo={cod}"
+    ua = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": ua})
+        with urllib.request.urlopen(req, timeout=25) as r:
+            html_raw = r.read().decode("utf-8", "replace")
+    except Exception as e:
+        return (f"⚠️ No pude bajar la nota {cod} en vivo ({type(e).__name__}). "
+                f"Ábrela en: https://www.dof.gob.mx/nota_detalle.php?codigo={cod}")
+    txt = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", html_raw)
+    txt = re.sub(r"(?s)<[^>]+>", " ", txt)
+    txt = _html.unescape(txt)
+    txt = re.sub(r"[ \t\xa0]+", " ", txt)
+    txt = re.sub(r"\n\s*\n+", "\n\n", txt).strip()
+    if len(txt) < 80:
+        return (f"⚠️ La nota {cod} no devolvió texto legible (puede ser solo imagen/PDF). "
+                f"Ábrela en: https://www.dof.gob.mx/nota_detalle.php?codigo={cod}")
+    return (f"📄 Nota DOF cód {cod} (descargada en vivo del DOF):\n\n"
+            + txt[:6000] + ("\n\n…(texto truncado)" if len(txt) > 6000 else ""))
+
+
 def _mac_enqueue_command(comando: str, args: dict | None = None, razon: str = "") -> str:
     """Encola un comando para que la Mac lo ejecute en su próximo poll."""
     if comando not in MAC_ALLOWED_COMMANDS:
@@ -7962,6 +8022,8 @@ def execute_tool(name: str, args: dict) -> str:
             return _dropbox_enviar(args["path"])
         elif name == "dof_pdf":
             return _dof_pdf(str(args["cod"]))
+        elif name == "dof_nota":
+            return _dof_nota_texto(str(args["cod"]))
         elif name == "generar_documento":
             return _generar_documento_tool(args["tipo"], args["titulo"], args["contenido"])
         elif name == "proyectos_listar":
