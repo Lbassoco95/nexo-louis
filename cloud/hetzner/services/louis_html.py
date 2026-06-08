@@ -147,6 +147,21 @@ def _css(accent: str, accent_dark: str) -> str:
   .header .brand {{ font-size: 1.15em; font-weight: bold; color: #fff; letter-spacing: .5px; display: inline-flex; align-items: center; gap: 9px; }}
   .header .brand img.logo {{ height: 30px; width: auto; display: block; }}
   .resumen {{ background: #eef3fb; border-left: 4px solid {accent}; padding: 11px 15px; margin: 1em 0; font-size: .95em; border-radius: 0 8px 8px 0; }}
+  .kpis {{ display: flex; flex-wrap: wrap; gap: 12px; margin: 1em 0 1.4em; }}
+  .kpi {{ flex: 1; min-width: 128px; background: #fff; border: 1px solid #e3e6ea;
+          border-top: 3px solid {accent}; border-radius: 10px; padding: 12px 14px;
+          box-shadow: 0 1px 4px rgba(0,0,0,.04); }}
+  .kpi .v {{ font-size: 1.8em; font-weight: bold; color: {accent_dark}; line-height: 1; }}
+  .kpi .l {{ font-size: .8em; color: #555; margin-top: 5px; font-family: sans-serif; }}
+  .kpi .s {{ font-size: .72em; color: #999; margin-top: 2px; }}
+  .destacados {{ background: #fff; border: 1px solid #e3e6ea; border-left: 4px solid {accent};
+          border-radius: 0 10px 10px 0; padding: 14px 18px; margin: 1.2em 0; }}
+  .destacados h3 {{ margin: 0 0 8px; color: {accent_dark}; }}
+  .bar-row {{ display: flex; align-items: center; gap: 8px; margin: 4px 0; font-size: .85em; }}
+  .bar-row .bl {{ min-width: 130px; color: #444; }}
+  .bar-row .bt {{ flex: 1; background: #eef0f3; border-radius: 6px; overflow: hidden; height: 16px; }}
+  .bar-row .bf {{ height: 100%; background: {accent}; }}
+  .bar-row .bn {{ min-width: 32px; text-align: right; color: #666; font-weight: bold; }}
   .footer {{ margin-top: 3em; padding-top: 1em; border-top: 1px solid #ddd;
              font-size: 0.8em; color: #999; text-align: center; }}
   details.sec {{ border: 1px solid #e3e6ea; border-radius: 8px; margin: 12px 0; padding: 0 14px; background: #fff; }}
@@ -259,6 +274,38 @@ def render_page(titulo: str, agente: str, body_html: str, *,
 <script>{script_js}</script>
 </body>
 </html>""".encode("utf-8")
+
+
+def kpi_cards(cards: list) -> str:
+    """Fila de tarjetas-KPI para encabezar un dashboard.
+    cards: lista de dicts {value, label, sub?}."""
+    esc = _html.escape
+    out = ['<div class="kpis">']
+    for c in cards:
+        sub = c.get("sub", "")
+        out.append(
+            f'<div class="kpi"><div class="v">{esc(str(c.get("value","")))}</div>'
+            f'<div class="l">{esc(str(c.get("label","")))}</div>'
+            + (f'<div class="s">{esc(str(sub))}</div>' if sub else '')
+            + '</div>')
+    out.append('</div>')
+    return "".join(out)
+
+
+def barras(items: list, total: int = 0) -> str:
+    """Mini gráfica de barras horizontales. items: lista de (etiqueta, n)."""
+    esc = _html.escape
+    mx = max([n for _, n in items], default=0) or 1
+    if total <= 0:
+        total = sum(n for _, n in items) or 1
+    out = []
+    for etq, n in items:
+        pct = int(round(100 * n / mx))
+        out.append(
+            f'<div class="bar-row"><span class="bl">{esc(str(etq))}</span>'
+            f'<span class="bt"><span class="bf" style="width:{pct}%"></span></span>'
+            f'<span class="bn">{n}</span></div>')
+    return "".join(out)
 
 
 def _md_body(md: str) -> str:

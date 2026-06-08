@@ -112,14 +112,69 @@ def cosechar(dias):
     return out
 
 
+def _es_sjf(fuente):
+    return "SJF" in (fuente or "").upper()
+
+
+def _sintesis_natural(data, dias):
+    """Resumen 'en claro' en lenguaje natural de lo aprendido (vía DeepSeek).
+    Devuelve HTML (párrafo + bullets) o '' si no se pudo generar."""
+    titulos = []
+    for ag, v in data.items():
+        for t, f in v["nuevos"][:25]:
+            area = v["label"] or ag
+            titulos.append(f"[{area}] {t}")
+    if not titulos:
+        return ""
+    muestra = "\n".join(titulos[:90])
+    system = (
+        "Eres Louis, asistente del despacho legal Kawiil (México). Te paso una lista de "
+        "títulos de documentos oficiales (DOF/SJF) que el despacho indexó esta semana. "
+        "Escribe un resumen EJECUTIVO en español claro y natural para el equipo interno "
+        "(no jerga): 1 párrafo corto (2-3 frases) de qué dominó la semana, y luego 4-6 "
+        "viñetas con los TEMAS agrupados y por qué importan para clientes. Markdown: usa "
+        "'- ' para viñetas y **negritas** para los temas. NO inventes; básate solo en los títulos.")
+    try:
+        sys.path.insert(0, SCRIPTS)
+        import louis_core as L
+        out = L.call_deepseek(system, [], f"Periodo: últimos {dias} días.\n\n{muestra}")
+        if not out or len(out.strip()) < 40:
+            return ""
+        sys.path.insert(0, SCRIPTS)
+        import louis_html as LH
+        return f'<div class="destacados"><h3>📌 En claro — lo de la semana</h3>{LH._md_body(out.strip())}</div>'
+    except Exception as e:
+        print(f"WARN: síntesis natural falló: {e}", file=sys.stderr)
+        return ""
+
+
 def build_html(data, dias, etiqueta):
     sys.path.insert(0, SCRIPTS)
     import louis_html as LH
     total_nuevos = sum(len(v["nuevos"]) for v in data.values())
     total_kb = sum(v["total"] for v in data.values())
     agentes_activos = sum(1 for v in data.values() if v["nuevos"])
+    dof_n = sum(1 for v in data.values() for _, f in v["nuevos"] if not _es_sjf(f))
+    sjf_n = total_nuevos - dof_n
+    areas = sorted({v["label"] for v in data.values() if v["nuevos"] and v["label"]})
+
+    # ── KPIs ──
+    kpis = LH.kpi_cards([
+        {"value": total_nuevos, "label": "Aprendizajes nuevos", "sub": f"últimos {dias} días"},
+        {"value": agentes_activos, "label": "Áreas/agentes con novedades", "sub": f"de {len(data)} agentes"},
+        {"value": f"{dof_n}/{sjf_n}", "label": "DOF / SJF", "sub": "normas / criterios judiciales"},
+        {"value": total_kb, "label": "Base de conocimiento", "sub": "documentos en total"},
+    ])
+    # ── Barras: aprendizajes nuevos por agente (top) ──
+    rank = sorted(((data[a]["label"] or a, len(data[a]["nuevos"]))
+                   for a in data if data[a]["nuevos"]), key=lambda x: -x[1])[:8]
+    barras_html = (f'<div class="destacados"><h3>📊 Por área (aprendizajes nuevos)</h3>'
+                   f'{LH.barras(rank)}</div>') if rank else ""
+    # ── Síntesis en lenguaje natural ──
+    sintesis = _sintesis_natural(data, dias)
+
+    # ── Detalle (colapsado para navegar fácil) ──
     secc = []
-    # Agentes con novedades primero, ordenados por # de aprendizajes nuevos
     for ag in sorted(data, key=lambda a: (-len(data[a]["nuevos"]), a)):
         v = data[ag]
         if not v["nuevos"]:
@@ -129,23 +184,23 @@ def build_html(data, dias, etiqueta):
             for t, f in v["nuevos"][:60])
         label = f" — {esc(v['label'])}" if v["label"] else ""
         secc.append(
-            f'<details class="sec" open><summary>{esc(ag)}{label} '
+            f'<details class="sec"><summary>{esc(ag)}{label} '
             f'<span class="c">({len(v["nuevos"])} nuevos · {v["total"]} total)</span></summary>'
             f'<div class="sec-body"><table><thead><tr><th>Aprendizaje (documento)</th>'
             f'<th>Fuente</th></tr></thead><tbody>{filas}</tbody></table></div></details>')
-    # Agentes sin novedades, resumidos
     sin = [(a, v["total"]) for a, v in data.items() if not v["nuevos"]]
     if sin:
-        li = "".join(f"<li>{esc(a)}: {n} docs (sin novedades)</li>"
-                     for a, n in sorted(sin, key=lambda x: -x[1]))
-        secc.append('<details class="sec"><summary>Resto de agentes (sin aprendizajes nuevos) '
+        li = "".join(f"<li>{esc(a)}: {n} docs</li>" for a, n in sorted(sin, key=lambda x: -x[1]))
+        secc.append('<details class="sec"><summary>Resto de agentes (sin novedades) '
                     f'<span class="c">({len(sin)})</span></summary>'
                     f'<div class="sec-body"><ul>{li}</ul></div></details>')
-    body = "\n".join(secc) or '<p style="color:#888;font-style:italic">Sin aprendizajes nuevos en el periodo.</p>'
+    detalle = ('<h2>Detalle por agente</h2>' + "\n".join(secc)) if secc else \
+              '<p style="color:#888;font-style:italic">Sin aprendizajes nuevos en el periodo.</p>'
+
+    body = kpis + sintesis + barras_html + detalle
     resumen = (f"En los últimos <strong>{dias} días</strong> los agentes destilaron "
-               f"<strong>{total_nuevos}</strong> aprendizajes nuevos del DOF/SJF "
-               f"({agentes_activos} agentes con novedades). "
-               f"Base de conocimiento total: <strong>{total_kb}</strong> documentos. "
+               f"<strong>{total_nuevos}</strong> documentos oficiales del DOF/SJF. "
+               f"Abajo: el resumen en claro, la gráfica por área, y el detalle (toca para abrir). "
                f"Esto es cómo la autoridad dispone y redacta — destilado para nuestros documentos.")
     ctx = (f"Digest de aprendizajes legales (últimos {dias} días): {total_nuevos} nuevos, "
            f"{total_kb} en total.\n"
