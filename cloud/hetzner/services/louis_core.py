@@ -7423,18 +7423,13 @@ def _invocar_agente(
             import datetime as _dt_ag
             safe_nombre = nombre.replace("/", "_")
             fname_base = f"{safe_nombre}_{_dt_ag.datetime.now().strftime('%Y%m%d_%H%M')}"
-            # Intentar PDF primero, caer a HTML si fpdf2 no está instalado
-            pdf_bytes = _generar_pdf(titulo, raw, nombre)
-            if pdf_bytes:
-                _queue_file(pdf_bytes, f"{fname_base}.pdf", f"📄 {titulo[:60]}")
-                _guardar_generado(pdf_bytes, f"{fname_base}.pdf")
-                ext_msg = "PDF"
-            else:
-                html_bytes = _md_to_html(titulo, nombre, raw)
-                _queue_file(html_bytes, f"{fname_base}.html",
-                            f"📄 {titulo[:60]} — abre en Safari → Compartir → Imprimir → PDF")
-                _guardar_generado(html_bytes, f"{fname_base}.html")
-                ext_msg = "HTML (instala fpdf2 en el servidor para PDF nativo)"
+            # Reportes de agentes → HTML interactivo (motor único louis_html: logo
+            # Kawiil, secciones colapsables, buscador y chat). Regla de Polo: HTML por defecto.
+            html_bytes = _md_to_html(titulo, nombre, raw)
+            _queue_file(html_bytes, f"{fname_base}.html",
+                        f"🌐 {titulo[:60]} — HTML interactivo (ábrelo en el navegador)")
+            _guardar_generado(html_bytes, f"{fname_base}.html")
+            ext_msg = "HTML interactivo"
             preview = raw[:600].strip()
             return (
                 f"[{nombre} respondió — documento completo enviado como {ext_msg}]\n\n"
