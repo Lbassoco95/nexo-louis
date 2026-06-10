@@ -2289,6 +2289,31 @@ TOOLS_DEFINITION = [
         },
     },
     {
+        "name": "editar_recordatorio",
+        "description": "Edita un recordatorio YA agendado (cambia su texto y/o su hora) por ID. ÚSALO cuando Polo corrige algo de un recordatorio pendiente (ej. 'el de poderes era Best Motos, no Vez Motos' o 'muévelo a las 9'), para que la corrección se propague a la cola y no llegue con el dato viejo. Saca el ID con listar_recordatorios.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "ID del recordatorio a editar"},
+                "nuevo_texto": {"type": "string", "description": "Texto corregido (opcional)"},
+                "nueva_hora": {"type": "string", "description": "Nueva hora ISO 8601 con tz, ej '2026-06-11T09:00:00-06:00' (opcional)"},
+            },
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "corregir_nombre",
+        "description": "Registra una corrección PERMANENTE de nombre de cliente mal transcrito por voz (ej. 'Vez Motos' → 'Best Motos'). A partir de ese momento Louis corrige solo ese nombre en TODOS los recordatorios/notas nuevos. ÚSALO cuando Polo diga 'no es X, es Y' sobre un nombre que la transcripción equivoca seguido.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "mal": {"type": "string", "description": "Como lo transcribe MAL (ej. 'vez motos')"},
+                "bien": {"type": "string", "description": "Nombre CORRECTO (ej. 'Best Motos')"},
+            },
+            "required": ["mal", "bien"],
+        },
+    },
+    {
         "name": "create_reminder",
         "description": "[LEGACY — prefiere agendar_recordatorio que SÍ dispara push, este solo escribe a AGENDA.md] Anota en AGENDA.md.",
         "input_schema": {
@@ -7243,6 +7268,7 @@ def _agendar_recordatorio(mensaje: str, fecha_hora: str = "", canal: str = "tele
     Si se pasa en_minutos>0, el fire_at se calcula DEL LADO DEL SERVIDOR (reloj real),
     así un recordatorio relativo ('en 12 min') nunca depende de que el modelo tenga
     bien la hora. Si no, usa fecha_hora (ISO 8601)."""
+    mensaje = _normalizar_clientes(mensaje)  # corrige nombres mal transcritos por voz
     try:
         if en_minutos and int(en_minutos) > 0:
             dt = datetime.now(get_active_tz()) + timedelta(minutes=int(en_minutos))
@@ -7305,6 +7331,91 @@ def _cancelar_recordatorio(rid: str) -> str:
         return f"ERROR: no encontré recordatorio con id '{rid}'. Usa listar_recordatorios para ver los IDs."
     _write_queue(nuevo)
     return f"OK recordatorio '{rid}' cancelado."
+
+
+def _editar_recordatorio(rid: str, nuevo_texto: str = "", nueva_hora: str = "") -> str:
+    """Edita un recordatorio YA agendado (texto y/o hora) para que una corrección
+    se propague a la cola — no solo a la memoria."""
+    queue = _read_queue()
+    found = next((e for e in queue if e.get("id") == rid), None)
+    if not found:
+        return f"ERROR: no encontré recordatorio con id '{rid}'. Usa listar_recordatorios."
+    cambios = []
+    if nuevo_texto:
+        found["message"] = _normalizar_clientes(nuevo_texto)
+        cambios.append("texto")
+    if nueva_hora:
+        try:
+            dt = datetime.fromisoformat(nueva_hora)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=TZ_CDMX)
+            found["fire_at"] = dt.isoformat()
+            cambios.append("hora")
+        except Exception as e:
+            return f"ERROR: nueva_hora inválida '{nueva_hora}' ({e}). Usa ISO 8601 (ej '2026-06-11T10:00:00-06:00')."
+    if not cambios:
+        return "ERROR: dime qué cambiar (nuevo_texto y/o nueva_hora)."
+    queue.sort(key=lambda x: x.get("fire_at", ""))
+    _write_queue(queue)
+    return (f"OK recordatorio '{rid}' actualizado ({', '.join(cambios)}).\n"
+            f"Ahora: {found.get('fire_at','?')} → {found.get('message','')[:120]}")
+
+
+# ===== Alias de nombres de clientes (anti-error de transcripción de voz) =====
+CLIENT_ALIASES_FILE = STATE_DIR / "client_aliases.json"
+# Lo que la transcripción de voz suele equivocar → nombre correcto (canónico).
+_CLIENT_ALIASES_SEED = {
+    "vez motos": "Best Motos",
+    "ves motos": "Best Motos",
+    "best moto": "Best Motos",
+    "juoshui": "Joshui",
+    "yoshui": "Joshui",
+    "joshúi": "Joshui",
+    "los perez": "Los Pérez",
+    "los pérez y amigos": "Los Pérez",
+}
+
+
+def _load_client_aliases() -> dict:
+    aliases = dict(_CLIENT_ALIASES_SEED)
+    try:
+        if CLIENT_ALIASES_FILE.exists():
+            extra = json.loads(CLIENT_ALIASES_FILE.read_text())
+            if isinstance(extra, dict):
+                aliases.update({str(k).lower(): str(v) for k, v in extra.items()})
+    except Exception:
+        log.warning("no pude leer client_aliases.json", exc_info=True)
+    return aliases
+
+
+def _normalizar_clientes(texto: str) -> str:
+    """Corrige nombres de cliente mal transcritos usando el mapa de alias.
+    Insensible a may/min, respeta límites de palabra, deja el nombre canónico."""
+    if not texto:
+        return texto
+    out = texto
+    for mal, bien in _load_client_aliases().items():
+        if mal:
+            out = re.sub(rf"(?i)\b{re.escape(mal)}\b", bien, out)
+    return out
+
+
+def _corregir_nombre(mal: str, bien: str) -> str:
+    """Agrega/actualiza una corrección de nombre en el mapa persistente."""
+    mal = (mal or "").strip().lower()
+    bien = (bien or "").strip()
+    if not mal or not bien:
+        return "ERROR: dame el nombre como se transcribe MAL y el CORRECTO."
+    try:
+        current = {}
+        if CLIENT_ALIASES_FILE.exists():
+            current = json.loads(CLIENT_ALIASES_FILE.read_text()) or {}
+        current[mal] = bien
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        CLIENT_ALIASES_FILE.write_text(json.dumps(current, ensure_ascii=False, indent=2))
+        return f"OK: de ahora en adelante '{mal}' → '{bien}'. (mapa de alias actualizado)"
+    except Exception as e:
+        return f"ERROR guardando alias: {e}"
 
 
 # ===== Sub-agentes =====
@@ -7868,6 +7979,10 @@ def execute_tool(name: str, args: dict) -> str:
             return _listar_recordatorios()
         elif name == "cancelar_recordatorio":
             return _cancelar_recordatorio(args["id"])
+        elif name == "editar_recordatorio":
+            return _editar_recordatorio(args["id"], args.get("nuevo_texto", ""), args.get("nueva_hora", ""))
+        elif name == "corregir_nombre":
+            return _corregir_nombre(args["mal"], args["bien"])
         elif name == "legal_estado":
             return _legal_estado(args.get("modulo", "ambos"))
         elif name == "legal_buscar":
