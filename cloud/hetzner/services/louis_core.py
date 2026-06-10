@@ -7364,15 +7364,14 @@ def _editar_recordatorio(rid: str, nuevo_texto: str = "", nueva_hora: str = "") 
 # ===== Alias de nombres de clientes (anti-error de transcripción de voz) =====
 CLIENT_ALIASES_FILE = STATE_DIR / "client_aliases.json"
 # Lo que la transcripción de voz suele equivocar → nombre correcto (canónico).
+# OJO: solo correcciones de transcripción INEQUÍVOCAS. NO metas aquí nombres que
+# sean subcadena de una razón social registrada (ej. NO "los pérez y amigos"→"los
+# pérez", ni "juoshui"→"joshui": "Juoshui Agua Viva Mex" es el nombre LEGAL). Para
+# esos casos usa la mención casual, no toques el string legal.
 _CLIENT_ALIASES_SEED = {
     "vez motos": "Best Motos",
     "ves motos": "Best Motos",
     "best moto": "Best Motos",
-    "juoshui": "Joshui",
-    "yoshui": "Joshui",
-    "joshúi": "Joshui",
-    "los perez": "Los Pérez",
-    "los pérez y amigos": "Los Pérez",
 }
 
 
