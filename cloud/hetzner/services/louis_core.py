@@ -7417,6 +7417,162 @@ def _corregir_nombre(mal: str, bien: str) -> str:
         return f"ERROR guardando alias: {e}"
 
 
+# ===== Auto-memoria nocturna (destilación del día) =====
+# Resuelve el hueco de diseño: la charla normal corre en DeepSeek/Ollama (sin tools),
+# así que nada se guardaba a memoria de largo plazo. Esto corre 1×/día desde el
+# scheduler, lee la conversación del día, destila hechos durables con Haiku y los
+# agrega a PEOPLE/CLIENTES/AGENDA/IMPORTANT (con dedup y alias de clientes aplicado).
+MEMORY_DISTILL_STATE = STATE_DIR / "last-memory-distill.json"
+_DISTILL_TARGETS = {
+    "PEOPLE": "PEOPLE.md",
+    "CLIENTES": "CLIENTES.md",
+    "AGENDA": "AGENDA.md",
+    "IMPORTANT": "IMPORTANT.md",
+}
+
+_DISTILL_SYSTEM = (
+    "Eres el módulo de memoria de Louis, asistente ejecutivo de Polo (Kawiil, despacho "
+    "legal/tech en México). Te paso la conversación de HOY entre Polo y Louis. Extrae SOLO "
+    "hechos DURABLES que valga la pena recordar a largo plazo y clasifícalos. Devuelve "
+    "EXCLUSIVAMENTE un JSON válido con estas llaves (arrays de strings, una frase corta por "
+    'hecho; usa [] si no hay nada):\n'
+    '{"PEOPLE": [], "CLIENTES": [], "AGENDA": [], "IMPORTANT": []}\n\n'
+    "Reglas:\n"
+    "- PEOPLE: datos durables de personas (rol, empresa, relación, junta recurrente, preferencias).\n"
+    "- CLIENTES: datos de clientes/prospectos (razón social, RFC, contacto, estatus, servicio).\n"
+    "- AGENDA: pendientes/tareas/compromisos por hacer.\n"
+    "- IMPORTANT: decisiones, hechos clave o instrucciones permanentes de Polo.\n"
+    "- NO incluyas charla trivial, saludos, briefings, ni cosas efímeras (clima, '¿qué hay hoy?').\n"
+    "- NO inventes: solo lo explícito en la conversación. Usa nombres correctos y completos.\n"
+    "- Si no hay NADA durable, devuelve todos los arrays vacíos.\n"
+    "Responde SOLO el JSON, sin explicación ni markdown."
+)
+
+
+def _distill_already_ran_today(today: str) -> bool:
+    try:
+        if MEMORY_DISTILL_STATE.exists():
+            return json.loads(MEMORY_DISTILL_STATE.read_text()).get("date") == today
+    except Exception:
+        pass
+    return False
+
+
+def _distill_save_state(today: str, resumen: str):
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        MEMORY_DISTILL_STATE.write_text(json.dumps(
+            {"date": today, "ts": datetime.now(TZ_CDMX).isoformat(), "resumen": resumen},
+            ensure_ascii=False, indent=2))
+    except Exception:
+        log.warning("no pude guardar last-memory-distill.json", exc_info=True)
+
+
+def _distill_collect_today(today: str, max_chars: int = 18000) -> str:
+    """Junta los turnos de HOY (telegram+slack) en un transcript para destilar."""
+    turns = []
+    for fname in ("telegram-history.jsonl", "slack-history.jsonl"):
+        p = SPACE / fname
+        if not p.exists():
+            continue
+        for line in p.read_text().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            if str(d.get("ts", ""))[:10] != today:
+                continue
+            content = (d.get("content") or "").strip()
+            if content:
+                quien = "Polo" if d.get("role") == "user" else "Louis"
+                turns.append((str(d.get("ts", "")), f"{quien}: {content}"))
+    turns.sort(key=lambda t: t[0])
+    txt = "\n".join(t[1] for t in turns)
+    return txt[-max_chars:] if len(txt) > max_chars else txt
+
+
+def _distill_parse_json(raw: str) -> dict:
+    if not raw:
+        return {}
+    m = re.search(r"\{.*\}", raw, re.DOTALL)
+    if not m:
+        return {}
+    try:
+        d = json.loads(m.group(0))
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _distill_norm(s: str) -> str:
+    """Normaliza para dedup: quita marca de fecha, baja a minúsculas, deja alfanumérico."""
+    s = re.sub(r"\[(auto |)\d{4}-\d{2}-\d{2}[^\]]*\]", "", s)
+    return re.sub(r"[^a-z0-9áéíóúñ ]", "", s.lower()).strip()
+
+
+def _distill_append(fname: str, line: str) -> bool:
+    """Agrega una línea a un .md con dedup contra TODO el archivo. True si escribió."""
+    line = _normalizar_clientes((line or "").strip())
+    nuevo = _distill_norm(line)
+    if len(nuevo) < 8:
+        return False
+    path = SPACE / fname
+    if path.exists():
+        for l in path.read_text().splitlines():
+            ln = _distill_norm(l)
+            if ln and (nuevo == ln or nuevo in ln or ln in nuevo):
+                return False
+    fecha = datetime.now(TZ_CDMX).strftime("%Y-%m-%d")
+    entry = line
+    if fname == "AGENDA.md" and not entry.lstrip().startswith(("- [", "-[", "*", "-")):
+        entry = f"- [ ] {entry}"
+    entry = f"{entry}  · [auto {fecha}]"
+    with path.open("a") as f:
+        f.write("\n" + entry + "\n")
+    return True
+
+
+def run_memory_distillation(force: bool = False) -> str:
+    """Destila la conversación del día a memoria de largo plazo. Idempotente por fecha.
+    Pensado para correr 1×/día desde el scheduler."""
+    today = datetime.now(TZ_CDMX).strftime("%Y-%m-%d")
+    if not force and _distill_already_ran_today(today):
+        return "(auto-memoria ya corrió hoy)"
+    transcript = _distill_collect_today(today)
+    if not transcript or "Polo:" not in transcript or len(transcript) < 120:
+        _distill_save_state(today, "sin conversación que destilar")
+        return "(auto-memoria: nada que destilar hoy)"
+    try:
+        api_key = load_anthropic_key()
+    except Exception as e:
+        log.warning(f"auto-memoria sin API key: {e}")
+        return f"(auto-memoria: sin API key — {e})"
+    try:
+        raw = call_haiku(api_key, _DISTILL_SYSTEM, [], "Conversación de hoy:\n\n" + transcript)
+    except Exception as e:
+        log.warning(f"auto-memoria Haiku falló: {e}")
+        return f"(auto-memoria: Haiku falló — {e})"
+    data = _distill_parse_json(raw)
+    if not data:
+        _distill_save_state(today, "Haiku no devolvió JSON")
+        return "(auto-memoria: no obtuve JSON válido del modelo)"
+    escritos = {}
+    for cat, fname in _DISTILL_TARGETS.items():
+        items = data.get(cat) or []
+        if not isinstance(items, list):
+            continue
+        n = sum(1 for it in items if isinstance(it, str) and _distill_append(fname, it))
+        if n:
+            escritos[fname] = n
+    resumen = ", ".join(f"{f}:{n}" for f, n in escritos.items()) or "0 hechos nuevos"
+    _distill_save_state(today, resumen)
+    log.info(f"auto-memoria destilada → {resumen}")
+    return f"OK auto-memoria: {resumen}"
+
+
 # ===== Sub-agentes =====
 import re as _re
 

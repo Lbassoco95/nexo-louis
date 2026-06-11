@@ -304,6 +304,17 @@ def main():
             except Exception as e:
                 log.warning(f"legal bg tick falló: {e}")
 
+        # Auto-memoria nocturna: destila la conversación del día a memoria de largo
+        # plazo (PEOPLE/CLIENTES/AGENDA/IMPORTANT). Idempotente por fecha — corre una
+        # sola vez aunque el tick caiga muchas veces en la ventana de las 23h. Silenciosa.
+        try:
+            if datetime.now(TZ_CDMX).hour == 23:
+                r = core.run_memory_distillation()
+                if r and r.startswith("OK"):
+                    log.info(f"auto-memoria: {r}")
+        except Exception as e:
+            log.warning(f"auto-memoria tick falló: {e}")
+
         time.sleep(TICK_SECONDS)
 
 
