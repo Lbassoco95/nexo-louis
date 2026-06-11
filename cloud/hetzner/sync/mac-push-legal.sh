@@ -49,10 +49,19 @@ snapshot_db() {
 }
 
 # === SJF ===
+# IMPORTANTE (jun-2026): el SERVIDOR es ahora la fuente de la verdad del acervo SJF.
+# Corre su propio harvester diario (/opt/openclaw/legal/sjf/sjf_harvest.py via systemd
+# timer) que escribe directo en /opt/openclaw/legal/sjf/biblioteca.db. Si la Mac
+# empujara su copia (que se queda atrás cuando la Mac duerme), PISARÍA lo que el
+# servidor descargó y el acervo se revertiría. Por eso el push de SJF está APAGADO por
+# defecto. Para reactivarlo (si algún día la Mac vuelve a ser la fuente): LOUIS_PUSH_SJF=1.
+PUSH_SJF="${LOUIS_PUSH_SJF:-0}"
 SJF_DB="$HOME/sjf_biblioteca/biblioteca.db"
 SJF_LOGS="$HOME/sjf_biblioteca/logs"
 SJF_SNAPSHOT="$SNAPSHOT_DIR/sjf_biblioteca.db"
-if [[ -f "$SJF_DB" ]]; then
+if [[ "$PUSH_SJF" != "1" ]]; then
+  echo "[$(stamp)] SJF push DESACTIVADO (servidor es la fuente de la verdad). LOUIS_PUSH_SJF=1 para reactivar."
+elif [[ -f "$SJF_DB" ]]; then
   SIZE=$(du -h "$SJF_DB" | cut -f1)
   echo "[$(stamp)] SJF snapshot $SJF_DB ($SIZE) → $SJF_SNAPSHOT"
   if snapshot_db "$SJF_DB" "$SJF_SNAPSHOT"; then
@@ -81,10 +90,16 @@ if [[ -d "$SJF_LOGS" ]]; then
 fi
 
 # === DOF ===
+# El servidor ahora corre la extracción del DOF (download-contents/generate-pdfs)
+# y es la FUENTE DE LA VERDAD. El push desde la Mac queda DESACTIVADO por defecto
+# para no sobreescribir el avance del servidor. LOUIS_PUSH_DOF=1 para reactivar.
+PUSH_DOF="${LOUIS_PUSH_DOF:-0}"
 DOF_DB="$HOME/dof_biblioteca/biblioteca_dof.db"
 DOF_LOGS="$HOME/dof_biblioteca/logs"
 DOF_SNAPSHOT="$SNAPSHOT_DIR/biblioteca_dof.db"
-if [[ -f "$DOF_DB" ]]; then
+if [[ "$PUSH_DOF" != "1" ]]; then
+  echo "[$(stamp)] DOF push DESACTIVADO (servidor es la fuente de la verdad). LOUIS_PUSH_DOF=1 para reactivar."
+elif [[ -f "$DOF_DB" ]]; then
   SIZE=$(du -h "$DOF_DB" | cut -f1)
   echo "[$(stamp)] DOF snapshot $DOF_DB ($SIZE) → $DOF_SNAPSHOT"
   if snapshot_db "$DOF_DB" "$DOF_SNAPSHOT"; then

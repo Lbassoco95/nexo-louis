@@ -1,0 +1,11 @@
+[Unit]
+Description=Dispara el boletín VESPERTINO del DOF (lunes a viernes, tarde CDMX)
+
+[Timer]
+# La edición vespertina del DOF (cuando existe) sale por la tarde. Reportamos la
+# VESPERTINA del DÍA EN CURSO. Si ese día no hubo vespertina, el script no envía nada.
+OnCalendar=Mon..Fri *-*-* 18:30:00 America/Mexico_City
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,10 @@
+[Unit]
+Description=Dispara la generación de PDFs individuales del DOF (tras tener el texto)
+
+[Timer]
+OnBootSec=6min
+OnUnitActiveSec=12min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

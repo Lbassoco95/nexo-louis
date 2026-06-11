@@ -1,0 +1,12 @@
+[Unit]
+Description=Dispara la extracción de texto del DOF en lotes (rápido, hasta llenar el histórico)
+
+[Timer]
+# Arranca poco después del boot y repite cada 8 min tras cada corrida.
+# Lotes de 800 → llena el histórico en pocos días, sin saturar al DOF.
+OnBootSec=3min
+OnUnitActiveSec=8min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

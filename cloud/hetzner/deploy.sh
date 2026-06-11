@@ -153,9 +153,12 @@ ok "Cron registrado: $CRON_FILE"
 # Los .py de cloud/hetzner/services/ (versión repo) van a /opt/openclaw/scripts/
 # para que los systemd units los encuentren. Esto sobreescribe versiones viejas
 # del seed (Mac) — el repo es source-of-truth para la lógica del bridge.
-log "[6b] Copiando servicios louis_core + telegram-bridge + slack-bridge + m365 al runtime"
+log "[6b] Copiando servicios (core + bridges + scheduler + gateway + self-update + browser) al runtime"
 mkdir -p /opt/openclaw/scripts /opt/openclaw/scripts/m365 /opt/openclaw/logs
-for svc in louis_core.py telegram-bridge.py slack-bridge.py; do
+# TODOS los .py que el runtime importa o ejecuta. Si falta alguno, las tools que
+# dependen de él fallan en silencio (self_update → ImportError; browser_* → error).
+for svc in louis_core.py telegram-bridge.py slack-bridge.py scheduler.py \
+           openclaw_gateway.py self_update.py browser_runner.py cerebro_kawiil_mcp.py; do
   if [[ -f "services/${svc}" ]]; then
     install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" "services/${svc}" "/opt/openclaw/scripts/${svc}"
   fi
@@ -163,13 +166,19 @@ done
 if [[ -f "services/m365.py" ]]; then
   install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" "services/m365.py" "/opt/openclaw/scripts/m365/m365.py"
 fi
+# Seeds que el runtime puede correr/referenciar (idempotentes)
+for sc in seed-kawiil-agents.sh import-legal-agents.sh seed-morning-briefing.sh; do
+  if [[ -f "scripts/${sc}" ]]; then
+    install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" "scripts/${sc}" "/opt/openclaw/scripts/${sc}"
+  fi
+done
 chown -R "$SYSTEM_USER":"$SYSTEM_USER" /opt/openclaw/scripts /opt/openclaw/logs
 ok "Scripts en /opt/openclaw/scripts/"
 
 # ── 7) Bridges systemd units (Telegram + Slack) ──────────────
-log "[7/7] Instalando units de bridges (telegram + slack)"
+log "[7/8] Instalando units (telegram + slack + scheduler + gateway)"
 ENV_OUT="/opt/openclaw/openclaw.env"
-for unit in telegram-bridge slack-bridge; do
+for unit in telegram-bridge slack-bridge scheduler openclaw-gateway cerebro-kawiil; do
   if [[ -f "services/${unit}.service" ]]; then
     sed \
       -e "s|@@SYSTEM_USER@@|${SYSTEM_USER}|g" \
@@ -178,6 +187,22 @@ for unit in telegram-bridge slack-bridge; do
       "services/${unit}.service" > "/etc/systemd/system/${unit}.service"
   fi
 done
+
+# Cerebro Kawiil: almacén compartido de entregables (Cowork ↔ Louis)
+if [[ ! -d /opt/openclaw/entregables ]]; then
+  mkdir -p /opt/openclaw/entregables/_briefs
+  [[ -f "entregables/README.md" ]] && \
+    install -m 0644 -o "$SYSTEM_USER" -g "$SYSTEM_USER" "entregables/README.md" /opt/openclaw/entregables/README.md
+  chown -R "$SYSTEM_USER":"$SYSTEM_USER" /opt/openclaw/entregables
+fi
+
+# Kit de marca (logos Kawiil/Yoltik) para brandear documentos HTML
+if [[ -d "assets/brand" ]]; then
+  mkdir -p /opt/openclaw/assets
+  cp -r assets/brand /opt/openclaw/assets/
+  chown -R "$SYSTEM_USER":"$SYSTEM_USER" /opt/openclaw/assets
+  ok "Kit de marca en /opt/openclaw/assets/brand"
+fi
 
 systemctl daemon-reload
 
@@ -202,6 +227,86 @@ if [[ -f /opt/openclaw/scripts/slack-bridge.py ]]; then
 else
   warn "slack-bridge.py aún no copiado al seed — sin arrancar"
 fi
+
+# Gateway HTTP de Louis — la cara de louis.kawiil.mx (Caddy → 127.0.0.1:3000).
+# Reemplaza al binario oficial de OpenClaw (openclaw.ai responde 403).
+if [[ -f /opt/openclaw/scripts/openclaw_gateway.py ]]; then
+  systemctl enable --now openclaw-gateway
+  if systemctl is-active --quiet openclaw-gateway; then
+    ok "openclaw-gateway activo (louis.kawiil.mx → :${OPENCLAW_PORT:-3000})"
+  else
+    warn "openclaw-gateway no levantó — journalctl -u openclaw-gateway -n 50"
+  fi
+  # Nota de seguridad (diferida por decisión de Polo): el gateway no exige token
+  # por default. Mientras no haya OPENCLAW_GATEWAY_TOKEN, protégelo con Cloudflare Access.
+  grep -q '^OPENCLAW_GATEWAY_TOKEN=' "$ENV_OUT" 2>/dev/null \
+    || warn "openclaw-gateway SIN token — protégelo con Cloudflare Access antes de exponer DNS"
+else
+  warn "openclaw_gateway.py no copiado — louis.kawiil.mx devolverá 502"
+fi
+
+# Scheduler — motor de tareas repetitivas (recordatorios recurrentes + briefing matutino).
+if [[ -f /opt/openclaw/scripts/scheduler.py ]]; then
+  systemctl enable --now scheduler
+  if systemctl is-active --quiet scheduler; then
+    ok "scheduler activo (tareas repetitivas + briefing)"
+  else
+    warn "scheduler no levantó — journalctl -u scheduler -n 50"
+  fi
+else
+  warn "scheduler.py no copiado — sin recordatorios ni briefing automático"
+fi
+
+# Harvester legal SJF — actualiza las tesis del Semanario Judicial (timer diario).
+# Causa raíz del estancamiento (jun-2026): no existía timer y el scraper no usaba
+# el parámetro ?isSemanal=true. Aquí instalamos el harvester corregido + su timer.
+log "[7b] Instalando harvester SJF + timer diario"
+mkdir -p /opt/openclaw/legal/sjf
+for f in sjf_harvest.py sjf_weekly_summary.py sjf_biblioteca.py; do
+  if [[ -f "legal-scrapers/${f}" ]]; then
+    install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" "legal-scrapers/${f}" "/opt/openclaw/legal/sjf/${f}"
+  fi
+done
+# update diario + resumen semanal (lunes)
+for unit in sjf-update sjf-weekly; do
+  if [[ -f "services/${unit}.service" && -f "services/${unit}.timer" ]]; then
+    sed -e "s|@@SYSTEM_USER@@|${SYSTEM_USER}|g" -e "s|@@OPENCLAW_HOME@@|/opt/openclaw|g" \
+        "services/${unit}.service" > "/etc/systemd/system/${unit}.service"
+    sed -e "s|@@SYSTEM_USER@@|${SYSTEM_USER}|g" -e "s|@@OPENCLAW_HOME@@|/opt/openclaw|g" \
+        "services/${unit}.timer" > "/etc/systemd/system/${unit}.timer"
+  fi
+done
+systemctl daemon-reload
+for t in sjf-update.timer sjf-weekly.timer; do
+  if [[ -f "/etc/systemd/system/${t}" ]]; then
+    systemctl enable --now "$t"
+    systemctl is-active --quiet "$t" && ok "${t} activo" || warn "${t} no levantó — systemctl status ${t}"
+  fi
+done
+ok "SJF: harvester diario (13:30) + resumen semanal (lun 8:00) en /opt/openclaw/legal/sjf/"
+
+# ── 8) Seeds: agentes + briefing matutino (idempotentes) ──────
+log "[8/8] Sembrando agentes y briefing matutino"
+export SYSTEM_USER HOME_OC=/opt/openclaw
+# 14 agentes kawiil-* con contexto de negocio
+if [[ -f scripts/seed-kawiil-agents.sh ]]; then
+  bash scripts/seed-kawiil-agents.sh && ok "Agentes kawiil-* sembrados" \
+    || warn "seed-kawiil-agents falló (continúo)"
+fi
+# Agentes legales (clona anthropics/claude-for-legal — requiere red a github)
+if [[ -f scripts/import-legal-agents.sh ]]; then
+  bash scripts/import-legal-agents.sh && ok "Agentes legales importados" \
+    || warn "import-legal-agents falló (¿sin acceso a github? continúo)"
+fi
+# Briefing matutino 7:00 CDMX recurrente (lo consume el scheduler)
+if [[ -f scripts/seed-morning-briefing.sh ]]; then
+  bash scripts/seed-morning-briefing.sh && ok "Briefing matutino agendado (7:00 CDMX)" \
+    || warn "seed-morning-briefing falló (continúo)"
+fi
+# Los seeds corren como root; devolvemos la propiedad a $SYSTEM_USER para que el
+# scheduler (que corre como $SYSTEM_USER) pueda reescribir la cola al disparar.
+chown -R "$SYSTEM_USER":"$SYSTEM_USER" /opt/openclaw/reminders /opt/openclaw/spaces 2>/dev/null || true
+ok "Seeds aplicados"
 
 # ── Done ──────────────────────────────────────────────────────
 echo ""

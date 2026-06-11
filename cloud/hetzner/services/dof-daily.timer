@@ -1,0 +1,11 @@
+[Unit]
+Description=Dispara el boletín MATUTINO del DOF (lunes a viernes, mañana CDMX)
+
+[Timer]
+# El DOF no publica fines de semana. Reportamos la edición MATUTINA del DÍA EN CURSO
+# (el script default = --mat + hoy). La vespertina la dispara dof-daily-tarde.timer.
+OnCalendar=Mon..Fri *-*-* 09:00:00 America/Mexico_City
+Persistent=true
+
+[Install]
+WantedBy=timers.target

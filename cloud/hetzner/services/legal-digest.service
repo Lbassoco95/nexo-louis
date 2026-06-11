@@ -1,0 +1,18 @@
+[Unit]
+Description=Louis — digest semanal de aprendizajes de los agentes kawiil-* (DOF/SJF → Telegram + Kawiil Central)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@@SYSTEM_USER@@
+Group=@@SYSTEM_USER@@
+WorkingDirectory=@@OPENCLAW_HOME@@/legal
+Environment=LOUIS_SCRIPTS=@@OPENCLAW_HOME@@/scripts
+Environment=LEGAL_KNOWLEDGE_BASE=@@OPENCLAW_HOME@@/spaces/general/agents/knowledge
+ExecStart=/usr/bin/python3 @@OPENCLAW_HOME@@/legal/legal_digest.py --dias 7
+StandardOutput=append:@@OPENCLAW_HOME@@/logs/legal-digest.log
+StandardError=append:@@OPENCLAW_HOME@@/logs/legal-digest.log
+SyslogIdentifier=louis-legal-digest
+TimeoutStartSec=600
+MemoryMax=512M

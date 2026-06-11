@@ -23,6 +23,7 @@ Formato de cada entry (una por línea):
 """
 
 import os
+import re
 import sys
 import json
 import time
@@ -81,16 +82,20 @@ def send_telegram(text: str):
         return False
     import urllib.request
     import urllib.error
+    import html as _html
+    # format_for_telegram produce HTML → hay que enviar con parse_mode HTML (antes
+    # decía 'Markdown', por eso el briefing salía con ** y ### en crudo).
     formatted = core.format_for_telegram(text)
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    body = {"chat_id": chat_id, "text": formatted[:4000], "parse_mode": "Markdown", "disable_web_page_preview": True}
+    body = {"chat_id": chat_id, "text": formatted[:4000], "parse_mode": "HTML", "disable_web_page_preview": True}
     try:
         core.http_post_json(url, headers={}, body=body, timeout=15)
         return True
     except urllib.error.HTTPError:
-        # retry sin parse_mode
+        # Fallback: quitar tags HTML y desescapar → texto plano legible (NO el markdown crudo).
+        raw = _html.unescape(re.sub(r"<[^>]+>", "", formatted))
         body.pop("parse_mode", None)
-        body["text"] = text[:4000]
+        body["text"] = raw[:4000]
         try:
             core.http_post_json(url, headers={}, body=body, timeout=15)
             return True
@@ -125,25 +130,41 @@ def send_slack(text: str, channel: str = None):
 
 
 # ===== Enrich con Ollama (sin Anthropic) =====
+# Patrones de RECHAZO/basura que Ollama a veces devuelve en vez de reformular
+# (ej. "Lo siento, no tengo permiso para reformular los datos"). Si aparecen,
+# se descarta el resultado y se manda el mensaje ORIGINAL verbatim.
+_REFUSAL_RE = re.compile(
+    r"(no tengo permiso|lo siento|no puedo (reformular|ayudar|procesar)|"
+    r"as an ai|i (cannot|can't|am sorry)|i'm sorry|no me es posible|"
+    r"no estoy autorizad|seré encantado de asistirte|en qué puedo ayudarte)",
+    re.IGNORECASE)
+
+
 def enrich_with_ollama(raw_message: str) -> str:
-    """Reformula recordatorio en tono Louis vía Ollama local."""
+    """Reformula recordatorio en tono Louis vía Ollama local. Si Ollama devuelve un
+    rechazo/basura (o algo demasiado distinto/largo), manda el mensaje ORIGINAL."""
     sys_prompt = (
-        "Eres Louis, asistente ejecutivo de Polo. Reformula recordatorios proactivos: "
-        "directo, cálido, 1-2 líneas. Telegram *negrita* legacy. NO inventes hechos."
+        "Eres Louis, asistente ejecutivo de Polo. Reformula este recordatorio en tono "
+        "directo y cálido, 1-2 líneas, en español. Telegram *negrita* legacy. NO inventes "
+        "hechos, NO pidas permiso, NO te disculpes: SOLO devuelve el recordatorio reformulado."
     )
-    user_msg = (
-        "Reformula SIN cambiar datos:\n" + raw_message[:2000]
-    )
+    user_msg = "Reformula SIN cambiar datos (devuelve solo el texto):\n" + raw_message[:2000]
     try:
         result = core.call_ollama(sys_prompt, [], user_msg, history_file=None)
-        if result and not result.startswith("⚠️"):
+        if (result and not result.startswith("⚠️")
+                and not _REFUSAL_RE.search(result)
+                and len(result) <= max(400, len(raw_message) * 3)):
             return result
+        log.warning("enrich descartado (rechazo/basura/largo); uso mensaje raw")
     except Exception as e:
         log.warning(f"Enrich Ollama falló: {e}")
     return raw_message
 
 
 MORNING_BRIEFING_MARKER = "__morning_briefing__"
+
+# Indexación legal en background: tick cada 10 min (10 × 60s), 10 docs por agente
+LEGAL_BG_TICK_INTERVAL = 10  # cada cuántos ticks de 60s correr el bg-indexer
 
 
 # ===== Queue I/O =====
@@ -263,12 +284,37 @@ def tick():
 def main():
     log.info("=== louis-scheduler arrancando ===")
     log.info(f"Queue: {QUEUE_FILE}")
-    log.info(f"Tick cada {TICK_SECONDS}s")
+    log.info(f"Tick cada {TICK_SECONDS}s | bg-legal cada {LEGAL_BG_TICK_INTERVAL * TICK_SECONDS}s")
+    tick_count = 0
     while True:
         try:
             tick()
         except Exception as e:
             log.exception(f"Tick falló: {e}")
+
+        tick_count += 1
+
+        # Indexación legal en background: cada LEGAL_BG_TICK_INTERVAL ticks (≈10 min)
+        # Silenciosa — sin notificar a Polo salvo que encuentre docs nuevos
+        if tick_count % LEGAL_BG_TICK_INTERVAL == 0:
+            try:
+                r = core._legal_indexar_background_tick(limite=10)
+                if r and ":+" in r:  # solo loguear si hubo docs nuevos
+                    log.info(f"legal bg: {r}")
+            except Exception as e:
+                log.warning(f"legal bg tick falló: {e}")
+
+        # Auto-memoria nocturna: destila la conversación del día a memoria de largo
+        # plazo (PEOPLE/CLIENTES/AGENDA/IMPORTANT). Idempotente por fecha — corre una
+        # sola vez aunque el tick caiga muchas veces en la ventana de las 23h. Silenciosa.
+        try:
+            if datetime.now(TZ_CDMX).hour == 23:
+                r = core.run_memory_distillation()
+                if r and r.startswith("OK"):
+                    log.info(f"auto-memoria: {r}")
+        except Exception as e:
+            log.warning(f"auto-memoria tick falló: {e}")
+
         time.sleep(TICK_SECONDS)
 
 

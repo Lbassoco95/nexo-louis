@@ -1,0 +1,16 @@
+[Unit]
+Description=Louis DOF — boletín MATUTINO del Diario Oficial (Telegram, curado por impacto)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@@SYSTEM_USER@@
+Group=@@SYSTEM_USER@@
+WorkingDirectory=@@OPENCLAW_HOME@@/legal/dof
+ExecStart=/usr/bin/python3 @@OPENCLAW_HOME@@/legal/dof/dof_daily_summary.py --mat
+StandardOutput=append:@@OPENCLAW_HOME@@/logs/dof-daily.log
+StandardError=append:@@OPENCLAW_HOME@@/logs/dof-daily.log
+SyslogIdentifier=louis-dof-daily
+TimeoutStartSec=300
+MemoryMax=512M

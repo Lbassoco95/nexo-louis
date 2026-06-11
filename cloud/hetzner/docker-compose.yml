@@ -5,6 +5,7 @@ services:
     image: caddy:2.8-alpine
     container_name: louis-caddy
     restart: unless-stopped
+    init: true            # tini como PID 1: recolecta los hijos del healthcheck (ssl_client) → sin zombies
     network_mode: host    # necesitamos ver localhost:3000 de OpenClaw (nativo) y exponer 80/443 al exterior
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
@@ -13,10 +14,14 @@ services:
     environment:
       LOUIS_DOMAIN: ${LOUIS_DOMAIN}
       AGENTS_DOMAIN: ${AGENTS_DOMAIN}
+      CEREBRO_DOMAIN: ${CEREBRO_DOMAIN:-cerebro.kawiil.mx}
+      CEREBRO_PORT: ${CEREBRO_PORT:-4040}
       ACME_EMAIL: ${ACME_EMAIL}
       OPENCLAW_PORT: ${OPENCLAW_PORT:-3000}
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80"]
+      # Admin API de Caddy (HTTP plano en :2019). Antes apuntaba a :80, que redirige a
+      # HTTPS y reventaba el TLS (ssl_client) → unhealthy + fuga de zombies.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:2019/config/ >/dev/null 2>&1 || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3

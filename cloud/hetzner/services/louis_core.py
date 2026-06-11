@@ -24,6 +24,7 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 import urllib.request
 import urllib.error
+import urllib.parse
 
 # ===== Paths =====
 # En Hetzner systemd corre como polo pero el home está protegido (ProtectSystem=full).
@@ -36,6 +37,13 @@ else:
 SPACE = HOME_OC / "spaces" / "general"
 AGENTS_DIR = SPACE / "agents"   # sub-agentes ligeros (prompts especializados)
 ANTHROPIC_ENV_FILE = HOME_OC / ".env"
+# Bitácora de actividad de agentes — la consume el dashboard visual del gateway.
+# Cada línea es un evento JSON: {ts, evento, agente, modelo, parent, detalle}.
+AGENT_ACTIVITY_FILE = HOME_OC / "logs" / "agent-activity.jsonl"
+
+# ── Cerebro Kawiil — almacén compartido Cowork ↔ Louis ──────────────────
+ENTREGABLES_PATH = Path(os.environ.get("ENTREGABLES_PATH", str(HOME_OC / "entregables")))
+BRIEFS_PATH = ENTREGABLES_PATH / "_briefs"
 
 M365_SCRIPT = HOME_OC / "scripts" / "m365" / "m365.py"
 if not M365_SCRIPT.exists():
@@ -48,10 +56,14 @@ if not M365_SCRIPT.exists():
 #   • /haiku → Claude Haiku (rápido, sin tools)
 #   • /llama, /ollama, /local → Ollama forzado (sin fallback a Claude)
 CLAUDE_SONNET = "claude-sonnet-4-6"      # tool use, decisiones complejas
-CLAUDE_HAIKU = "claude-haiku-4-5"        # chat rápido por default
+CLAUDE_HAIKU = "claude-haiku-4-5-20251001"  # chat rápido por default
 CLAUDE_MODEL = CLAUDE_SONNET              # compat (cuando se usa tool use)
 ANTHROPIC_API_BASE = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
+
+# DeepSeek (provider alterno barato — /deepseek, /ds). Compatible OpenAI chat.
+DEEPSEEK_API_BASE = os.environ.get("DEEPSEEK_API_BASE", "https://api.deepseek.com/chat/completions")
+DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
 
 OLLAMA_BASE = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 OLLAMA_FAST_MODEL = os.environ.get(
@@ -76,6 +88,204 @@ OLLAMA_MEMORY_LIMITS = {
 TZ_CDMX = timezone(timedelta(hours=-6))
 STATE_DIR = HOME_OC / "state"
 LAST_BRIEFING_FILE = STATE_DIR / "last-briefing.json"
+
+# Frases de "relleno" con que el modelo a veces TERMINA el turno sin ejecutar la tool
+# (se queda esperando otro mensaje de Polo). Disparan el auto-continue anti-stall.
+_STALL_RE = re.compile(
+    r"(d[eé]jame\s+\w+"                                  # déjame revisar/ver/crear…
+    r"|voy\s+a\s+\w+"                                    # voy a crear/revisar/buscar…
+    r"|ahora\s+(creo|cre[oa]|registro|agrego|hago|voy|reviso|busco|checo|sigo|paso|las?\s+creo|lo\s+hago)"
+    r"|procedo\s+a|paso\s+a\s+\w+|sigo\s+con|contin[uú]o\s+con|enseguida"
+    r"|cre[oa]r?[eé]?\s+(la|el|las|los)\s+(tarea|subtarea|sub-tarea|proyecto|cliente)"
+    r"|registr[oa]r?[eé]?\s+(la|el|en|ahora)"
+    r"|dame\s+un\s+momento|perm[ií]teme|un\s+momento)",
+    re.IGNORECASE)
+
+
+_TOOL_LEAK_RE = re.compile(r"DSML|invoke\s+name=|tool_calls|antml:|parameter\s+name=|</?invoke>|</?parameter>", re.IGNORECASE)
+
+
+def _strip_tool_leak(text: str) -> str:
+    """Quita markup de llamadas a herramientas que el modelo a veces emite como TEXTO
+    (ej. '<| DSML | invoke name=bash>'). Nunca debe llegarle eso a Polo."""
+    if not text or not _TOOL_LEAK_RE.search(text):
+        return text
+    lines = [ln for ln in text.split("\n") if not _TOOL_LEAK_RE.search(ln)]
+    cleaned = "\n".join(lines).strip()
+    # Si tras limpiar queda casi nada, avisa en vez de mandar basura.
+    return cleaned if len(cleaned) > 15 else "Estoy ejecutando eso… dame un segundo y te confirmo el resultado."
+
+
+# Frases con que el modelo AFIRMA haber creado un recordatorio. Si aparecen pero no
+# llamó agendar_recordatorio, fabricó la confirmación → se le obliga a crearlo.
+_REMINDER_CLAIM_RE = re.compile(
+    r"(recordatorio\s+(creado|agendado|programado|configurado|listo)|"
+    r"agend[eé]\s+(el|tu|un)\s+recordatorio|te\s+(llegar[aá]|recordar[eé]|aviso|avisar[eé])\b|"
+    r"te\s+lo\s+recuerdo\s+(a las|el|mañana|en)|qued[oó]\s+agendado)",
+    re.IGNORECASE)
+
+
+def _es_stall(texto: str) -> bool:
+    """True si el turno parece quedarse 'a medias' (anuncia acción sin ejecutarla).
+    Señales: frase de relleno, o termina anunciando con ':' sin contenido después."""
+    t = (texto or "").strip()
+    if not t:
+        return False
+    if _STALL_RE.search(t):
+        return True
+    # Termina con ':' (ej. "Ahora creo la tarea principal y las subtareas:") → iba a
+    # hacer/listar algo y no lo hizo. Señal fuerte de corte.
+    if t.endswith(":"):
+        return True
+    return False
+
+# ===== Zona horaria activa =====
+# Default SIEMPRE CDMX. Cambia cuando Polo viaja (tool zona_horaria). Las consultas
+# de horas mundiales (clientes) NO cambian la zona activa.
+TZ_DEFAULT_NAME = "America/Mexico_City"
+ACTIVE_TZ_FILE = STATE_DIR / "active_tz.json"
+_DIAS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+_MESES_ES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
+# Alias amistosos → zona IANA (para que Polo diga "Madrid", "Nueva York", "Tokio").
+TZ_ALIASES = {
+    "cdmx": "America/Mexico_City", "mexico": "America/Mexico_City", "méxico": "America/Mexico_City",
+    "ciudad de mexico": "America/Mexico_City", "df": "America/Mexico_City",
+    "monterrey": "America/Monterrey", "guadalajara": "America/Mexico_City",
+    "tijuana": "America/Tijuana", "cancun": "America/Cancun", "cancún": "America/Cancun",
+    "nueva york": "America/New_York", "new york": "America/New_York", "ny": "America/New_York",
+    "nyc": "America/New_York", "miami": "America/New_York", "washington": "America/New_York",
+    "los angeles": "America/Los_Angeles", "la": "America/Los_Angeles", "california": "America/Los_Angeles",
+    "san francisco": "America/Los_Angeles", "chicago": "America/Chicago", "texas": "America/Chicago",
+    "denver": "America/Denver", "madrid": "Europe/Madrid", "españa": "Europe/Madrid",
+    "espana": "Europe/Madrid", "barcelona": "Europe/Madrid", "londres": "Europe/London",
+    "london": "Europe/London", "uk": "Europe/London", "paris": "Europe/Paris", "parís": "Europe/Paris",
+    "berlin": "Europe/Berlin", "berlín": "Europe/Berlin", "roma": "Europe/Rome", "italia": "Europe/Rome",
+    "amsterdam": "Europe/Amsterdam", "tokio": "Asia/Tokyo", "tokyo": "Asia/Tokyo",
+    "japon": "Asia/Tokyo", "japón": "Asia/Tokyo", "shanghai": "Asia/Shanghai", "china": "Asia/Shanghai",
+    "beijing": "Asia/Shanghai", "pekin": "Asia/Shanghai", "pekín": "Asia/Shanghai",
+    "hong kong": "Asia/Hong_Kong", "hongkong": "Asia/Hong_Kong", "singapur": "Asia/Singapore",
+    "seul": "Asia/Seoul", "seúl": "Asia/Seoul", "dubai": "Asia/Dubai", "dubái": "Asia/Dubai",
+    "bogota": "America/Bogota", "bogotá": "America/Bogota", "lima": "America/Lima",
+    "santiago": "America/Santiago", "buenos aires": "America/Argentina/Buenos_Aires",
+    "sao paulo": "America/Sao_Paulo", "são paulo": "America/Sao_Paulo", "brasil": "America/Sao_Paulo",
+}
+
+
+def _resolve_tz_name(nombre: str) -> str | None:
+    """Traduce un nombre amistoso o zona IANA a zona IANA válida (o None)."""
+    if not nombre:
+        return None
+    raw = nombre.strip()
+    low = raw.lower().strip(" ?¿.!")
+    if low in TZ_ALIASES:
+        return TZ_ALIASES[low]
+    try:
+        from zoneinfo import ZoneInfo
+        ZoneInfo(raw)
+        return raw
+    except Exception:
+        return None
+
+
+def get_active_tz_name() -> str:
+    try:
+        if ACTIVE_TZ_FILE.exists():
+            return json.loads(ACTIVE_TZ_FILE.read_text()).get("tz") or TZ_DEFAULT_NAME
+    except Exception:
+        pass
+    return TZ_DEFAULT_NAME
+
+
+def get_active_tz():
+    """tzinfo de la zona activa (default CDMX). Cae a TZ_CDMX si zoneinfo no está."""
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(get_active_tz_name())
+    except Exception:
+        return TZ_CDMX
+
+
+def set_active_tz(tz_name: str) -> bool:
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        ACTIVE_TZ_FILE.write_text(json.dumps(
+            {"tz": tz_name, "set_at": datetime.now(TZ_CDMX).isoformat()}, ensure_ascii=False))
+        return True
+    except Exception:
+        return False
+
+
+def _fmt_dt_es(dt) -> str:
+    """Fecha/hora en español sin depender del locale del sistema."""
+    return f"{_DIAS_ES[dt.weekday()]} {dt.day} {_MESES_ES[dt.month - 1]} {dt.year}, {dt.strftime('%H:%M')}"
+
+
+def _reloj_tool(zona: str = "") -> str:
+    """RELOJ EN VIVO — lee la hora real del sistema en el momento de la llamada (no
+    depende del prompt, que se congela). Devuelve hora/fecha en la zona activa de
+    Polo; si se pasa 'zona', añade esa zona también."""
+    try:
+        from zoneinfo import ZoneInfo
+        _zi = True
+    except Exception:
+        _zi = False
+    activa = get_active_tz_name()
+    now_act = datetime.now(get_active_tz())
+    etq = "CDMX" if activa == TZ_DEFAULT_NAME else activa
+    out = [f"🕐 Ahora mismo: {_fmt_dt_es(now_act)} ({etq})"]
+    if activa != TZ_DEFAULT_NAME:
+        out.append(f"(En CDMX serían las {datetime.now(TZ_CDMX).strftime('%H:%M')})")
+    if zona and _zi:
+        for z in [p.strip() for p in re.split(r"[,;/]| y ", zona) if p.strip()]:
+            tzname = _resolve_tz_name(z)
+            if tzname:
+                t = datetime.now(ZoneInfo(tzname))
+                out.append(f"• {z.title()} ({tzname}): {t.strftime('%H:%M')} — {_DIAS_ES[t.weekday()]} {t.day} {_MESES_ES[t.month-1]}")
+            else:
+                out.append(f"• {z}: no reconozco esa zona")
+    return "\n".join(out)
+
+
+def _zona_horaria_tool(accion: str, zona: str = "") -> str:
+    """set = cambia zona activa (viaje); reset = vuelve a CDMX; consultar = horas
+    mundiales sin cambiar la zona activa."""
+    accion = (accion or "consultar").lower().strip()
+    try:
+        from zoneinfo import ZoneInfo
+    except Exception:
+        return "ERROR: zoneinfo no disponible en el servidor (instala tzdata)."
+
+    if accion in ("reset", "regreso", "regresar", "volver", "cdmx"):
+        set_active_tz(TZ_DEFAULT_NAME)
+        return f"OK: reloj de vuelta a CDMX. Ahora: {_fmt_dt_es(datetime.now(TZ_CDMX))} (CDMX)."
+
+    if accion in ("set", "cambiar", "viaje", "viajar", "estoy"):
+        tzname = _resolve_tz_name(zona)
+        if not tzname:
+            return (f"ERROR: no reconozco la zona '{zona}'. Dame ciudad (Madrid, Nueva York, "
+                    f"Tokio) o zona IANA (Europe/Madrid).")
+        set_active_tz(tzname)
+        ahi = _fmt_dt_es(datetime.now(ZoneInfo(tzname)))
+        cdmx = datetime.now(TZ_CDMX).strftime("%H:%M")
+        return (f"OK: reloj activo ahora en *{tzname}*. Ahí son {ahi}. (En CDMX: {cdmx}.) "
+                f"Avísame cuando regreses y lo regreso a CDMX.")
+
+    # consultar (horas mundiales) — NO cambia la zona activa
+    zonas = [z.strip() for z in re.split(r"[,;/]| y ", zona) if z.strip()]
+    if not zonas:
+        return "ERROR: dime qué ciudad/zona consultar (ej. 'Tokio, Madrid')."
+    out = []
+    for z in zonas:
+        tzname = _resolve_tz_name(z)
+        if not tzname:
+            out.append(f"• {z}: no reconozco esa zona")
+            continue
+        t = datetime.now(ZoneInfo(tzname))
+        out.append(f"• {z.title()} ({tzname}): {t.strftime('%H:%M')} — {_DIAS_ES[t.weekday()]} {t.day} {_MESES_ES[t.month-1]}")
+    cdmx = datetime.now(TZ_CDMX).strftime("%H:%M")
+    activa = get_active_tz_name()
+    nota = "" if activa == TZ_DEFAULT_NAME else f" | zona activa de Polo: {activa}"
+    return "Horas actuales:\n" + "\n".join(out) + f"\n(CDMX: {cdmx}{nota})"
 SESSION_HINTS_FILE = STATE_DIR / "session-hints.json"
 
 M365_HINT_RE = re.compile(
@@ -160,15 +370,31 @@ TOOL_KEYWORDS = [
     r"\b(dónde\s+(corres|estás|vives)|donde\s+(corres|estas|vives))\b",
     r"\b(qué\s+(tienes|puedes|conectado|conexión|cuentas|servicios|herramientas|tools)|que\s+(tienes|puedes|conectado))\b",
     r"\b(host|hostname|servidor|vm|server|configuración|configuracion|setup)\b",
+    # Estado/infraestructura: deben ir a Claude-con-tools (listar_agentes, hetzner_estado,
+    # verificar_conexiones), NUNCA a DeepSeek que inventa reportes plausibles.
+    r"\b(c[oó]mo\s+est[aá]s|qu[eé]\s+(falta|tienes\s+listo|est[aá]\s+listo|hace\s+falta)|"
+    r"qu[eé]\s+(est[aá]|hay)\s+pendiente|pendientes?\s+de\s+(infra\w*|configuraci[oó]n)|"
+    r"estado\s+(actual|de\s+louis|de\s+la\s+infra\w*)|infraestructura|instalad\w+|deploy\s+key)\b",
     r"\b(actualiza|actualizar|escribe|guarda|anota|recuerda|recuérdame|recordame|registra)\b",
     r"\b(memoria|agenda|recordatorio|reminder|tarea|pendiente)\b",
     r"\b(léeme|leeme|abre|consulta)\s+(la|el|mi|mis)\s+(agenda|memoria|aprendizajes|learnings|important|proyectos|projects)\b",
     r"\b(amatl|atl|balam|coyolli|metztli|nelli|ollin|teocuitl|tepantli|tequitl|tlahtoani|tlahtolli|tochtli|yollotl)\b",
     r"\b(agente|agentes|despacha|dispatch|kawiil)\b",
+    # Proyectos sincronizados desde la Mac (~/Documents/Claude/Projects)
+    r"\b(proyecto|proyectos|vizum|dazon|kuali|rivium|sylon|impulso|fiatcoin|kawiilers)\b",
     r"\b(correo|correos|email|outlook|inbox|mail|carpeta|archivo|archivar|borrar|marcar)\b",
     r"\b(calendario|calendar|junta|juntas|reunión|reunion|reuniones|cita|citas|evento|eventos)\b",
     r"\b(manda|envía|envia|enviar|responde|responder|reenvía|reenvia|reenviar)\b",
     r"\b(slack|canal|mensaje\s+a)\b",
+    # Confirmaciones de acción (ej: tras '¿empiezo?' → 'sí/dale/hazlo') deben ir a
+    # Claude-con-tools, NO a DeepSeek (que no puede ejecutar la tool prometida).
+    r"^\s*(s[ií]|dale|h[aá]zlo|hazl[oa]|adelante|procede|proc[eé]de|confirmo|órale|orale|va\b|hágalo|hagalo|ejec[uú]talo|c[oó]rrelo|correlo)\b",
+    # Verificación de comandos / estado real (deben ir a Claude con tools, NO a DeepSeek que inventa)
+    r"\b(resultado|resultados|se\s+hizo|se\s+subió|se\s+subio|hiciste|corrió|corrio|terminó|termino|log|logs|cola|push|commit|backfill)\b",
+    # Envío de archivos / PDFs / Dropbox (deben ir a Claude con tools, no a DeepSeek)
+    r"\b(pdf|pptx|powerpoint|presentaci[oó]n|excel|xlsx|hoja\s+de\s+c[aá]lculo|dropbox|documento|informe|dictamen|reporte|adjunt\w+|archivo)\b",
+    r"\b(p[aá]sa(?:me|melo|lo|mela|la)?|m[aá]nda(?:me|melo|lo|mela|la)?|env[ií]a(?:me|melo|lo|mela|la)?|descarga(?:me|melo)?|mu[eé]stra(?:me|melo)?|comp[aá]rte(?:me|melo|lo)?|compart\w+|gen[eé]ra(?:me|lo)?|elabora(?:me|lo)?)\b",
+    r"\b(por\s+aqu[ií]|por\s+telegram|por\s+este\s+medio|en\s+esta\s+conversaci[oó]n)\b",
     # Sub-agentes
     r"\b(crear|nuevo|registrar|invocar|delegar|listar)\s+(agente|sub-agente|subagente|asistente)\b",
     r"\b(asistente\s+de|asistente\s+especialista|asistente\s+especializado)\b",
@@ -199,6 +425,8 @@ TOOL_REGEX = re.compile("|".join(TOOL_KEYWORDS), re.IGNORECASE)
 
 OLLAMA_FORCE_PREFIXES = ("/llama", "/ollama", "/local")
 OLLAMA_QUALITY_PREFIXES = ("/oss",)
+HAIKU_FORCE_PREFIXES = ("/haiku", "/rápido", "/rapido")
+DEEPSEEK_FORCE_PREFIXES = ("/deepseek", "/ds")
 CLAUDE_FORCE_PREFIXES = (
     "/sonnet", "/claude", "/calidad", "/fuerte", "/profundo", "/analisis", "/análisis",
     "/verify",
@@ -231,6 +459,14 @@ def load_anthropic_key():
     key = env.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
     if not key:
         raise RuntimeError(f"No encontré ANTHROPIC_API_KEY en {ANTHROPIC_ENV_FILE} ni en env")
+    return key
+
+
+def load_deepseek_key():
+    env = load_env_file(ANTHROPIC_ENV_FILE)
+    key = env.get("DEEPSEEK_API_KEY") or os.environ.get("DEEPSEEK_API_KEY")
+    if not key:
+        raise RuntimeError(f"No encontré DEEPSEEK_API_KEY en {ANTHROPIC_ENV_FILE} ni en env")
     return key
 
 
@@ -278,6 +514,7 @@ MEMORY_FILES = [
     "SALUD.md",         # Citas médicas, medicamentos, exámenes pendientes
     "VIAJES.md",        # Viajes pasados/próximos + preferencias (aerolínea, hotel)
     "FINANZAS.md",      # Notas financieras personales (NO números de cuenta) — pagos recurrentes, deadlines fiscales
+    "COACH.md",         # Briefing de coach ejecutivo: perfil psicométrico de Polo + prioridades de desarrollo
 ]
 
 
@@ -287,6 +524,38 @@ def load_system_prompt(channel: str = "telegram") -> str:
     agents = SPACE / "AGENTS.md"
     if agents.exists():
         parts.append(agents.read_text())
+    # Fecha y hora actual SIEMPRE en contexto (en la zona activa de Polo).
+    _tz_name = get_active_tz_name()
+    _now = datetime.now(get_active_tz())
+    _es_default = (_tz_name == TZ_DEFAULT_NAME)
+    if _es_default:
+        _viaje = ""
+        _etq = "CDMX"
+    else:
+        _cdmx_now = datetime.now(TZ_CDMX).strftime("%H:%M")
+        _viaje = (f" ⚠️ Polo está FUERA de CDMX (viajando, zona {_tz_name}). "
+                  f"En CDMX serían las {_cdmx_now}. Su reloj base normal es CDMX.")
+        _etq = _tz_name
+    parts.append(
+        "\n\n# FECHA Y HORA\n"
+        f"Referencia al cargar contexto: {_fmt_dt_es(_now)} ({_etq}).{_viaje}\n"
+        "⚠️ ESA referencia se CONGELA y puede tener varios minutos de antigüedad. Para la "
+        "hora/fecha EXACTA de AHORA — '¿qué hora es?', '¿qué día es hoy?', '¿cuánto falta "
+        "para X?', deadlines de hoy, o ANTES de agendar — llama SIEMPRE la tool `reloj` "
+        "(lee el reloj real del sistema). NO calcules la hora de memoria.\n"
+        "Zona base de Polo: CDMX (America/Mexico_City, UTC-6, SIN horario de verano). "
+        "Si Polo viaja o está en otra zona ('estoy en Madrid'), llama `zona_horaria` "
+        "accion='set'; al regresar, accion='reset'. Para la hora de un cliente/ciudad, "
+        "usa `reloj` con 'zona' o `zona_horaria` accion='consultar' (eso NO cambia la zona activa).\n"
+        "🗓️ ANCLAJE DE FECHAS (crítico — aquí te equivocas): cuando leas mensajes de Slack, "
+        "correo o notas con fechas RELATIVAS ('hoy', 'mañana', 'ayer', 'el viernes'), esas "
+        "palabras son relativas a la FECHA EN QUE SE ESCRIBIÓ el mensaje (su timestamp, ej. "
+        "'[01/06 08:16]' = 1 jun), NO a la fecha actual. Convierte SIEMPRE a fecha absoluta. "
+        "Ej: un mensaje del 1-jun que dice 'junta hoy 11:30' = junta el **1-jun**, no hoy. "
+        "ANTES de decir que algo es 'HOY' o que hay un conflicto de horario, compara la fecha "
+        "absoluta del evento contra la fecha real de hoy (de `reloj`). Si no tienes el timestamp, "
+        "di que la fecha es relativa al mensaje y no la afirmes como hoy.\n"
+    )
     parts.append("\n\n# CONTEXTO DE MEMORIA (archivos vivos)\n")
     for fname in MEMORY_FILES:
         path = SPACE / fname
@@ -366,7 +635,104 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "- SALUD.md: citas médicas pendientes, exámenes, medicamentos\n"
         "- VIAJES.md: viajes pasados/próximos, preferencias (aerolínea, hotel, status frecuente)\n"
         "- FINANZAS.md: notas financieras personales — pagos recurrentes, deadlines fiscales (NUNCA guardes números de cuenta o tarjetas)\n"
-        "Usa `append_to_memory` cuando agregas. Usa `write_memory` solo si vas a reemplazar TODO el archivo."
+        "Usa `append_to_memory` SOLO para algo NUEVO. Usa `write_memory` solo si vas a reemplazar TODO el archivo."
+        "\n\n# EDITAR EN SU LUGAR — NO APILES NI DUPLIQUES (CRÍTICO)\n"
+        "Cuando Polo CORRIGE o ACTUALIZA algo ya anotado (cambia un responsable, fecha, nombre de cliente, "
+        "un dato), DEBES editar la línea existente con `reemplazar_pendiente(viejo, nuevo)` — NUNCA agregues "
+        "una línea nueva ni crees secciones tipo 'HOJA NUEVA / ACTUALIZACIÓN <hora>'. Apilar duplica y se "
+        "contradice (ej. el mismo cliente dos veces con datos distintos). Regla: novedad → append_to_memory; "
+        "corrección → reemplazar_pendiente; completado → completar_pendiente. La AGENDA debe quedar con UNA "
+        "sola versión vigente de cada cosa.\n"
+        "\n# NO CONFIRMES SIN HABER ESCRITO (CERO 'YA QUEDÓ' FALSOS)\n"
+        "PROHIBIDO decir 'anotado', 'corregido', 'actualizado', 'listo', 'ya quedó' si NO llamaste la tool "
+        "de memoria en este turno y devolvió OK. Confirma SOLO lo que la tool reportó: si devolvió 'no "
+        "encontré la línea', dilo y vuelve a intentar — no inventes éxito. Lo mismo para recordatorios: si "
+        "Polo te pide cambiar la hora, usa la tool de recordatorio y confirma con lo que devolvió, no de palabra."
+        "\n\n# CERRAR PENDIENTES — CRÍTICO PARA NO REPETIR TEMAS VIEJOS\n"
+        "Cuando Polo avise que algo YA se hizo/entregó/envió/quedó (ej. 'ya entregamos Vizum a la CNBV', "
+        "'ya se mandó la carta de Lupita', 'eso ya quedó'), DEBES llamar `completar_pendiente(texto)` con las "
+        "palabras clave para marcarlo - [x] en AGENDA. Si NO lo cierras, seguirá saliendo en cada revisión y "
+        "parecerá que 'sacas temas viejos'. Cerrar lo hecho es tan importante como anotar lo nuevo."
+        "\n\n# PROACTIVIDAD: REVISA AVANCES EN LOS DOCUMENTOS — NO SEAS SOLO REACTIVO\n"
+        "Cuando un pendiente sea un ENTREGABLE (perfil de puesto, escrito, carta, dictamen, contrato, "
+        "presentación, reporte), NO lo reportes a ciegas como 'sin empezar': PRIMERO revisa si ya hay avance "
+        "en los documentos de Polo — `dropbox_buscar` / `dropbox_analizar_imagen` y M365/OneDrive — y dilo "
+        "proactivamente. Ej.: en vez de 'pendiente: perfil Jefe de Fábrica', di 'vi un borrador del perfil de "
+        "Jefe de Fábrica en Dropbox del 2-jun, ¿lo reviso/continúo?'. En el briefing y en `/agenda`, marca lo "
+        "que YA tiene avance documental vs lo que no. Si no encuentras nada, dilo ('no veo borrador aún'), no "
+        "inventes que existe. Tu trabajo es ADELANTARTE: ver el estado real, no esperar a que Polo te lo diga."
+        "\n\n# DISEÑOS / POSTS (GAMMA) — ARQUITECTO DEL PROMPT, NO PLANTILLA FIJA\n"
+        "Cuando Polo pida un post, imagen, diseño o publicación para redes, ARMA un PROMPT art-directed "
+        "COMPLETO y A LA MEDIDA de ESA publicación. Cada post busca algo distinto: la escena, el mensaje y el "
+        "mood CAMBIAN SIEMPRE; lo único FIJO es la marca. Entrégalo listo para pegar en Gamma → modo 'Gráfico' "
+        "(NUEVO), recordándole a Polo adjuntar la referencia del Kawiilito. Estructura:\n"
+        "• Formato: imagen 1080x1080 (post Instagram).\n"
+        "• Escena (VARÍA por post): el Kawiilito (mascota Kawiil Mx, personaje amigable y profesional en tonos "
+        "navy y verde) HACIENDO algo del tema (señalar un calendario, megáfono, breaking news, etc.).\n"
+        "• Mensaje principal (texto grande): el gancho/dato.\n"
+        "• Texto de apoyo (chico): la aclaración con DATO DURO.\n"
+        "• Marca (FIJO): colores navy #1B4F72, azul #3498DB, verde #2ECC71, acento naranja #E67E22; limpio, "
+        "profesional pero amigable; logo Kawiil Mx abajo; fondo claro.\n"
+        "• Tono/mood: informativo, confiable, cercano — 'recordatorio oficial pero cálido de un asesor de "
+        "confianza'. Cuando el tema lo permita, ROMPE el molde de despacho (ej. estilo 'BREAKING NEWS') para conectar.\n"
+        "Lo FIJO es la marca; lo VARIABLE (escena/mensaje/mood) lo escribes TÚ según el objetivo del post. "
+        "`generar_visual_gamma` = BORRADOR rápido por API (más plano); para el diseño BUENO entrega el prompt para "
+        "el modo Gráfico de Gamma (ahí vive la referencia del Kawiilito; la API no acepta imágenes de referencia)."
+        "\n\n# USA TUS TOOLS — NUNCA digas 'no puedo' sin intentar\n"
+        "Tienes acceso REAL a Dropbox, Kawiil Central (clientes/proyectos/tareas y SQL), M365 "
+        "(correo/calendario), agentes, browser y más. ANTES de decir 'no tengo acceso', 'no puedo' "
+        "o 'no tengo acceso directo', DEBES intentar la tool que corresponde, EN ESE MISMO TURNO:\n"
+        "- 'revisa/crea al cliente X', 'es un grupo' → `kawiil_central_clientes`, `kawiil_central_query` "
+        "(tablas client_groups / clients / client_group_members).\n"
+        "- 'la info está en Dropbox' / 'son capturas' → `dropbox_buscar` → `dropbox_analizar_imagen` "
+        "(extrae datos DENTRO de una imagen con visión) o `dropbox_enviar`.\n"
+        "- Correo/agenda/juntas → tools `m365_*`.\n"
+        "Solo di que algo no se pudo si la tool DEVOLVIÓ un error — y entonces reporta el error textual. "
+        "Está PROHIBIDO decir 'no tengo acceso' cuando existe una tool para eso.\n"
+        "\n# NO TE DETENGAS A MEDIAS — EJECUTA EN EL MISMO TURNO (proactividad)\n"
+        "Eres un asistente PROACTIVO: completas la tarea de principio a fin SIN que Polo tenga que "
+        "empujarte turno por turno. PROHIBIDO terminar un turno con frases de relleno como 'déjame "
+        "revisar…', 'voy a revisar…', 'dame un momento', 'permíteme ver…', 'ahora reviso…', "
+        "'enseguida lo hago' SIN haber llamado ya la tool. Si dices que vas a revisar/crear/buscar "
+        "algo, LLAMA LA TOOL EN ESE MISMO TURNO y entrega el resultado real. Si una acción requiere "
+        "varios pasos (ej. buscar el user_id de alguien → crear proyecto → crear tarea), encadena "
+        "TODAS las tools necesarias en el mismo turno hasta terminar; NO te detengas a esperar otro "
+        "mensaje de Polo entre pasos. Solo te detienes a preguntar si falta un dato que únicamente "
+        "Polo tiene (no para cosas que tú puedes consultar con una tool).\n"
+        "SEGUIMIENTO REAL: si dices que vas a AVISAR, RECORDAR o dar seguimiento ('te aviso', 'le "
+        "mando recordatorio', 'te recuerdo', 'te aviso con tiempo'), DEBES llamar `agendar_recordatorio` "
+        "en ese mismo turno para programarlo de verdad. PROHIBIDO prometer un aviso que no programaste — "
+        "si no lo agendas, no llegará. Para deadlines de hoy, agenda el recordatorio con holgura (ej. un "
+        "par de horas antes del cierre), calculando la hora contra la HORA EXACTA actual.\n"
+        "\n# APRENDIZAJE Y AUTOCORRECCIÓN\n"
+        "Mejoras con el tiempo. LEARNINGS.md (arriba en tu contexto) son REGLAS VINCULANTES que Polo "
+        "te enseñó: respétalas y consúltalas antes de actuar.\n"
+        "- Cuando Polo te CORRIJA o te enseñe cómo hacer algo ('no, así no', 'se hace así', 'la próxima "
+        "vez haz X', 'recuerda que…', 'te equivocaste'), llama `save_learning(topic, rule, context)` con la "
+        "lección EN ESE TURNO y luego aplícala de inmediato.\n"
+        "- Cuando una tool falle y descubras la forma correcta (una ruta, el nombre de una tabla, un flujo), "
+        "guárdalo con `save_learning` para no repetir el error.\n"
+        "- No prometas 'lo voy a recordar' sin llamar la tool: si no lo guardas, no lo recordarás."
+        "\n\n# 🧭 MODO COACH EJECUTIVO\n"
+        "Tienes un rol de COACH EJECUTIVO de Polo, basado en COACH.md (su perfil psicométrico y "
+        "prioridades de desarrollo, arriba en tu contexto). ACTÍVALO cuando Polo lo pida ('hagamos "
+        "coaching', 'modo coach', 'sesión', 'como mi coach') o cuando hable de su desarrollo como "
+        "líder/G4, decisiones difíciles, manejo de presión, delegación, o conflictos con el equipo. "
+        "Fuera de eso, eres el asistente operativo normal (NO seas abrasivo en lo cotidiano).\n"
+        "EN MODO COACH (lee y respeta COACH.md):\n"
+        "- Honesto, directo, SIN condescendencia. NO valides automáticamente (su liderazgo 85% no es "
+        "excusa para no retarlo). NO te quedes en lo teórico: baja SIEMPRE a situaciones concretas y "
+        "recientes ('¿qué decisión tomaste esta semana y cómo?').\n"
+        "- Si detectas que evade una decisión o posterga algo incómodo, NÓMBRALO directo.\n"
+        "- Profundiza en conflicto/presión (ahí colapsa su IE 90→50 y es donde más necesita trabajo).\n"
+        "- Haz post-mortems de decisiones ya tomadas, no solo planear.\n"
+        "- NO aceptes 'voy a trabajar en eso': pregunta qué específicamente, cuándo, y cómo sabrá que lo hizo.\n"
+        "- Cierra cada sesión con 1-2 compromisos concretos y observables.\n"
+        "- Registra patrones recurrentes que detectes con `append_to_memory('COACH.md', ...)` (sección "
+        "'## Patrones observados [fecha]') para darles seguimiento sesión a sesión.\n"
+        "Sus 5 prioridades: (1) proceso de decisión repetible, (2) regulación emocional bajo presión, "
+        "(3) delegación real (hoy 0%), (4) relaciones profundas con el equipo (no solo carisma), "
+        "(5) respeto por el detalle. Si COACH.md no está cargado, dilo y pide que se cree."
         "\n\n# CUANDO POLO PREGUNTE DÓNDE ESTÁS O QUÉ TIENES CONECTADO\n"
         "SIEMPRE invoca primero la tool `verificar_conexiones`. Esto te da datos EN VIVO "
         "(hostname, IP, servicios systemd activos, modelos Ollama, M365 Kawiil/Yoltik con prueba real). "
@@ -387,7 +753,112 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "- `legal_ultimo(modulo, n)` — últimas N publicaciones recientes.\n"
         "- `legal_briefing()` — combinado SJF + DOF, ideal para el briefing matutino.\n"
         "Si Polo pregunta por el estado y la BD no se ha sincronizado todavía, dile claramente "
-        "'la BD no ha llegado al VPS aún — revisa que el cron de mac-push-legal.sh esté activo en tu Mac'."
+        "'la BD no ha llegado al VPS aún — revisa que el cron de mac-push-legal.sh esté activo en tu Mac'.\n"
+        "## ⛔ REGLA ABSOLUTA — NUNCA INVENTES DATOS LEGALES\n"
+        "JAMÁS fabriques resultados del DOF o SJF: ni títulos, ni fechas, ni números de "
+        "acuerdo/decreto, ni artículos, ni publicaciones. Si no lo obtuviste de una fuente "
+        "REAL (la BD vía `legal_buscar`, el portal vía `browser_leer`, o el conocimiento "
+        "indexado del agente), NO EXISTE para ti. Es preferible mil veces decir 'no encontré "
+        "/ no pude acceder / no está descargado todavía' que dar un resultado plausible pero "
+        "falso. Inventar una publicación del DOF es el peor error que puedes cometer: Polo "
+        "toma decisiones legales con eso. Cada dato que des debe ser trazable a su `cod_nota` "
+        "(DOF) o `registro_digital` (SJF) o a la URL exacta que leíste. Si no tienes el ID o "
+        "la URL, no lo afirmes.\n"
+        "## ⛔ REGLA ABSOLUTA — NUNCA INVENTES SALIDAS DE COMANDOS NI RESULTADOS\n"
+        "Esto aplica a TODO, no solo a lo legal: salidas de comandos, contenido de archivos, "
+        "resultados de `ssh`, de `git push`, de la cola de la Mac, logs, estados de servicios. "
+        "JAMÁS narres el resultado de algo que NO ejecutaste con una tool REAL. Si Polo te pide "
+        "'corre tal comando / lee tal archivo / revisa el resultado / se hizo el push' y no tienes "
+        "una tool que lo haga de verdad, di exactamente: 'no tengo una tool para ejecutar eso, no "
+        "te puedo dar el resultado real'. NUNCA fabriques un JSON, un log, un 'push exitoso' ni una "
+        "salida plausible. Para estados/resultados reales usa SIEMPRE la tool correcta:\n"
+        "- Resultado/estado de un comando de la Mac → `mac_comando_estado` (lee el archivo REAL).\n"
+        "- Estado de Hetzner (cola de la Mac, resultados, heartbeat, logs, conteos legales) → "
+        "`hetzner_estado`.\n"
+        "- Estado de servicios/conexiones de Hetzner → `verificar_conexiones`.\n"
+        "Si confirmaste algo (ej: 'el push se hizo', 'el comando terminó', 'el archivo llegó'), debe "
+        "venir de la salida REAL de una de esas tools — si no la llamaste, NO lo afirmes. Inventar "
+        "una salida de comando es tan grave como inventar una publicación del DOF.\n"
+        "## ⛔ NUNCA INVENTES ESTADO DE INFRAESTRUCTURA / INSTALACIÓN\n"
+        "Esto incluye: qué agentes están instalados, si el sync Mac↔Hetzner está activo, qué "
+        "servicios corren, qué repos/deploy keys existen, qué falta por configurar. JAMÁS generes "
+        "un 'Estado actual de Louis' ni una lista de 'pendientes de infraestructura' de memoria o "
+        "por suposición. Esos reportes plausibles pero falsos rompen la confianza (ej: decir 'los "
+        "agentes no están instalados' cuando SÍ lo están). Antes de afirmar el estado de algo:\n"
+        "- ¿Qué agentes tengo? → `listar_agentes` (lee los .md REALES instalados).\n"
+        "- ¿Estado de Hetzner / cola Mac / logs / conteos? → `hetzner_estado`.\n"
+        "- ¿Servicios y conexiones activas? → `verificar_conexiones`.\n"
+        "Si Polo pregunta 'cómo estás / qué tienes listo / qué falta / qué está instalado', PRIMERO "
+        "llamas estas tools y reportas SOLO lo que devuelven. Si una pieza no la puedes verificar con "
+        "ninguna tool, di 'no tengo cómo verificar X', NO inventes que está pendiente ni que funciona.\n"
+        "## CUANDO LA BD NO TIENE EL TEXTO (ej: publicaciones recientes sin HTML descargado)\n"
+        "Si `legal_buscar` no encuentra algo reciente (la BD tiene el índice pero no el texto "
+        "completo), tienes DOS caminos REALES — y si ninguno funciona, lo dices claramente:\n"
+        "1. **Browser**: `browser_navegar('https://www.dof.gob.mx/index_113.php?year=AAAA&month=MM&day=DD')` "
+        "luego `browser_leer` para extraer el contenido real. Solo reporta lo que efectivamente "
+        "leíste en la página.\n"
+        "2. **Disparar el backfill en la Mac**: si lo que falta es que la Mac no ha descargado "
+        "ese mes, usa `mac_ejecutar('dof_backfill_mes', {mes:'2026-05'})` para que la Mac corra "
+        "el script de descarga y suba la BD actualizada. Luego `mac_comando_estado(id)` para ver "
+        "si terminó. Cuando termine, la BD se sincroniza sola y ya puedes buscar con datos reales.\n"
+        "Si el browser falla Y la Mac está offline o el backfill no terminó, DILO: 'no pude "
+        "acceder al DOF en vivo y la Mac no ha descargado ese periodo — no tengo el dato real, "
+        "no te lo voy a inventar'. Esa es la respuesta correcta, no un resultado fabricado.\n"
+        "## INDEXACIÓN DE CONOCIMIENTO LEGAL (agentes kawiil-*)\n"
+        "- `legal_indexar(agente, forzar, limite)` — indexa DOF/SJF para un agente kawiil-* específico "
+        "(o 'todos' para todos). El agente lee docs relevantes a su especialidad, los resume con DeepSeek "
+        "y guarda el conocimiento. Corre automáticamente en background cada 10 min (10 docs por turno).\n"
+        "- `legal_conocimiento(agente)` — muestra qué sabe un agente kawiil-*: cuántos docs tiene, "
+        "resumen semanal, última indexación. Úsalo cuando Polo pregunte 'qué sabe kawiil-metzli del ISR'.\n"
+        "IMPORTANTE: los agentes kawiil-* ya tienen su conocimiento indexado INYECTADO automáticamente "
+        "cuando los invocas. Pueden citar publicaciones específicas que YA analizaron (con su ID real). "
+        "Pero si te preguntan algo que NO está en su conocimiento, deben decir que no lo tienen — "
+        "no inventar."
+        "\n\n# MAC DE POLO — BASH REMOTO Y SCRIPTS DE DESCARGA\n"
+        "La Mac corre scripts pesados (backfill DOF/SJF) y acepta comandos bash arbitrarios. "
+        "Hetzner no puede conectarse a la Mac (NAT), pero la Mac revisa una cola cada minuto. Herramientas:\n"
+        "- `mac_bash(bash_cmd, razon)` — ejecuta CUALQUIER bash en la Mac. Úsalo para diagnóstico, "
+        "reiniciar launchd agents, ver logs, limpiar caches, autocorregir fallas. "
+        "Niveles de seguridad auto-detectados:\n"
+        "  · safe (ls/tail/grep/launchctl list): ejecuta directo, reporta resultado.\n"
+        "  · impactful (launchctl load/unload, mkdir, cp): ANUNCIA qué harás antes de encolar.\n"
+        "  · major (rm -rf, kill -9, desactivar servicios): RAZONA el impacto, explícale a Polo, "
+        "espera confirmación explícita antes de encolar.\n"
+        "- `mac_ejecutar(comando, args, razon)` — atajos para DOF/SJF: `dof_backfill`, "
+        "`dof_backfill_mes` (args: {mes:'AAAA-MM'}), `sjf_backfill`, `legal_sync`.\n"
+        "- `mac_comando_estado(id)` — revisa si terminó (pending/running/done/error) y la salida.\n"
+        "Comandos útiles de diagnóstico Mac:\n"
+        "  `launchctl list | grep kawiil` — ver agentes activos\n"
+        "  `tail -50 ~/Library/Logs/louis-command-runner.log` — ver último ciclo del runner\n"
+        "  `launchctl unload/load ~/Library/LaunchAgents/ai.kawiil.command-runner.plist` — reiniciar runner\n"
+        "NUNCA digas que corriste algo si no confirmaste con `mac_comando_estado` que terminó 'done'."
+        "\n\n# SLACK — LEER CANALES (NO los DMs privados de Polo)\n"
+        "ESTÁS conectado a Slack (workspace Kawiil Mx, bot 'louis'). Cuando Polo pregunte qué hay "
+        "en Slack o qué le mandaron en un canal, USA ESTAS TOOLS — no digas que no tienes acceso:\n"
+        "- `slack_resumen(canales, msgs_por_canal)` — EN UN SOLO CALL lista canales Y lee mensajes "
+        "recientes. ES LA TOOL PRINCIPAL. Sin args lee los primeros 8 canales; con "
+        "canales=['cumplimiento-sylon','cumplimiento'] lee esos.\n"
+        "- `slack_leer(canal, limite)` — lee un canal específico por nombre o ID.\n"
+        "- `slack_canales` — lista los canales donde estás invitado.\n"
+        "- `slack_dm_leer(usuario)` — SOLO lee el DM entre el BOT y ese usuario (no aplica a otros).\n"
+        "LÍMITE REAL DE SLACK (díselo claro, NO prometas lo imposible): un bot NO puede leer los DMs "
+        "privados de Polo con terceros — eso ningún bot lo permite. Solo ves CANALES donde estás "
+        "invitado + tu propio DM. NUNCA digas 'dame acceso a tus DMs' ni 'no tengo acceso aún' (no es "
+        "cuestión de tiempo, es imposible por diseño de Slack). Si la info que Polo busca está en un DM "
+        "privado, dile: 'reenvíamela aquí o pide que la pongan en el canal #cumplimiento-sylon (u otro) "
+        "y la leo'. Para cualquier pregunta de canales, llama `slack_resumen` ANTES de responder."
+        "\n\n# DROPBOX Y PDFs — MANDAR ARCHIVOS A POLO\n"
+        "PUEDES leer el Dropbox de Polo y mandarle archivos por Telegram. NO digas que no puedes:\n"
+        "- `dropbox_buscar(query)` — busca un archivo por nombre/contenido. Devuelve la ruta exacta.\n"
+        "- `dropbox_listar(carpeta)` — navega carpetas (vacío = raíz).\n"
+        "- `dropbox_enviar(path)` — baja el archivo de Dropbox y SE LO MANDA a Polo por Telegram. "
+        "Usa la ruta exacta que te dio dropbox_buscar/dropbox_listar.\n"
+        "- `dof_pdf(cod)` — baja el PDF OFICIAL del DOF por su cod_nota y se lo manda a Polo. "
+        "Para esto NO necesitas Dropbox ni browser — el PDF se baja directo del DOF.\n"
+        "Flujo cuando Polo pide 'pásame el PDF del DOF': usa `dof_pdf(cod)` con el cod que ya tienes "
+        "de legal_buscar. Cuando pide un documento suyo: `dropbox_buscar` → `dropbox_enviar`. "
+        "IMPORTANTE: el backfill del DOF NO guarda PDFs en Dropbox (solo texto en la BD). Para el PDF "
+        "del DOF usa SIEMPRE `dof_pdf(cod)`, no busques en Dropbox."
         "\n\n# SELF-UPDATE — PUEDES EDITARTE A TI MISMO\n"
         "Tienes tools (`leer_mi_codigo`, `editar_mi_codigo`, `reiniciar_mi_servicio`, "
         "`ver_mis_backups`, `restaurar_mi_codigo`) para modificar tu propio código en /opt/openclaw/scripts/. "
@@ -420,7 +891,51 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "Cuando Polo te pida algo muy específico y repetitivo ('necesito un asistente que me ayude "
         "a redactar correos a clientes en mi tono'), considera proponer crear un agente. "
         "Tools: `crear_agente`, `listar_agentes`, `invocar_agente`. Confirma con Polo el prompt antes "
-        "de crear un agente nuevo."
+        "de crear un agente nuevo.\n"
+        "## ⛔ DELEGACIÓN ES SÍNCRONA — NO EXISTE 'EN SEGUNDO PLANO'\n"
+        "`invocar_agente`/`delegar_agente` corren AL INSTANTE y te devuelven el resultado del agente "
+        "EN LA MISMA llamada. NO hay procesamiento en background, ni colas, ni 'te aviso cuando termine'. "
+        "Por lo tanto:\n"
+        "- Cuando decidas delegar (y Polo confirme si preguntaste), DEBES llamar `invocar_agente` EN ESE "
+        "MISMO TURNO y entregar el resultado real del agente. \n"
+        "- PROHIBIDO decir 'ya lo delegué', 'lo está procesando', 'te aviso cuando termine', 'en unos "
+        "minutos te paso el informe' — eso es FALSO porque no hay tarea en segundo plano. Si lo dices "
+        "sin haber llamado la tool, estás mintiendo y la tarea NUNCA se hará.\n"
+        "- Flujo correcto: Polo pide algo → (si confirmas) → llamas `invocar_agente('kawiil-X', tarea, "
+        "contexto)` → te devuelve el informe → se lo entregas a Polo en ese turno. Todo en una sola vuelta.\n"
+        "- Si el resultado es muy largo, igual lo entregas (el bridge lo manda como archivo si hace falta). "
+        "Nunca lo dejes 'pendiente'.\n"
+        "Regla de oro: si dijiste que un agente haría algo, el output de ese agente DEBE aparecer en tu "
+        "respuesta. Si no llamaste la tool, no digas que delegaste.\n"
+        "PROHIBIDO TAMBIÉN: 'el agente sigue generando', 'va en la sección X', 'secciones 5.3 onwards', "
+        "'¿continúo?'. El agente NO genera por partes ni en vivo — entrega TODO de una vez. Cuando "
+        "`invocar_agente` te devuelva el texto, ENTRÉGALO COMPLETO a Polo en ese mismo mensaje (si es "
+        "largo, el bridge lo manda como archivo). No ofrezcas menús de 'continúo/resumo/guardo' en lugar "
+        "del informe: primero entrega el informe completo, y SI QUIERES, al final ofreces resumirlo. "
+        "El default es ENTREGAR, no preguntar.\n"
+        "## ⛔ DOCUMENTOS (PDF/PPTX/XLSX) — GENERA, NO PIDAS PERMISO\n"
+        "Cuando Polo pida un documento, dictamen, informe, plan, presentación o tabla 'como PDF', "
+        "'en PDF', 'documento', 'PowerPoint', 'Excel', o 'para compartir con el equipo':\n"
+        "- DEBES llamar la tool `generar_documento(tipo, titulo, contenido)` EN ESE MISMO TURNO. "
+        "El servidor genera el archivo REAL y se lo manda a Polo por Telegram automáticamente.\n"
+        "- `tipo`: 'pdf' para dictámenes/informes/planes de texto; 'pptx' para presentaciones; "
+        "'xlsx' para tablas/datos financieros.\n"
+        "- `contenido`: el documento COMPLETO en markdown (# para títulos, - para listas, | para tablas).\n"
+        "- PROHIBIDO preguntar '¿procedo a generar el PDF?', '¿lo genero ahora?', 'lo dejo listo en tu Mac'. "
+        "NUNCA digas que dejas algo 'en la Mac' — tú corres en el servidor y entregas por Telegram. "
+        "Si Polo pidió PDF, llamas `generar_documento` de inmediato. El default es GENERAR Y ENTREGAR.\n"
+        "- Flujo cuando un agente ya produjo el contenido: tomas ese texto → llamas `generar_documento` "
+        "con él → se manda el archivo. No vuelvas a delegar si ya tienes el contenido.\n"
+        "## REGLA LEGAL OBLIGATORIA — internacional como referencia, México como ley\n"
+        "Los ~92 agentes `legal-*` (claude-for-legal) son contexto EE.UU.: sirven SOLO como "
+        "REFERENCIA TÉCNICA internacional. Los agentes mexicanos (kawiil-nelli, kawiil-tepantli y "
+        "los que crees con nombres en náhuatl) son los que mandan: revisan esa referencia y producen "
+        "la versión OBLIGATORIA en México citando la norma local (CFF, LFPIORPI, LFPDPPP, LFT, CNBV, "
+        "UIF, SAT, INAI). Para CUALQUIER duda legal/regulatoria usa `consejo_experto_legal(area, "
+        "pregunta)`: trae la referencia internacional Y la mexicaniza automáticamente vía kawiil-nelli. "
+        "NUNCA entregues una conclusión legal extranjera sin mexicanizarla. Cuando crees un agente "
+        "legal nuevo, dale en su prompt esta misma doctrina (referencia internacional → versión MX "
+        "obligatoria) para que aprenda de los internacionales pero cite siempre derecho mexicano."
         "\n\n# MAC DE POLO — ESTADO Y WAKE\n"
         "La Mac de Polo manda heartbeat cada 30s a /opt/openclaw/state/mac_heartbeat.json "
         "(batería, AC power, SSID, uptime). Tools:\n"
@@ -459,6 +974,12 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "- `kawiil_central_query(sql, razon)` — SQL libre con guardrails. Para casos donde los wrappers "
         "no embonan con el schema real. PERMITIDO: SELECT/INSERT/UPDATE. BLOQUEADO: DROP/TRUNCATE/ALTER. "
         "DELETE requiere 'DELETE_CONFIRM' en razón Y confirmación explícita de Polo.\n"
+        "- `kawiil_central_notificar(titulo, cuerpo?, para?, tipo?)` — crea una notificación REAL en el "
+        "app (le aparece a la persona en su campana) + deja rastro en activity_log. ÚSALA para que el "
+        "EQUIPO se entere de un avance sin que Polo copie/pegue: cuando termines un análisis legal, el "
+        "resumen DOF, el reporte SJF, o cuando Polo diga 'avísale al equipo' / 'notifica a X'. `para` vacío "
+        "= solo Polo; `para='equipo'` = todos los activos; o nombres/emails separados por coma. NO uses "
+        "SQL crudo para esto.\n"
         "\n"
         "FLUJO RECOMENDADO cuando Polo te dice algo como 'avancé X' o 'creemos tarea para Y':\n"
         "1. Si es la primera vez de la sesión, llama `kawiil_central_estado()` para verificar conectividad "
@@ -629,10 +1150,279 @@ def build_operational_snapshot(compact: bool = True) -> str:
     else:
         lines.append("(vacío)")
 
+    # Cerebro Kawiil: una línea compacta sobre estado de entregables
+    cerebro_sum = _cerebro_entregables_snapshot()
+    if cerebro_sum:
+        lines.append(f"\n*CEREBRO Kawiil — Entregables*\n{cerebro_sum}")
+
     body = "\n".join(lines)
     if not compact:
         return f"{meta}\n\n{body}"
     return body
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CEREBRO KAWIIL — helpers de lectura directa del almacén compartido
+# Louis lee del disco local (0 tokens). Cowork escribe vía MCP.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _cerebro_parsear_fm(path: Path) -> dict:
+    """Lee el frontmatter YAML de un entregable/brief. Tolerante a errores."""
+    meta: dict = {"archivo": path.name, "titulo": path.stem, "estado": "desconocido"}
+    try:
+        content = path.read_text(encoding="utf-8")
+        m = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
+        if m:
+            for line in m.group(1).splitlines():
+                if ":" in line:
+                    k, _, v = line.partition(":")
+                    meta[k.strip()] = v.strip()
+    except Exception:
+        pass
+    return meta
+
+
+def _cerebro_listar(estado: str = "", cliente: str = "") -> str:
+    """Lista entregables del almacén compartido. Respuesta compacta."""
+    if not ENTREGABLES_PATH.exists():
+        return f"Cerebro no disponible en {ENTREGABLES_PATH}. ¿Ya se desplegó?"
+    items = []
+    for f in sorted(ENTREGABLES_PATH.glob("*.md")):
+        if f.name.startswith("_"):
+            continue
+        meta = _cerebro_parsear_fm(f)
+        if estado and meta.get("estado", "").lower() != estado.lower():
+            continue
+        if cliente and cliente.lower() not in meta.get("cliente", "").lower():
+            continue
+        icono = {"borrador": "📝", "listo": "✅", "en_vobo": "🔄",
+                 "aprobado": "✔️", "archivado": "📦"}.get(meta.get("estado", ""), "❓")
+        items.append(
+            f"{icono} {meta.get('titulo', f.stem)} | "
+            f"{meta.get('cliente','?')} | {meta.get('estado','?')} | "
+            f"{meta.get('fecha_actualizacion','?')}"
+        )
+    briefs_path = BRIEFS_PATH
+    n_briefs = len(list(briefs_path.glob("*.md"))) if briefs_path.exists() else 0
+    if not items:
+        return f"Sin entregables{(' estado='+estado) if estado else ''}. Briefs pendientes: {n_briefs}"
+    return "\n".join(items) + f"\n(Total: {len(items)} | Briefs pendientes: {n_briefs})"
+
+
+def _cerebro_proyecto_estado(nombre: str) -> str:
+    """Devuelve el frontmatter de un entregable específico. Sin cuerpo = barato."""
+    if not ENTREGABLES_PATH.exists():
+        return "Cerebro no disponible."
+    termino = nombre.lower()
+    for f in ENTREGABLES_PATH.glob("*.md"):
+        if f.name.startswith("_"):
+            continue
+        meta = _cerebro_parsear_fm(f)
+        if termino in f.stem.lower() or termino in meta.get("titulo", "").lower():
+            lineas = [f"Entregable: {meta.get('titulo', f.stem)}"]
+            for campo in ("cliente", "estado", "vobo", "responsable",
+                          "fecha_creacion", "fecha_actualizacion"):
+                if campo in meta:
+                    lineas.append(f"  {campo}: {meta[campo]}")
+            return "\n".join(lineas)
+    return f"No encontrado: «{nombre}»"
+
+
+def _cerebro_crear_brief(tarea: str, cliente: str, insumos: str = "",
+                         urgencia: str = "normal", contexto: str = "") -> str:
+    """
+    Crea un brief de dispatch en el almacén compartido y envía notificación
+    inmediata a Polo por Telegram ('brief listo, ábrelo en Cowork').
+    """
+    BRIEFS_PATH.mkdir(parents=True, exist_ok=True)
+    ahora = datetime.now(TZ_CDMX)
+    fecha = ahora.strftime("%Y-%m-%d")
+    slug  = re.sub(r"[^a-z0-9]+", "-", tarea.lower()).strip("-")[:55]
+    filepath = BRIEFS_PATH / f"{fecha}-brief-{slug}.md"
+
+    # Contexto AGENDA relevante (solo líneas que mencionen tarea o cliente)
+    agenda_txt = ""
+    agenda_f = SPACE / "AGENDA.md"
+    if agenda_f.exists():
+        lineas = agenda_f.read_text(encoding="utf-8").splitlines()
+        relevantes = [l for l in lineas if tarea.lower()[:20] in l.lower()
+                      or cliente.lower()[:15] in l.lower()][:6]
+        agenda_txt = "\n".join(relevantes) if relevantes else "(sin entradas relevantes)"
+
+    # Entregables previos del mismo cliente
+    previos = []
+    if ENTREGABLES_PATH.exists():
+        for f in ENTREGABLES_PATH.glob("*.md"):
+            if not f.name.startswith("_"):
+                meta = _cerebro_parsear_fm(f)
+                if cliente.lower() in meta.get("cliente", "").lower():
+                    previos.append(
+                        f"  • {meta.get('titulo', f.stem)} ({meta.get('estado','?')})"
+                    )
+
+    content = (
+        f"---\ntipo: brief_dispatch\ntarea: {tarea}\ncliente: {cliente}\n"
+        f"urgencia: {urgencia}\nestado: pendiente\npreparado_por: Louis\n"
+        f"fecha_creacion: {fecha} {ahora.strftime('%H:%M')}\n---\n\n"
+        f"# Brief: {tarea}\n\n"
+        f"Cliente: {cliente} | Urgencia: {urgencia}\n\n"
+        f"## Tarea\n{tarea}\n\n"
+        f"## Insumos\n{insumos or 'Consultar acervo legal y memoria según aplique.'}\n\n"
+        f"## Entregables previos del cliente\n"
+        + ("\n".join(previos) if previos else "  (ninguno)") +
+        f"\n\n## AGENDA relevante\n{agenda_txt}\n\n"
+        f"## Contexto adicional\n{contexto or '(ninguno)'}\n\n"
+        f"## Pasos para Cowork\n"
+        f"1. Revisar insumos y entregables previos\n"
+        f"2. `legal_buscar()` si aplica\n"
+        f"3. Producir entregable\n"
+        f"4. `entregable_registrar()` + `entregable_actualizar_estado('listo')`\n"
+    )
+    filepath.write_text(content, encoding="utf-8")
+
+    # Notificación inmediata vía Telegram (scheduler la toma en el próximo tick)
+    try:
+        notif = (
+            f"📋 *Brief listo en Cerebro Kawiil*\n"
+            f"Tarea: {tarea}\nCliente: {cliente} | Urgencia: {urgencia}\n"
+            f"Ábrelo en Cowork para tomarlo."
+        )
+        _encolar_notificacion(notif, canal="telegram")
+    except Exception:
+        pass  # la notificación es best-effort
+
+    return (
+        f"✅ Brief: _briefs/{filepath.name}\n"
+        f"Urgencia: {urgencia} | Previos del cliente: {len(previos)}\n"
+        f"Polo fue notificado por Telegram."
+    )
+
+
+def _cerebro_sync_agenda() -> str:
+    """
+    Compara los pendientes abiertos de AGENDA.md con el estado real en el
+    cerebro. Devuelve las discrepancias encontradas y encola una notificación
+    si hay algo que Louis reportaba como pendiente pero ya está listo.
+    """
+    agenda_f = SPACE / "AGENDA.md"
+    if not agenda_f.exists():
+        return "AGENDA.md no disponible."
+    if not ENTREGABLES_PATH.exists():
+        return f"Cerebro no disponible en {ENTREGABLES_PATH}."
+
+    # Construir índice: titulo/stem → estado del cerebro
+    indice: dict[str, str] = {}
+    for f in ENTREGABLES_PATH.glob("*.md"):
+        if not f.name.startswith("_"):
+            meta = _cerebro_parsear_fm(f)
+            titulo = meta.get("titulo", f.stem).lower()
+            indice[titulo] = meta.get("estado", "?")
+            # También indexar por palabras clave del stem
+            for palabra in f.stem.lower().split("-"):
+                if len(palabra) > 4:
+                    indice.setdefault(palabra, meta.get("estado", "?"))
+
+    # Buscar pendientes de AGENDA que ya estén en el cerebro como listo/aprobado
+    agenda_txt = agenda_f.read_text(encoding="utf-8")
+    pendientes = [l.strip() for l in agenda_txt.splitlines()
+                  if re.match(r"^\s*-\s*\[\s*\]\s+", l)]
+
+    discrepancias = []
+    for pend in pendientes:
+        texto = re.sub(r"^\s*-\s*\[\s*\]\s+", "", pend).lower()
+        for titulo_cerebro, estado_cerebro in indice.items():
+            if len(titulo_cerebro) > 4 and titulo_cerebro in texto:
+                if estado_cerebro in ("listo", "aprobado", "en_vobo"):
+                    discrepancias.append(
+                        f"• AGENDA dice pendiente → Cerebro dice «{estado_cerebro}»:\n"
+                        f"  AGENDA: {pend}\n"
+                        f"  Cerebro: {titulo_cerebro} ({estado_cerebro})"
+                    )
+                break
+
+    if not discrepancias:
+        return (
+            f"Sincronización OK. {len(pendientes)} pendientes en AGENDA, "
+            f"ninguno contradice el estado del Cerebro."
+        )
+
+    reporte = "\n".join(discrepancias)
+    # Notificar a Polo
+    try:
+        _encolar_notificacion(
+            f"🔄 *Cerebro Kawiil — discrepancias detectadas*\n\n{reporte[:800]}\n\n"
+            f"Louis puede actualizar AGENDA con `agenda_marcar_hecho()` si ya está listo.",
+            canal="telegram",
+        )
+    except Exception:
+        pass
+
+    return f"⚠️ {len(discrepancias)} discrepancia(s):\n\n{reporte}"
+
+
+def _encolar_notificacion(mensaje: str, canal: str = "telegram") -> None:
+    """Encola una notificación inmediata (fire_at = ahora) al scheduler."""
+    REMINDERS_DIR.mkdir(parents=True, exist_ok=True)
+    import uuid as _u
+    entry = {
+        "id": str(_u.uuid4())[:8],
+        "fire_at": datetime.now(TZ_CDMX).isoformat(),
+        "message": mensaje,
+        "channel": canal,
+        "mode": "raw",
+        "recurrence": None,
+        "created_at": datetime.now(TZ_CDMX).isoformat(),
+        "source": "cerebro",
+    }
+    try:
+        queue = _read_queue()
+    except Exception:
+        queue = []
+    queue.append(entry)
+    _write_queue(queue)
+
+
+def _cerebro_entregables_snapshot() -> str:
+    """
+    Resumen ultra-compacto del cerebro para incrustar en build_operational_snapshot().
+    Una sola línea por estado. Sin coste extra en tokens.
+    """
+    if not ENTREGABLES_PATH.exists():
+        return ""
+    conteo: dict[str, int] = {}
+    for f in ENTREGABLES_PATH.glob("*.md"):
+        if not f.name.startswith("_"):
+            meta = _cerebro_parsear_fm(f)
+            e = meta.get("estado", "?")
+            conteo[e] = conteo.get(e, 0) + 1
+    if not conteo:
+        return ""
+    partes = [f"{e}:{n}" for e, n in sorted(conteo.items())]
+    n_briefs = len(list(BRIEFS_PATH.glob("*.md"))) if BRIEFS_PATH.exists() else 0
+    briefs_str = f" | briefs_dispatch:{n_briefs}" if n_briefs else ""
+    return " | ".join(partes) + briefs_str
+
+
+def _generar_visual_gamma(texto: str, formato: str = "social",
+                          export: str = "png", instrucciones: str = "") -> str:
+    """Llama a gamma_gen.py (API de Gamma) y devuelve los enlaces. Server-side."""
+    script = HOME_OC / "scripts" / "gamma_gen.py"
+    if not script.exists():
+        return f"ERROR: no encuentro gamma_gen.py en {script}"
+    # --telegram: gamma_gen descarga el PNG al instante y lo adjunta (el link firmado caduca)
+    cmd = ["/usr/bin/python3", str(script), texto, "--format", formato, "--export", export, "--telegram"]
+    if instrucciones:
+        cmd += ["--instr", instrucciones]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except Exception as e:
+        return f"ERROR al generar el visual: {e}"
+    out = (r.stdout or "") + "\n" + (r.stderr or "")
+    g = re.search(r"gammaUrl:\s*(\S+)", out)
+    if g:
+        return (f"🎨 Listo: te mandé la imagen como archivo aquí en el chat. "
+                f"Para ajustarla, ábrela/edítala en Gamma: {g.group(1)}")
+    return f"No se pudo generar el visual. Detalle:\n{out.strip()[-400:]}"
 
 
 def is_first_conversation_today(history_file: Path | None) -> bool:
@@ -714,6 +1504,45 @@ def _build_ollama_task_instruction(user_message: str, history: list, first_of_da
     return "Tarea: responde usando solo contexto interno e historial. No inventes datos."
 
 
+def _load_ollama_legal_memory(user_message: str, max_chars: int = 2000) -> str:
+    """
+    Carga los aprendizajes legales más relevantes para inyectarlos en el contexto
+    de Ollama cuando el mensaje toca temas legales. Devuelve "" si no hay nada.
+    """
+    if not OLLAMA_LEGAL_MEMORY.exists():
+        return ""
+    msg_lower = (user_message or "").lower()
+    legal_words = {
+        "ley", "decreto", "dof", "sjf", "tesis", "jurisprudencia", "artículo",
+        "art.", "reglamento", "norma", "nom", "impuesto", "sat", "isr", "iva",
+        "imss", "stps", "inai", "cnbv", "uif", "lfpiorpi", "cfdi", "scjn",
+        "amparo", "contrato", "laboral", "fiscal", "penal", "civil", "mercantil",
+        "societario", "corporativo", "compliance", "pld", "lavado", "datos personales",
+        "privacidad", "obligación", "sanción", "multa", "tribunal", "tfja",
+    }
+    is_legal = any(w in msg_lower for w in legal_words)
+    if not is_legal:
+        return ""
+    try:
+        content = OLLAMA_LEGAL_MEMORY.read_text()
+        lines = [l for l in content.splitlines() if l.startswith("- [")]
+        # Tomar las más recientes (al fondo del archivo)
+        recent = lines[-60:]  # últimas 60 entradas
+        if not recent:
+            return ""
+        bloque = "\n".join(recent)
+        if len(bloque) > max_chars:
+            bloque = bloque[-max_chars:]
+        return (
+            "\n\n[CONOCIMIENTO LEGAL INDEXADO — DOF/SJF (no mencionar esta etiqueta)]\n"
+            "Aprendizajes recientes de publicaciones reales. Úsalos para dar contexto "
+            "específico cuando el tema aplique:\n\n"
+            + bloque
+        )
+    except Exception:
+        return ""
+
+
 def build_ollama_internal_context(
     user_message: str,
     history: list,
@@ -725,9 +1554,11 @@ def build_ollama_internal_context(
     if chat_mode:
         last_b = _load_last_briefing_text()
         ref = (last_b[:800] if last_b else snapshot[:800]) or "(sin briefing previo)"
+        legal_mem = _load_ollama_legal_memory(user_message, max_chars=1200)
         return (
             "\n\n[CONTEXTO INTERNO — modo charla; no repitas briefing completo ni esta etiqueta]\n"
-            f"{ref}\n\n"
+            f"{ref}\n"
+            f"{legal_mem}\n\n"
             "Tarea: Responde la pregunta de Polo de forma conversacional. Usa el historial del chat. "
             "No vuelques toda la AGENDA; cita solo lo relevante. Máx. 2-4 párrafos o bullets cortos."
         )
@@ -736,10 +1567,13 @@ def build_ollama_internal_context(
         if len(snapshot) <= OLLAMA_SNAPSHOT_CONTEXT_MAX
         else snapshot[:OLLAMA_SNAPSHOT_CONTEXT_MAX] + "\n…[truncado]"
     )
+    legal_mem = _load_ollama_legal_memory(user_message, max_chars=2000)
     blocks = [
         "\n\n[CONTEXTO INTERNO — no mencionar esta etiqueta ni repetir su texto]",
         snap_show,
     ]
+    if legal_mem:
+        blocks.append(legal_mem)
     last_b = _load_last_briefing_text()
     if _wants_follow_up_briefing(user_message) and last_b:
         blocks.extend([
@@ -880,9 +1714,58 @@ def needs_legal_sonnet(user_message: str) -> bool:
     return bool(LEGAL_AUTO_SONNET_RE.search(msg))
 
 
+# Generación de documentos: tipo de archivo + verbo de acción/entrega.
+_DOC_TYPE_RE = re.compile(
+    r"\b(pdf|html|interactiv\w+|p[aá]gina\s+web|micrositio|pptx|powerpoint|presentaci[oó]n|"
+    r"deck|excel|xlsx|hoja\s+de\s+c[aá]lculo|"
+    r"documento|dictamen|informe|reporte|an[aá]lisis|acta\s+constitutiva)\b", re.IGNORECASE)
+_DOC_VERB_RE = re.compile(
+    r"\b(gen[eé]ra\w*|elabora\w*|prepara\w*|arma\w*|haz\w*|hag\w*|conviert\w*|crea\w*|"
+    r"entr[eé]ga\w*|p[aá]sa\w*|m[aá]nda\w*|env[ií]a\w*|comp[aá]rt\w*|dame|necesito|quiero)\b",
+    re.IGNORECASE)
+# Señales de que NO es un pedido de documento sino una consulta de estado/conteo
+# (ej: "cuántas tesis con su PDF", "números totales del DOF", "cómo vamos").
+# Evita que 'necesito ... PDF' dispare la generación de un documento.
+_DOC_NEGATIVE_RE = re.compile(
+    r"\b(cu[aá]nt\w*|n[uú]mero?s?|total\w*|c[oó]mo\s+(vamos|va|van|est[aá]\w*)|"
+    r"estad[oí]stic\w*|estado\s+(del?|de\s+la)|descargad\w*|indexad\w*|organizad\w*|"
+    r"avance|conteo|resumen\s+de\s+(estado|n[uú]meros))\b",
+    re.IGNORECASE)
+
+# Señales de ACCIÓN YA REALIZADA (pasado/completado) — un REPORTE de estatus, no una
+# orden. Ej: "ya se envió el documento", "entregamos el informe", "se mandó la
+# semana pasada", "ya quedó". Sin esto, un comentario de seguimiento que mencione
+# 'documento' + un verbo de entrega disparaba (mal) la generación de un PDF basura.
+_DOC_DONE_RE = re.compile(
+    r"\bya\s+(se\s+|lo\s+|la\s+|los\s+|las\s+|le\s+)?"
+    r"(envi\w*|entreg\w*|mand\w*|gener\w*|qued\w*|termin\w*|hic\w*|hize|est[aá]\b|avis\w*)"
+    r"|\bse\s+(envi[oó]|entreg[oó]|mand[oó]|gener[oó]|avis[oó])\b"
+    r"|\b(envi[oó]|entreg[oó]|mand[oó]|gener[oó]|enviaron|entregaron|mandaron|"
+    r"enviamos|entregamos|mandamos|generamos|envi[eé]|entregu[eé]|mand[eé])\b",
+    re.IGNORECASE)
+
+
+def needs_doc_sonnet(user_message: str) -> bool:
+    """True si Polo pide GENERAR un documento (PDF/PPTX/XLSX). Usa Sonnet — sigue
+    instrucciones de tool-calling mucho mejor que Haiku para generar_documento.
+    Excluye consultas de estado/conteo (cuántas, números, descargadas) y REPORTES de
+    acción ya realizada (ya se envió/entregamos/se mandó), aunque mencionen 'PDF' o
+    'documento', porque ésos NO son pedidos de generar sino seguimiento/estatus."""
+    if not user_message:
+        return False
+    msg = user_message.strip()
+    if msg.lower().startswith(OLLAMA_FORCE_PREFIXES):
+        return False
+    if _DOC_NEGATIVE_RE.search(msg):
+        return False
+    if _DOC_DONE_RE.search(msg):
+        return False
+    return bool(_DOC_TYPE_RE.search(msg) and _DOC_VERB_RE.search(msg))
+
+
 def needs_sonnet_auto(user_message: str) -> bool:
-    """Ruta Sonnet sin prefijo: escritura memoria o agentes legales."""
-    return needs_memory_write(user_message) or needs_legal_sonnet(user_message)
+    """Ruta Sonnet sin prefijo: escritura memoria, agentes legales o documentos."""
+    return needs_memory_write(user_message) or needs_legal_sonnet(user_message) or needs_doc_sonnet(user_message)
 
 
 def _memory_write_billing_msg() -> str:
@@ -916,6 +1799,147 @@ def _format_memory_tool_confirmations(tool_results: list[str]) -> str:
     if not lines:
         return ""
     return "✅ *Memoria actualizada:*\n" + "\n".join(f"• {ln}" for ln in lines)
+
+
+# ===== Escritura determinística de memoria (sin Claude / sin créditos) =====
+# Permite que Louis "aprenda" aunque la cuenta Anthropic no tenga créditos: la
+# forma explícita "anota [en <archivo>]: <contenido>" se guarda directo con
+# append_to_memory, sin pasar por Sonnet. Es el carril de aprendizaje a prueba
+# de fallos — siempre disponible, gratis y local.
+_MEMORY_FILE_KEYWORDS = (
+    ("agenda", "AGENDA.md"),
+    ("prospecto", "PROSPECTOS.md"),
+    ("cliente", "CLIENTES.md"),
+    ("importante", "IMPORTANT.md"),
+    ("important", "IMPORTANT.md"),
+    ("journal", "JOURNAL.md"),
+    ("bitacora", "JOURNAL.md"),
+    ("bitácora", "JOURNAL.md"),
+    ("aprendizaje", "LEARNINGS.md"),
+    ("learning", "LEARNINGS.md"),
+    ("proyecto", "PROJECTS.md"),
+    ("project", "PROJECTS.md"),
+    ("personal", "PERSONAL.md"),
+    ("familia", "FAMILIA.md"),
+    ("salud", "SALUD.md"),
+    ("viaje", "VIAJES.md"),
+    ("finanza", "FINANZAS.md"),
+    ("equipo", "PEOPLE.md"),
+    ("gente", "PEOPLE.md"),
+    ("people", "PEOPLE.md"),
+)
+
+_MEMORY_TRIGGER_RE = re.compile(
+    r"^\s*(?:anota|anotar|agrega|agregar|registra|registrar|guarda|guardar|"
+    r"apunta|apuntar)\b[:\s]*",
+    re.IGNORECASE,
+)
+# OJO: 'recuérdame/recuérdalo' NO van aquí — eso es un RECORDATORIO (scheduler vía
+# agendar_recordatorio), no una nota en AGENDA. Si se interceptan aquí, se guardan
+# como nota y nunca disparan.
+_MEMORY_FILE_PREFIX_RE = re.compile(
+    r"^(?:en|a|al)\s+(?:la\s+|el\s+|mi\s+)?([\wáéíóúñ]+)\s*:?\s*(.*)$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _resolve_memory_file_strict(token: str) -> str | None:
+    """Devuelve el archivo de memoria si el token coincide con una palabra clave, si no None."""
+    t = (token or "").lower().strip()
+    for kw, fname in _MEMORY_FILE_KEYWORDS:
+        if t.startswith(kw):
+            return fname
+    return None
+
+
+_REMINDER_REL_RE = re.compile(
+    r"^\s*(?:recu[eé]rdame|recuerdame|av[ií]same|avisame|recu[eé]rdalo|recuerdalo)\b"
+    r".*?\ben\s+(\d{1,4})\s*(min(?:uto)?s?|h(?:ora)?s?)\b"
+    r"\s*(?:que|de|del|sobre|para|:|,)?\s*(.*)$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def try_deterministic_reminder(user_message: str) -> str | None:
+    """Crea un recordatorio RELATIVO ('recuérdame en N min/horas …') directo en el
+    servidor, sin pasar por el modelo. La hora la calcula el reloj real → nunca falla
+    por mala hora del modelo ni se desvía a una nota en AGENDA. None si no aplica."""
+    if not user_message:
+        return None
+    m = _REMINDER_REL_RE.match(user_message.strip())
+    if not m:
+        return None
+    n = int(m.group(1))
+    unidad = m.group(2).lower()
+    resto = (m.group(3) or "").strip().strip(":,. ").strip()
+    minutos = n * 60 if unidad.startswith("h") else n
+    if minutos <= 0 or minutos > 60 * 24 * 14:  # tope 2 semanas
+        return None
+    mensaje = resto if len(resto) >= 2 else "Recordatorio"
+    # Modo raw → texto exacto, sin Ollama.
+    res = _agendar_recordatorio(mensaje, en_minutos=minutos, modo="raw")
+    if not res.startswith("OK"):
+        return None
+    try:
+        cuando = (datetime.now(get_active_tz()) + timedelta(minutes=minutos))
+        hh = cuando.strftime("%H:%M")
+    except Exception:
+        hh = f"+{minutos}min"
+    unidad_txt = f"{n} {'hora(s)' if unidad.startswith('h') else 'min'}"
+    return f"⏰ Listo, te recuerdo en {unidad_txt} (a las {hh}): *{mensaje}*"
+
+
+def try_deterministic_memory_write(user_message: str, strict: bool = True) -> str | None:
+    """Guarda una nota en memoria SIN Claude (append directo).
+
+    strict=True  → solo dispara con señal explícita (dos puntos en el mensaje,
+                   o archivo nombrado: "anota en AGENDA: …"). Pensado como
+                   fast-path que ahorra créditos y funciona offline sin robarle
+                   a Sonnet peticiones matizadas.
+    strict=False → permisivo (sin ':'); usado como fallback cuando Sonnet falla
+                   por créditos, para no perder el aprendizaje.
+
+    Devuelve confirmación (str) o None si el mensaje no es una nota clara.
+    """
+    if not user_message:
+        return None
+    msg = strip_override_prefix(user_message.strip())
+    tm = _MEMORY_TRIGGER_RE.match(msg)
+    if not tm:
+        return None
+    rest = msg[tm.end():].strip()
+    if not rest:
+        return None
+
+    # ¿El gatillo es un verbo de CAPTURA explícito (anota/apunta/registra/guarda/
+    # agrega)? Con esos la intención de guardar es inequívoca, así que NO exigimos
+    # ':' — garantiza que "anota llamar a Jesús mañana" se persista siempre, sin
+    # depender del modelo. 'recuérdame' NO entra aquí: va al flujo de recordatorios.
+    trigger_word = tm.group(0).strip().lower()
+    is_capture_verb = bool(re.match(
+        r"(anota|anotar|apunta|apuntar|registra|registrar|guarda|guardar|agrega|agregar)",
+        trigger_word))
+
+    fname = "AGENDA.md"
+    explicit_file = False
+    fpm = _MEMORY_FILE_PREFIX_RE.match(rest)
+    if fpm:
+        candidate = _resolve_memory_file_strict(fpm.group(1))
+        if candidate:
+            fname, explicit_file, rest = candidate, True, fpm.group(2).strip()
+
+    if strict and ":" not in user_message and not explicit_file and not is_capture_verb:
+        return None
+
+    rest = rest.lstrip(":").strip()
+    if not rest:
+        return None
+
+    fecha = datetime.now(TZ_CDMX).strftime("%Y-%m-%d %H:%M")
+    result = execute_tool("append_to_memory", {"filename": fname, "content": f"- [{fecha}] {rest}"})
+    if not result.startswith("OK"):
+        return f"⚠️ No pude guardar en {fname}: {result}"
+    return f"✅ Anotado en *{fname}*:\n• {rest}"
 
 
 def should_deterministic_operational_response(user_message: str, history: list | None = None) -> bool:
@@ -1030,8 +2054,45 @@ def _resolve_ollama_model(user_message: str) -> tuple[str, int]:
     return OLLAMA_FAST_MODEL, OLLAMA_CHAT_TIMEOUT
 
 
+def _reason_briefing(snapshot: str) -> str | None:
+    """Briefing matutino RAZONADO por Claude Haiku (barato): prioriza y sintetiza en
+    vez de volcar la memoria cruda. None si no hay API o falla → cae a determinístico."""
+    api_key = load_anthropic_key()
+    if not api_key:
+        return None
+    hoy = _fmt_dt_es(datetime.now(get_active_tz()))
+    sys = (
+        "Eres Louis, asistente ejecutivo de Polo (CEO de Kawiil). Redacta su BRIEFING "
+        "matutino a partir de los datos de AGENDA/IMPORTANT/JOURNAL/CLIENTES de abajo. "
+        "REGLAS: saluda en 1 línea; PRIORIZA lo crítico de hoy en máx. 5 viñetas, agrupando "
+        "y descartando duplicados, ruido y entradas viejas; sé conciso y accionable; resalta "
+        "deadlines reales. NO vuelques los datos crudos, NO inventes nada que no esté en los "
+        "datos, NO repitas. Español de México. Usa **negrita** para lo clave y viñetas con '- '. "
+        "NADA de encabezados '#' ni tablas. Cierra con '¿Por dónde empezamos?'.\n\n"
+        f"Hoy es {hoy} (CDMX)."
+    )
+    headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
+    body = {
+        "model": CLAUDE_HAIKU,
+        "max_tokens": 900,
+        "system": sys,
+        "messages": [{"role": "user", "content": f"DATOS (memoria viva):\n{snapshot[:6000]}"}],
+    }
+    try:
+        resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=60)
+        txt = "".join(b.get("text", "") for b in resp.get("content", []) if b.get("type") == "text").strip()
+        return txt if len(txt) > 40 else None
+    except Exception as e:
+        log.warning(f"briefing razonado falló, uso determinístico: {e}")
+        return None
+
+
 def generate_morning_briefing() -> str:
     snap = build_operational_snapshot()
+    reasoned = _reason_briefing(snap)
+    if reasoned:
+        saludo_ts = datetime.now(TZ_CDMX).strftime("%A %d %b %Y")
+        return f"☀️ *Briefing {saludo_ts} (CDMX)*\n\n{reasoned}"
     return format_morning_briefing_deterministic(snap)
 
 
@@ -1153,18 +2214,64 @@ TOOLS_DEFINITION = [
         },
     },
     {
-        "name": "agendar_recordatorio",
-        "description": "Programa un recordatorio PROACTIVO — Louis lo envía al canal (Telegram default) a la hora indicada. ÚSALO siempre que Polo diga 'recuérdame', 'avísame', 'mañana a las X', 'el viernes', etc. Sé proactivo: si Polo menciona algo con fecha futura, ofrécele agendarlo. Recurrencia opcional.",
+        "name": "completar_pendiente",
+        "description": "Marca como HECHO (- [x]) un pendiente de AGENDA.md cuando Polo avisa que algo ya se hizo/entregó/envió/quedó (ej. 'ya entregué Vizum', 'ya se mandó la carta de Lupita'). Busca las líneas de pendiente abiertas que coincidan con el texto y las cierra, para que dejen de aparecer en las revisiones. ÚSALO siempre que Polo reporte algo completado — así la AGENDA se mantiene limpia y no te saca temas viejos.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "mensaje": {"type": "string", "description": "Mensaje que se le enviará a Polo cuando dispare (en primera persona/segunda persona, ej: 'Junta con Carmen en 30 min')"},
-                "fecha_hora": {"type": "string", "description": "ISO 8601 con tz CDMX -06:00. Ej: '2026-05-26T08:00:00-06:00'. Si Polo dice 'mañana a las 9', calcula la fecha exacta tú."},
-                "canal": {"type": "string", "enum": ["telegram", "slack"], "default": "telegram"},
-                "modo": {"type": "string", "enum": ["raw", "enrich"], "default": "enrich", "description": "enrich = Haiku reformula en tono Louis; raw = manda literal"},
-                "recurrencia": {"type": "string", "enum": ["daily", "weekly", "monthly", "yearly"], "description": "Opcional. 'yearly' es ideal para cumpleaños y aniversarios."},
+                "texto": {"type": "string", "description": "Palabras clave del pendiente que se completó (ej: 'Vizum CNBV comunicación', 'carta Lupita Correduría'). Se hace match flexible contra las líneas - [ ] de AGENDA."},
             },
-            "required": ["mensaje", "fecha_hora"],
+            "required": ["texto"],
+        },
+    },
+    {
+        "name": "reemplazar_pendiente",
+        "description": "CORRIGE/ACTUALIZA un pendiente existente de AGENDA.md EDITÁNDOLO en su lugar (no crea líneas nuevas ni 'hojas nuevas'). ÚSALO cuando Polo corrige un dato de algo ya anotado (ej. 'Casandra no es de Habib, es RPC de Fernando', 'el cliente es Joshui no Dazon', cambia un responsable/fecha). Busca la línea que coincida con `viejo` y la reemplaza COMPLETA por `nuevo`. Así no se duplica ni se contradice la AGENDA. Si necesitas AGREGAR algo nuevo usa append_to_memory; si algo se completó usa completar_pendiente.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "viejo": {"type": "string", "description": "Palabras clave de la línea EXISTENTE a corregir (match flexible contra las líneas de AGENDA). Ej: 'Casandra Habib'."},
+                "nuevo": {"type": "string", "description": "El texto COMPLETO que debe quedar en esa línea (sin el '- [ ]', se conserva el estado de la casilla). Ej: 'Casandra — RPC a cargo de Fernando (vence 5-jun)'."},
+            },
+            "required": ["viejo", "nuevo"],
+        },
+    },
+    {
+        "name": "reloj",
+        "description": "RELOJ EN VIVO. Devuelve la fecha y hora REAL de este momento (en la zona activa de Polo, default CDMX). ÚSALO SIEMPRE que necesites la hora/fecha actual exacta: cuando Polo pregunte '¿qué hora es?', '¿qué día es hoy?', al calcular '¿cuánto falta para…?', deadlines de hoy, o antes de agendar algo. NO confíes en la hora del prompt (se congela); este tool lee el reloj real. Opcional: pasa 'zona' para incluir también la hora de otra ciudad.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "zona": {"type": "string", "description": "Opcional: ciudad/zona extra a incluir (ej. 'Tokio'). Para varias, sepáralas con comas."},
+            },
+        },
+    },
+    {
+        "name": "zona_horaria",
+        "description": "Maneja la zona horaria de Polo y consulta horas mundiales. El default SIEMPRE es CDMX (America/Mexico_City). Usa accion='set' con la ciudad/zona cuando Polo diga que viaja o está en otra zona ('estoy en Madrid', 'ando en Nueva York', 'me fui a Tokio'). accion='reset' cuando regrese a México ('ya regresé', 'estoy de vuelta'). accion='consultar' para decir la hora actual de una o varias ciudades/clientes ('¿qué hora es en Tokio?', 'hora en Madrid y Nueva York') SIN cambiar la zona activa.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "accion": {"type": "string", "enum": ["set", "reset", "consultar"]},
+                "zona": {"type": "string", "description": "Ciudad o zona IANA (Madrid, Nueva York, Tokio, Europe/Madrid…). Para consultar varias, sepáralas con comas."},
+            },
+            "required": ["accion"],
+        },
+    },
+    {
+        "name": "agendar_recordatorio",
+        "description": "Programa un recordatorio PROACTIVO que Louis envía al canal a la hora indicada. ÚSALO siempre que Polo diga 'recuérdame', 'avísame', 'en X minutos', 'mañana a las X', etc. IMPORTANTE: para tiempo RELATIVO ('en 12 minutos', 'en 2 horas') usa `en_minutos` (12, 120…) y el SERVIDOR calcula la hora real — NO calcules tú la hora absoluta (te equivocas con la hora). Usa `fecha_hora` SOLO para una fecha/hora específica futura.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "mensaje": {"type": "string", "description": "Mensaje que se le enviará a Polo cuando dispare"},
+                "en_minutos": {"type": "integer", "description": "RELATIVO desde ahora, en minutos (ej. 12 = en 12 min, 120 = en 2 horas). El servidor calcula la hora con el reloj real. PREFIERE esto para 'en X min/horas'."},
+                "fecha_hora": {"type": "string", "description": "ISO 8601 con tz CDMX -06:00, ej '2026-06-05T09:00:00-06:00'. Solo para fecha/hora específica (no relativa)."},
+                "canal": {"type": "string", "enum": ["telegram", "slack"], "default": "telegram"},
+                "modo": {"type": "string", "enum": ["raw", "enrich"], "default": "raw", "description": "raw (DEFAULT, recomendado) = manda el mensaje EXACTO; enrich = lo reformula vía Ollama (riesgo de que lo altere, úsalo solo si quieres tono)"},
+                "recurrencia": {"type": "string", "enum": ["daily", "weekly", "monthly", "yearly"], "description": "Opcional. 'yearly' ideal para cumpleaños/aniversarios."},
+            },
+            "required": ["mensaje"],
         },
     },
     {
@@ -1179,6 +2286,31 @@ TOOLS_DEFINITION = [
             "type": "object",
             "properties": {"id": {"type": "string"}},
             "required": ["id"],
+        },
+    },
+    {
+        "name": "editar_recordatorio",
+        "description": "Edita un recordatorio YA agendado (cambia su texto y/o su hora) por ID. ÚSALO cuando Polo corrige algo de un recordatorio pendiente (ej. 'el de poderes era Best Motos, no Vez Motos' o 'muévelo a las 9'), para que la corrección se propague a la cola y no llegue con el dato viejo. Saca el ID con listar_recordatorios.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "ID del recordatorio a editar"},
+                "nuevo_texto": {"type": "string", "description": "Texto corregido (opcional)"},
+                "nueva_hora": {"type": "string", "description": "Nueva hora ISO 8601 con tz, ej '2026-06-11T09:00:00-06:00' (opcional)"},
+            },
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "corregir_nombre",
+        "description": "Registra una corrección PERMANENTE de nombre de cliente mal transcrito por voz (ej. 'Vez Motos' → 'Best Motos'). A partir de ese momento Louis corrige solo ese nombre en TODOS los recordatorios/notas nuevos. ÚSALO cuando Polo diga 'no es X, es Y' sobre un nombre que la transcripción equivoca seguido.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "mal": {"type": "string", "description": "Como lo transcribe MAL (ej. 'vez motos')"},
+                "bien": {"type": "string", "description": "Nombre CORRECTO (ej. 'Best Motos')"},
+            },
+            "required": ["mal", "bien"],
         },
     },
     {
@@ -1255,7 +2387,7 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "consejo_experto_legal",
-        "description": "Consulta a 1-3 agentes legal-* (los 92 de claude-for-legal, contexto US) sobre una pregunta. Encuentra los más relevantes según el `area`, los invoca con la pregunta+contexto, y sintetiza opiniones. Diseñado para que los agentes kawiil (cuando lleguen) o Louis mismo consulte profundidad técnica antes de responder a un cliente. NO sustituye juicio MX — adapta el aprendizaje al contexto local.",
+        "description": "Dictamen legal MEXICANIZADO. Consulta 1-3 agentes legal-* internacionales (claude-for-legal, contexto US) como REFERENCIA, y luego el agente mexicano kawiil-nelli revisa ese razonamiento y produce la versión OBLIGATORIA en México citando la norma local (CFF, LFPIORPI, LFPDPPP, LFT, CNBV, UIF, SAT, INAI), separando 'obligatorio en México' de 'buena práctica internacional'. ÚSALO para cualquier duda legal/regulatoria antes de responder a un cliente o director. La referencia internacional enseña; México es la ley que se aplica.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1308,6 +2440,30 @@ TOOLS_DEFINITION = [
         "input_schema": {"type": "object", "properties": {}},
     },
     {
+        "name": "legal_indexar",
+        "description": "Indexa DOF/SJF para un agente legal kawiil-* específico (o 'todos' para indexar todos). Lee documentos relevantes a la especialidad del agente, los resume con Claude Haiku, y guarda el conocimiento en su directorio. Los agentes usan ese conocimiento automáticamente cuando responden preguntas. ÚSALO cuando Polo diga 'indexa a kawiil-nelli', 'actualiza el conocimiento', 'que los agentes aprendan del DOF', o cuando el scheduler lo programe semanalmente.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agente": {"type": "string", "description": "Nombre del agente kawiil-* (ej: 'kawiil-nelli') o 'todos' para indexar todos los kawiil-*."},
+                "forzar": {"type": "boolean", "default": False, "description": "Si true, re-indexa aunque ya fue indexado recientemente."},
+                "limite": {"type": "integer", "default": 30, "description": "Máximo de documentos nuevos a indexar por agente (10-100)."},
+            },
+            "required": ["agente"],
+        },
+    },
+    {
+        "name": "legal_conocimiento",
+        "description": "Muestra el conocimiento indexado de un agente kawiil-*: cuántos docs tiene, áreas cubiertas, última indexación, resumen semanal. ÚSALO cuando Polo pregunte 'qué sabe kawiil-nelli', 'cuánto contexto tiene el agente', 'muéstrame el resumen del DOF que tiene kawiil-metzli'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agente": {"type": "string", "description": "Nombre del agente kawiil-* (ej: 'kawiil-nelli')."},
+            },
+            "required": ["agente"],
+        },
+    },
+    {
         "name": "mac_estado",
         "description": "Reporta si la Mac de Polo está prendida y enviando heartbeat. Devuelve: online/offline, segundos desde último heartbeat, % batería, AC power, SSID, IP pública. ÚSALO cuando Polo pregunte 'está prendida mi Mac', 'cómo está mi compu', 'sync activo', o ANTES de pedirle que actualice algo (si offline, avísale primero).",
         "input_schema": {"type": "object", "properties": {}},
@@ -1321,6 +2477,61 @@ TOOLS_DEFINITION = [
                 "razon": {"type": "string", "description": "Por qué Louis necesita la Mac prendida. Ej: 'para correr backfill SJF', 'para sync de Projects'."},
             },
             "required": ["razon"],
+        },
+    },
+    {
+        "name": "mac_bash",
+        "description": (
+            "Ejecuta CUALQUIER comando bash en la Mac de Polo (la Mac lo recoge en ≤1 min). "
+            "Úsalo para: reiniciar launchd agents, ver logs, diagnosticar agentes, limpiar caches, "
+            "autocorregir fallas, instalar paquetes, editar configs. "
+            "REGLAS DE SEGURIDAD: (1) safe (ls/cat/tail/grep/launchctl list) → ejecuta y reporta. "
+            "(2) impactful (launchctl load/unload, mkdir, cp) → anuncia qué harás ANTES de encolar. "
+            "(3) major (rm -rf, kill -9, sudo rm, desactivar servicios críticos) → razona el impacto "
+            "con detalle, explícale a Polo y espera confirmación explícita. "
+            "Verifica resultado con mac_comando_estado después de encolar."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "bash_cmd": {"type": "string", "description": "Comando bash a ejecutar en la Mac de Polo."},
+                "razon": {"type": "string", "description": "Por qué se ejecuta (queda en bitácora)."},
+                "nivel": {"type": "string", "enum": ["safe", "impactful", "major"], "description": "Nivel de impacto. Si omites, se auto-detecta."},
+            },
+            "required": ["bash_cmd", "razon"],
+        },
+    },
+    {
+        "name": "mac_ejecutar",
+        "description": "Encola un comando para que la Mac de Polo lo ejecute (la Mac revisa la cola cada minuto y corre los scripts de descarga que viven ahí). ÚSALO cuando falte texto del DOF/SJF y Polo pida actualizarlo, o pida 'corre el backfill', 'descarga el DOF de mayo', 'actualiza la biblioteca'. Comandos: dof_backfill (lo más reciente), dof_backfill_mes (args {mes:'AAAA-MM'}), sjf_backfill, legal_sync (fuerza push de BDs). Devuelve un id; verifica el resultado con mac_comando_estado. NO afirmes que el backfill corrió hasta confirmar 'done'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "comando": {"type": "string", "enum": ["dof_backfill", "dof_backfill_mes", "sjf_backfill", "legal_sync"], "description": "Comando a ejecutar en la Mac."},
+                "args": {"type": "object", "description": "Argumentos. Para dof_backfill_mes: {mes:'AAAA-MM'}, ej {mes:'2026-05'}."},
+                "razon": {"type": "string", "description": "Por qué se ejecuta (queda en bitácora)."},
+            },
+            "required": ["comando"],
+        },
+    },
+    {
+        "name": "mac_comando_estado",
+        "description": "Revisa el estado/resultado de un comando encolado para la Mac. Pasa el `id` que devolvió mac_ejecutar para ver si terminó (pending/running/done/error) y su salida. Sin id, lista los últimos comandos y pendientes. ÚSALO después de mac_ejecutar para confirmar que el backfill terminó antes de reportarle a Polo.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "ID del comando (devuelto por mac_ejecutar). Vacío = resumen de los últimos."},
+            },
+        },
+    },
+    {
+        "name": "hetzner_estado",
+        "description": "Lee estado/archivos REALES de Hetzner (el servidor de Louis). ÚSALO en vez de inventar cuando Polo pida revisar la cola de la Mac, resultados de comandos, logs, heartbeat o conteos legales. NUNCA fabriques estas salidas — llama esta tool. Opciones de `que`: cola_mac, resultados_mac, heartbeat, log_telegram, log_scheduler, legal_conteo. Sin `que` lista las opciones.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "que": {"type": "string", "description": "cola_mac | resultados_mac | heartbeat | log_telegram | log_scheduler | legal_conteo"},
+            },
         },
     },
     {
@@ -1525,9 +2736,37 @@ TOOLS_DEFINITION = [
                 "asignado_a": {"type": "string", "description": "id o email del responsable"},
                 "prioridad": {"type": "string", "enum": ["baja", "media", "alta", "urgente"]},
                 "deadline": {"type": "string", "description": "ISO 8601 date o datetime"},
+                "parent_task_id": {"type": "string", "description": "Si es SUB-TAREA, el id de la tarea padre. Se marca is_subtask=true automáticamente (así guarda las sub-tareas Kawiil Central). NO uses checklist para sub-tareas."},
                 "campos_extra": {"type": "object", "description": "Otros campos del schema que kawiil-central use (status default, labels, etc)"},
             },
             "required": ["titulo", "proyecto_id"],
+        },
+    },
+    {
+        "name": "kawiil_central_asignar_tarea",
+        "description": "Asigna una tarea EXISTENTE (o varias) a una persona por su NOMBRE (ej. 'Jesús García'). Resuelve el nombre al usuario correcto internamente. ÚSALA cuando Polo diga 'asigna esta tarea a X' o 'X es el responsable'. NO uses SQL crudo ni inventes shell/API. tarea_id puede traer varios ids separados por coma.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tarea_id": {"type": "string", "description": "id de la tarea (o varios ids separados por coma)"},
+                "persona": {"type": "string", "description": "Nombre o email del responsable (ej. 'Jesús García Turcott')"},
+            },
+            "required": ["tarea_id", "persona"],
+        },
+    },
+    {
+        "name": "kawiil_central_crear_proyecto",
+        "description": "Crea un PROYECTO en kawiil-central para un cliente. USA ESTA TOOL en vez de SQL crudo (valida el enum de area y evita el error de transacción). 'area' debe ser una de: legal, contabilidad, softlanding, juicios, gestoria, cumplimiento, representacion, constitucion_nacional — o vacía. Para servicios de backoffice/control interno/organización de procesos usa 'gestoria' o deja area vacía. Necesitas el client_id (sácalo con kawiil_central_clientes). Confirma con Polo antes de crear.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Nombre del proyecto (ej. 'Backoffice y Control Interno')"},
+                "client_id": {"type": "string", "description": "id del cliente dueño del proyecto"},
+                "area": {"type": "string", "enum": ["legal", "contabilidad", "softlanding", "juicios", "gestoria", "cumplimiento", "representacion", "constitucion_nacional"]},
+                "descripcion": {"type": "string"},
+                "service_tags": {"type": "string", "description": "Etiquetas separadas por coma (ej. 'control_interno,backoffice,procesos')"},
+            },
+            "required": ["name", "client_id"],
         },
     },
     {
@@ -1556,12 +2795,29 @@ TOOLS_DEFINITION = [
         },
     },
     {
+        "name": "kawiil_central_notificar",
+        "description": "Avisa al equipo dentro del app de Kawiil Central creando una notificación REAL (les aparece en su campana). ÚSALA cuando completes un avance que el equipo debe ver: resumen DOF diario, reporte SJF semanal, análisis legal terminado, briefing, o cuando Polo diga 'avísale al equipo' / 'notifica a X'. NO uses SQL crudo. `para`: nombre o email tal como aparece en Kawiil Central (varios separados por coma), o 'equipo' para todos los usuarios activos. Si lo dejas vacío, solo le llega a Polo (evita spamear al equipo por defecto). Pon un título corto y el detalle en `cuerpo`.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "titulo": {"type": "string", "description": "Título corto del aviso (ej. 'Resumen DOF — viernes 6 jun')"},
+                "cuerpo": {"type": "string", "description": "Detalle/cuerpo de la notificación (opcional pero recomendado)"},
+                "para": {"type": "string", "description": "Destinatarios: nombre(s)/email(s) separados por coma, o 'equipo' para todos. Vacío = solo Polo."},
+                "tipo": {"type": "string", "description": "Categoría de la notificación (default 'ai_update'). Ej: 'dof_resumen', 'sjf_semanal', 'legal_analisis', 'briefing'."},
+                "entity_type": {"type": "string", "description": "Opcional: tipo de entidad relacionada (ej. 'task', 'project') para enlazar."},
+                "entity_id": {"type": "string", "description": "Opcional: id (uuid) de la entidad relacionada."},
+            },
+            "required": ["titulo"],
+        },
+    },
+    {
         "name": "kawiil_central_proyectos",
-        "description": "Lista los proyectos activos en kawiil-central. Filtro opcional por estado.",
+        "description": "Lista proyectos en kawiil-central. Filtro opcional por estado y POR CLIENTE. Para ver los proyectos de UN cliente (ej. '¿qué proyectos tiene Magnetico?'), pasa cliente='Magnetico' (insensible a acentos) — NO improvises ni adivines entre todos los proyectos. Devuelve nombre, area y status de cada uno.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "estado": {"type": "string", "description": "Filtro por estado (ej: 'activo', 'archivado')"},
+                "cliente": {"type": "string", "description": "Nombre o id del cliente para ver SOLO sus proyectos (ej. 'Magnetico')"},
                 "limit": {"type": "integer", "default": 20},
             },
         },
@@ -1601,7 +2857,7 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "kawiil_central_clientes",
-        "description": "Lista clientes activos. Filtros opcionales por nombre o segmento. Muestra cuántos proyectos abiertos y tareas pendientes por cliente.",
+        "description": "Busca/lista clientes en Kawiil Central. ES LA FORMA CORRECTA de verificar si un cliente existe — búsqueda INSENSIBLE A ACENTOS y mayúsculas (encuentra 'Magnetico' aunque escribas 'Magnético'). NO uses SQL crudo con ILIKE para buscar clientes (ILIKE no ignora acentos y dirías 'no existe' por error). Si esta tool devuelve 0, recién ahí concluye que no está registrado.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1672,6 +2928,170 @@ TOOLS_DEFINITION = [
         "input_schema": {
             "type": "object",
             "properties": {"incluir_m365": {"type": "boolean", "default": True}},
+        },
+    },
+    # Slack tools
+    {
+        "name": "slack_resumen",
+        "description": "Lee los mensajes recientes de los canales de Slack donde Louis-Nexo está invitado. Devuelve en un solo call: lista de canales + últimos mensajes de cada uno. ÚSALA SIEMPRE que Polo pregunte qué hay en Slack, qué le mandaron, o qué pasa en algún canal. Es la tool principal para Slack.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "canales": {"type": "array", "items": {"type": "string"}, "description": "Lista de canales a leer (ej: ['general','cumplimiento']). Si se omite, lee los primeros 8 canales disponibles."},
+                "msgs_por_canal": {"type": "integer", "default": 10, "description": "Mensajes a traer por canal (máx 50)."},
+            },
+        },
+    },
+    {
+        "name": "slack_canales",
+        "description": "Lista los canales de Slack donde Louis-Nexo está invitado. Úsala para saber qué canales puede leer antes de llamar slack_leer.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "slack_leer",
+        "description": "Lee mensajes recientes de un canal de Slack (o DM) donde Louis-Nexo está invitado. Usa 'canal' con el nombre (ej: 'general') o el ID (C…). Devuelve los últimos N mensajes con autor, fecha y texto. Úsala cuando Polo pregunte qué hay en Slack, qué le mandaron, o qué está pasando en un canal.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "canal": {"type": "string", "description": "Nombre o ID del canal (ej: 'general', 'C08XXXXX')"},
+                "limite": {"type": "integer", "default": 20, "description": "Número de mensajes a traer (máx 100)"},
+            },
+            "required": ["canal"],
+        },
+    },
+    {
+        "name": "slack_dm_leer",
+        "description": "Lee los mensajes directos (DMs) recientes del usuario indicado con Louis-Nexo. Usa el nombre de usuario o ID (U…). Útil cuando Polo pregunta qué le mandaron por DM.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "usuario": {"type": "string", "description": "Nombre o ID del usuario (ej: 'polo', 'U08XXXXX')"},
+                "limite": {"type": "integer", "default": 20},
+            },
+            "required": ["usuario"],
+        },
+    },
+    # Dropbox + PDF del DOF
+    {
+        "name": "dropbox_buscar",
+        "description": "Busca archivos en el Dropbox de Polo por nombre o contenido. Devuelve nombre + ruta exacta. Úsala cuando Polo pida un documento/contrato/archivo que tiene guardado en Dropbox.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Texto a buscar en nombre o contenido"},
+                "limite": {"type": "integer", "default": 10},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "dropbox_listar",
+        "description": "Lista archivos y carpetas de una ruta de Dropbox (vacío = raíz). Úsala para navegar el Dropbox de Polo cuando no sabes la ruta exacta.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"carpeta": {"type": "string", "description": "Ruta ej '/Contratos' (vacío = raíz)"}},
+        },
+    },
+    {
+        "name": "dropbox_enviar",
+        "description": "Descarga un archivo de Dropbox por su ruta exacta y SE LO MANDA a Polo por Telegram. Usa la ruta (path_display) que devolvió dropbox_buscar/dropbox_listar. Úsala cuando Polo pida que le pases/mandes un archivo para revisarlo.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string", "description": "Ruta exacta del archivo en Dropbox (ej '/Contratos/acuerdo.pdf')"}},
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "dropbox_analizar_imagen",
+        "description": "Baja una IMAGEN (png/jpg/gif/webp) de Dropbox por su ruta y la analiza con VISIÓN para EXTRAER datos de adentro (ej. de una captura de pantalla: nombre/razón social, RFC, tipo de persona, contacto, email, teléfono). Úsala cuando la información que Polo necesita está DENTRO de una captura/imagen en Dropbox (no en el nombre del archivo). Para mandar el archivo tal cual, usa dropbox_enviar.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Ruta exacta de la imagen en Dropbox (de dropbox_buscar/listar)"},
+                "pregunta": {"type": "string", "description": "Qué extraer (ej. 'datos del cliente: nombre, RFC, tipo persona, contacto, email, teléfono')"},
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "dof_pdf",
+        "description": "Descarga el PDF oficial de una publicación del DOF por su cod_nota y se lo MANDA a Polo por Telegram. Usa el cod que devuelve legal_buscar (ej: 5789080). Úsala cuando Polo pida el PDF de una publicación del DOF.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"cod": {"type": "string", "description": "cod_nota de la publicación DOF"}},
+            "required": ["cod"],
+        },
+    },
+    {
+        "name": "dof_nota",
+        "description": "Trae el TEXTO de una nota específica del DOF por su código (ej. 5496518) para LEERLA y responder. Primero busca en la BD local; si no está descargada, la baja EN VIVO del DOF por HTTP ligero (NO el browser pesado que el DOF bloquea). ÚSALA cuando pregunten 'qué dice la nota X', 'el del ayuntamiento', 'el contenido del código N', o para revisar un aviso/edicto/acuerdo puntual. Devuelve el texto, no un archivo (para eso usa dof_pdf).",
+        "input_schema": {
+            "type": "object",
+            "properties": {"cod": {"type": "string", "description": "código de la nota del DOF (numérico, ej. 5496518)"}},
+            "required": ["cod"],
+        },
+    },
+    {
+        "name": "proyectos_listar",
+        "description": (
+            "Lista los proyectos de Polo sincronizados desde su Mac (~/Documents/Claude/Projects): "
+            "Dazon, Vizum, Kawiil*, Yoltik*, Kuali, RIVIUM, etc. Muestra cuántos archivos tiene cada uno "
+            "y cuándo cambió por última vez. Úsala cuando Polo pregunte por sus proyectos o quieras saber "
+            "qué proyectos hay antes de leer documentos para actualizar PROJECTS.md."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "proyectos_archivos",
+        "description": (
+            "Lista los archivos dentro de un proyecto sincronizado (más recientes primero). "
+            "Úsala antes de `proyecto_leer` para saber el nombre exacto del archivo que quieres abrir."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"proyecto": {"type": "string", "description": "Nombre del proyecto (ej: 'Vizum', 'Dazon')"}},
+            "required": ["proyecto"],
+        },
+    },
+    {
+        "name": "proyecto_leer",
+        "description": (
+            "Lee el contenido de un archivo de un proyecto sincronizado (texto: .md/.txt/.csv/.json; "
+            "y .pdf si hay extracción disponible). Úsala para revisar el estado real de un proyecto y, "
+            "si Polo lo pide, actualizar PROJECTS.md con lo que encuentres. NO inventes el contenido — "
+            "léelo con esta tool."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "proyecto": {"type": "string", "description": "Nombre del proyecto (ej: 'Vizum')"},
+                "archivo": {"type": "string", "description": "Nombre o ruta del archivo dentro del proyecto"},
+            },
+            "required": ["proyecto", "archivo"],
+        },
+    },
+    {
+        "name": "generar_documento",
+        "description": (
+            "Genera un documento REAL en el servidor y se lo manda a Polo por Telegram. "
+            "Úsala cuando Polo pida un documento formal para compartir con su equipo: dictámenes, planes, reportes, "
+            "presentaciones, tablas. EL FORMATO POR DEFECTO ES HTML interactivo (el estándar de Kawiil: dashboard "
+            "colapsable + buscador + chat embebido). SOLO usa otro formato si Polo lo pide explícitamente: "
+            "'en word' → docx (editable); 'en pdf' → pdf; 'presentación/deck' → pptx; 'excel/tabla de datos' → xlsx. "
+            "El contenido debe ser markdown completo — encabezados con #, listas con -, tablas con |."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tipo": {
+                    "type": "string",
+                    "enum": ["html", "docx", "pdf", "pptx", "xlsx"],
+                    "description": "html = DEFAULT, documento interactivo (colapsables+buscador+chat); docx = Word editable (cuando pidan 'en word'); pdf = PDF fijo (cuando pidan 'en pdf'); pptx = presentación/deck; xlsx = tabla/datos",
+                },
+                "titulo": {"type": "string", "description": "Título del documento (sin extensión)"},
+                "contenido": {"type": "string", "description": "Contenido completo en markdown"},
+            },
+            "required": ["tipo", "titulo", "contenido"],
         },
     },
     # M365 tools (mismas que antes)
@@ -1856,6 +3276,37 @@ TOOLS_DEFINITION = [
         },
     },
     {
+        "name": "m365_eliminar_evento",
+        "description": "Cancela o elimina un evento del calendario. Si Polo es el ORGANIZADOR y el evento tiene asistentes, lo CANCELA y notifica a todos los asistentes. Si es invitado, lo borra de su calendario. CONFIRMA con Polo antes de cancelar. Necesitas el event_id (sácalo con m365_calendario).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tenant": {"type": "string", "enum": TENANT_ENUM},
+                "event_id": {"type": "string"},
+                "comentario": {"type": "string", "description": "Mensaje de cancelación que reciben los asistentes (opcional)"},
+            },
+            "required": ["tenant", "event_id"],
+        },
+    },
+    {
+        "name": "m365_actualizar_evento",
+        "description": "Modifica un evento existente (cambiar hora, asunto, asistentes, lugar o descripción). Si Polo es organizador y hay asistentes, Graph les manda la actualización automáticamente. Pasa solo los campos a cambiar. Necesitas el event_id (sácalo con m365_calendario). CONFIRMA los cambios con Polo antes.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tenant": {"type": "string", "enum": TENANT_ENUM},
+                "event_id": {"type": "string"},
+                "subject": {"type": "string", "description": "Nuevo asunto/título"},
+                "inicio": {"type": "string", "description": "Nueva hora inicio YYYY-MM-DDTHH:MM CDMX"},
+                "fin": {"type": "string", "description": "Nueva hora fin YYYY-MM-DDTHH:MM CDMX"},
+                "asistentes": {"type": "string", "description": "Lista nueva de asistentes separada por comas (reemplaza la anterior)"},
+                "body": {"type": "string", "description": "Nueva descripción"},
+                "ubicacion": {"type": "string", "description": "Nuevo lugar"},
+            },
+            "required": ["tenant", "event_id"],
+        },
+    },
+    {
         "name": "m365_pendientes_evento",
         "description": "Lista SOLO las invitaciones de calendario donde Polo aún no ha respondido (notResponded). Útil cuando Polo pregunta '¿qué invitaciones tengo pendientes?'.",
         "input_schema": {
@@ -1920,6 +3371,86 @@ TOOLS_DEFINITION = [
             "required": ["tenant", "to", "subject", "body"],
         },
     },
+    # ── Cerebro Kawiil ───────────────────────────────────────────────────────
+    {
+        "name": "cerebro_listar",
+        "description": (
+            "Lista los entregables del almacén compartido Cowork↔Louis. "
+            "Filtrar por estado (borrador/listo/en_vobo/aprobado/archivado) y/o cliente. "
+            "Usar para saber qué ya se produjo en Cowork antes de reportar algo como pendiente."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "estado": {"type": "string", "description": "Filtrar por estado. Dejar vacío para todos."},
+                "cliente": {"type": "string", "description": "Filtrar por nombre de cliente."},
+            },
+        },
+    },
+    {
+        "name": "cerebro_proyecto_estado",
+        "description": (
+            "Devuelve el estado detallado (frontmatter) de un entregable específico. "
+            "Usar cuando se necesita confirmar el estado real de un proyecto concreto."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "nombre": {"type": "string", "description": "Nombre o título del entregable."},
+            },
+            "required": ["nombre"],
+        },
+    },
+    {
+        "name": "cerebro_crear_brief",
+        "description": (
+            "Crea un brief de dispatch en el cerebro para que Cowork produzca un entregable. "
+            "Notifica a Polo por Telegram inmediatamente ('brief listo, ábrelo en Cowork'). "
+            "Usar cuando Louis identifica trabajo que debe delegarse a Cowork."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tarea": {"type": "string", "description": "Descripción de lo que Cowork debe producir."},
+                "cliente": {"type": "string", "description": "Cliente al que corresponde el entregable."},
+                "insumos": {"type": "string", "description": "Documentos, datos o contexto disponibles para producir el entregable."},
+                "urgencia": {"type": "string", "enum": ["baja", "normal", "alta", "urgente"], "default": "normal"},
+                "contexto": {"type": "string", "description": "Contexto adicional relevante."},
+            },
+            "required": ["tarea", "cliente"],
+        },
+    },
+    {
+        "name": "cerebro_sync_agenda",
+        "description": (
+            "Compara los pendientes abiertos de AGENDA.md con el estado real del cerebro. "
+            "Detecta lo que Louis reporta como 'pendiente' pero ya está 'listo' o 'aprobado' en Cowork. "
+            "Notifica a Polo por Telegram si hay discrepancias. "
+            "Usar en briefing matutino o cuando Polo pregunta por el estado de proyectos."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "generar_visual_gamma",
+        "description": (
+            "Genera un VISUAL/diseño con Gamma (posts de Instagram/redes, presentaciones, "
+            "documentos, infografías) y devuelve el enlace para ver/editar + el archivo PNG/PDF. "
+            "ÚSALO cuando Polo pida una imagen, post, publicación, infografía, presentación o diseño. "
+            "NO intentes abrir el sitio gamma.app (lo bloquea Cloudflare): esta tool usa la API oficial. "
+            "Para posts de redes usa formato 'social'. Pon la marca en 'instrucciones' "
+            "(ej. 'Kawiil MX, azul #1a6ef5, profesional')."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "texto": {"type": "string", "description": "Contenido/tema del diseño (el copy o las instrucciones de qué generar)."},
+                "formato": {"type": "string", "enum": ["social", "presentation", "document", "webpage"], "default": "social"},
+                "export": {"type": "string", "enum": ["png", "pdf", "pptx"], "default": "png"},
+                "instrucciones": {"type": "string", "description": "Notas de marca/estilo (colores, tono, marca)."},
+            },
+            "required": ["texto"],
+        },
+    },
 ]
 
 
@@ -1968,6 +3499,15 @@ def _run_m365_tool(name: str, args: dict) -> str:
     elif name == "m365_responder_evento":
         cmd = ["responder-evento", tenant, args["event_id"], args["accion"],
                args.get("comentario", ""), str(args.get("send_response", True)).lower()]
+    elif name == "m365_eliminar_evento":
+        cmd = ["eliminar-evento", tenant, args["event_id"]]
+        if args.get("comentario"):
+            cmd.append(args["comentario"])
+    elif name == "m365_actualizar_evento":
+        cmd = ["actualizar-evento", tenant, args["event_id"]]
+        for campo in ("subject", "inicio", "fin", "asistentes", "body", "ubicacion"):
+            if args.get(campo):
+                cmd.append(f"{campo}={args[campo]}")
     elif name == "m365_pendientes_evento":
         cmd = ["pendientes-evento", tenant, args.get("rango", "semana")]
     elif name == "m365_mandar_correo":
@@ -2087,11 +3627,14 @@ def _verificar_conexiones(incluir_m365: bool = True) -> str:
         by_cat.setdefault(cat, []).append(n)
     for cat, names in by_cat.items():
         out.append(f"  {cat}: {', '.join(names)}")
-    out.append(f"\n--- Routing ---")
-    out.append(f"  Chat default: Ollama ({OLLAMA_FAST_MODEL})")
-    out.append(f"  Briefing operativo: determinístico (<1s)")
-    out.append(f"  /oss: {OLLAMA_QUALITY_MODEL}")
-    out.append(f"  Tools / agentes / memoria: Claude ({CLAUDE_MODEL})")
+    out.append(f"\n--- Routing (optimizado por costo) ---")
+    out.append(f"  Chat default: DeepSeek ({DEEPSEEK_MODEL}) — fluido, API barata")
+    out.append(f"  Briefing operativo: determinístico (<1s, $0)")
+    out.append(f"  Tools/datos/correos/recordatorios: Claude Haiku ({CLAUDE_HAIKU}) — ≈1/3 de Sonnet")
+    out.append(f"  Indexación legal DOF/SJF: DeepSeek (background, 10 docs/10min)")
+    out.append(f"  PESADO → Sonnet ({CLAUDE_SONNET}): dictamen legal o prefijo /sonnet, /profundo")
+    out.append(f"  /oss: Ollama {OLLAMA_QUALITY_MODEL} — local, privado")
+    out.append(f"  /llama: Ollama {OLLAMA_FAST_MODEL} — local forzado")
     return "\n".join(out)
 
 
@@ -2356,6 +3899,517 @@ def _legal_briefing() -> str:
     return "\n".join(parts)
 
 
+# ===== Legal Agent Knowledge Indexing =====
+# Cada agente kawiil-* acumula resúmenes de DOF/SJF de su especialidad.
+# Se indexa semanalmente por el scheduler; también se puede disparar manualmente.
+# El conocimiento se inyecta automáticamente cuando se invoca el agente.
+
+KNOWLEDGE_BASE = HOME_OC / "spaces" / "general" / "agents" / "knowledge"
+KNOWLEDGE_MAX_DOCS = 500       # docs máximos por agente (acumulación continua)
+KNOWLEDGE_CONTEXT_DOCS = 5     # docs que se inyectan en cada invocación de agente
+# Rotation state: qué agente fue el último en indexarse en background
+LEGAL_BG_ROTATION = HOME_OC / "state" / "legal-bg-rotation.json"
+# Cola de prioridad: docs urgentes a indexar antes que el batch normal
+LEGAL_BG_PRIORITY = HOME_OC / "state" / "legal-bg-priority.jsonl"
+
+# Memoria legal de Ollama: aprendizajes condensados de DOF/SJF que Ollama absorbe
+# en su contexto cuando responde temas legales. Se acumula en background.
+OLLAMA_LEGAL_MEMORY = SPACE / "OLLAMA_LEGAL_MEMORY.md"
+OLLAMA_LEGAL_MEMORY_MAX = 300  # entradas máximas antes de rotar
+
+# Keywords DOF/SJF por agente. Agentes no listados usan su campo 'especialidad'.
+KAWIIL_KNOWLEDGE_MAP: dict = {
+    "kawiil-nelli": {
+        "label": "Compliance PLD / ALD / LFPIORPI",
+        "dof": ["LFPIORPI", "lavado de dinero", "financiamiento terrorismo", "UIF", "CNBV"],
+        "sjf": ["lavado de dinero", "LFPIORPI", "financiamiento del terrorismo", "UIF"],
+    },
+    "kawiil-tepantli": {
+        "label": "Ciberseguridad / Datos Personales / LFPDPPP",
+        "dof": ["datos personales", "LFPDPPP", "INAI", "ciberseguridad"],
+        "sjf": ["datos personales", "privacidad", "LFPDPPP", "INAI"],
+    },
+    "kawiil-metzli": {
+        "label": "Fiscal / SAT / CFF",
+        "dof": ["CFF", "SAT", "reforma fiscal", "ISR", "IVA", "IEPS"],
+        "sjf": ["CFF", "SAT", "ISR", "IVA", "TFJA", "devolución impuestos"],
+    },
+    "kawiil-ehecatl": {
+        "label": "Laboral / STPS / IMSS",
+        "dof": ["LFT", "STPS", "IMSS", "seguridad social", "salario mínimo"],
+        "sjf": ["LFT", "STPS", "derecho laboral", "IMSS", "despido injustificado"],
+    },
+    "kawiil-tonati": {
+        "label": "Corporativo / M&A / Gobierno Corporativo",
+        "dof": ["LGSM", "fusión", "escisión", "gobierno corporativo", "valores"],
+        "sjf": ["fusión de sociedades", "gobierno corporativo", "accionistas", "LGSM"],
+    },
+    "kawiil-citlali": {
+        "label": "Tecnología / Fintech / Regulación Digital",
+        "dof": ["fintech", "Ley Fintech", "criptomonedas", "tecnología financiera", "CNBV"],
+        "sjf": ["fintech", "tecnología financiera", "criptomonedas"],
+    },
+    "kawiil-yoliztli": {
+        "label": "Propiedad Intelectual / IMPI",
+        "dof": ["IMPI", "propiedad industrial", "marcas", "patentes", "derechos de autor"],
+        "sjf": ["propiedad industrial", "IMPI", "marcas", "patente"],
+    },
+    "kawiil-tlali": {
+        "label": "Ambiental / Energía / SEMARNAT",
+        "dof": ["SEMARNAT", "ambiental", "energía", "cambio climático", "NOM"],
+        "sjf": ["medio ambiente", "SEMARNAT", "impacto ambiental"],
+    },
+    "kawiil-patli": {
+        "label": "Salud / Farmacéutico / COFEPRIS",
+        "dof": ["COFEPRIS", "salud", "medicamentos", "dispositivos médicos"],
+        "sjf": ["COFEPRIS", "derecho a la salud", "medicamentos"],
+    },
+    "kawiil-calli": {
+        "label": "Inmobiliario / Vivienda / Desarrollo Urbano",
+        "dof": ["desarrollo urbano", "vivienda", "INFONAVIT", "CONAVI"],
+        "sjf": ["bienes inmuebles", "arrendamiento", "INFONAVIT"],
+    },
+}
+
+
+def _knowledge_dir(agente: str) -> Path:
+    d = KNOWLEDGE_BASE / agente
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "docs").mkdir(exist_ok=True)
+    return d
+
+
+def _knowledge_index(agente: str) -> dict:
+    """Lee index.json del agente o devuelve estructura vacía."""
+    idx_file = KNOWLEDGE_BASE / agente / "index.json"
+    if idx_file.exists():
+        try:
+            return json.loads(idx_file.read_text())
+        except Exception:
+            pass
+    return {"agente": agente, "docs": [], "last_indexed": None, "total": 0}
+
+
+def _knowledge_save_index(agente: str, idx: dict):
+    idx_file = KNOWLEDGE_BASE / agente / "index.json"
+    idx_file.write_text(json.dumps(idx, ensure_ascii=False, indent=2))
+
+
+def _summarize_for_knowledge(agente: str, titulo: str, fecha: str, fuente: str,
+                             texto: str) -> tuple[str, str]:
+    """
+    Usa DeepSeek para resumir un documento legal del DOF/SJF.
+    Devuelve (resumen_completo, aprendizaje_ollama) donde:
+    - resumen_completo: 400-600 palabras para el knowledge dir del agente
+    - aprendizaje_ollama: 1-2 líneas condensadas que Ollama absorbe en su contexto
+    """
+    system = (
+        f"Eres el indexador legal del agente '{agente}' (derecho mexicano). "
+        f"Lee el documento y responde en DOS partes separadas por '|||OLLAMA|||':\n\n"
+        f"PARTE 1 — RESUMEN COMPLETO (para base de conocimiento del agente, ~400 palabras):\n"
+        f"- ¿Qué establece o resuelve?\n"
+        f"- ¿Qué obligaciones/derechos crea o modifica?\n"
+        f"- Artículos clave mencionados\n"
+        f"- Normas relacionadas (leyes, reglamentos, NOMs)\n"
+        f"- Implicación práctica para empresas en México\n\n"
+        f"|||OLLAMA|||\n\n"
+        f"PARTE 2 — APRENDIZAJE CLAVE (para Ollama, máx 2 líneas concisas):\n"
+        f"Una síntesis de la idea más importante de este documento en 1-2 líneas "
+        f"que un modelo local pueda usar como referencia rápida al responder.\n\n"
+        f"Responde en español de México. No repitas el título en la parte 1."
+    )
+    prompt = f"Fuente: {fuente} | Fecha: {fecha}\nTítulo: {titulo}\n\n{texto[:5000]}"
+    try:
+        resumen_raw = call_deepseek(system, [], prompt)
+        if resumen_raw and "|||OLLAMA|||" in resumen_raw:
+            partes = resumen_raw.split("|||OLLAMA|||", 1)
+            resumen = partes[0].strip()
+            aprendizaje = partes[1].strip()[:300]
+        elif resumen_raw:
+            # DeepSeek no siguió el formato — tomar todo como resumen, extractar inicio
+            resumen = resumen_raw.strip()
+            aprendizaje = resumen[:200].rstrip(".") + "."
+        else:
+            resumen = texto[:800] + "…"
+            aprendizaje = titulo[:150]
+    except Exception as e:
+        log.warning(f"DeepSeek summarize falló ({agente}): {e}")
+        resumen = texto[:800] + "…"
+        aprendizaje = titulo[:150]
+    return resumen, aprendizaje
+
+
+def _ollama_legal_append(agente: str, area: str, fecha: str, titulo: str, aprendizaje: str):
+    """
+    Agrega un aprendizaje condensado a OLLAMA_LEGAL_MEMORY.md.
+    Ollama lo absorberá en su contexto cuando responda temas legales.
+    Rota el archivo si supera OLLAMA_LEGAL_MEMORY_MAX entradas.
+    """
+    try:
+        OLLAMA_LEGAL_MEMORY.parent.mkdir(parents=True, exist_ok=True)
+        entrada = (
+            f"- [{datetime.now().strftime('%Y-%m-%d')}] [{agente}] [{area}] "
+            f"**{titulo[:80]}** — {aprendizaje}\n"
+        )
+        if OLLAMA_LEGAL_MEMORY.exists():
+            contenido = OLLAMA_LEGAL_MEMORY.read_text()
+            lineas = [l for l in contenido.splitlines() if l.startswith("- [")]
+            if len(lineas) >= OLLAMA_LEGAL_MEMORY_MAX:
+                # Rotar: quitar el 20% más antiguo
+                lineas = lineas[OLLAMA_LEGAL_MEMORY_MAX // 5:]
+            lineas.append(entrada.rstrip())
+            header = (
+                "# Memoria Legal de Ollama\n"
+                "_Aprendizajes condensados DOF/SJF — actualizado automáticamente en background_\n\n"
+            )
+            OLLAMA_LEGAL_MEMORY.write_text(header + "\n".join(lineas) + "\n")
+        else:
+            OLLAMA_LEGAL_MEMORY.write_text(
+                "# Memoria Legal de Ollama\n"
+                "_Aprendizajes condensados DOF/SJF — actualizado automáticamente en background_\n\n"
+                + entrada
+            )
+    except Exception as e:
+        log.warning(f"_ollama_legal_append: {e}")
+
+
+def _legal_indexar_agente(agente: str, forzar: bool = False, limite: int = 30,
+                          background: bool = False) -> str:
+    """
+    Indexa DOF/SJF para el agente. En background=True procesa lo más reciente
+    que aún no está indexado sin gate de recencia — la puerta real es already_indexed.
+    forzar=True re-indexa todo desde cero (borra el set de already_indexed).
+    """
+    if not _AGENT_NAME_RE.match(agente):
+        return f"ERROR: nombre de agente '{agente}' inválido."
+    agent_file = AGENTS_DIR / f"{agente}.md"
+    if not agent_file.exists():
+        return f"ERROR: agente '{agente}' no existe."
+
+    idx = _knowledge_index(agente)
+
+    # En modo manual (no background, no forzar), avisamos si no hay nada nuevo que hacer
+    if not background and not forzar and idx.get("docs") and idx.get("last_indexed"):
+        try:
+            last = datetime.fromisoformat(idx["last_indexed"])
+            hours_ago = int((datetime.now() - last).total_seconds() / 3600)
+            if hours_ago < 1:
+                return (f"⏭ {agente}: indexado hace {hours_ago}h "
+                        f"({idx.get('total', 0)} docs). Usa forzar=true para re-indexar.")
+        except Exception:
+            pass
+
+    # forzar=True: empieza desde cero
+    if forzar:
+        idx["docs"] = []
+
+    # Obtener keywords para este agente
+    cfg = KAWIIL_KNOWLEDGE_MAP.get(agente)
+    if not cfg:
+        meta = _parse_agent_file(agent_file)
+        especialidad = meta.get("especialidad", "")
+        words = [w for w in especialidad.replace(",", " ").split() if len(w) > 4][:5]
+        cfg = {"label": especialidad, "dof": words, "sjf": words}
+
+    kdir = _knowledge_dir(agente)
+    docs_dir = kdir / "docs"
+    nuevos = 0
+    errores = 0
+    already_indexed = set(idx.get("docs", []))
+
+    # Cuántos por keyword (distribuir el límite)
+    dof_keywords = (cfg.get("dof") or [])[:4]
+    sjf_keywords = (cfg.get("sjf") or [])[:4]
+    per_kw_dof = max(1, limite // max(len(dof_keywords), 1))
+    per_kw_sjf = max(1, limite // max(len(sjf_keywords), 1))
+
+    # ── Indexar desde DOF (más recientes primero) ──────────────────────────
+    if DOF_DB.exists() and nuevos < limite:
+        conn = _legal_open(DOF_DB)
+        for keyword in dof_keywords:
+            if nuevos >= limite:
+                break
+            try:
+                rows = conn.execute(
+                    "SELECT n.cod_nota, n.fecha, n.titulo, n.tipo_documento, n.texto_plano "
+                    "FROM notas n "
+                    "WHERE n.incluido=1 AND n.texto_plano IS NOT NULL "
+                    "AND length(n.texto_plano) > 200 "
+                    "AND (n.titulo LIKE ? OR n.texto_plano LIKE ?) "
+                    "ORDER BY n.fecha DESC LIMIT ?",
+                    (f"%{keyword}%", f"%{keyword}%", per_kw_dof * 5),
+                ).fetchall()
+            except Exception as e:
+                log.warning(f"DOF bg query '{keyword}': {e}")
+                rows = []
+            for r in rows:
+                if nuevos >= limite:
+                    break
+                doc_id = f"dof-{r['cod_nota']}"
+                if doc_id in already_indexed:
+                    continue
+                try:
+                    titulo_doc = r["titulo"] or "(sin título)"
+                    resumen, aprendizaje = _summarize_for_knowledge(
+                        agente, titulo_doc, r["fecha"] or "", "DOF", r["texto_plano"] or "")
+                    fname = f"dof-{r['fecha'] or 'nd'}-{r['cod_nota']}.md"
+                    (docs_dir / fname).write_text(
+                        f"# {titulo_doc}\n"
+                        f"**Fuente:** DOF | **Fecha:** {r['fecha']} | "
+                        f"**Tipo:** {r['tipo_documento'] or '?'} | **ID:** {r['cod_nota']}\n\n"
+                        f"{resumen}\n"
+                    )
+                    _ollama_legal_append(agente, cfg.get("label", "DOF"),
+                                        r["fecha"] or "", titulo_doc, aprendizaje)
+                    already_indexed.add(doc_id)
+                    nuevos += 1
+                except Exception as e:
+                    log.warning(f"Doc DOF {r['cod_nota']} ({agente}): {e}")
+                    errores += 1
+        conn.close()
+
+    # ── Indexar desde SJF (más recientes primero) ──────────────────────────
+    if SJF_DB.exists() and nuevos < limite:
+        conn = _legal_open(SJF_DB)
+        for keyword in sjf_keywords:
+            if nuevos >= limite:
+                break
+            try:
+                rows = conn.execute(
+                    "SELECT t.registro_digital, t.rubro, t.epoca, t.instancia, "
+                    "t.materias, t.fecha_publicacion, t.ta_tj, t.texto "
+                    "FROM tesis t "
+                    "WHERE t.texto IS NOT NULL AND length(t.texto) > 200 "
+                    "AND (t.rubro LIKE ? OR t.texto LIKE ? OR t.materias LIKE ?) "
+                    "ORDER BY t.fecha_publicacion DESC LIMIT ?",
+                    (f"%{keyword}%", f"%{keyword}%", f"%{keyword}%", per_kw_sjf * 5),
+                ).fetchall()
+            except Exception as e:
+                log.warning(f"SJF bg query '{keyword}': {e}")
+                rows = []
+            for r in rows:
+                if nuevos >= limite:
+                    break
+                doc_id = f"sjf-{r['registro_digital']}"
+                if doc_id in already_indexed:
+                    continue
+                try:
+                    kind = "Jurisprudencia" if r["ta_tj"] == 1 else "Tesis Aislada"
+                    rubro = r["rubro"] or "(sin rubro)"
+                    resumen, aprendizaje = _summarize_for_knowledge(
+                        agente, rubro, r["fecha_publicacion"] or "", "SJF", r["texto"] or "")
+                    fname = f"sjf-{r['fecha_publicacion'] or 'nd'}-{r['registro_digital']}.md"
+                    (docs_dir / fname).write_text(
+                        f"# {rubro}\n"
+                        f"**Fuente:** SJF ({kind}) | **Época:** {r['epoca'] or '?'} | "
+                        f"**Instancia:** {r['instancia'] or '?'} | "
+                        f"**Fecha:** {r['fecha_publicacion']} | **ID:** {r['registro_digital']}\n"
+                        f"**Materias:** {r['materias'] or '?'}\n\n"
+                        f"{resumen}\n"
+                    )
+                    _ollama_legal_append(agente, cfg.get("label", "SJF"),
+                                        r["fecha_publicacion"] or "", rubro, aprendizaje)
+                    already_indexed.add(doc_id)
+                    nuevos += 1
+                except Exception as e:
+                    log.warning(f"Doc SJF {r['registro_digital']} ({agente}): {e}")
+                    errores += 1
+        conn.close()
+
+    # ── Actualizar índice y resumen ─────────────────────────────────────────
+    total_docs = len(list(docs_dir.glob("*.md")))
+    if nuevos > 0:
+        _rebuild_weekly_summary(agente, kdir, docs_dir)
+    idx.update({
+        "agente": agente,
+        "label": cfg.get("label", ""),
+        "docs": list(already_indexed)[-KNOWLEDGE_MAX_DOCS:],
+        "last_indexed": datetime.now().isoformat(),
+        "total": total_docs,
+    })
+    _knowledge_save_index(agente, idx)
+
+    if background:
+        return f"{agente}:+{nuevos}" if nuevos else f"{agente}:al-día"
+    return (
+        f"✅ Indexación {agente} completada:\n"
+        f"  • Nuevos: {nuevos} | Errores: {errores}\n"
+        f"  • Total en knowledge: {total_docs}\n"
+        f"  • Área: {cfg.get('label', '?')}"
+    )
+
+
+def _rebuild_weekly_summary(agente: str, kdir: Path, docs_dir: Path):
+    """Reconstruye resumen-semanal.md con los últimos 20 docs."""
+    try:
+        all_docs = sorted(docs_dir.glob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True)[:20]
+        if not all_docs:
+            return
+        lines = [f"# Resumen semanal de conocimiento — {agente}\n",
+                 f"_Actualizado: {datetime.now().strftime('%Y-%m-%d %H:%M')}_\n\n"]
+        for doc in all_docs:
+            try:
+                content = doc.read_text()
+                # Primer bloque: título + primeras 3 líneas del resumen
+                doc_lines = [l for l in content.splitlines() if l.strip()]
+                lines.append("\n---\n\n")
+                lines.extend([l + "\n" for l in doc_lines[:5]])
+            except Exception:
+                pass
+        (kdir / "resumen-semanal.md").write_text("".join(lines))
+    except Exception as e:
+        log.warning(f"_rebuild_weekly_summary {agente}: {e}")
+
+
+def _load_agent_knowledge(agente: str, max_chars: int = 8000) -> str:
+    """
+    Carga el conocimiento indexado del agente para inyectarlo como contexto.
+    Devuelve string vacío si no hay conocimiento aún.
+    """
+    docs_dir = KNOWLEDGE_BASE / agente / "docs"
+    if not docs_dir.exists():
+        return ""
+    # Los más recientes primero
+    all_docs = sorted(docs_dir.glob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True)
+    if not all_docs:
+        return ""
+    chunks = []
+    total = 0
+    for doc in all_docs[:KNOWLEDGE_CONTEXT_DOCS]:
+        try:
+            text = doc.read_text()[:2000]
+            if total + len(text) > max_chars:
+                break
+            chunks.append(text)
+            total += len(text)
+        except Exception:
+            pass
+    if not chunks:
+        return ""
+    header = f"## Conocimiento indexado de {agente} (DOF/SJF)\n_Últimas publicaciones analizadas:_\n\n"
+    return header + "\n\n---\n\n".join(chunks)
+
+
+def _legal_indexar_todos(limite_por_agente: int = 20) -> str:
+    """Indexa todos los agentes kawiil-*. Para el tool manual (con respuesta verbose)."""
+    if not AGENTS_DIR.exists():
+        return "No hay directorio de agentes."
+    kawiil_files = [f for f in AGENTS_DIR.glob("kawiil-*.md")]
+    if not kawiil_files:
+        return "No hay agentes kawiil-* registrados."
+    resultados = []
+    for f in kawiil_files:
+        agente = f.stem
+        try:
+            r = _legal_indexar_agente(agente, forzar=False, limite=limite_por_agente)
+            resultados.append(f"{agente}: {r.splitlines()[0] if r else '?'}")
+            log.info(f"legal_indexar_todos: {agente} → {r[:80]}")
+        except Exception as e:
+            resultados.append(f"{agente}: ERROR {e}")
+            log.warning(f"legal_indexar_todos {agente}: {e}")
+    return f"Indexación manual legal ({len(kawiil_files)} agentes):\n" + "\n".join(resultados)
+
+
+# ── Prioridad: encola un tema/doc para indexación inmediata ───────────────────
+def _legal_enqueue_priority(agente: str, tema: str, razon: str = ""):
+    """Agrega a la cola de prioridad para que el bg-tick lo indexe primero."""
+    try:
+        LEGAL_BG_PRIORITY.parent.mkdir(parents=True, exist_ok=True)
+        entry = {"agente": agente, "tema": tema, "razon": razon,
+                 "ts": datetime.now().isoformat()}
+        with LEGAL_BG_PRIORITY.open("a") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        log.warning(f"_legal_enqueue_priority: {e}")
+
+
+def _legal_drain_priority() -> list[dict]:
+    """Lee y vacía la cola de prioridad. Devuelve lista de entries."""
+    if not LEGAL_BG_PRIORITY.exists():
+        return []
+    try:
+        lines = LEGAL_BG_PRIORITY.read_text().splitlines()
+        LEGAL_BG_PRIORITY.write_text("")  # vaciar
+        result = []
+        for l in lines:
+            l = l.strip()
+            if l:
+                try:
+                    result.append(json.loads(l))
+                except Exception:
+                    pass
+        return result
+    except Exception:
+        return []
+
+
+def _legal_bg_next_agent() -> str | None:
+    """
+    Devuelve el siguiente agente kawiil-* en rotación round-robin.
+    Guarda estado en LEGAL_BG_ROTATION para que persista entre ticks.
+    """
+    if not AGENTS_DIR.exists():
+        return None
+    kawiil = sorted(f.stem for f in AGENTS_DIR.glob("kawiil-*.md"))
+    if not kawiil:
+        return None
+    rot = {}
+    if LEGAL_BG_ROTATION.exists():
+        try:
+            rot = json.loads(LEGAL_BG_ROTATION.read_text())
+        except Exception:
+            pass
+    last = rot.get("last_agent", "")
+    try:
+        idx = kawiil.index(last)
+        nxt = kawiil[(idx + 1) % len(kawiil)]
+    except ValueError:
+        nxt = kawiil[0]
+    LEGAL_BG_ROTATION.parent.mkdir(parents=True, exist_ok=True)
+    LEGAL_BG_ROTATION.write_text(json.dumps(
+        {"last_agent": nxt, "ts": datetime.now().isoformat()}))
+    return nxt
+
+
+def _legal_indexar_background_tick(limite: int = 10) -> str:
+    """
+    Un tick de indexación en background — silencioso, llamado cada N minutos
+    por el scheduler. Procesa:
+      1) Cola de prioridad primero (temas urgentes / leyes recién subidas)
+      2) Siguiente agente en rotación round-robin, 10 docs más recientes sin indexar
+    Devuelve string corto para el log.
+    """
+    resultados = []
+
+    # 1) Prioridad: si hay entries en la cola, indexar esos agentes primero
+    priority = _legal_drain_priority()
+    for entry in priority[:3]:  # máx 3 prioridades por tick para no bloquear
+        agente = entry.get("agente", "")
+        if not agente or not _AGENT_NAME_RE.match(agente):
+            continue
+        if not (AGENTS_DIR / f"{agente}.md").exists():
+            continue
+        try:
+            r = _legal_indexar_agente(agente, forzar=False, limite=limite, background=True)
+            resultados.append(f"[prio] {r}")
+            log.info(f"legal bg priority: {r}")
+        except Exception as e:
+            log.warning(f"legal bg priority {agente}: {e}")
+
+    # 2) Rotación normal: siguiente agente en la lista
+    agente = _legal_bg_next_agent()
+    if agente:
+        try:
+            r = _legal_indexar_agente(agente, forzar=False, limite=limite, background=True)
+            resultados.append(f"[bg] {r}")
+            log.info(f"legal bg tick: {r}")
+        except Exception as e:
+            log.warning(f"legal bg tick {agente}: {e}")
+            resultados.append(f"[bg] {agente}: error {e}")
+
+    return " | ".join(resultados) if resultados else "bg: sin agentes"
+
+
 # ===== Mac status / wake request =====
 MAC_HEARTBEAT_FILE = HOME_OC / "state" / "mac_heartbeat.json"
 
@@ -2461,6 +4515,1373 @@ def _send_telegram_direct(text: str) -> None:
         urllib.request.urlopen(req, timeout=10).read()
     except Exception:
         log.exception("_send_telegram_direct falló")
+
+
+# ===== Puente de comandos Hetzner → Mac =====
+# La Mac no es alcanzable desde Hetzner (NAT). Pero la Mac SÍ se conecta a
+# Hetzner: cada minuto un launchd corre mac-command-runner.sh que lee esta cola,
+# ejecuta los comandos whitelisted localmente, y escribe el resultado de vuelta.
+MAC_CMD_QUEUE = HOME_OC / "state" / "mac-commands.jsonl"
+MAC_CMD_RESULTS = HOME_OC / "state" / "mac-command-results.jsonl"
+
+# Comandos que la Mac acepta ejecutar. El runner en la Mac tiene el mapeo real
+# a scripts; aquí solo validamos que el comando sea conocido.
+MAC_ALLOWED_COMMANDS = {
+    "dof_backfill":      "Descarga lo más reciente del DOF (HTMLs nuevos) en la Mac.",
+    "dof_backfill_mes":  "Descarga/actualiza DOF del mes indicado. args: {mes:'AAAA-MM'}.",
+    "sjf_backfill":      "Continúa el backfill del SJF en la Mac.",
+    "legal_sync":        "Fuerza el push inmediato de las BDs (DOF/SJF) Mac→Hetzner.",
+    "mac_bash":          "Ejecuta un comando bash arbitrario en la Mac. args: {bash_cmd:'...', nivel:'safe|impactful|major'}.",
+}
+
+# Clasificación de seguridad para mac_bash
+_MAC_BASH_SAFE_RE = re.compile(
+    r"^\s*(?:ls|cat|tail|head|grep|find|echo|pwd|ps|df|du|wc|sort|uniq|"
+    r"launchctl\s+list|launchctl\s+print|systemctl\s+status|journalctl|"
+    r"python3?\s+-c\s+['\"]?import|pip\s+(?:list|show|freeze)|"
+    r"which|type|env|printenv|uname|sw_vers|uptime|date|id|whoami|"
+    r"sqlite3\b.*(?:\.count\b|SELECT\b|PRAGMA\b))",
+    re.IGNORECASE,
+)
+_MAC_BASH_MAJOR_RE = re.compile(
+    r"\b(?:rm\s+-[rf]|rm\s+.*\*|sudo\s+rm|kill\s+-9|pkill|"
+    r"launchctl\s+(?:unload|remove|disable)|"
+    r">\s*/(?!tmp)|dd\s+if=|mkfs|fdisk|"
+    r"chmod\s+777|chown\s+-R\s+root)\b",
+    re.IGNORECASE,
+)
+
+def _mac_bash_nivel(bash_cmd: str) -> str:
+    """Clasifica nivel de riesgo de un comando bash."""
+    if _MAC_BASH_MAJOR_RE.search(bash_cmd):
+        return "major"
+    if _MAC_BASH_SAFE_RE.match(bash_cmd):
+        return "safe"
+    return "impactful"
+
+
+def _slack_client():
+    """Devuelve un WebClient de Slack usando el token del archivo de credenciales."""
+    try:
+        from slack_sdk import WebClient
+    except ImportError:
+        return None, "ERROR: slack_sdk no instalado (pip install slack-sdk)"
+    creds_path = HOME_OC / "credentials" / "slack.env"
+    creds = load_env_file(creds_path)
+    token = creds.get("SLACK_BOT_TOKEN") or os.environ.get("SLACK_BOT_TOKEN", "")
+    if not token.startswith("xoxb-"):
+        return None, f"ERROR: SLACK_BOT_TOKEN no configurado o inválido en {creds_path}"
+    return WebClient(token=token), None
+
+
+def _slack_all_channels(client, types="public_channel,private_channel,im,mpim"):
+    """Lista TODOS los canales PAGINANDO. Slack devuelve los canales por tandas con
+    'next_cursor' aunque pidas limit alto; sin seguir el cursor se pierden canales
+    (por eso 'cumplimiento-vizum' no aparecía). Tope de seguridad de 25 páginas."""
+    out = []
+    cursor = None
+    for _ in range(25):
+        kwargs = {"types": types, "limit": 200, "exclude_archived": True}
+        if cursor:
+            kwargs["cursor"] = cursor
+        resp = client.conversations_list(**kwargs)
+        out += resp.get("channels", [])
+        cursor = (resp.get("response_metadata") or {}).get("next_cursor")
+        if not cursor:
+            break
+    return out
+
+
+def _slack_canales() -> str:
+    client, err = _slack_client()
+    if err:
+        return err
+    try:
+        channels = _slack_all_channels(client)
+        rows = []
+        for ch in channels:
+            name = ch.get("name") or ch.get("user") or ch.get("id")
+            cid = ch["id"]
+            ctype = "DM" if ch.get("is_im") else ("privado" if ch.get("is_private") else "público")
+            miembro = "" if ch.get("is_member") or ch.get("is_im") else "  (no miembro)"
+            rows.append(f"  {cid}  {name}  [{ctype}]{miembro}")
+        return f"Canales visibles para Louis ({len(rows)}):\n" + "\n".join(rows) if rows else "No hay canales."
+    except Exception as e:
+        return f"ERROR al listar canales Slack: {e}"
+
+
+def _slack_leer(canal: str, limite: int = 20) -> str:
+    client, err = _slack_client()
+    if err:
+        return err
+    try:
+        # Resolve name → ID si necesario
+        channel_id = canal
+        if not canal.startswith("C") and not canal.startswith("D"):
+            target = canal.lower().lstrip("#")
+            channel_id = None
+            for ch in _slack_all_channels(client, "public_channel,private_channel"):
+                if ch.get("name", "").lower() == target:
+                    channel_id = ch["id"]
+                    break
+            if not channel_id:
+                return f"No encontré el canal '#{canal}'. Revisa el nombre o invítame con /invite @Louis."
+        history = client.conversations_history(channel=channel_id, limit=min(limite, 100))
+        msgs = history.get("messages", [])
+        if not msgs:
+            return f"No hay mensajes recientes en #{canal}."
+        # Resolve user IDs → nombres
+        users: dict = {}
+        def _uname(uid: str) -> str:
+            if uid not in users:
+                try:
+                    r = client.users_info(user=uid)
+                    users[uid] = r["user"].get("real_name") or r["user"].get("name") or uid
+                except Exception:
+                    users[uid] = uid
+            return users[uid]
+        import datetime as _dt
+        lines = [f"Últimos {len(msgs)} mensajes de #{canal}:"]
+        for m in reversed(msgs):
+            ts = float(m.get("ts", 0))
+            dt = _dt.datetime.fromtimestamp(ts).strftime("%d/%m %H:%M")
+            user = _uname(m.get("user", "?"))
+            text = m.get("text", "(sin texto)")[:300]
+            lines.append(f"[{dt}] {user}: {text}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"ERROR leyendo Slack #{canal}: {e}"
+
+
+def _slack_dm_leer(usuario: str, limite: int = 20) -> str:
+    client, err = _slack_client()
+    if err:
+        return err
+    try:
+        # Buscar ID del usuario por nombre si no es U...
+        uid = usuario
+        if not usuario.startswith("U"):
+            resp = client.users_list()
+            for u in resp.get("members", []):
+                if u.get("name", "").lower() == usuario.lower() or \
+                   (u.get("real_name") or "").lower() == usuario.lower():
+                    uid = u["id"]
+                    break
+        # Abrir DM
+        dm = client.conversations_open(users=uid)
+        channel_id = dm["channel"]["id"]
+        return _slack_leer(channel_id, limite)
+    except Exception as e:
+        return f"ERROR leyendo DM con {usuario}: {e}"
+
+
+def _slack_resumen(canales: list | None = None, msgs_por_canal: int = 10) -> str:
+    """Lee los últimos mensajes de los canales más activos en un solo call."""
+    client, err = _slack_client()
+    if err:
+        return err
+    import datetime as _dt
+
+    def _uname(uid: str, _cache: dict = {}) -> str:
+        if uid not in _cache:
+            try:
+                r = client.users_info(user=uid)
+                _cache[uid] = r["user"].get("real_name") or r["user"].get("name") or uid
+            except Exception:
+                _cache[uid] = uid
+        return _cache[uid]
+
+    try:
+        # Obtén lista de canales donde el bot está invitado (PAGINANDO).
+        todos = _slack_all_channels(client, "public_channel,private_channel")
+        all_channels = [c for c in todos if c.get("is_member")]
+        if not all_channels:
+            all_channels = todos
+
+        # Filtra a los solicitados o usa todos
+        if canales:
+            target = [c for c in all_channels if c.get("name", "").lower() in [x.lstrip("#").lower() for x in canales]]
+        else:
+            target = all_channels[:8]  # máximo 8 canales
+
+        if not target:
+            names = [c.get("name", c["id"]) for c in all_channels[:20]]
+            return f"El bot no está en ningún canal público de los disponibles. Canales visibles: {names}"
+
+        sections = []
+        for ch in target:
+            cid = ch["id"]
+            cname = ch.get("name", cid)
+            try:
+                history = client.conversations_history(channel=cid, limit=msgs_por_canal)
+                msgs = history.get("messages", [])
+                if not msgs:
+                    sections.append(f"#{cname}: sin mensajes recientes.")
+                    continue
+                lines = [f"#{cname} — últimos {len(msgs)} msgs:"]
+                for m in reversed(msgs):
+                    ts = float(m.get("ts", 0))
+                    dt = _dt.datetime.fromtimestamp(ts).strftime("%d/%m %H:%M")
+                    user = _uname(m.get("user", "?"))
+                    text = (m.get("text") or m.get("attachments", [{}])[0].get("fallback", "(sin texto)"))[:200]
+                    lines.append(f"  [{dt}] {user}: {text}")
+                sections.append("\n".join(lines))
+            except Exception as e:
+                sections.append(f"#{cname}: ERROR — {e}")
+
+        return "\n\n".join(sections) if sections else "No se encontraron mensajes."
+    except Exception as e:
+        return f"ERROR en slack_resumen: {e}"
+
+
+# ===== Cola de archivos para enviar por el canal (Telegram/Slack) =====
+# Las tools no pueden mandar archivos directo (devuelven texto). En su lugar
+# encolan (bytes, nombre, caption) aquí; el bridge los drena tras call_llm y
+# los envía con telegram_send_document.
+_PENDING_FILES: list = []
+_QUEUED_HASHES: set = set()
+
+
+def _queue_file(content: bytes, filename: str, caption: str = "") -> None:
+    # Dedupe: no encolar el MISMO archivo dos veces (evita el bug de mandar
+    # el mismo PDF 3 veces). Compara por hash del contenido.
+    import hashlib as _hl
+    try:
+        h = _hl.sha256(content).hexdigest()
+    except Exception:
+        h = None
+    if h and h in _QUEUED_HASHES:
+        log.info(f"_queue_file: omito duplicado {filename}")
+        return
+    if h:
+        _QUEUED_HASHES.add(h)
+    _PENDING_FILES.append((content, filename, caption))
+
+
+# ===== Proyectos (sync desde ~/Documents/Claude/Projects de la Mac) =====
+PROJECTS_DIR = HOME_OC / "projects"
+# Carpeta donde Louis guarda lo que genera (PDFs, informes). Se sincroniza de
+# regreso a la Mac. Va con prefijo "_" para distinguirse de los proyectos de Polo.
+GENERATED_DIR = PROJECTS_DIR / "_Louis-Generados"
+_PROJ_TEXT_EXT = {".md", ".markdown", ".txt", ".csv", ".json", ".rtf"}
+
+
+def _guardar_generado(content: bytes, filename: str) -> str | None:
+    """Guarda un archivo generado en /opt/openclaw/projects/_Louis-Generados/YYYY-MM/
+    para que quede registro y se sincronice de regreso a la Mac. Devuelve la ruta
+    o None si falla (sin romper el envío por Telegram)."""
+    import datetime as _dt
+    try:
+        sub = GENERATED_DIR / _dt.date.today().strftime("%Y-%m")
+        sub.mkdir(parents=True, exist_ok=True)
+        dest = sub / filename
+        dest.write_bytes(content)
+        return str(dest)
+    except Exception as e:
+        log.warning(f"No pude guardar generado {filename}: {e}")
+        return None
+
+
+def _proyectos_listar() -> str:
+    """Lista los proyectos sincronizados y cuántos archivos tiene cada uno."""
+    if not PROJECTS_DIR.exists():
+        return ("No hay proyectos sincronizados todavía en el servidor. "
+                "El sync Mac→Hetzner (ai.kawiil.projects-sync) aún no ha corrido "
+                "o no está instalado.")
+    proyectos = sorted([d for d in PROJECTS_DIR.iterdir() if d.is_dir()])
+    if not proyectos:
+        return "La carpeta de proyectos existe pero está vacía (el sync aún no subió nada)."
+    out = [f"📁 *Proyectos sincronizados* ({len(proyectos)}):\n"]
+    for d in proyectos:
+        files = [f for f in d.rglob("*") if f.is_file()]
+        recientes = max((f.stat().st_mtime for f in files), default=0)
+        import datetime as _dt
+        fecha = _dt.datetime.fromtimestamp(recientes).strftime("%d/%m %H:%M") if recientes else "?"
+        out.append(f"• *{d.name}* — {len(files)} archivos · últ. cambio {fecha}")
+    return "\n".join(out)
+
+
+def _proyectos_archivos(proyecto: str) -> str:
+    """Lista los archivos de un proyecto (para luego leer uno con proyecto_leer)."""
+    base = PROJECTS_DIR / proyecto
+    if not base.exists() or not base.is_dir():
+        disponibles = sorted([d.name for d in PROJECTS_DIR.iterdir() if d.is_dir()]) if PROJECTS_DIR.exists() else []
+        return (f"No encuentro el proyecto «{proyecto}». Disponibles: "
+                f"{', '.join(disponibles) if disponibles else '(ninguno aún)'}")
+    files = sorted([f for f in base.rglob("*") if f.is_file() and f.name != ".DS_Store"],
+                   key=lambda f: f.stat().st_mtime, reverse=True)
+    if not files:
+        return f"El proyecto «{proyecto}» no tiene archivos sincronizados."
+    out = [f"📂 *{proyecto}* — {len(files)} archivos (más recientes primero):\n"]
+    for f in files[:60]:
+        rel = f.relative_to(base)
+        kb = f.stat().st_size / 1024
+        out.append(f"• {rel}  ({kb:.0f} KB)")
+    if len(files) > 60:
+        out.append(f"… y {len(files) - 60} más")
+    return "\n".join(out)
+
+
+def _proyecto_leer(proyecto: str, archivo: str) -> str:
+    """Lee el contenido de un archivo de texto de un proyecto.
+
+    Para archivos de texto (.md/.txt/.csv/.json) devuelve el contenido.
+    Para PDF intenta extraer texto si hay librería; si no, lo dice.
+    """
+    base = PROJECTS_DIR / proyecto
+    if not base.exists():
+        return f"No encuentro el proyecto «{proyecto}». Usa `proyectos_listar` para ver los disponibles."
+    # Resolver el archivo (match exacto o por nombre/substring)
+    target = base / archivo
+    if not target.exists():
+        candidatos = [f for f in base.rglob("*") if f.is_file() and archivo.lower() in f.name.lower()]
+        if not candidatos:
+            return (f"No encuentro «{archivo}» en {proyecto}. Usa `proyectos_archivos('{proyecto}')` "
+                    f"para ver la lista exacta.")
+        target = max(candidatos, key=lambda f: f.stat().st_mtime)
+    # Seguridad: no salir de PROJECTS_DIR
+    try:
+        target.resolve().relative_to(PROJECTS_DIR.resolve())
+    except ValueError:
+        return "Ruta inválida."
+    ext = target.suffix.lower()
+    try:
+        if ext in _PROJ_TEXT_EXT:
+            txt = target.read_text(encoding="utf-8", errors="replace")
+            if len(txt) > 12000:
+                txt = txt[:12000] + f"\n\n… (truncado, el archivo tiene {len(txt):,} caracteres)"
+            return f"📄 {proyecto}/{target.relative_to(base)}:\n\n{txt}"
+        if ext == ".pdf":
+            try:
+                from pypdf import PdfReader
+                reader = PdfReader(str(target))
+                pages = [p.extract_text() or "" for p in reader.pages[:40]]
+                txt = "\n".join(pages).strip()
+                if not txt:
+                    return f"«{target.name}» es un PDF sin texto extraíble (probablemente escaneado/imagen)."
+                if len(txt) > 12000:
+                    txt = txt[:12000] + "\n\n… (truncado)"
+                return f"📄 {proyecto}/{target.name} (PDF):\n\n{txt}"
+            except ImportError:
+                return (f"«{target.name}» es PDF. Para leer PDFs instala pypdf en el servidor: "
+                        f"pip3 install --break-system-packages pypdf")
+        return (f"«{target.name}» es {ext or 'sin extensión'} — no lo puedo leer como texto. "
+                f"Formatos legibles: {', '.join(sorted(_PROJ_TEXT_EXT))} y .pdf.")
+    except Exception as e:
+        return f"Error leyendo «{target.name}»: {e}"
+
+
+
+
+def get_pending_files() -> list:
+    """Devuelve y limpia la cola de archivos pendientes de envío."""
+    files = list(_PENDING_FILES)
+    _PENDING_FILES.clear()
+    return files
+
+
+# ===== Generación de documentos (PDF / PPTX / XLSX) =====
+
+_UNICODE_MAP = {
+    "–": "-", "—": "-", "‒": "-", "‐": "-", "‑": "-",  # dashes
+    "‘": "'", "’": "'", "‚": "'", "‛": "'",  # single quotes
+    "“": '"', "”": '"', "„": '"', "‟": '"',  # double quotes
+    "…": "...", "•": "-", "·": "-", "●": "-", "▪": "-",  # ellipsis, bullets
+    "→": "->", "←": "<-", "⇒": "=>", "↔": "<->",  # arrows
+    " ": " ", " ": " ", " ": " ", "​": "",  # spaces
+    "✓": "[OK]", "✔": "[OK]", "✗": "[X]", "✘": "[X]",  # checks
+    "€": "EUR", "™": "(TM)", "®": "(R)", "©": "(C)",
+}
+_MD_INLINE_RE = re.compile(r"(\*\*|__|\*|`|~~)")
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+_EMOJI_RE = re.compile(
+    "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF\U00002190-\U000021FF️]",
+    flags=re.UNICODE,
+)
+
+
+def _clean_text_for_pdf(text: str) -> str:
+    """Limpia markdown inline + mapea Unicode a ASCII para fuentes core de fpdf."""
+    if not text:
+        return ""
+    # Links markdown [texto](url) → texto
+    text = _MD_LINK_RE.sub(r"\1", text)
+    # Marcadores inline **bold** *italic* `code` ~~strike~~ → quitar marcadores
+    text = _MD_INLINE_RE.sub("", text)
+    # Mapeo de puntuación Unicode común
+    for u, a in _UNICODE_MAP.items():
+        text = text.replace(u, a)
+    # Emojis fuera (no renderizan en core fonts)
+    text = _EMOJI_RE.sub("", text)
+    return text
+
+
+def _sanitize_latin1(text: str) -> str:
+    """Convierte a latin-1 para fuentes core de fpdf (preserva acentos españoles)."""
+    return _clean_text_for_pdf(text).encode("latin-1", errors="replace").decode("latin-1")
+
+
+def _break_long_tokens(text: str, max_len: int = 45) -> str:
+    """Parte palabras/tokens sin espacios más largos que max_len para que fpdf
+    pueda hacer wrap. Evita 'Not enough horizontal space to render a character'."""
+    out = []
+    for tok in text.split(" "):
+        while len(tok) > max_len:
+            out.append(tok[:max_len])
+            tok = tok[max_len:]
+        out.append(tok)
+    return " ".join(out)
+
+
+def _generar_pdf(titulo: str, contenido: str, agente: str = "Louis") -> bytes | None:
+    """Genera un PDF a partir de contenido markdown. Retorna None si fpdf2 no está instalado."""
+    try:
+        from fpdf import FPDF
+    except ImportError:
+        return None
+    import datetime as _dt
+
+    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    margin = 20
+    pdf.set_margins(margin, margin, margin)
+    pdf.set_auto_page_break(auto=True, margin=margin)
+    pdf.add_page()
+    epw = pdf.w - 2 * margin  # ancho útil (positivo garantizado)
+
+    def _cell(text: str, h: float, font_size: float, bold: bool = False, align: str = "L"):
+        """multi_cell robusto: ancho explícito, X reseteado, tokens largos partidos."""
+        pdf.set_font("Helvetica", "B" if bold else "", font_size)
+        pdf.set_x(margin)
+        safe = _break_long_tokens(_sanitize_latin1(text)) or " "
+        try:
+            pdf.multi_cell(epw, h, safe, align=align)
+        except Exception:
+            try:
+                pdf.set_x(margin)
+                pdf.multi_cell(epw, h, safe[:200] or " ", align=align)
+            except Exception:
+                pass
+
+    def _render_table(rows: list):
+        """Renderiza una tabla markdown con wrap automático (API pdf.table de fpdf2)."""
+        if not rows:
+            return
+        ncols = max(len(r) for r in rows)
+        norm = [[_break_long_tokens(_sanitize_latin1(c), 60) for c in (r + [""] * (ncols - len(r)))] for r in rows]
+        pdf.set_font("Helvetica", "", 8)
+        try:
+            from fpdf.fonts import FontFace
+            head_style = FontFace(emphasis="BOLD", color=(255, 255, 255), fill_color=(44, 62, 80))
+            with pdf.table(
+                width=epw, text_align="LEFT", line_height=4.5,
+                first_row_as_headings=True, headings_style=head_style,
+            ) as table:
+                for r in norm:
+                    row = table.row()
+                    for c in r:
+                        row.cell(c or " ")
+        except Exception as e:
+            log.debug(f"_render_table falló, fallback texto ({e})")
+            for r in norm:
+                _cell(" | ".join(r), 5, 8)
+        pdf.ln(2)
+
+    # Portada / título
+    _cell(titulo, 10, 16, bold=True, align="C")
+    pdf.ln(3)
+    fecha = _dt.date.today().strftime("%d/%m/%Y")
+    _cell(f"Elaborado por: {agente} | Kawiil | {fecha}", 6, 9, align="C")
+    pdf.ln(2)
+    pdf.set_line_width(0.5)
+    pdf.line(margin, pdf.get_y(), pdf.w - margin, pdf.get_y())
+    pdf.ln(6)
+
+    table_buf: list = []  # acumula filas de tabla consecutivas
+
+    def _flush_table():
+        if table_buf:
+            _render_table(list(table_buf))
+            table_buf.clear()
+
+    for line in contenido.split("\n"):
+        try:
+            is_table_line = "|" in line and line.strip().startswith("|")
+            if is_table_line:
+                cells = [c.strip() for c in line.strip().strip("|").split("|")]
+                if all(set(c).issubset(set("-: ")) for c in cells if c):
+                    continue  # separador de header markdown
+                table_buf.append(cells)
+                continue
+            else:
+                _flush_table()
+
+            if line.startswith("#### "):
+                _cell(line[5:], 6, 10, bold=True); pdf.ln(1)
+            elif line.startswith("### "):
+                pdf.ln(2); _cell(line[4:], 7, 11, bold=True); pdf.ln(1)
+            elif line.startswith("## "):
+                pdf.ln(4); _cell(line[3:], 8, 13, bold=True)
+                pdf.set_line_width(0.2)
+                pdf.line(margin, pdf.get_y(), pdf.w - margin, pdf.get_y()); pdf.ln(3)
+            elif line.startswith("# "):
+                pdf.ln(5); _cell(line[2:], 9, 14, bold=True); pdf.ln(3)
+            elif line.strip() in ("---", "___", "***"):
+                pdf.set_line_width(0.2)
+                pdf.line(margin, pdf.get_y(), pdf.w - margin, pdf.get_y()); pdf.ln(3)
+            elif line.lstrip().startswith(("- ", "* ", "> ")):
+                stripped = line.lstrip()
+                _cell("  - " + stripped[2:], 5, 10)
+            elif len(line) > 2 and line[0].isdigit() and line[1] in (".", ")"):
+                _cell("  " + line, 5, 10)
+            elif not line.strip():
+                pdf.ln(2)
+            else:
+                _cell(line, 5, 10)
+        except Exception as e:
+            log.debug(f"_generar_pdf: línea omitida ({e}): {line[:60]!r}")
+            continue
+
+    _flush_table()
+    return bytes(pdf.output())
+
+
+def _generar_pptx(titulo: str, contenido: str, agente: str = "Louis") -> bytes | None:
+    """Genera un PowerPoint (.pptx) desde markdown. Retorna None si python-pptx no está."""
+    try:
+        from pptx import Presentation
+        from pptx.util import Inches, Pt
+        from pptx.dml.color import RGBColor
+    except ImportError:
+        return None
+    from io import BytesIO
+    import datetime as _dt
+
+    prs = Presentation()
+    prs.slide_width = Inches(13.33)
+    prs.slide_height = Inches(7.5)
+
+    # Slide de título
+    sl = prs.slides.add_slide(prs.slide_layouts[0])
+    sl.shapes.title.text = titulo[:80]
+    ph = sl.placeholders[1]
+    ph.text = f"Kawiil | {agente} | {_dt.date.today().strftime('%d/%m/%Y')}"
+
+    current_title = ""
+    current_body: list[str] = []
+
+    def _flush():
+        nonlocal current_title, current_body
+        if not current_title and not current_body:
+            return
+        sl2 = prs.slides.add_slide(prs.slide_layouts[1])
+        sl2.shapes.title.text = (current_title or "Contenido")[:80]
+        tf = sl2.placeholders[1].text_frame
+        tf.clear()
+        for b in current_body[:18]:
+            p = tf.add_paragraph()
+            p.text = b[:180]
+        current_title = ""
+        current_body = []
+
+    for line in contenido.split("\n"):
+        if line.startswith("## ") or line.startswith("# "):
+            _flush()
+            current_title = line.lstrip("# ").strip()
+        elif line.startswith("### "):
+            current_body.append(line[4:].strip())
+        elif line.startswith("- ") or line.startswith("* "):
+            current_body.append("• " + line[2:].strip())
+        elif len(line) > 2 and line[0].isdigit() and line[1] in (".", ")"):
+            current_body.append(line.strip())
+        elif line.strip() and not line.startswith("|") and not set(line.strip()).issubset(set("-: |")):
+            current_body.append(line.strip())
+        if len(current_body) >= 18:
+            _flush()
+
+    _flush()
+
+    buf = BytesIO()
+    prs.save(buf)
+    return buf.getvalue()
+
+
+def _generar_xlsx(titulo: str, contenido: str) -> bytes | None:
+    """Genera un Excel (.xlsx) desde markdown (tablas + texto). Retorna None si openpyxl no está."""
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment
+    except ImportError:
+        return None
+    from io import BytesIO
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = titulo[:31]
+
+    dark = PatternFill(start_color="2C3E50", end_color="2C3E50", fill_type="solid")
+    white = Font(color="FFFFFF", bold=True)
+
+    row = 1
+    for line in contenido.split("\n"):
+        if line.startswith("#"):
+            cell = ws.cell(row, 1, line.lstrip("# ").strip())
+            cell.font = Font(bold=True, size=13)
+            row += 1
+        elif "|" in line:
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if all(set(c).issubset(set("-: ")) for c in cells if c):
+                continue
+            is_header = row == 1 or ws.cell(row - 1, 1).value is None
+            for col, val in enumerate(cells, 1):
+                cell = ws.cell(row, col, val)
+                col_letter = cell.column_letter
+                ws.column_dimensions[col_letter].width = max(
+                    ws.column_dimensions[col_letter].width, min(len(val) + 3, 45)
+                )
+                if is_header:
+                    cell.fill = dark
+                    cell.font = white
+            row += 1
+        elif line.strip():
+            ws.cell(row, 1, line.strip())
+            row += 1
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _generar_docx(titulo: str, contenido: str, agente: str = "Louis") -> bytes | None:
+    """Genera un Word (.docx) desde markdown (encabezados, negritas, tablas, listas).
+    Retorna None si python-docx no está instalado."""
+    try:
+        from docx import Document
+        from docx.shared import Pt, RGBColor
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+    except ImportError:
+        return None
+    from io import BytesIO
+    import datetime as _dt
+
+    doc = Document()
+    h = doc.add_heading(titulo[:120], level=0)
+    sub = doc.add_paragraph()
+    run = sub.add_run(f"Elaborado por Louis · Kawiil — {agente} · {_dt.date.today().strftime('%d/%m/%Y')}")
+    run.italic = True
+    run.font.size = Pt(9)
+    run.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
+
+    def _add_richtext(par, text):
+        # **negrita** y *itálica* básicas
+        for seg in re.split(r"(\*\*.+?\*\*|\*.+?\*)", text):
+            if not seg:
+                continue
+            if seg.startswith("**") and seg.endswith("**"):
+                par.add_run(seg[2:-2]).bold = True
+            elif seg.startswith("*") and seg.endswith("*"):
+                par.add_run(seg[1:-1]).italic = True
+            else:
+                par.add_run(seg)
+
+    lines = contenido.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        # Tabla markdown
+        if re.match(r"^\s*\|", line):
+            tbl_lines = []
+            while i < len(lines) and re.match(r"^\s*\|", lines[i]):
+                tbl_lines.append(lines[i]); i += 1
+            filas = [[c.strip() for c in ln.strip().strip("|").split("|")]
+                     for ln in tbl_lines if not re.match(r"^[\s|:\-]+$", ln)]
+            if filas:
+                t = doc.add_table(rows=0, cols=len(filas[0]))
+                t.style = "Light Grid Accent 1"
+                for fi, fila in enumerate(filas):
+                    cells = t.add_row().cells
+                    for ci, val in enumerate(fila[:len(cells)]):
+                        cells[ci].text = val
+                        if fi == 0:
+                            for p in cells[ci].paragraphs:
+                                for r in p.runs:
+                                    r.bold = True
+            continue
+        m = re.match(r"^(#{1,4})\s+(.+)", line)
+        if m:
+            doc.add_heading(m.group(2).strip(), level=min(len(m.group(1)), 4))
+            i += 1; continue
+        if re.match(r"^---+\s*$", line):
+            doc.add_paragraph().add_run("―" * 20)
+            i += 1; continue
+        m = re.match(r"^\s*[-*]\s+(.+)", line)
+        if m:
+            _add_richtext(doc.add_paragraph(style="List Bullet"), m.group(1))
+            i += 1; continue
+        m = re.match(r"^\s*\d+\.\s+(.+)", line)
+        if m:
+            _add_richtext(doc.add_paragraph(style="List Number"), m.group(1))
+            i += 1; continue
+        if line.strip():
+            _add_richtext(doc.add_paragraph(), line.strip())
+        i += 1
+
+    buf = BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def _limpiar_contenido_doc(texto: str) -> str:
+    """Quita HTML/CSS/código que un agente pudo meter en su respuesta. El formato
+    visual lo arma el sistema (PDF/HTML), no el agente — si el agente escribe un
+    <!DOCTYPE>...</style>, aquí se elimina para no renderizar código en crudo."""
+    if not texto:
+        return texto
+    t = texto
+    t = re.sub(r"```[a-zA-Z]*\n.*?```", "", t, flags=re.DOTALL)   # bloques ```...```
+    t = t.replace("```", "")
+    t = re.sub(r"<style[^>]*>.*?</style>", "", t, flags=re.DOTALL | re.IGNORECASE)
+    t = re.sub(r"<script[^>]*>.*?</script>", "", t, flags=re.DOTALL | re.IGNORECASE)
+    t = re.sub(r"<!DOCTYPE[^>]*>", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"</?(html|head|body|meta|title|link)[^>]*>", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    return t.strip()
+
+
+def _generar_documento_tool(tipo: str, titulo: str, contenido: str, agente: str = "Louis") -> str:
+    """Genera PDF/HTML/PPTX/XLSX en el servidor y lo encola para envío por Telegram."""
+    import datetime as _dt
+    tipo = tipo.lower().strip()
+    if tipo == "word":
+        tipo = "docx"
+    contenido = _limpiar_contenido_doc(contenido)   # el formato lo arma el sistema, no el agente
+    generators = {"pdf": _generar_pdf, "pptx": _generar_pptx, "xlsx": _generar_xlsx,
+                  "html": _generar_html, "docx": _generar_docx}
+    gen = generators.get(tipo)
+    if gen is None:
+        return f"ERROR: tipo '{tipo}' no reconocido. Usa: html, pdf, word/docx, pptx, xlsx"
+    # pdf/html/docx muestran "Elaborado por: … {agente}"; pptx/xlsx no usan agente
+    data = gen(titulo, contenido, agente) if tipo in ("pdf", "html", "docx") else gen(titulo, contenido)
+    if data is None:
+        pkg = {"pdf": "fpdf2", "pptx": "python-pptx", "xlsx": "openpyxl", "docx": "python-docx"}.get(tipo, tipo)
+        return (f"ERROR: librería '{pkg}' no instalada en el servidor. "
+                f"Pide a Polo que ejecute en la Mac:\n"
+                f"ssh polo@204.168.131.21 'pip3 install {pkg}'")
+    safe = titulo[:40].replace(" ", "_").replace("/", "-")
+    fname = f"{safe}_{_dt.datetime.now().strftime('%Y%m%d_%H%M')}.{tipo}"
+    captions = {
+        "pdf": "📄 PDF listo — ábrelo directo",
+        "html": "🌐 HTML interactivo — ábrelo en el navegador (secciones colapsables + buscador + chat)",
+        "docx": "📝 Word listo — ábrelo en Word o Pages (editable)",
+        "pptx": "📊 PowerPoint listo — ábrelo en Keynote o PowerPoint",
+        "xlsx": "📊 Excel listo — ábrelo en Numbers o Excel",
+    }
+    _queue_file(data, fname, captions.get(tipo, f"📄 {titulo[:60]}"))
+    saved = _guardar_generado(data, fname)
+    extra = " · guardado en Hetzner (se sincroniza a tu Mac)" if saved else ""
+    return f"✅ {tipo.upper()} generado: {fname} ({len(data):,} bytes) — enviándolo por Telegram ahora{extra}"
+
+
+def _doc_tipo_de_mensaje(user_message: str) -> str:
+    """Infiere el formato del documento pedido. Default = HTML interactivo
+    (el estándar de Kawiil). Polo puede pedir otro formato explícito por Telegram
+    (word/pdf/excel/powerpoint) y se respeta."""
+    m = (user_message or "").lower()
+    if re.search(r"\b(word|docx|documento\s+de\s+word|editable|en\s+word)\b", m):
+        return "docx"
+    if re.search(r"\b(pptx|powerpoint|presentaci[oó]n|deck|diapositiva)\b", m):
+        return "pptx"
+    if re.search(r"\b(excel|xlsx|hoja\s+de\s+c[aá]lculo|tabla\s+de\s+datos)\b", m):
+        return "xlsx"
+    if re.search(r"\bpdf\b", m):
+        return "pdf"
+    # Default: HTML interactivo (dashboard + buscador + chat). Aplica a todo.
+    return "html"
+
+
+_LEGAL_ANALISIS_RE = re.compile(
+    r"\b(an[aá]lisis|dictamen|opini[oó]n)\b.{0,40}\b(legal|jur[ií]dic\w+|derecho|normativ\w+|"
+    r"regulaci[oó]n|cumplimiento)\b", re.IGNORECASE | re.DOTALL)
+_LEGAL_FUERTE_RE = re.compile(
+    r"\b(marca\s+registrada|propiedad\s+intelectual|derechos?\s+de\s+autor|impi|profeco|cnbv|"
+    r"lfda|lfppi|amparo|jurisprudencia|tesis\s+(aislada|jurisprudencial)|infracci[oó]n\s+(legal|administrativa))\b",
+    re.IGNORECASE)
+
+
+def _es_analisis_legal(msg: str) -> bool:
+    """True si el pedido es un ANÁLISIS/dictamen legal (para armarlo con el flujo
+    multi-agente, no de un solo tiro). No matchea 'redacta un contrato' (eso es plantilla)."""
+    m = (msg or "")
+    return bool(_LEGAL_ANALISIS_RE.search(m) or _LEGAL_FUERTE_RE.search(m))
+
+
+def generar_documento_directo(api_key: str, system_prompt: str, history: list,
+                              user_message: str) -> tuple:
+    """Flujo DIRECTO y determinístico para pedidos de documento.
+
+    En vez de depender de que el modelo llame una tool (poco confiable), hace UNA
+    llamada a Sonnet pidiendo SOLO el contenido del documento en markdown, y luego
+    genera el archivo (PDF/PPTX/XLSX) en el servidor y lo encola. El modelo solo
+    escribe texto (100% confiable); la generación del archivo es nuestra.
+
+    Returns: (texto_confirmacion, model_used).
+    """
+    tipo = _doc_tipo_de_mensaje(user_message)
+    # Contexto: últimas conversaciones para que el documento use lo ya discutido.
+    ctx_msgs = []
+    for h in (history or [])[-8:]:
+        if h.get("role") in ("user", "assistant") and isinstance(h.get("content"), str) and h["content"].strip():
+            ctx_msgs.append({"role": h["role"], "content": h["content"].strip()})
+
+    # ── DOCUMENTO LEGAL: armarlo DESDE la investigación multi-agente ──────────
+    # Agentes internacionales = referencia → agente mexicano (kawiil-nelli) mexicaniza.
+    # Así el doc lleva análisis riguroso + cita real (no un solo tiro genérico), y se
+    # acredita al agente que lo produjo.
+    if _es_analisis_legal(user_message):
+        ctx_txt = "\n".join(c["content"] for c in ctx_msgs[-4:]) if ctx_msgs else ""
+        try:
+            analisis = _consejo_experto_legal(area="", pregunta=user_message, contexto=ctx_txt,
+                                              incluir_referencia=False)
+        except Exception as e:
+            analisis = ""
+            log.warning(f"doc legal: consejo_experto_legal falló: {e}")
+        if analisis and not analisis.startswith("ERROR") and len(analisis) > 300:
+            mt = re.search(r"^#\s+(.+)$", analisis, re.MULTILINE)
+            titulo = (mt.group(1).strip() if mt else ("Análisis legal — " + user_message[:50])).rstrip(".?!")
+            agente_credito = "Agentes legales Kawiil → kawiil-nelli (mexicanización)"
+            resultado = _generar_documento_tool(tipo, titulo, analisis, agente_credito)
+            if resultado.startswith("ERROR"):
+                return (f"⚠️ {resultado}", "doc-error")
+            log.info(f"doc legal multi-agente OK: tipo={tipo} titulo={titulo[:40]}")
+            return (f"⚖️ Listo: *{titulo}*\n\nAnálisis multi-agente (referencia internacional → "
+                    f"mexicanizado por kawiil-nelli). Te lo mando como {tipo.upper()} aquí abajo.",
+                    f"doc-legal-{tipo}")
+        # si el flujo legal no dio contenido suficiente, cae al flujo normal de abajo
+
+    instruccion = (
+        f"Eres el generador de documentos de Louis (Kawiil). El usuario pidió:\n«{user_message}»\n\n"
+        "Escribe AHORA el DOCUMENTO COMPLETO y FINAL en formato markdown:\n"
+        "- Usa # para el título principal, ## para secciones, ### para subsecciones.\n"
+        "- Usa - para viñetas y tablas con | columna | columna |.\n"
+        "- Incluye TODO el contenido sustantivo (marco legal, análisis, datos, cronogramas, etc.).\n"
+        "- NO escribas preámbulos ('aquí está', 'voy a generar', '¿procedo?') ni cierres "
+        "('¿algo más?', '¿lo genero?'). Empieza DIRECTO con el título (#) y termina con el "
+        "contenido del documento. NO menciones que es un PDF ni cómo se va a entregar.\n"
+        "- Profundidad profesional: este documento se compartirá con un equipo de trabajo real."
+    )
+    sys_combined = system_prompt + "\n\n" + instruccion
+    messages = ctx_msgs + [{"role": "user", "content": user_message}]
+    # Colapsa roles consecutivos (Anthropic rechaza dos del mismo rol seguidos)
+    collapsed = []
+    for m in messages:
+        if collapsed and collapsed[-1]["role"] == m["role"]:
+            collapsed[-1]["content"] += "\n" + m["content"]
+        else:
+            collapsed.append(dict(m))
+    while collapsed and collapsed[0]["role"] != "user":
+        collapsed.pop(0)
+    headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
+    body = {
+        "model": CLAUDE_SONNET,
+        "max_tokens": 8192,
+        "system": sys_combined,
+        "messages": collapsed,
+    }
+    try:
+        resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=180)
+    except Exception as e:
+        log.exception("generar_documento_directo: API falló")
+        return (f"⚠️ No pude generar el documento (error de Claude: {e}). Intenta de nuevo.", "doc-error")
+    blocks = resp.get("content", [])
+    contenido = "".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip()
+    if not contenido or len(contenido) < 200:
+        return ("⚠️ Claude no devolvió contenido suficiente para el documento. Intenta ser más específico.",
+                "doc-empty")
+    # Título: primer encabezado markdown o las primeras palabras del pedido
+    m = re.search(r"^#\s+(.+)$", contenido, re.MULTILINE)
+    titulo = (m.group(1).strip() if m else (user_message[:60].strip())).rstrip(".?!")
+    resultado = _generar_documento_tool(tipo, titulo, contenido)
+    if resultado.startswith("ERROR"):
+        return (f"⚠️ {resultado}", "doc-error")
+    log.info(f"generar_documento_directo OK: tipo={tipo} titulo={titulo[:40]} len={len(contenido)}")
+    return (f"📄 Listo: *{titulo}*\n\nTe lo mando como {tipo.upper()} aquí abajo. "
+            f"({len(contenido):,} caracteres de contenido)", f"doc-{tipo}")
+
+
+# ===== Dropbox =====
+_DROPBOX_TOKEN_CACHE = {"token": None, "expires": 0.0}
+
+
+def _dropbox_token():
+    """Obtiene un access_token de Dropbox a partir del refresh_token (cacheado)."""
+    import time
+    if _DROPBOX_TOKEN_CACHE["token"] and time.time() < _DROPBOX_TOKEN_CACHE["expires"] - 120:
+        return _DROPBOX_TOKEN_CACHE["token"], None
+    creds = load_env_file(HOME_OC / "credentials" / "dropbox.env")
+    key = creds.get("DROPBOX_APP_KEY") or os.environ.get("DROPBOX_APP_KEY", "")
+    secret = creds.get("DROPBOX_APP_SECRET") or os.environ.get("DROPBOX_APP_SECRET", "")
+    refresh = creds.get("DROPBOX_REFRESH_TOKEN") or os.environ.get("DROPBOX_REFRESH_TOKEN", "")
+    if not (key and secret and refresh):
+        return None, "ERROR: faltan credenciales Dropbox en /opt/openclaw/credentials/dropbox.env"
+    data = urllib.parse.urlencode({
+        "grant_type": "refresh_token", "refresh_token": refresh,
+        "client_id": key, "client_secret": secret,
+    }).encode()
+    req = urllib.request.Request("https://api.dropbox.com/oauth2/token", data=data, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            j = json.loads(r.read())
+    except Exception as e:
+        return None, f"ERROR refrescando token Dropbox: {e}"
+    tok = j.get("access_token")
+    if not tok:
+        return None, f"ERROR: Dropbox no devolvió access_token: {j}"
+    _DROPBOX_TOKEN_CACHE["token"] = tok
+    _DROPBOX_TOKEN_CACHE["expires"] = time.time() + float(j.get("expires_in", 14400))
+    return tok, None
+
+
+def _dropbox_member_header() -> dict:
+    """Header de selección de usuario para apps de equipo (Dropbox Business).
+    Sin él, el token de equipo no puede operar sobre los archivos de un usuario."""
+    creds = load_env_file(HOME_OC / "credentials" / "dropbox.env")
+    mid = creds.get("DROPBOX_MEMBER_ID") or os.environ.get("DROPBOX_MEMBER_ID", "")
+    return {"Dropbox-API-Select-User": mid} if mid else {}
+
+
+def _dropbox_buscar(query: str, limite: int = 10) -> str:
+    tok, err = _dropbox_token()
+    if err:
+        return err
+    headers = {"Authorization": f"Bearer {tok}", **_dropbox_member_header()}
+    try:
+        j = http_post_json(
+            "https://api.dropbox.com/2/files/search_v2", headers,
+            {"query": query, "options": {"max_results": min(limite, 25)}},
+        )
+    except urllib.error.HTTPError as e:
+        return f"ERROR búsqueda Dropbox: {getattr(e, 'body', '') or e}"
+    except Exception as e:
+        return f"ERROR búsqueda Dropbox: {e}"
+    matches = j.get("matches", [])
+    if not matches:
+        return f"No encontré archivos para '{query}' en Dropbox."
+    lines = [f"Resultados Dropbox para '{query}':"]
+    for m in matches:
+        md = m.get("metadata", {}).get("metadata", {})
+        name = md.get("name", "?")
+        path = md.get("path_display") or md.get("path_lower", "")
+        lines.append(f"  {name}  →  {path}")
+    return "\n".join(lines)
+
+
+def _dropbox_listar(carpeta: str = "") -> str:
+    tok, err = _dropbox_token()
+    if err:
+        return err
+    headers = {"Authorization": f"Bearer {tok}", **_dropbox_member_header()}
+    path = "" if (not carpeta or carpeta == "/") else carpeta
+    try:
+        j = http_post_json("https://api.dropbox.com/2/files/list_folder", headers, {"path": path})
+    except urllib.error.HTTPError as e:
+        return f"ERROR listando Dropbox: {getattr(e, 'body', '') or e}"
+    except Exception as e:
+        return f"ERROR listando Dropbox: {e}"
+    entries = j.get("entries", [])
+    if not entries:
+        return f"Carpeta '{carpeta or '/'}' vacía o no existe."
+    lines = [f"Contenido de '{carpeta or '/'}':"]
+    for ent in entries:
+        tag = "📁" if ent.get(".tag") == "folder" else "📄"
+        lines.append(f"  {tag} {ent.get('name')}  →  {ent.get('path_display', '')}")
+    return "\n".join(lines)
+
+
+def _dropbox_enviar(path: str) -> str:
+    content, err = _dropbox_download_bytes(path)
+    if err:
+        return err.replace("ERROR descargando", "ERROR descargando de Dropbox")
+    filename = path.rsplit("/", 1)[-1] or "archivo"
+    _queue_file(content, filename, f"📄 {filename} (Dropbox)")
+    return f"Archivo '{filename}' ({len(content) // 1024} KB) descargado de Dropbox — enviándolo por Telegram."
+
+
+def _dropbox_norm_name(s: str) -> str:
+    """Normaliza espacios unicode raros (U+202F de las capturas de macOS, NBSP, etc.)
+    para comparar nombres de archivo sin que el modelo los rompa al reescribirlos."""
+    for ch in (" ", " ", " ", " ", " "):
+        s = s.replace(ch, " ")
+    return " ".join(s.split()).lower()
+
+
+def _dropbox_resolve_exact(path: str) -> str | None:
+    """Si la ruta no existe literal (p.ej. el modelo reescribió el U+202F como espacio
+    normal), busca por nombre de archivo y devuelve la ruta EXACTA del API."""
+    base = path.rsplit("/", 1)[-1]
+    tok, err = _dropbox_token()
+    if err:
+        return None
+    headers = {"Authorization": f"Bearer {tok}", **_dropbox_member_header()}
+    try:
+        j = http_post_json("https://api.dropbox.com/2/files/search_v2", headers,
+                           {"query": base, "options": {"max_results": 10}})
+    except Exception:
+        return None
+    target = _dropbox_norm_name(base)
+    matches = j.get("matches", [])
+    for m in matches:
+        md = m.get("metadata", {}).get("metadata", {})
+        p = md.get("path_display") or md.get("path_lower")
+        if p and _dropbox_norm_name(p.rsplit("/", 1)[-1]) == target:
+            return p
+    return None
+
+
+def _dropbox_download_bytes(path: str):
+    """Descarga el contenido binario de un archivo de Dropbox. (bytes, None) | (None, error).
+    Si la ruta no se encuentra (típico cuando se reescribió el U+202F de las capturas),
+    reintenta resolviendo la ruta exacta por búsqueda."""
+    def _try(p):
+        tok, err = _dropbox_token()
+        if err:
+            return None, err
+        req = urllib.request.Request("https://content.dropboxapi.com/2/files/download", method="POST")
+        req.add_header("Authorization", f"Bearer {tok}")
+        _mid = _dropbox_member_header().get("Dropbox-API-Select-User")
+        if _mid:
+            req.add_header("Dropbox-API-Select-User", _mid)
+        req.add_header("Dropbox-API-Arg", json.dumps({"path": p}))
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                return r.read(), None
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", "ignore")[:300] if hasattr(e, "read") else str(e)
+            return None, f"ERROR descargando '{p}': {body}"
+        except Exception as e:
+            return None, f"ERROR descargando '{p}': {e}"
+
+    data, err = _try(path)
+    if data is not None:
+        return data, None
+    # Reintento: resolver ruta exacta por búsqueda (arregla el U+202F reescrito).
+    if "not_found" in (err or ""):
+        exact = _dropbox_resolve_exact(path)
+        if exact and exact != path:
+            d2, e2 = _try(exact)
+            if d2 is not None:
+                return d2, None
+            return None, e2
+    return None, err
+
+
+_IMG_MEDIA = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+              ".gif": "image/gif", ".webp": "image/webp"}
+
+
+def _dropbox_analizar_imagen(path: str, pregunta: str = "") -> str:
+    """Baja una imagen de Dropbox y la analiza con visión de Claude para EXTRAER
+    datos (RFC, razón social, contacto…). Devuelve el texto extraído."""
+    import base64
+    ext = ("." + path.rsplit(".", 1)[-1].lower()) if "." in path else ""
+    media_type = _IMG_MEDIA.get(ext)
+    if not media_type:
+        return (f"ERROR: '{ext or path}' no es imagen soportada (png/jpg/gif/webp). "
+                f"Para PDF/otros usa dropbox_enviar.")
+    data, err = _dropbox_download_bytes(path)
+    if err:
+        return err
+    if len(data) > 4_500_000:
+        return f"ERROR: imagen de {len(data):,} bytes (>4.5MB), muy grande para visión."
+    api_key = load_anthropic_key()
+    if not api_key:
+        return "ERROR: falta ANTHROPIC_API_KEY para visión."
+    b64 = base64.standard_b64encode(data).decode("ascii")
+    sys_p = ("Eres un extractor de datos. Lee la imagen (captura de pantalla) y extrae la "
+             "información solicitada de forma estructurada y LITERAL. Si un dato no aparece, "
+             "escribe 'no aparece'. No inventes ni completes datos.")
+    q = pregunta.strip() or ("Extrae todos los datos del cliente: nombre/razón social, RFC, "
+        "tipo (persona física o moral), nombre de contacto, puesto, email, teléfono, dirección.")
+    return call_claude_with_image(api_key, sys_p, b64, media_type, q)
+
+
+def _dof_pdf(cod: str) -> str:
+    """Genera el documento de una publicación del DOF desde nuestra BD local
+    (texto ya descargado) y lo encola como HTML para envío por Telegram.
+
+    Más confiable que el endpoint del DOF (404/SSL/anti-bot): el contenido ya
+    está en biblioteca_dof.db para las publicaciones descargadas. El HTML se abre
+    en el navegador y se puede imprimir a PDF.
+    """
+    import html as _html
+    if not DOF_DB.exists():
+        return f"DOF: BD no encontrada en {DOF_DB}."
+    conn = _legal_open(DOF_DB)
+    if conn is None:
+        return "DOF: no pude abrir la BD."
+    try:
+        row = conn.execute(
+            "SELECT cod_nota, fecha, titulo, tipo_documento, nombre_cod_orga_uno, texto_plano "
+            "FROM notas WHERE cod_nota=?", (cod,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return (f"No encontré la publicación cod={cod} en la BD del DOF.\n"
+                f"URL oficial para verla: https://www.dof.gob.mx/nota_detalle.php?codigo={cod}")
+    texto = row["texto_plano"]
+    if not texto or not texto.strip():
+        return (f"La publicación cod={cod} está en el índice pero su texto aún no se descarga.\n"
+                f"Dispara el backfill del DOF o ábrela en: "
+                f"https://www.dof.gob.mx/nota_detalle.php?codigo={cod}")
+    titulo = row["titulo"] or f"DOF cod {cod}"
+    fecha = row["fecha"] or ""
+    tipo = row["tipo_documento"] or ""
+    organo = row["nombre_cod_orga_uno"] or ""
+    cuerpo = _html.escape(texto).replace("\n", "<br>\n")
+    doc = (
+        "<!DOCTYPE html><html lang='es'><head><meta charset='utf-8'>"
+        f"<title>{_html.escape(titulo)}</title>"
+        "<style>body{font-family:Georgia,serif;max-width:800px;margin:40px auto;"
+        "padding:0 20px;line-height:1.6;color:#1a1a1a}"
+        ".meta{color:#555;font-size:14px;border-bottom:2px solid #8b0000;"
+        "padding-bottom:12px;margin-bottom:24px}"
+        "h1{font-size:20px;color:#8b0000}.cod{color:#888;font-size:12px}</style></head><body>"
+        f"<h1>{_html.escape(titulo)}</h1>"
+        f"<div class='meta'>{_html.escape(organo)} · {_html.escape(tipo)} · "
+        f"Publicado {_html.escape(fecha)}<br><span class='cod'>DOF cod_nota: {cod}</span></div>"
+        f"<div>{cuerpo}</div></body></html>"
+    )
+    content = doc.encode("utf-8")
+    _queue_file(content, f"DOF_{cod}.html", f"📄 DOF {cod} — {titulo[:60]}")
+    return (f"Documento del DOF (cod={cod}, {len(content) // 1024} KB) generado desde la BD — "
+            f"enviándolo por Telegram. Ábrelo en el navegador para leerlo o imprimirlo a PDF.")
+
+
+def _dof_nota_texto(cod: str) -> str:
+    """Devuelve el TEXTO de una nota del DOF por código, para LEERLA/responder en chat.
+    1) Busca en la BD local (texto ya descargado). 2) Si no está, la baja EN VIVO del
+    endpoint ligero del DOF (nota_detalle_popup.php) por HTTP directo — NO el browser
+    pesado, que el DOF bloquea. Devuelve texto plano (truncado)."""
+    import html as _html
+    cod = str(cod).strip()
+    if not cod.isdigit():
+        return f"❌ Código inválido: '{cod}'. Debe ser numérico (ej. 5496518)."
+    titulo = fecha = ""
+    # 1) BD local
+    try:
+        if DOF_DB.exists():
+            conn = _legal_open(DOF_DB)
+            if conn is not None:
+                row = conn.execute(
+                    "SELECT titulo, fecha, texto_plano FROM notas WHERE cod_nota=?", (cod,)
+                ).fetchone()
+                conn.close()
+                if row:
+                    titulo = row["titulo"] or ""
+                    fecha = row["fecha"] or ""
+                    t = (row["texto_plano"] or "").strip()
+                    if len(t) > 80:
+                        return (f"📄 *{titulo or cod}* (DOF {fecha}, cód {cod}) — texto de la BD local:\n\n"
+                                + t[:6000] + ("\n\n…(texto truncado; pide más si lo necesitas)" if len(t) > 6000 else ""))
+    except Exception as e:
+        log.warning(f"dof_nota_texto BD: {e}")
+    # 2) En vivo — reusa el fetch PROBADO del scraper (host/headers correctos:
+    # http://diariooficial.gob.mx/nota_detalle_popup.php). Mi URL propia daba URLError.
+    txt = ""
+    try:
+        dof_dir = os.environ.get("DOF_SCRIPT_DIR", "/opt/openclaw/legal/dof")
+        if dof_dir not in sys.path:
+            sys.path.insert(0, dof_dir)
+        import dof_biblioteca as _dofb
+        html_raw = _dofb.fetch_nota_html(int(cod))
+        if html_raw:
+            txt = (_dofb.html_to_text(html_raw) or "").strip()
+    except Exception as e:
+        log.warning(f"dof_nota_texto live: {e}")
+    if not txt or len(txt) < 80:
+        return (f"⚠️ La nota {cod} aún no está descargada y no pude bajarla en vivo "
+                f"(quizá es solo imagen/PDF o el DOF no respondió). "
+                f"Ábrela en: https://www.dof.gob.mx/nota_detalle.php?codigo={cod}")
+    return (f"📄 Nota DOF cód {cod} (descargada en vivo del DOF):\n\n"
+            + txt[:6000] + ("\n\n…(texto truncado)" if len(txt) > 6000 else ""))
+
+
+def _mac_enqueue_command(comando: str, args: dict | None = None, razon: str = "") -> str:
+    """Encola un comando para que la Mac lo ejecute en su próximo poll."""
+    if comando not in MAC_ALLOWED_COMMANDS:
+        permitidos = ", ".join(MAC_ALLOWED_COMMANDS.keys())
+        return f"ERROR: comando '{comando}' no permitido. Disponibles: {permitidos}"
+    # Validación específica
+    args = args or {}
+    if comando == "dof_backfill_mes":
+        mes = str(args.get("mes", "")).strip()
+        if not re.match(r"^\d{4}-\d{2}$", mes):
+            return "ERROR: dof_backfill_mes requiere args {mes:'AAAA-MM'}, ej {mes:'2026-05'}."
+    if comando == "mac_bash":
+        if not args.get("bash_cmd", "").strip():
+            return "ERROR: mac_bash requiere args {bash_cmd:'comando bash'}."
+        # Auto-detecta nivel si no viene
+        if "nivel" not in args:
+            args["nivel"] = _mac_bash_nivel(args["bash_cmd"])
+    cmd_id = str(_uuid.uuid4())[:8]
+    entry = {
+        "id": cmd_id,
+        "comando": comando,
+        "args": args,
+        "razon": razon[:300],
+        "status": "pending",
+        "enqueued_at": datetime.now(TZ_CDMX).isoformat(),
+    }
+    try:
+        MAC_CMD_QUEUE.parent.mkdir(parents=True, exist_ok=True)
+        with MAC_CMD_QUEUE.open("a") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        return f"ERROR encolando comando: {e}"
+
+    # Si la Mac está offline, avisa a Polo para que la prenda
+    estado_mac = ""
+    try:
+        if MAC_HEARTBEAT_FILE.exists():
+            data = json.loads(MAC_HEARTBEAT_FILE.read_text())
+            ts = datetime.fromisoformat(data.get("ts", "").replace("Z", "+00:00"))
+            delta = int((datetime.now(timezone.utc) - ts).total_seconds())
+            if delta > 90:
+                estado_mac = (f"\n⚠️ Tu Mac parece offline (último heartbeat hace {delta//60} min). "
+                              f"El comando correrá cuando la prendas.")
+        else:
+            estado_mac = "\n⚠️ No tengo heartbeat de tu Mac — el comando correrá cuando se conecte."
+    except Exception:
+        pass
+
+    desc = MAC_ALLOWED_COMMANDS[comando]
+    return (f"📤 Comando `{comando}` encolado para la Mac (id `{cmd_id}`).\n"
+            f"  {desc}\n"
+            f"  La Mac lo recoge en ≤1 min. Revisa con `mac_comando_estado('{cmd_id}')`."
+            f"{estado_mac}")
+
+
+def _hetzner_estado(que: str = "") -> str:
+    """Lee estado/archivos REALES de Hetzner (whitelist). Fuente de verdad para que
+    Louis no invente salidas. NO ejecuta bash arbitrario; solo lee lo whitelisted."""
+    que = (que or "").strip().lower()
+    logs_dir = HOME_OC / "logs"
+    opciones = {
+        "cola_mac": "Últimas entradas de la cola de comandos a la Mac (pendientes).",
+        "resultados_mac": "Últimos resultados REALES de comandos ejecutados en la Mac.",
+        "heartbeat": "Último heartbeat de la Mac (online/batería/uptime).",
+        "log_telegram": "Últimas líneas del log del bridge de Telegram.",
+        "log_scheduler": "Últimas líneas del log del scheduler.",
+        "legal_conteo": "Conteo de publicaciones DOF/SJF en la BD (total y mayo 2026).",
+    }
+    if not que or que not in opciones:
+        listado = "\n".join(f"  • {k}: {v}" for k, v in opciones.items())
+        return f"hetzner_estado — indica `que` ∈ una de estas opciones:\n{listado}"
+
+    def _tail(path, n=25):
+        if not path.exists():
+            return f"(no existe {path})"
+        lines = path.read_text(errors="ignore").splitlines()
+        return "\n".join(lines[-n:]) or "(vacío)"
+
+    if que == "cola_mac":
+        return f"Cola de comandos a la Mac (real):\n```\n{_tail(MAC_CMD_QUEUE, 15)}\n```"
+    if que == "resultados_mac":
+        return f"Resultados reales de comandos de la Mac:\n```\n{_tail(MAC_CMD_RESULTS, 15)}\n```"
+    if que == "heartbeat":
+        return _mac_estado()
+    if que == "log_telegram":
+        return f"Log telegram-bridge (real):\n```\n{_tail(logs_dir / 'telegram-bridge.log', 30)}\n```"
+    if que == "log_scheduler":
+        return f"Log scheduler (real):\n```\n{_tail(logs_dir / 'scheduler.log', 30)}\n```"
+    if que == "legal_conteo":
+        out = []
+        for nombre, db, col, tabla in (
+            ("DOF", DOF_DB, "fecha", "notas"),
+            ("SJF", SJF_DB, "fecha", None),
+        ):
+            if not db.exists():
+                out.append(f"{nombre}: BD no encontrada en {db}")
+                continue
+            try:
+                conn = _legal_open(db)
+                if nombre == "DOF":
+                    total = conn.execute("SELECT COUNT(*) FROM notas").fetchone()[0]
+                    con_txt = conn.execute(
+                        "SELECT COUNT(*) FROM notas WHERE texto_plano IS NOT NULL").fetchone()[0]
+                    may = conn.execute(
+                        "SELECT COUNT(*) FROM notas WHERE fecha LIKE '2026-05%' "
+                        "AND texto_plano IS NOT NULL").fetchone()[0]
+                    ult = conn.execute("SELECT MAX(fecha) FROM notas").fetchone()[0]
+                    out.append(f"DOF: total={total}, con texto={con_txt}, "
+                               f"mayo-2026 con texto={may}, última fecha={ult}")
+                else:
+                    # SJF: detectar tabla principal
+                    tablas = [r[0] for r in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+                    out.append(f"SJF: tablas={tablas}")
+                conn.close()
+            except Exception as e:
+                out.append(f"{nombre}: error leyendo BD — {e}")
+        return "Conteo legal (real):\n" + "\n".join(out)
+    return f"opción no reconocida: {que}"
+
+
+def _mac_comando_estado(cmd_id: str = "") -> str:
+    """Lee el resultado de un comando ejecutado en la Mac (o lista los últimos)."""
+    # Construye un índice de resultados
+    resultados = {}
+    if MAC_CMD_RESULTS.exists():
+        for line in MAC_CMD_RESULTS.read_text().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+                resultados[r.get("id")] = r
+            except Exception:
+                pass
+    # Estado de la cola (pendientes)
+    pendientes = {}
+    if MAC_CMD_QUEUE.exists():
+        for line in MAC_CMD_QUEUE.read_text().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                e = json.loads(line)
+                pendientes[e.get("id")] = e
+            except Exception:
+                pass
+
+    if cmd_id:
+        if cmd_id in resultados:
+            r = resultados[cmd_id]
+            status = r.get("status", "?")
+            salida = (r.get("output", "") or "")[:1500]
+            icon = {"done": "✅", "error": "❌", "running": "⏳"}.get(status, "•")
+            return (f"{icon} Comando `{cmd_id}` ({r.get('comando','?')}): *{status}*\n"
+                    f"  Terminó: {r.get('finished_at','?')}\n"
+                    f"  Salida:\n```\n{salida}\n```")
+        if cmd_id in pendientes:
+            e = pendientes[cmd_id]
+            return (f"⏳ Comando `{cmd_id}` ({e.get('comando','?')}): *pending* — "
+                    f"la Mac aún no lo recoge (encolado {e.get('enqueued_at','?')}).")
+        return f"❓ No encuentro el comando `{cmd_id}` ni en cola ni en resultados."
+
+    # Sin id: resumen de los últimos
+    out = ["📋 *Comandos Mac recientes:*"]
+    last_results = sorted(resultados.values(), key=lambda x: x.get("finished_at", ""), reverse=True)[:5]
+    for r in last_results:
+        icon = {"done": "✅", "error": "❌", "running": "⏳"}.get(r.get("status"), "•")
+        out.append(f"  {icon} `{r.get('id')}` {r.get('comando')} → {r.get('status')} ({r.get('finished_at','?')[:16]})")
+    pend = [e for eid, e in pendientes.items() if eid not in resultados]
+    if pend:
+        out.append("\n⏳ *Pendientes (la Mac aún no recoge):*")
+        for e in pend[:5]:
+            out.append(f"  • `{e.get('id')}` {e.get('comando')} (encolado {e.get('enqueued_at','?')[:16]})")
+    if len(out) == 1:
+        return "(no hay comandos Mac registrados todavía)"
+    return "\n".join(out)
 
 
 # ===== Browser headless (Playwright via subprocess) =====
@@ -3305,6 +6726,13 @@ def _kawiil_central_pipeline(limit_por_etapa: int = 5) -> str:
         return f"❌ Pipeline query falló: {e}"
 
 
+def _strip_accents(s: str) -> str:
+    """Normaliza para comparar: minúsculas y SIN acentos (Magnético == Magnetico)."""
+    import unicodedata
+    return "".join(ch for ch in unicodedata.normalize("NFD", s or "")
+                   if unicodedata.category(ch) != "Mn").lower().strip()
+
+
 def _kawiil_central_clientes(query: str = "", limit: int = 30) -> str:
     conn, err = _kawiil_central_pg()
     if err:
@@ -3317,28 +6745,26 @@ def _kawiil_central_clientes(query: str = "", limit: int = 30) -> str:
     cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=%s", (tabla,))
     cols = {r[0] for r in cur.fetchall()}
     name_col = next((c for c in ("name", "nombre", "company", "razon_social") if c in cols), "id")
-    where = ""
-    params = []
-    if query:
-        where = f" WHERE {name_col} ILIKE %s"
-        params.append(f"%{query}%")
-    sql = f"SELECT id, {name_col} FROM public.{tabla}{where} ORDER BY {name_col} LIMIT %s"
-    params.append(limit)
     try:
-        cur.execute(sql, params)
-        rows = cur.fetchall()
+        # Traemos TODOS y filtramos en Python sin acentos (ILIKE de Postgres NO ignora
+        # acentos → 'Magnético' no encontraba 'Magnetico'). Son ~100 clientes, es barato.
+        cur.execute(f"SELECT id, {name_col} FROM public.{tabla} ORDER BY {name_col}")
+        allrows = cur.fetchall()
+        if query:
+            q = _strip_accents(query)
+            rows = [r for r in allrows if q in _strip_accents(r[1] or "")][:limit]
+        else:
+            rows = allrows[:limit]
         if not rows:
             conn.close()
             return f"📭 0 clientes para '{query}'"
         out = [f"👥 *{len(rows)} clientes*" + (f" para '{query}'" if query else "") + ":"]
-        # Count tareas/proyectos por cliente
         tabla_p = _kawiil_central_find_table(conn, ("projects", "proyectos"))
-        tabla_t = _kawiil_central_find_table(conn, ("tasks", "tareas"))
         for cid, cname in rows:
             line = f"  • `{str(cid)[:8]}…` *{cname}*"
             try:
                 if tabla_p:
-                    cur.execute(f"SELECT count(*) FROM public.{tabla_p} WHERE client_id::text = %s OR cliente_id::text = %s", (str(cid), str(cid)))
+                    cur.execute(f"SELECT count(*) FROM public.{tabla_p} WHERE client_id::text = %s", (str(cid),))
                     n = cur.fetchone()[0]
                     if n > 0: line += f"  📁{n}"
             except Exception:
@@ -3352,7 +6778,7 @@ def _kawiil_central_clientes(query: str = "", limit: int = 30) -> str:
         return f"❌ Query falló: {e}"
 
 
-def _kawiil_central_proyectos(estado: str = "", limit: int = 20) -> str:
+def _kawiil_central_proyectos(estado: str = "", limit: int = 20, cliente: str = "") -> str:
     conn, err = _kawiil_central_pg()
     if err:
         return err
@@ -3365,6 +6791,28 @@ def _kawiil_central_proyectos(estado: str = "", limit: int = 20) -> str:
     cols = {r[0] for r in cur.fetchall()}
     where = []
     params = []
+    cliente_label = ""
+    # Filtro por CLIENTE (id uuid o nombre sin acentos). Determinístico: resuelve el
+    # nombre contra la tabla de clientes y filtra por client_id. Evita que Louis
+    # "adivine" entre los 197 proyectos y se contradiga (no tiene → sí → no).
+    if cliente and "client_id" in cols:
+        ids = []
+        if cliente.count("-") >= 4 and len(cliente) >= 32:
+            ids = [cliente]
+            cliente_label = cliente[:8] + "…"
+        else:
+            ct = _kawiil_central_find_table(conn, ("clients", "client", "clientes"))
+            if ct:
+                cur.execute(f"SELECT id, name FROM public.{ct}")
+                q = _strip_accents(cliente)
+                matches = [(cid, cn) for cid, cn in cur.fetchall() if q in _strip_accents(cn or "")]
+                ids = [str(cid) for cid, _ in matches]
+                cliente_label = ", ".join(cn for _, cn in matches[:3]) or cliente
+        if not ids:
+            conn.close()
+            return f"📭 No encontré al cliente '{cliente}' para filtrar proyectos."
+        where.append("client_id::text IN (" + ",".join(["%s"] * len(ids)) + ")")
+        params.extend(ids)
     if estado and ("status" in cols or "state" in cols or "estado" in cols):
         col = "status" if "status" in cols else ("state" if "state" in cols else "estado")
         where.append(f"{col} = %s")
@@ -3385,9 +6833,11 @@ def _kawiil_central_proyectos(estado: str = "", limit: int = 20) -> str:
         except Exception: pass
         return f"❌ Query falló: {e}\n  SQL: {sql}"
     if not rows:
-        return f"📭 0 proyectos en `{tabla}`."
-    out = [f"📁 *{len(rows)} proyectos* (de `{tabla}`):"]
-    priority_cols = ["id", "name", "nombre", "title", "status", "estado", "owner_id", "created_at"]
+        suf = f" del cliente '{cliente_label or cliente}'" if cliente else ""
+        return f"📭 0 proyectos{suf}."
+    titulo = f"📁 *{len(rows)} proyectos*" + (f" de *{cliente_label}*" if cliente_label else f" (de `{tabla}`)") + ":"
+    out = [titulo]
+    priority_cols = ["id", "name", "nombre", "title", "area", "status", "estado", "created_at"]
     show_cols = [c for c in priority_cols if c in colnames] or colnames[:5]
     for r in rows:
         row_dict = dict(zip(colnames, r))
@@ -3400,9 +6850,113 @@ def _kawiil_central_proyectos(estado: str = "", limit: int = 20) -> str:
     return "\n".join(out)
 
 
+_KC_AREAS_VALIDAS = {"legal", "contabilidad", "softlanding", "juicios", "gestoria",
+                     "cumplimiento", "representacion", "constitucion_nacional"}
+
+
+def _kawiil_central_resolver_usuario(conn, nombre: str) -> str | None:
+    """Resuelve un nombre/email a auth user_id para asignar tareas.
+    tasks.assigned_to → auth.users; profiles.user_id ES ese id. Busca en profiles por
+    full_name/email SIN acentos. Devuelve profiles.user_id o None."""
+    if not nombre:
+        return None
+    # ¿Ya es un uuid? úsalo tal cual.
+    if nombre.count("-") >= 4 and len(nombre) >= 32:
+        return nombre
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT user_id, full_name, email FROM public.profiles WHERE user_id IS NOT NULL AND is_active IS NOT FALSE")
+        q = _strip_accents(nombre)
+        for uid, fn, em in cur.fetchall():
+            if uid and (q in _strip_accents(fn or "") or q in _strip_accents(em or "")):
+                return str(uid)
+    except Exception:
+        pass
+    return None
+
+
+def _kawiil_central_asignar_tarea(tarea_id: str, persona: str) -> str:
+    """Asigna una o varias tareas EXISTENTES a una persona (por nombre/email).
+    Resuelve persona→profiles.user_id (assigned_to es FK a auth.users). tarea_id puede
+    ser uno o varios ids separados por coma."""
+    if not tarea_id or not persona:
+        return "❌ Necesito tarea_id y persona."
+    conn, err = _kawiil_central_pg()
+    if err:
+        return err
+    uid = _kawiil_central_resolver_usuario(conn, persona)
+    if not uid:
+        conn.close()
+        return f"❌ No encontré a '{persona}' en profiles. Dímelo como aparece en Kawiil Central (nombre o email)."
+    ids = [t.strip() for t in re.split(r"[,\s]+", tarea_id) if t.strip()]
+    try:
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("UPDATE public.tasks SET assigned_to = %s WHERE id IN ("
+                    + ",".join(["%s"] * len(ids)) + ")", [uid] + ids)
+        n = cur.rowcount
+        _kawiil_central_audit(f"asignar_tarea a {persona}", f"UPDATE tasks assigned_to={uid} ids={ids}")
+        conn.close()
+        if n == 0:
+            return f"❌ No se actualizó nada (¿ids correctos?): {ids}"
+        return f"✅ {n} tarea(s) asignada(s) a *{persona}*."
+    except Exception as e:
+        try: conn.close()
+        except Exception: pass
+        return f"❌ No pude asignar (error real): {e}"
+
+
+def _kawiil_central_crear_proyecto(name: str, client_id: str = "", area: str = "",
+                                   descripcion: str = "", service_tags: str = "") -> str:
+    """Crea un proyecto validando el enum `area` para no fallar con errores crípticos."""
+    if not name:
+        return "❌ Falta el nombre del proyecto."
+    area = (area or "").strip().lower()
+    if area and area not in _KC_AREAS_VALIDAS:
+        return (f"❌ area inválida: '{area}'. Usa una de: {', '.join(sorted(_KC_AREAS_VALIDAS))} "
+                f"(o déjala vacía). Para backoffice/control interno usa 'gestoria' o déjala vacía "
+                f"y describe el servicio en el nombre/service_tags.")
+    conn, err = _kawiil_central_pg()
+    if err:
+        return err
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT id FROM public.organizations LIMIT 1")
+        row = cur.fetchone()
+        if not row:
+            conn.close()
+            return "❌ No hay organización en la BD."
+        data = {"organization_id": row[0], "name": name, "status": "activo"}
+        if client_id:
+            data["client_id"] = client_id
+        if area:
+            data["area"] = area
+        if descripcion:
+            data["description"] = descripcion
+        tags = [t.strip() for t in re.split(r"[,;]", service_tags) if t.strip()] if service_tags else None
+        if tags:
+            data["service_tags"] = tags
+        cols_sql = ", ".join(data.keys())
+        placeholders = ", ".join(["%s"] * len(data))
+        sql = f"INSERT INTO public.projects ({cols_sql}) VALUES ({placeholders}) RETURNING id"
+        conn.autocommit = True
+        cur.execute(sql, list(data.values()))
+        new_id = cur.fetchone()[0]
+        _kawiil_central_audit(f"crear_proyecto: {name}", sql + " :: " + json.dumps(data, default=str))
+        conn.close()
+        return f"✅ Proyecto creado: *{name}* (id `{str(new_id)[:8]}…`)" + (f" · area={area}" if area else " · sin area")
+    except Exception as e:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return f"❌ No se pudo crear el proyecto: {e}"
+
+
 def _kawiil_central_crear_tarea(titulo: str, proyecto_id: str, descripcion: str = "",
                                  asignado_a: str = "", prioridad: str = "",
-                                 deadline: str = "", campos_extra: dict = None) -> str:
+                                 deadline: str = "", campos_extra: dict = None,
+                                 parent_task_id: str = "") -> str:
     conn, err = _kawiil_central_pg()
     if err:
         return err
@@ -3426,9 +6980,19 @@ def _kawiil_central_crear_tarea(titulo: str, proyecto_id: str, descripcion: str 
             if c in cols:
                 data[c] = descripcion; break
     if asignado_a:
-        for c in ("assignee_id", "assigned_to", "asignado_a", "owner_id", "responsible"):
-            if c in cols:
-                data[c] = asignado_a; break
+        # Resuelve nombre/email → user_id (assigned_to apunta a auth.users vía
+        # profiles.user_id). Si no resuelve, se omite para no romper el FK.
+        uid = _kawiil_central_resolver_usuario(conn, asignado_a)
+        if uid:
+            for c in ("assigned_to", "assignee_id", "asignado_a", "owner_id", "responsible"):
+                if c in cols:
+                    data[c] = uid; break
+    # Sub-tarea real: parent_task_id + is_subtask=true (convención de Kawiil Central).
+    if parent_task_id:
+        if "parent_task_id" in cols:
+            data["parent_task_id"] = parent_task_id
+        if "is_subtask" in cols:
+            data["is_subtask"] = True
     if prioridad:
         for c in ("priority", "prioridad"):
             if c in cols:
@@ -3561,6 +7125,109 @@ def _kawiil_central_avance(tarea_id: str, texto: str, porcentaje: int = None) ->
     return "❌ No encontré tabla de comentarios/updates ni campo notes/history en tareas. Crea la estructura en kawiil-central primero, o usa kawiil_central_query con SQL específico."
 
 
+def _kawiil_central_notificar(titulo: str, cuerpo: str = "", para: str = "",
+                              tipo: str = "ai_update", entity_type: str = "",
+                              entity_id: str = "", registrar_actividad: bool = True) -> str:
+    """Crea notificaciones en Kawiil Central (una fila por usuario en `notifications`)
+    para que al equipo le aparezca el aviso en el app. También deja rastro en `activity_log`.
+    `para`: nombre/email/uuid (varios separados por coma) o 'equipo'/'todos' para todos los
+    usuarios activos. Vacío = solo Polo (no spamea al equipo)."""
+    if not titulo:
+        return "❌ Falta el título de la notificación."
+    conn, err = _kawiil_central_pg()
+    if err:
+        return err
+    try:
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM public.organizations LIMIT 1")
+        row = cur.fetchone()
+        if not row:
+            conn.close()
+            return "❌ No hay organización en la BD."
+        org_id = row[0]
+
+        def _todos_activos():
+            cur.execute("SELECT user_id FROM public.profiles WHERE user_id IS NOT NULL AND is_active IS NOT FALSE")
+            return [str(r[0]) for r in cur.fetchall()]
+
+        destinatarios: list[str] = []
+        no_resueltos: list[str] = []
+        para_norm = (para or "").strip().lower()
+        EQUIPO = ("equipo", "todos", "team", "all", "todo el equipo")
+        if not para_norm:
+            uid = _kawiil_central_resolver_usuario(conn, "polo") or _kawiil_central_resolver_usuario(conn, "leopoldo")
+            if uid:
+                destinatarios = [uid]
+        elif para_norm in EQUIPO:
+            destinatarios = _todos_activos()
+        else:
+            for tok in re.split(r"[,;]", para):
+                tok = tok.strip()
+                if not tok:
+                    continue
+                if tok.lower() in EQUIPO:
+                    destinatarios.extend(_todos_activos())
+                    continue
+                uid = _kawiil_central_resolver_usuario(conn, tok)
+                if uid:
+                    destinatarios.append(uid)
+                else:
+                    no_resueltos.append(tok)
+        destinatarios = list(dict.fromkeys(destinatarios))  # dedup, preserva orden
+        if not destinatarios:
+            conn.close()
+            extra = f" (no resolví: {', '.join(no_resueltos)})" if no_resueltos else ""
+            return (f"❌ No resolví destinatarios para '{para}'{extra}. Usa el nombre/email como "
+                    f"aparece en Kawiil Central, o 'equipo' para todos.")
+
+        tipo = (tipo or "ai_update").strip()
+        all_cols = ["user_id", "type", "title", "organization_id"]
+        tail_cols, tail_vals = [], []
+        if cuerpo:
+            tail_cols.append("body"); tail_vals.append(cuerpo)
+        if entity_type:
+            tail_cols.append("entity_type"); tail_vals.append(entity_type)
+        if entity_id:
+            tail_cols.append("entity_id"); tail_vals.append(entity_id)
+        all_cols += tail_cols
+        ph = ", ".join(["%s"] * len(all_cols))
+        n = 0
+        for uid in destinatarios:
+            cur.execute(f"INSERT INTO public.notifications ({', '.join(all_cols)}) VALUES ({ph})",
+                        [uid, tipo, titulo, org_id] + tail_vals)
+            n += 1
+
+        if registrar_actividad:
+            det = {"source": "louis", "title": titulo}
+            if cuerpo:
+                det["body"] = cuerpo[:500]
+            try:
+                if entity_id:
+                    cur.execute(
+                        "INSERT INTO public.activity_log (organization_id, entity_type, entity_id, action, details) "
+                        "VALUES (%s, %s, %s, %s, %s)",
+                        (org_id, entity_type or "ai_update", entity_id, "louis_notificacion", json.dumps(det)))
+                else:
+                    cur.execute(
+                        "INSERT INTO public.activity_log (organization_id, entity_type, entity_id, action, details) "
+                        "VALUES (%s, %s, gen_random_uuid(), %s, %s)",
+                        (org_id, entity_type or "ai_update", "louis_notificacion", json.dumps(det)))
+            except Exception:
+                log.exception("activity_log insert falló (no crítico)")
+
+        _kawiil_central_audit(f"notificar '{titulo}' → {n} user(s)", f"type={tipo} para={para or 'polo'}")
+        conn.close()
+        aviso = f"✅ Notificación enviada a {n} persona(s) en Kawiil Central: *{titulo}*"
+        if no_resueltos:
+            aviso += f"\n⚠️ No resolví (no notificados): {', '.join(no_resueltos)}"
+        return aviso
+    except Exception as e:
+        try: conn.close()
+        except Exception: pass
+        return f"❌ No pude crear la notificación (error real): {e}"
+
+
 # ===== Recordatorios (scheduler queue) =====
 import uuid as _uuid
 
@@ -3595,9 +7262,21 @@ def _write_queue(items: list):
     tmp.replace(QUEUE_FILE)
 
 
-def _agendar_recordatorio(mensaje: str, fecha_hora: str, canal: str = "telegram",
-                          modo: str = "enrich", recurrencia: str = None) -> str:
-    """Agrega un recordatorio al queue del scheduler."""
+def _agendar_recordatorio(mensaje: str, fecha_hora: str = "", canal: str = "telegram",
+                          modo: str = "raw", recurrencia: str = None, en_minutos: int = 0) -> str:
+    """Agrega un recordatorio al queue del scheduler.
+    Si se pasa en_minutos>0, el fire_at se calcula DEL LADO DEL SERVIDOR (reloj real),
+    así un recordatorio relativo ('en 12 min') nunca depende de que el modelo tenga
+    bien la hora. Si no, usa fecha_hora (ISO 8601)."""
+    mensaje = _normalizar_clientes(mensaje)  # corrige nombres mal transcritos por voz
+    try:
+        if en_minutos and int(en_minutos) > 0:
+            dt = datetime.now(get_active_tz()) + timedelta(minutes=int(en_minutos))
+            fecha_hora = dt.isoformat()
+    except Exception:
+        pass
+    if not fecha_hora:
+        return "ERROR: da 'en_minutos' (relativo, recomendado) o 'fecha_hora' ISO 8601."
     # Valida fecha
     try:
         dt = datetime.fromisoformat(fecha_hora)
@@ -3607,6 +7286,12 @@ def _agendar_recordatorio(mensaje: str, fecha_hora: str, canal: str = "telegram"
         # Asume CDMX
         dt = dt.replace(tzinfo=TZ_CDMX)
         fecha_hora = dt.isoformat()
+    # Protección: si el fire_at quedó en el PASADO (típico cuando el modelo calculó mal
+    # la hora), avisa en vez de encolar algo que se dispara de inmediato.
+    ahora = datetime.now(dt.tzinfo or TZ_CDMX)
+    if dt < ahora - timedelta(minutes=1):
+        return (f"ERROR: la hora {dt.strftime('%Y-%m-%d %H:%M')} ya pasó (ahora son las "
+                f"{ahora.strftime('%H:%M')}). Usa 'en_minutos' para tiempo relativo y lo calculo yo.")
     entry = {
         "id": str(_uuid.uuid4())[:8],
         "fire_at": fecha_hora,
@@ -3648,10 +7333,292 @@ def _cancelar_recordatorio(rid: str) -> str:
     return f"OK recordatorio '{rid}' cancelado."
 
 
+def _editar_recordatorio(rid: str, nuevo_texto: str = "", nueva_hora: str = "") -> str:
+    """Edita un recordatorio YA agendado (texto y/o hora) para que una corrección
+    se propague a la cola — no solo a la memoria."""
+    queue = _read_queue()
+    found = next((e for e in queue if e.get("id") == rid), None)
+    if not found:
+        return f"ERROR: no encontré recordatorio con id '{rid}'. Usa listar_recordatorios."
+    cambios = []
+    if nuevo_texto:
+        found["message"] = _normalizar_clientes(nuevo_texto)
+        cambios.append("texto")
+    if nueva_hora:
+        try:
+            dt = datetime.fromisoformat(nueva_hora)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=TZ_CDMX)
+            found["fire_at"] = dt.isoformat()
+            cambios.append("hora")
+        except Exception as e:
+            return f"ERROR: nueva_hora inválida '{nueva_hora}' ({e}). Usa ISO 8601 (ej '2026-06-11T10:00:00-06:00')."
+    if not cambios:
+        return "ERROR: dime qué cambiar (nuevo_texto y/o nueva_hora)."
+    queue.sort(key=lambda x: x.get("fire_at", ""))
+    _write_queue(queue)
+    return (f"OK recordatorio '{rid}' actualizado ({', '.join(cambios)}).\n"
+            f"Ahora: {found.get('fire_at','?')} → {found.get('message','')[:120]}")
+
+
+# ===== Alias de nombres de clientes (anti-error de transcripción de voz) =====
+CLIENT_ALIASES_FILE = STATE_DIR / "client_aliases.json"
+# Lo que la transcripción de voz suele equivocar → nombre correcto (canónico).
+# OJO: solo correcciones de transcripción INEQUÍVOCAS. NO metas aquí nombres que
+# sean subcadena de una razón social registrada (ej. NO "los pérez y amigos"→"los
+# pérez", ni "juoshui"→"joshui": "Juoshui Agua Viva Mex" es el nombre LEGAL). Para
+# esos casos usa la mención casual, no toques el string legal.
+_CLIENT_ALIASES_SEED = {
+    "vez motos": "Best Motos",
+    "ves motos": "Best Motos",
+    "best moto": "Best Motos",
+}
+
+
+def _load_client_aliases() -> dict:
+    aliases = dict(_CLIENT_ALIASES_SEED)
+    try:
+        if CLIENT_ALIASES_FILE.exists():
+            extra = json.loads(CLIENT_ALIASES_FILE.read_text())
+            if isinstance(extra, dict):
+                aliases.update({str(k).lower(): str(v) for k, v in extra.items()})
+    except Exception:
+        log.warning("no pude leer client_aliases.json", exc_info=True)
+    return aliases
+
+
+def _normalizar_clientes(texto: str) -> str:
+    """Corrige nombres de cliente mal transcritos usando el mapa de alias.
+    Insensible a may/min, respeta límites de palabra, deja el nombre canónico."""
+    if not texto:
+        return texto
+    out = texto
+    for mal, bien in _load_client_aliases().items():
+        if mal:
+            out = re.sub(rf"(?i)\b{re.escape(mal)}\b", bien, out)
+    return out
+
+
+def _corregir_nombre(mal: str, bien: str) -> str:
+    """Agrega/actualiza una corrección de nombre en el mapa persistente."""
+    mal = (mal or "").strip().lower()
+    bien = (bien or "").strip()
+    if not mal or not bien:
+        return "ERROR: dame el nombre como se transcribe MAL y el CORRECTO."
+    try:
+        current = {}
+        if CLIENT_ALIASES_FILE.exists():
+            current = json.loads(CLIENT_ALIASES_FILE.read_text()) or {}
+        current[mal] = bien
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        CLIENT_ALIASES_FILE.write_text(json.dumps(current, ensure_ascii=False, indent=2))
+        return f"OK: de ahora en adelante '{mal}' → '{bien}'. (mapa de alias actualizado)"
+    except Exception as e:
+        return f"ERROR guardando alias: {e}"
+
+
+# ===== Auto-memoria nocturna (destilación del día) =====
+# Resuelve el hueco de diseño: la charla normal corre en DeepSeek/Ollama (sin tools),
+# así que nada se guardaba a memoria de largo plazo. Esto corre 1×/día desde el
+# scheduler, lee la conversación del día, destila hechos durables con Haiku y los
+# agrega a PEOPLE/CLIENTES/AGENDA/IMPORTANT (con dedup y alias de clientes aplicado).
+MEMORY_DISTILL_STATE = STATE_DIR / "last-memory-distill.json"
+_DISTILL_TARGETS = {
+    "PEOPLE": "PEOPLE.md",
+    "CLIENTES": "CLIENTES.md",
+    "AGENDA": "AGENDA.md",
+    "IMPORTANT": "IMPORTANT.md",
+}
+
+_DISTILL_SYSTEM = (
+    "Eres el módulo de memoria de Louis, asistente ejecutivo de Polo (Kawiil, despacho "
+    "legal/tech en México). Te paso la conversación de HOY entre Polo y Louis. Extrae SOLO "
+    "hechos DURABLES y ESPECÍFICOS que valga la pena recordar a largo plazo y clasifícalos. "
+    "Devuelve EXCLUSIVAMENTE un JSON válido con estas llaves (arrays de strings, una frase "
+    'corta por hecho; usa [] si no hay nada):\n'
+    '{"PEOPLE": [], "CLIENTES": [], "AGENDA": [], "IMPORTANT": []}\n\n'
+    "Reglas:\n"
+    "- PEOPLE: datos durables de personas (rol, empresa, relación, junta recurrente, preferencias).\n"
+    "- CLIENTES: datos de clientes/prospectos (razón social, RFC, contacto, estatus, servicio).\n"
+    "- AGENDA: pendientes/tareas/compromisos por hacer DE POLO (no tareas internas de Louis).\n"
+    "- IMPORTANT: decisiones, hechos clave o instrucciones permanentes de Polo.\n"
+    "- Cada hecho debe ser ESPECÍFICO: con nombre propio, empresa, fecha, monto o dato concreto. "
+    "Si es vago o genérico, OMÍTELO.\n"
+    "- NO guardes hechos sobre Louis mismo, el sistema, el bot, la memoria, los archivos .md, ni "
+    "tareas de mantenimiento ('actualizar AGENDA', 'consolidar memoria', 'Louis es asistente…'). "
+    "Solo el MUNDO de Polo: personas, clientes, casos, compromisos, decisiones.\n"
+    "- NO incluyas charla trivial, saludos, briefings, ni cosas efímeras (clima, '¿qué hay hoy?').\n"
+    "- NO inventes: solo lo explícito en la conversación. Usa nombres correctos y completos.\n"
+    "- Ante la duda, NO lo guardes. Mejor pocos hechos sólidos que muchos genéricos.\n"
+    "- Si no hay NADA durable y específico, devuelve todos los arrays vacíos.\n"
+    "Responde SOLO el JSON, sin explicación ni markdown."
+)
+
+
+def _distill_already_ran_today(today: str) -> bool:
+    try:
+        if MEMORY_DISTILL_STATE.exists():
+            return json.loads(MEMORY_DISTILL_STATE.read_text()).get("date") == today
+    except Exception:
+        pass
+    return False
+
+
+def _distill_save_state(today: str, resumen: str):
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        MEMORY_DISTILL_STATE.write_text(json.dumps(
+            {"date": today, "ts": datetime.now(TZ_CDMX).isoformat(), "resumen": resumen},
+            ensure_ascii=False, indent=2))
+    except Exception:
+        log.warning("no pude guardar last-memory-distill.json", exc_info=True)
+
+
+def _distill_collect_today(today: str, max_chars: int = 18000) -> str:
+    """Junta los turnos de HOY (telegram+slack) en un transcript para destilar."""
+    turns = []
+    for fname in ("telegram-history.jsonl", "slack-history.jsonl"):
+        p = SPACE / fname
+        if not p.exists():
+            continue
+        for line in p.read_text().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            if str(d.get("ts", ""))[:10] != today:
+                continue
+            content = (d.get("content") or "").strip()
+            if content:
+                quien = "Polo" if d.get("role") == "user" else "Louis"
+                turns.append((str(d.get("ts", "")), f"{quien}: {content}"))
+    turns.sort(key=lambda t: t[0])
+    txt = "\n".join(t[1] for t in turns)
+    return txt[-max_chars:] if len(txt) > max_chars else txt
+
+
+def _distill_parse_json(raw: str) -> dict:
+    if not raw:
+        return {}
+    m = re.search(r"\{.*\}", raw, re.DOTALL)
+    if not m:
+        return {}
+    try:
+        d = json.loads(m.group(0))
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _distill_norm(s: str) -> str:
+    """Normaliza para dedup: quita marca de fecha, baja a minúsculas, deja alfanumérico."""
+    s = re.sub(r"\[(auto |)\d{4}-\d{2}-\d{2}[^\]]*\]", "", s)
+    return re.sub(r"[^a-z0-9áéíóúñ ]", "", s.lower()).strip()
+
+
+def _distill_append(fname: str, line: str) -> bool:
+    """Agrega una línea a un .md con dedup contra TODO el archivo. True si escribió."""
+    line = _normalizar_clientes((line or "").strip())
+    nuevo = _distill_norm(line)
+    if len(nuevo) < 8:
+        return False
+    path = SPACE / fname
+    if path.exists():
+        for l in path.read_text().splitlines():
+            ln = _distill_norm(l)
+            if ln and (nuevo == ln or nuevo in ln or ln in nuevo):
+                return False
+    fecha = datetime.now(TZ_CDMX).strftime("%Y-%m-%d")
+    entry = line
+    if fname == "AGENDA.md" and not entry.lstrip().startswith(("- [", "-[", "*", "-")):
+        entry = f"- [ ] {entry}"
+    entry = f"{entry}  · [auto {fecha}]"
+    with path.open("a") as f:
+        f.write("\n" + entry + "\n")
+    return True
+
+
+def run_memory_distillation(force: bool = False) -> str:
+    """Destila la conversación del día a memoria de largo plazo. Idempotente por fecha.
+    Pensado para correr 1×/día desde el scheduler."""
+    today = datetime.now(TZ_CDMX).strftime("%Y-%m-%d")
+    if not force and _distill_already_ran_today(today):
+        return "(auto-memoria ya corrió hoy)"
+    transcript = _distill_collect_today(today)
+    if not transcript or "Polo:" not in transcript or len(transcript) < 120:
+        _distill_save_state(today, "sin conversación que destilar")
+        return "(auto-memoria: nada que destilar hoy)"
+    try:
+        api_key = load_anthropic_key()
+    except Exception as e:
+        log.warning(f"auto-memoria sin API key: {e}")
+        return f"(auto-memoria: sin API key — {e})"
+    try:
+        raw = call_haiku(api_key, _DISTILL_SYSTEM, [], "Conversación de hoy:\n\n" + transcript)
+    except Exception as e:
+        log.warning(f"auto-memoria Haiku falló: {e}")
+        return f"(auto-memoria: Haiku falló — {e})"
+    data = _distill_parse_json(raw)
+    if not data:
+        _distill_save_state(today, "Haiku no devolvió JSON")
+        return "(auto-memoria: no obtuve JSON válido del modelo)"
+    escritos = {}
+    for cat, fname in _DISTILL_TARGETS.items():
+        items = data.get(cat) or []
+        if not isinstance(items, list):
+            continue
+        n = sum(1 for it in items if isinstance(it, str) and _distill_append(fname, it))
+        if n:
+            escritos[fname] = n
+    resumen = ", ".join(f"{f}:{n}" for f, n in escritos.items()) or "0 hechos nuevos"
+    _distill_save_state(today, resumen)
+    log.info(f"auto-memoria destilada → {resumen}")
+    return f"OK auto-memoria: {resumen}"
+
+
 # ===== Sub-agentes =====
 import re as _re
 
 _AGENT_NAME_RE = _re.compile(r"^[a-z][a-z0-9-]{1,40}$")
+
+
+# Stack de agentes activos en el hilo actual — permite saber qué agente invocó a
+# cuál (para dibujar las conexiones en el dashboard). Es best-effort, no thread-safe
+# estricto, suficiente para visualización.
+_AGENT_STACK: list = []
+
+
+def log_agent_activity(evento: str, agente: str, modelo: str = "", detalle: str = "") -> None:
+    """Anexa un evento a la bitácora de actividad de agentes (best-effort, nunca rompe).
+
+    evento: 'start' | 'end' | 'error' | 'created'
+    El dashboard del gateway lee este archivo para animar los círculos.
+    """
+    try:
+        parent = _AGENT_STACK[-1] if _AGENT_STACK else None
+        rec = {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "evento": evento,
+            "agente": agente,
+            "modelo": modelo,
+            "parent": parent,
+            "detalle": (detalle or "")[:200],
+        }
+        AGENT_ACTIVITY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with AGENT_ACTIVITY_FILE.open("a") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        # Rotación simple: si pasa de ~5000 líneas, deja las últimas 2000.
+        try:
+            if AGENT_ACTIVITY_FILE.stat().st_size > 2_000_000:
+                lines = AGENT_ACTIVITY_FILE.read_text().splitlines()[-2000:]
+                AGENT_ACTIVITY_FILE.write_text("\n".join(lines) + "\n")
+        except Exception:
+            pass
+    except Exception:
+        pass  # nunca dejar que la bitácora rompa la ejecución del agente
 
 
 def _crear_agente(nombre: str, especialidad: str, prompt: str, modelo: str = "claude-sonnet-4-6") -> str:
@@ -3672,6 +7639,7 @@ def _crear_agente(nombre: str, especialidad: str, prompt: str, modelo: str = "cl
         f"{prompt}\n"
     )
     path.write_text(body)
+    log_agent_activity("created", nombre, modelo, especialidad)
     return f"OK: agente '{nombre}' creado en {path.name} (especialidad: {especialidad}, modelo: {modelo})"
 
 
@@ -3718,22 +7686,129 @@ def _invocar_agente_via_ollama(nombre: str, sub_system: str, user_msg: str) -> s
     return f"[{nombre} respondió vía Ollama]\n\n{resp}"
 
 
+def _invocar_agente_via_deepseek(nombre: str, sub_system: str, user_msg: str, modelo: str) -> str | None:
+    resp = call_deepseek(sub_system, [], user_msg, model=modelo)
+    if not resp:
+        return None
+    return f"[{nombre} respondió vía DeepSeek]\n\n{resp}"
+
+
+_DOC_THRESHOLD = 2500  # chars above which agent output is sent as a file
+
+
+def _md_to_html(titulo: str, agente: str, md: str) -> bytes:
+    """Convierte markdown → HTML interactivo. El motor vive en louis_html.py
+    (módulo ÚNICO compartido con los boletines DOF/SJF): mejorar el look ahí
+    mejora TODOS los documentos a la vez."""
+    import louis_html as _LH
+    return _LH.md_to_html(titulo, agente, md)
+
+
+def _generar_html(titulo: str, contenido: str, agente: str = "Louis") -> bytes | None:
+    """Genera HTML interactivo (colapsables + buscador) desde markdown. Sin libs externas."""
+    try:
+        return _md_to_html(titulo, agente, contenido)
+    except Exception as e:
+        log.warning(f"_generar_html falló: {e}")
+        return None
+
+
 def _invocar_agente(
     nombre: str,
     tarea: str,
     contexto: str = "",
     modelo_override: str | None = None,
+    enviar_doc: bool = True,
 ) -> str:
-    """Ejecuta una sub-llamada al modelo del agente con su prompt + tarea."""
+    """Wrapper con bitácora de actividad (start/end) para el dashboard visual.
+
+    Empuja el agente al stack para que las invocaciones anidadas (un agente que
+    llama a otro vía consejo_experto_legal) queden registradas con su `parent`.
+    Si el output supera _DOC_THRESHOLD chars, lo envía como archivo HTML y retorna
+    un resumen corto para que Louis no lo vomite como texto plano en Telegram.
+    """
     if not _AGENT_NAME_RE.match(nombre):
         return f"ERROR: nombre '{nombre}' inválido."
     path = AGENTS_DIR / f"{nombre}.md"
     if not path.exists():
         return f"ERROR: agente '{nombre}' no existe. Usa `listar_agentes` para ver disponibles."
     meta = _parse_agent_file(path)
+    modelo_log = (modelo_override or meta.get("modelo", "claude-sonnet-4-6")).strip()
+    log_agent_activity("start", nombre, modelo_log, tarea)
+    _AGENT_STACK.append(nombre)
+    try:
+        out = _invocar_agente_impl(nombre, tarea, contexto, modelo_override, meta)
+        evento = "error" if out.startswith("ERROR") else "end"
+        log_agent_activity(evento, nombre, modelo_log, out[:200])
+
+        # Si el informe es largo, generar PDF real y encolarlo
+        raw = out
+        if raw.startswith(f"[{nombre} respondió]"):
+            raw = raw[len(f"[{nombre} respondió]"):].strip()
+        # Solo el TOP-LEVEL manda documento. Las invocaciones internas (pasos de un
+        # flujo multi-agente, p.ej. consejo_experto_legal) NO mandan doc por agente:
+        # devuelven texto para que el flujo consolide en UN solo entregable.
+        if enviar_doc and len(raw) >= _DOC_THRESHOLD and not out.startswith("ERROR"):
+            titulo = tarea[:80].strip().rstrip(".?!")
+            import datetime as _dt_ag
+            safe_nombre = nombre.replace("/", "_")
+            fname_base = f"{safe_nombre}_{_dt_ag.datetime.now().strftime('%Y%m%d_%H%M')}"
+            # Reportes de agentes → HTML interactivo (motor único louis_html: logo
+            # Kawiil, secciones colapsables, buscador y chat). Regla de Polo: HTML por defecto.
+            html_bytes = _md_to_html(titulo, nombre, raw)
+            _queue_file(html_bytes, f"{fname_base}.html",
+                        f"🌐 {titulo[:60]} — HTML interactivo (ábrelo en el navegador)")
+            _guardar_generado(html_bytes, f"{fname_base}.html")
+            ext_msg = "HTML interactivo"
+            preview = raw[:600].strip()
+            return (
+                f"[{nombre} respondió — documento completo enviado como {ext_msg}]\n\n"
+                f"**Inicio del documento:**\n{preview}…"
+            )
+
+        return out
+    except Exception as e:
+        log_agent_activity("error", nombre, modelo_log, str(e))
+        raise
+    finally:
+        if _AGENT_STACK and _AGENT_STACK[-1] == nombre:
+            _AGENT_STACK.pop()
+
+
+def _invocar_agente_impl(
+    nombre: str,
+    tarea: str,
+    contexto: str = "",
+    modelo_override: str | None = None,
+    meta: dict | None = None,
+) -> str:
+    """Ejecuta una sub-llamada al modelo del agente con su prompt + tarea."""
+    path = AGENTS_DIR / f"{nombre}.md"
+    if meta is None:
+        meta = _parse_agent_file(path)
     modelo = (modelo_override or meta.get("modelo", "claude-sonnet-4-6")).strip()
     sub_system = meta["prompt"]
-    user_msg = tarea if not contexto else f"{tarea}\n\n## Contexto adicional\n{contexto}"
+
+    # Inyectar conocimiento indexado para agentes kawiil-* (DOF/SJF context)
+    knowledge_ctx = ""
+    if nombre.startswith("kawiil-"):
+        try:
+            knowledge_ctx = _load_agent_knowledge(nombre)
+        except Exception as e:
+            log.debug(f"No pude cargar knowledge de {nombre}: {e}")
+
+    ctx_parts = []
+    if contexto:
+        ctx_parts.append(contexto)
+    if knowledge_ctx:
+        ctx_parts.append(knowledge_ctx)
+    full_contexto = "\n\n".join(ctx_parts)
+
+    user_msg = tarea if not full_contexto else f"{tarea}\n\n## Contexto adicional\n{full_contexto}"
+
+    if modelo.lower().startswith("deepseek"):
+        out = _invocar_agente_via_deepseek(nombre, sub_system, user_msg, modelo)
+        return out or f"ERROR: DeepSeek no respondió al agente '{nombre}'"
 
     if modelo.lower().startswith("ollama") or modelo == "llama":
         out = _invocar_agente_via_ollama(nombre, sub_system, user_msg)
@@ -3788,7 +7863,8 @@ _LEGAL_AREA_PREFIXES = {
 }
 
 
-def _consejo_experto_legal(area: str, pregunta: str, contexto: str = "", max_expertos: int = 3) -> str:
+def _consejo_experto_legal(area: str, pregunta: str, contexto: str = "", max_expertos: int = 3,
+                           incluir_referencia: bool = True) -> str:
     """Encuentra agentes legal-* relevantes, los invoca y sintetiza."""
     max_expertos = max(1, min(int(max_expertos or 3), 5))
     area = (area or "general").lower().strip()
@@ -3835,8 +7911,10 @@ def _consejo_experto_legal(area: str, pregunta: str, contexto: str = "", max_exp
         nombre = f.stem
         nombres_consultados.append(nombre)
         try:
-            log.info(f"consejo_experto_legal: consultando {nombre}")
-            resp = _invocar_agente(nombre, pregunta, contexto)
+            log.info(f"consejo_experto_legal: consultando {nombre} (referencia, Haiku)")
+            # Los agentes legal-* internacionales son SOLO referencia → Haiku (barato).
+            # La mexicanización vinculante (kawiil-nelli) sí va en Sonnet más abajo.
+            resp = _invocar_agente(nombre, pregunta, contexto, modelo_override=CLAUDE_HAIKU, enviar_doc=False)
             opiniones.append(f"### {nombre}\n{resp}")
         except Exception as e:
             opiniones.append(f"### {nombre}\n(error consultando: {e})")
@@ -3844,35 +7922,93 @@ def _consejo_experto_legal(area: str, pregunta: str, contexto: str = "", max_exp
     raw_consejo = "\n\n---\n\n".join(opiniones)
     _kawiil_central_audit(f"consejo_experto_legal area={area}", pregunta[:300]) if 'KAWIIL_CENTRAL_AUDIT_LOG' in globals() else None
 
-    # Síntesis con Haiku (rápido, barato — para resumir múltiples opiniones)
-    try:
-        api_key = load_anthropic_key()
-        sys_prompt = (
-            "Eres un asistente que sintetiza opiniones de varios expertos legales de Estados Unidos "
-            "para presentarle a un abogado MEXICANO. Tu trabajo:\n"
-            "1. Identifica los 3-5 puntos clave en común entre los expertos\n"
-            "2. Marca los puntos que requieren ADAPTACIÓN al contexto mexicano (LFPDPPP, Código Civil, leyes locales)\n"
-            "3. Lista las divergencias entre expertos (si las hay)\n"
-            "4. Cierra con un Bottom Line ejecutivo de 2-3 líneas\n"
-            "Sé conciso. Mucho contenido pero formato compacto. Usa bullets."
-        )
-        body = {
-            "model": CLAUDE_HAIKU,
-            "max_tokens": 1500,
-            "system": sys_prompt,
-            "messages": [{"role": "user", "content": f"PREGUNTA ORIGINAL:\n{pregunta}\n\nCONTEXTO:\n{contexto}\n\nOPINIONES DE EXPERTOS US:\n\n{raw_consejo[:18000]}"}],
-        }
-        headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
-        resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=60)
-        text_blocks = [b.get("text", "") for b in resp.get("content", []) if b.get("type") == "text"]
-        sintesis = "".join(text_blocks).strip() or "(sin síntesis)"
-    except Exception as e:
-        sintesis = f"(síntesis falló: {e})"
+    # Encolar en prioridad para que el bg-indexer refuerce el conocimiento sobre este tema
+    _legal_enqueue_priority(
+        f"kawiil-{area}" if (AGENTS_DIR / f"kawiil-{area}.md").exists() else "kawiil-nelli",
+        pregunta[:200], razon=f"consulta legal area={area}"
+    )
 
-    header = f"⚖️ *Consejo de Expertos Legales US — área:* `{area}`\n"
-    header += f"*Consultados ({len(nombres_consultados)}):* " + ", ".join(f"`{n}`" for n in nombres_consultados) + "\n"
+    # ── MEXICANIZACIÓN OBLIGATORIA ──────────────────────────────────────────
+    # Los agentes internacionales (legal-* de claude-for-legal, contexto US) son
+    # SOLO REFERENCIA. Un agente MEXICANO revisa su razonamiento y produce la
+    # versión válida y OBLIGATORIA en México, citando la norma local aplicable.
+    # Si existe el agente compliance mexicano (kawiil-nelli), él hace la
+    # mexicanización (y queda registrado en el dashboard como agente trabajando).
+    tarea_mex = (
+        f"PREGUNTA ORIGINAL:\n{pregunta}\n\n"
+        f"CONTEXTO:\n{contexto or '(sin contexto adicional)'}\n\n"
+        f"REFERENCIA INTERNACIONAL (expertos US — usar SOLO como punto de partida, "
+        f"NO como respuesta final):\n\n{raw_consejo[:16000]}"
+    )
+    mex_agent = "kawiil-nelli" if (AGENTS_DIR / "kawiil-nelli.md").exists() else None
+    sintesis = None
+    if mex_agent:
+        try:
+            sintesis = _invocar_agente(mex_agent, MEXICANIZE_DOCTRINE + "\n\n" + tarea_mex, "", enviar_doc=False)
+            # _invocar_agente prefija "[nombre respondió]"; lo quitamos para el render.
+            if sintesis and sintesis.startswith("["):
+                nl = sintesis.find("\n")
+                if nl > 0:
+                    sintesis = sintesis[nl:].lstrip()
+        except Exception as e:
+            sintesis = None
+            log.warning(f"mexicanización vía {mex_agent} falló: {e}")
+    if not sintesis or sintesis.startswith("ERROR"):
+        # Fallback: Claude Sonnet con la misma doctrina obligatoria.
+        try:
+            api_key = load_anthropic_key()
+            body = {
+                "model": CLAUDE_SONNET,
+                "max_tokens": 2000,
+                "system": MEXICANIZE_DOCTRINE,
+                "messages": [{"role": "user", "content": tarea_mex}],
+            }
+            headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
+            resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=90)
+            text_blocks = [b.get("text", "") for b in resp.get("content", []) if b.get("type") == "text"]
+            sintesis = "".join(text_blocks).strip() or "(sin síntesis)"
+        except Exception as e:
+            sintesis = f"(mexicanización falló: {e})"
+
+    quien = mex_agent or "Claude (fallback)"
+    header = f"⚖️ *Dictamen legal mexicanizado — área:* `{area}`\n"
+    header += f"*Referencia internacional ({len(nombres_consultados)}):* " + ", ".join(f"`{n}`" for n in nombres_consultados) + "\n"
+    header += f"*Mexicanizado por:* `{quien}`\n"
     header += f"*Pregunta:* {pregunta[:200]}\n\n"
-    return header + "## Síntesis adaptada a México\n\n" + sintesis + "\n\n---\n\n## Opiniones individuales (para deep-dive)\n\n" + raw_consejo[:6000]
+    salida = header + "## Versión obligatoria en México\n\n" + sintesis
+    # La "referencia internacional" (agentes legal-* US) suele ser ruido para el
+    # entregable; solo se incluye cuando se pide explícitamente (deep-dive en Telegram).
+    if incluir_referencia:
+        salida += "\n\n---\n\n## Referencia internacional (para deep-dive)\n\n" + raw_consejo[:6000]
+    return salida
+
+
+# Doctrina que convierte la referencia internacional en la versión OBLIGATORIA en
+# México. Se inyecta tanto cuando mexicaniza kawiil-nelli como en el fallback Claude.
+MEXICANIZE_DOCTRINE = (
+    "Eres un abogado MEXICANO senior. Recibes el análisis de expertos legales "
+    "internacionales (principalmente EE.UU.) como REFERENCIA TÉCNICA, nunca como "
+    "respuesta final. Tu trabajo es REVISAR ese razonamiento y producir la versión "
+    "VÁLIDA Y OBLIGATORIA conforme al derecho mexicano. Reglas:\n"
+    "1. NUNCA copies la conclusión extranjera tal cual. Tradúcela al marco mexicano "
+    "aplicable: Constitución, CFF, LFPIORPI, LFPDPPP, LFT, Código de Comercio, CNBV, "
+    "UIF, SAT, INAI, Condusef, NOMs y la jurisprudencia SCJN/TFJA que aplique.\n"
+    "2. Separa SIEMPRE en dos bloques claros:\n"
+    "   • **OBLIGATORIO EN MÉXICO** — lo que la ley mexicana exige, citando artículo y "
+    "ordenamiento específico. Marca deadlines en negrita.\n"
+    "   • **Buena práctica internacional (opcional)** — lo que viene de la referencia US "
+    "y conviene pero no es exigible aquí.\n"
+    "3. Si la práctica extranjera NO aplica o es contraria a la norma mexicana, dilo "
+    "explícitamente ('esto NO aplica en México porque…').\n"
+    "4. Si falta una norma mexicana específica que deberías citar y no la tienes, dilo "
+    "y sugiere verificar en DOF/SJF con legal_buscar — no inventes artículos.\n"
+    "5. Cierra con un 'Bottom line' ejecutivo de 2-3 líneas para el director.\n"
+    "Formato compacto, bullets, en español de México.\n"
+    "FORMATO DE SALIDA (CRÍTICO): responde SOLO con el análisis en MARKDOWN simple — "
+    "encabezados con ##, viñetas con -, tablas con | columna |. PROHIBIDO escribir HTML, "
+    "etiquetas <style>/<html>/<div>, CSS, JavaScript o bloques de código ```html. El diseño "
+    "visual (HTML/PDF) lo genera el sistema a partir de tu markdown; tú NO lo armes."
+)
 
 
 def execute_tool(name: str, args: dict) -> str:
@@ -3889,9 +8025,88 @@ def execute_tool(name: str, args: dict) -> str:
             return f"OK escrito {args['filename']}"
         elif name == "append_to_memory":
             path = SPACE / args["filename"]
+            content = args["content"]
+            # Dedup: evita el bug de escribir la MISMA entrada muchas veces (el
+            # JOURNAL llegó a tener 7x la misma línea). Si el cuerpo (sin la marca de
+            # fecha [YYYY-MM-DD ...]) ya está en las últimas ~40 líneas, no reescribe.
+            try:
+                if path.exists():
+                    _norm = lambda s: re.sub(r"\[\d{4}-\d{2}-\d{2}[^\]]*\]", "", s).strip().lower()
+                    nuevo = _norm(content)
+                    if nuevo and len(nuevo) > 12:
+                        recientes = path.read_text().splitlines()[-40:]
+                        if any(nuevo == _norm(l) for l in recientes):
+                            return f"(ya estaba en {args['filename']}, no dupliqué)"
+            except Exception:
+                pass
             with path.open("a") as f:
-                f.write("\n" + args["content"] + "\n")
+                f.write("\n" + content + "\n")
             return f"OK agregado a {args['filename']}"
+        elif name == "reloj":
+            return _reloj_tool(args.get("zona", ""))
+        elif name == "zona_horaria":
+            return _zona_horaria_tool(args.get("accion", "consultar"), args.get("zona", ""))
+        elif name == "completar_pendiente":
+            path = SPACE / "AGENDA.md"
+            if not path.exists():
+                return "(AGENDA.md no existe)"
+            texto = (args.get("texto") or "").strip().lower()
+            # Palabras clave significativas (>3 letras) del texto a buscar.
+            keys = [w for w in re.findall(r"\w+", texto) if len(w) > 3]
+            if not keys:
+                return "ERROR: dame palabras clave del pendiente a cerrar"
+            lines = path.read_text().splitlines()
+            cerradas = []
+            for i, line in enumerate(lines):
+                if re.match(r"^\s*-\s*\[\s*\]\s+", line):
+                    low = line.lower()
+                    # Coincide si al menos la mitad (o 2) de las keywords están en la línea.
+                    hits = sum(1 for k in keys if k in low)
+                    if hits >= max(2, (len(keys) + 1) // 2):
+                        lines[i] = re.sub(r"\[\s*\]", "[x]", line, count=1)
+                        cerradas.append(line.strip()[:80])
+            if not cerradas:
+                return f"(no encontré pendientes abiertos que coincidan con «{texto}»)"
+            path.write_text("\n".join(lines) + ("\n" if not "\n".join(lines).endswith("\n") else ""))
+            listado = "\n".join(f"  ✓ {c}" for c in cerradas)
+            return f"OK cerré {len(cerradas)} pendiente(s):\n{listado}"
+        elif name == "reemplazar_pendiente":
+            path = SPACE / "AGENDA.md"
+            if not path.exists():
+                return "(AGENDA.md no existe)"
+            viejo = (args.get("viejo") or "").strip().lower()
+            nuevo = (args.get("nuevo") or "").strip()
+            keys = [w for w in re.findall(r"\w+", viejo) if len(w) > 3]
+            if not keys or not nuevo:
+                return "ERROR: dame palabras clave de la línea a corregir (viejo) y el texto nuevo"
+            lines = path.read_text().splitlines()
+            # candidata = línea con más keywords (prioriza pendientes - [ ]/- [x])
+            mejor_i, mejor_hits = -1, 0
+            for i, line in enumerate(lines):
+                low = line.lower()
+                hits = sum(1 for k in keys if k in low)
+                if hits > mejor_hits and hits >= max(2, (len(keys) + 1) // 2):
+                    mejor_i, mejor_hits = i, hits
+            if mejor_i < 0:
+                return f"(no encontré una línea que coincida con «{viejo}» — usa append_to_memory si es algo nuevo)"
+            orig = lines[mejor_i]
+            # El modelo a veces incluye su propio checkbox en `nuevo` (ej. "- [x] ...").
+            # Detéctalo para honrar el estado, y límpialo para NO duplicar prefijos.
+            mnew = re.match(r"^\s*-\s*\[([ xX])\]\s+", nuevo)
+            nuevo_limpio = re.sub(r"^\s*-\s*\[[ xX]\]\s+|^\s*-\s+", "", nuevo).strip()
+            indent_m = re.match(r"^(\s*)", orig)
+            indent = indent_m.group(1) if indent_m else ""
+            if mnew:
+                # usa el estado que pidió el modelo en `nuevo`
+                prefijo = f"{indent}- [{mnew.group(1).lower()}] "
+            else:
+                # conserva el prefijo/estado original de la línea
+                mpref = re.match(r"^(\s*-\s*\[[ xX]\]\s+|\s*-\s+|\s*)", orig)
+                prefijo = mpref.group(1) if mpref else "- [ ] "
+            antes = orig.strip()
+            lines[mejor_i] = f"{prefijo}{nuevo_limpio}"
+            path.write_text("\n".join(lines) + "\n")
+            return f"OK corregí la línea en su lugar:\n  antes: {antes[:90]}\n  ahora: {lines[mejor_i].strip()[:90]}"
         elif name == "create_reminder":
             script = SPACE / "scripts" / "crear-recordatorio.sh"
             if not script.exists():
@@ -3917,14 +8132,18 @@ def execute_tool(name: str, args: dict) -> str:
             return f"OK aprendido: {args['topic']}"
         elif name == "agendar_recordatorio":
             return _agendar_recordatorio(
-                args["mensaje"], args["fecha_hora"],
+                args["mensaje"], args.get("fecha_hora", ""),
                 args.get("canal", "telegram"), args.get("modo", "enrich"),
-                args.get("recurrencia"),
+                args.get("recurrencia"), args.get("en_minutos", 0),
             )
         elif name == "listar_recordatorios":
             return _listar_recordatorios()
         elif name == "cancelar_recordatorio":
             return _cancelar_recordatorio(args["id"])
+        elif name == "editar_recordatorio":
+            return _editar_recordatorio(args["id"], args.get("nuevo_texto", ""), args.get("nueva_hora", ""))
+        elif name == "corregir_nombre":
+            return _corregir_nombre(args["mal"], args["bien"])
         elif name == "legal_estado":
             return _legal_estado(args.get("modulo", "ambos"))
         elif name == "legal_buscar":
@@ -3933,10 +8152,45 @@ def execute_tool(name: str, args: dict) -> str:
             return _legal_ultimo(args["modulo"], args.get("n", 10))
         elif name == "legal_briefing":
             return _legal_briefing()
+        elif name == "legal_indexar":
+            agente = args.get("agente", "").strip()
+            forzar = bool(args.get("forzar", False))
+            limite = max(10, min(int(args.get("limite", 30)), 100))
+            if agente.lower() == "todos":
+                return _legal_indexar_todos(limite_por_agente=limite)
+            return _legal_indexar_agente(agente, forzar=forzar, limite=limite)
+        elif name == "legal_conocimiento":
+            agente = args.get("agente", "").strip()
+            idx = _knowledge_index(agente)
+            kdir = KNOWLEDGE_BASE / agente
+            resumen_file = kdir / "resumen-semanal.md"
+            parts = [
+                f"📚 Conocimiento indexado — *{agente}*",
+                f"  • Total docs: {idx.get('total', 0)}",
+                f"  • Área: {idx.get('label', '?')}",
+                f"  • Última indexación: {idx.get('last_indexed', '(nunca)') or '(nunca)'}",
+            ]
+            if resumen_file.exists():
+                resumen = resumen_file.read_text()[:3000]
+                parts.append(f"\n{resumen}")
+            else:
+                parts.append("  • Resumen semanal: no disponible aún (corre legal_indexar primero)")
+            return "\n".join(parts)
         elif name == "mac_estado":
             return _mac_estado()
         elif name == "mac_wake_request":
             return _mac_wake_request(args["razon"])
+        elif name == "mac_bash":
+            bash_cmd = args["bash_cmd"]
+            razon = args.get("razon", "")
+            nivel = args.get("nivel") or _mac_bash_nivel(bash_cmd)
+            return _mac_enqueue_command("mac_bash", {"bash_cmd": bash_cmd, "nivel": nivel}, razon)
+        elif name == "mac_ejecutar":
+            return _mac_enqueue_command(args["comando"], args.get("args", {}), args.get("razon", ""))
+        elif name == "mac_comando_estado":
+            return _mac_comando_estado(args.get("id", ""))
+        elif name == "hetzner_estado":
+            return _hetzner_estado(args.get("que", ""))
         elif name == "browser_navegar":
             return _browser_navegar(args["url"], args.get("wait_until", "networkidle"), args.get("wait_extra_ms", 0))
         elif name == "browser_leer":
@@ -3980,7 +8234,7 @@ def execute_tool(name: str, args: dict) -> str:
             return _kawiil_central_tareas(args.get("estado", ""), args.get("proyecto_id", ""),
                                           args.get("asignado_a", ""), args.get("limit", 20))
         elif name == "kawiil_central_proyectos":
-            return _kawiil_central_proyectos(args.get("estado", ""), args.get("limit", 20))
+            return _kawiil_central_proyectos(args.get("estado", ""), args.get("limit", 20), args.get("cliente", ""))
         elif name == "kawiil_central_tareas_proximas":
             return _kawiil_central_tareas_proximas(args.get("dias", 7), args.get("estado_excluir", "hecho"), args.get("asignado_a", ""))
         elif name == "kawiil_central_tarea_detalle":
@@ -3993,11 +8247,22 @@ def execute_tool(name: str, args: dict) -> str:
             return _kawiil_central_crear_tarea(args["titulo"], args["proyecto_id"],
                                                 args.get("descripcion", ""), args.get("asignado_a", ""),
                                                 args.get("prioridad", ""), args.get("deadline", ""),
-                                                args.get("campos_extra"))
+                                                args.get("campos_extra"), args.get("parent_task_id", ""))
+        elif name == "kawiil_central_crear_proyecto":
+            return _kawiil_central_crear_proyecto(args["name"], args.get("client_id", ""),
+                                                  args.get("area", ""), args.get("descripcion", ""),
+                                                  args.get("service_tags", ""))
+        elif name == "kawiil_central_asignar_tarea":
+            return _kawiil_central_asignar_tarea(args["tarea_id"], args["persona"])
         elif name == "kawiil_central_actualizar_tarea":
             return _kawiil_central_actualizar_tarea(args["tarea_id"], args["cambios"])
         elif name == "kawiil_central_avance":
             return _kawiil_central_avance(args["tarea_id"], args["texto"], args.get("porcentaje"))
+        elif name == "kawiil_central_notificar":
+            return _kawiil_central_notificar(
+                args["titulo"], args.get("cuerpo", ""), args.get("para", ""),
+                args.get("tipo", "ai_update"), args.get("entity_type", ""),
+                args.get("entity_id", ""))
         elif name == "leer_mi_codigo":
             import self_update as _su
             return _su.leer_mi_codigo(args["archivo"], args.get("offset", 0), args.get("limit", 200))
@@ -4013,6 +8278,34 @@ def execute_tool(name: str, args: dict) -> str:
         elif name == "restaurar_mi_codigo":
             import self_update as _su
             return _su.restaurar_mi_codigo(args["archivo"], args["backup_id"])
+        elif name == "slack_resumen":
+            return _slack_resumen(args.get("canales"), args.get("msgs_por_canal", 10))
+        elif name == "slack_canales":
+            return _slack_canales()
+        elif name == "slack_leer":
+            return _slack_leer(args["canal"], args.get("limite", 20))
+        elif name == "slack_dm_leer":
+            return _slack_dm_leer(args["usuario"], args.get("limite", 20))
+        elif name == "dropbox_buscar":
+            return _dropbox_buscar(args["query"], args.get("limite", 10))
+        elif name == "dropbox_listar":
+            return _dropbox_listar(args.get("carpeta", ""))
+        elif name == "dropbox_analizar_imagen":
+            return _dropbox_analizar_imagen(args["path"], args.get("pregunta", ""))
+        elif name == "dropbox_enviar":
+            return _dropbox_enviar(args["path"])
+        elif name == "dof_pdf":
+            return _dof_pdf(str(args["cod"]))
+        elif name == "dof_nota":
+            return _dof_nota_texto(str(args["cod"]))
+        elif name == "generar_documento":
+            return _generar_documento_tool(args["tipo"], args["titulo"], args["contenido"])
+        elif name == "proyectos_listar":
+            return _proyectos_listar()
+        elif name == "proyectos_archivos":
+            return _proyectos_archivos(args["proyecto"])
+        elif name == "proyecto_leer":
+            return _proyecto_leer(args["proyecto"], args["archivo"])
         elif name == "verificar_conexiones":
             return _verificar_conexiones(args.get("incluir_m365", True))
         elif name == "crear_agente":
@@ -4031,6 +8324,22 @@ def execute_tool(name: str, args: dict) -> str:
             )
         elif name == "consejo_experto_legal":
             return _consejo_experto_legal(args["area"], args["pregunta"], args.get("contexto", ""), args.get("max_expertos", 3))
+        elif name == "cerebro_listar":
+            return _cerebro_listar(args.get("estado", ""), args.get("cliente", ""))
+        elif name == "cerebro_proyecto_estado":
+            return _cerebro_proyecto_estado(args["nombre"])
+        elif name == "cerebro_crear_brief":
+            return _cerebro_crear_brief(
+                args["tarea"], args["cliente"],
+                args.get("insumos", ""), args.get("urgencia", "normal"),
+                args.get("contexto", ""),
+            )
+        elif name == "cerebro_sync_agenda":
+            return _cerebro_sync_agenda()
+        elif name == "generar_visual_gamma":
+            return _generar_visual_gamma(
+                args["texto"], args.get("formato", "social"),
+                args.get("export", "png"), args.get("instrucciones", ""))
         elif name.startswith("m365_"):
             return _run_m365_tool(name, args)
         else:
@@ -4042,7 +8351,7 @@ def execute_tool(name: str, args: dict) -> str:
 
 # ===== Routing =====
 def needs_claude(user_message: str) -> bool:
-    """Claude solo con prefijo explícito (/sonnet, /profundo, …). El chat normal va a Ollama."""
+    """Claude solo con prefijo explícito (/sonnet, /profundo, …). El chat normal va a DeepSeek."""
     if not user_message:
         return False
     msg = user_message.strip().lower()
@@ -4051,10 +8360,23 @@ def needs_claude(user_message: str) -> bool:
     return msg.startswith(CLAUDE_FORCE_PREFIXES)
 
 
+def needs_tools(user_message: str) -> bool:
+    """True si el mensaje pide datos/acciones que requieren herramientas: búsqueda legal
+    (DOF/tesis/SJF), correo/calendario M365, kawiil-central, browser, vault, etc.
+    → se enruta a Claude con tools (análisis/indexación/conocimiento).
+    Los overrides explícitos de chat (/ds, /llama, /oss, /haiku) tienen prioridad y NO cuentan."""
+    if not user_message:
+        return False
+    msg = user_message.strip()
+    if msg.lower().startswith(OLLAMA_FORCE_PREFIXES + OLLAMA_QUALITY_PREFIXES + DEEPSEEK_FORCE_PREFIXES + HAIKU_FORCE_PREFIXES):
+        return False
+    return bool(TOOL_REGEX.search(msg))
+
+
 def strip_override_prefix(user_message: str) -> str:
     """Quita /sonnet, /llama, /oss, etc. del inicio antes de enviar al modelo."""
     cleaned = user_message
-    for prefix in CLAUDE_FORCE_PREFIXES + OLLAMA_FORCE_PREFIXES + OLLAMA_QUALITY_PREFIXES:
+    for prefix in CLAUDE_FORCE_PREFIXES + OLLAMA_FORCE_PREFIXES + OLLAMA_QUALITY_PREFIXES + HAIKU_FORCE_PREFIXES + DEEPSEEK_FORCE_PREFIXES:
         if cleaned.lower().startswith(prefix):
             cleaned = cleaned[len(prefix):].strip()
             break
@@ -4108,6 +8430,53 @@ def call_ollama(
         log.warning("Ollama devolvió vacío")
         return None
     return sanitize_ollama_response(content.strip())
+
+
+def call_deepseek(system_prompt: str, history: list, user_message: str, model: str | None = None) -> str | None:
+    raw = []
+    for h in history:
+        if h["role"] in ("user", "assistant") and isinstance(h["content"], str) and h["content"].strip():
+            raw.append({"role": h["role"], "content": h["content"].strip()})
+    cleaned_input = strip_override_prefix((user_message or "").strip()) or "(mensaje vacío)"
+    raw.append({"role": "user", "content": cleaned_input})
+    # Colapsa mensajes consecutivos del mismo rol (DeepSeek también rechaza secuencias inválidas)
+    hist_clean = []
+    for m in raw:
+        if hist_clean and hist_clean[-1]["role"] == m["role"]:
+            hist_clean[-1]["content"] += "\n" + m["content"]
+        else:
+            hist_clean.append(m)
+    while hist_clean and hist_clean[0]["role"] != "user":
+        hist_clean.pop(0)
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt[:50_000]})
+    messages.extend(hist_clean)
+    selected_model = (model or DEEPSEEK_MODEL).strip()
+    if selected_model.startswith("deepseek/"):
+        selected_model = selected_model.split("/", 1)[1]
+    headers = {"Authorization": f"Bearer {load_deepseek_key()}"}
+    body = {
+        "model": selected_model,
+        "messages": messages,
+        "temperature": 0.3,
+        "max_tokens": 2048,
+        "stream": False,
+    }
+    try:
+        resp = http_post_json(DEEPSEEK_API_BASE, headers, body, timeout=120)
+    except urllib.error.HTTPError as e:
+        err_body = getattr(e, "body", "") or ""
+        log.error(f"DeepSeek falló — code={e.code} body={err_body[:500]}")
+        return f"(error DeepSeek HTTP {e.code}: {err_body[:300] or 'body vacío'})"
+    except Exception as e:
+        log.exception("DeepSeek API falló")
+        return f"(error llamando a DeepSeek: {e})"
+    choices = resp.get("choices") or []
+    if not choices:
+        return "(sin respuesta de DeepSeek)"
+    msg = choices[0].get("message") or {}
+    return (msg.get("content") or "").strip() or "(respuesta vacía de DeepSeek)"
 
 
 def call_haiku(api_key: str, system_prompt: str, history: list, user_message: str) -> str:
@@ -4196,36 +8565,161 @@ def call_claude_with_image(api_key: str, system_prompt: str, image_b64: str, med
     return "".join(blocks).strip() or "(sin respuesta del análisis)"
 
 
-def call_claude(api_key: str, system_prompt: str, history: list, user_message: str) -> str:
-    """Llama Claude Sonnet con tools. Loop hasta que termine.
+def _sanitize_tool_blocks(messages: list) -> list:
+    """Garantiza el protocolo tool_use→tool_result que exige Anthropic.
+
+    Quita `tool_use` colgados (sin su `tool_result` en el siguiente mensaje) y
+    `tool_result` huérfanos (sin su `tool_use` en el mensaje previo). Evita el
+    400 'tool_use ids were found without tool_result blocks'. No toca mensajes
+    de texto normales.
+    """
+    out: list = []
+    for i, m in enumerate(messages):
+        content = m.get("content")
+        role = m.get("role")
+        if not isinstance(content, list):
+            out.append(m)
+            continue
+        if role == "assistant":
+            tu_ids = [b.get("id") for b in content
+                      if isinstance(b, dict) and b.get("type") == "tool_use"]
+            if tu_ids:
+                nxt = messages[i + 1] if i + 1 < len(messages) else None
+                res_ids = set()
+                if nxt and nxt.get("role") == "user" and isinstance(nxt.get("content"), list):
+                    res_ids = {b.get("tool_use_id") for b in nxt["content"]
+                               if isinstance(b, dict) and b.get("type") == "tool_result"}
+                if not all(t in res_ids for t in tu_ids):
+                    # falta algún tool_result → quita los tool_use de este turno
+                    content = [b for b in content
+                               if not (isinstance(b, dict) and b.get("type") == "tool_use")]
+                    if not content:
+                        continue  # turno vacío → omitir
+        elif role == "user":
+            prev = out[-1] if out else None
+            prev_ids = set()
+            if prev and prev.get("role") == "assistant" and isinstance(prev.get("content"), list):
+                prev_ids = {b.get("id") for b in prev["content"]
+                            if isinstance(b, dict) and b.get("type") == "tool_use"}
+            new_content = [b for b in content
+                           if not (isinstance(b, dict) and b.get("type") == "tool_result"
+                                   and b.get("tool_use_id") not in prev_ids)]
+            if not new_content:
+                continue  # todos los tool_result eran huérfanos → omitir
+            content = new_content
+        out.append({**m, "content": content})
+    return out
+
+
+def call_claude(api_key: str, system_prompt: str, history: list, user_message: str,
+                model: str | None = None) -> str:
+    """Llama Claude con tools. Loop hasta que termine.
+
+    Por costo, el default es Haiku (≈1/3 de Sonnet) — suficiente para la mayoría
+    de tareas con herramientas (búsquedas, datos, recordatorios). Sonnet se reserva
+    para lo pesado (dictamen legal, /sonnet, /profundo) vía el parámetro `model`.
 
     Acumula el texto de CADA turn separadamente. Al final devuelve el último turn
     con contenido — esto evita que se pierda texto cuando Claude devuelve
     text+tool_use en un mismo turn y después responde vacío.
     """
-    messages = []
+    model = model or CLAUDE_HAIKU
+    # Construye mensajes colapsando consecutivos del mismo rol.
+    # Anthropic rechaza con 400 si hay dos "user" o dos "assistant" seguidos
+    # (puede pasar cuando el bridge escribe historial duplicado).
+    raw_msgs = []
     for h in history:
-        if h["role"] in ("user", "assistant") and isinstance(h["content"], str):
-            messages.append({"role": h["role"], "content": h["content"]})
-    messages.append({"role": "user", "content": user_message})
+        if h["role"] in ("user", "assistant") and isinstance(h["content"], str) and h["content"].strip():
+            raw_msgs.append({"role": h["role"], "content": h["content"].strip()})
+    raw_msgs.append({"role": "user", "content": (user_message or "").strip() or "(vacío)"})
+    messages = []
+    for m in raw_msgs:
+        if messages and messages[-1]["role"] == m["role"]:
+            messages[-1]["content"] += "\n" + m["content"]
+        else:
+            messages.append({"role": m["role"], "content": m["content"]})
+    # Asegura que el primer mensaje sea "user"
+    while messages and messages[0]["role"] != "user":
+        messages.pop(0)
+    # Ancla la HORA REAL dentro del ÚLTIMO mensaje del usuario (lo último que lee el
+    # modelo) para que GANE sobre cualquier hora vieja del historial — el modelo se
+    # anclaba en un "14:03" mencionado antes en la conversación e ignoraba el reloj.
+    try:
+        _now_l = datetime.now(get_active_tz())
+        _tzl = "CDMX" if get_active_tz_name() == TZ_DEFAULT_NAME else get_active_tz_name()
+        for _i in range(len(messages) - 1, -1, -1):
+            if messages[_i]["role"] == "user" and isinstance(messages[_i].get("content"), str):
+                messages[_i]["content"] = (
+                    f"[hora real AHORA: {_fmt_dt_es(_now_l)} ({_tzl}). Para horas/deadlines/"
+                    f"'cuánto falta' usa ESTA; ignora cualquier otra hora dicha antes en el chat.]\n"
+                    + messages[_i]["content"])
+                break
+    except Exception:
+        pass
     headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
-    max_loops = 8
+    max_loops = 12  # holgura para tareas multi-paso (crear proyecto+tarea+subtareas) + anti-stall
     turn_texts = []   # texto emitido por cada turn (puede ser "")
     tools_executed = []  # nombres de tools ejecutados (para fallback message)
     memory_tool_results = []  # confirmaciones append/write_memory
-    for _ in range(max_loops):
+    # Detecta si la query es sobre Slack para forzar tool_choice en el primer turno
+    _SLACK_RE = re.compile(r"\b(slack|canal(es)?|dm\s+de|mensaje(s)?\s+(en|de)\s+slack)\b", re.IGNORECASE)
+    _force_tool_first = _SLACK_RE.search(user_message or "")
+    # Pedido de documento (PDF/PPTX/XLSX): forzar uso de tool en el 1er turno.
+    # Solo con Sonnet (con Haiku el tool_choice forzado devolvía contenido vacío).
+    # Evita que Sonnet diga 'genero el dictamen ahora' sin llamar la tool.
+    _force_doc = needs_doc_sonnet(user_message or "") and model == CLAUDE_SONNET
+    # PROMPT CACHING: tools + system son idénticos entre llamadas y entre las 8
+    # vueltas del loop. Cachearlos reduce el input ~90% (cache_read ≈ 10% del
+    # precio normal). Sin esto, cada vuelta re-paga el system prompt gigante +
+    # las ~80 definiciones de tools a precio completo. Breakpoint en la última
+    # tool cachea todas las tools + system (jerarquía: tools→system→messages).
+    _tools_cached = [dict(t) for t in TOOLS_DEFINITION]
+    _tools_cached[-1] = {**_tools_cached[-1], "cache_control": {"type": "ephemeral"}}
+    # Hora REAL fresca en CADA llamada, DESPUÉS del bloque cacheado (no rompe el
+    # caché del prompt grande). Resuelve que Louis use la hora "congelada" del
+    # contexto: aquí siempre ve la hora exacta del instante.
+    try:
+        _now_live = datetime.now(get_active_tz())
+        _tzlbl = "CDMX" if get_active_tz_name() == TZ_DEFAULT_NAME else get_active_tz_name()
+        _hora_block = (f"# ⏰ HORA EXACTA EN ESTE INSTANTE: {_fmt_dt_es(_now_live)} ({_tzlbl}).\n"
+                       "Esta es la hora REAL de AHORA. Úsala SIEMPRE para deadlines, 'cuánto falta', "
+                       "'hoy/mañana/esta mañana/esta tarde'. IGNORA cualquier otra hora del contexto.")
+    except Exception:
+        _hora_block = ""
+    _system_cached = [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
+    if _hora_block:
+        _system_cached.append({"type": "text", "text": _hora_block})
+    _stall_retries = 0
+    _reminder_retries = 0
+    for _loop_i in range(max_loops):  # noqa: B007
         body = {
-            "model": CLAUDE_SONNET,
+            "model": model,
             "max_tokens": 4096,
-            "system": system_prompt,
-            "tools": TOOLS_DEFINITION,
-            "messages": messages,
+            "system": _system_cached,
+            "tools": _tools_cached,
+            "messages": _sanitize_tool_blocks(messages),
         }
+        # Primer turno de queries Slack: forzar tool_choice para que no responda de memoria
+        if _force_tool_first and _loop_i == 0:
+            body["tool_choice"] = {"type": "tool", "name": "slack_resumen"}
+        # Pedido de documento (Sonnet): forzar uso de ALGUNA tool en el 1er turno.
+        # El modelo debe llamar invocar_agente (para contenido) o generar_documento.
+        elif _force_doc and _loop_i == 0:
+            body["tool_choice"] = {"type": "any"}
         try:
             resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=180)
         except Exception as e:
-            log.exception("Anthropic API falló")
-            return f"(error llamando a Claude: {e})"
+            detalle = (getattr(e, "body", "") or "")[:600]
+            log.exception("Anthropic API falló: %s", detalle)
+            return f"(error llamando a Claude: {e}" + (f" — {detalle}" if detalle else "") + ")"
+        # Log de cache para verificar el ahorro (cache_read debe dominar tras la 1ª llamada)
+        _u = resp.get("usage", {})
+        log.info(
+            "claude usage loop=%d model=%s in=%d cache_write=%d cache_read=%d out=%d",
+            _loop_i, model, _u.get("input_tokens", 0),
+            _u.get("cache_creation_input_tokens", 0),
+            _u.get("cache_read_input_tokens", 0), _u.get("output_tokens", 0),
+        )
         content = resp.get("content", [])
         stop_reason = resp.get("stop_reason")
         assistant_blocks = []
@@ -4240,6 +8734,29 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
         turn_texts.append(turn_text)
         messages.append({"role": "assistant", "content": assistant_blocks})
         if stop_reason != "tool_use" or not tool_calls:
+            # Red anti-stall: si terminó con "déjame revisar / voy a ver…" SIN ejecutar
+            # una tool, empújalo UNA vez a continuar en este turno (proactividad) en
+            # lugar de quedarse esperando otro mensaje de Polo.
+            if _stall_retries < 3 and _es_stall(turn_text):
+                _stall_retries += 1
+                log.info("anti-stall #%d: el modelo se detuvo sin ejecutar tool; empujando a continuar", _stall_retries)
+                messages.append({"role": "user", "content":
+                    "Continúa AHORA en este mismo turno: ejecuta YA las tools que faltan (crear "
+                    "proyecto/tarea/subtareas, etc.) hasta TERMINAR todo, y al final dame los IDs "
+                    "reales. No anuncies lo que vas a hacer; hazlo. No esperes otro mensaje mío."})
+                continue
+            # Recordatorio FABRICADO: dice "recordatorio creado/agendado/te llegará"
+            # pero NO llamó agendar_recordatorio → fabricó la confirmación. Obligarlo a
+            # crearlo de verdad (no dejar pasar la mentira).
+            if (_reminder_retries < 1 and _REMINDER_CLAIM_RE.search(turn_text or "")
+                    and "agendar_recordatorio" not in tools_executed):
+                _reminder_retries += 1
+                log.info("anti-fabricación: afirmó recordatorio sin llamar la tool; forzando")
+                messages.append({"role": "user", "content":
+                    "NO llamaste `agendar_recordatorio`, así que ese recordatorio NO existe. NO "
+                    "inventes que lo creaste. Llama `agendar_recordatorio` AHORA (usa en_minutos "
+                    "para tiempo relativo) y confírmame SOLO si la tool devolvió OK con su id."})
+                continue
             break
         tool_results = []
         for tc in tool_calls:
@@ -4255,7 +8772,9 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
     # Devolver el último turn con texto no vacío
     for t in reversed(turn_texts):
         if t and t.strip():
-            out = t.strip()
+            out = _strip_tool_leak(t.strip())
+            if not out:
+                continue
             if mem_confirm:
                 return f"{out}\n\n{mem_confirm}"
             return out
@@ -4288,6 +8807,20 @@ def call_llm(
     """
     msg = (user_message or "").strip().lower()
     first_of_day = is_first_conversation_today(history_file)
+
+    # Recordatorio relativo a prueba de fallos: "recuérdame en N min/horas …" se crea
+    # DIRECTO en el servidor (reloj real), sin depender del modelo ni de Ollama.
+    det_rem = try_deterministic_reminder(user_message)
+    if det_rem is not None:
+        _mark_last_route("recordatorio-directo")
+        return det_rem, "recordatorio-directo"
+
+    # Aprendizaje a prueba de fallos: "anota en AGENDA: …" se guarda directo,
+    # sin gastar créditos y aunque Anthropic esté sin saldo.
+    det_mem = try_deterministic_memory_write(user_message, strict=True)
+    if det_mem is not None:
+        _mark_last_route("memoria-directa")
+        return det_mem, "memoria-directa"
 
     def _ollama_route(tag: str) -> tuple:
         if _needs_sonnet_hint(user_message) and not _sonnet_hint_already_shown():
@@ -4327,6 +8860,39 @@ def call_llm(
         log.warning(f"Ollama no respondió ({tag})")
         return _ollama_unavailable_msg(), "ollama-error"
 
+    def _deepseek_route(tag: str) -> tuple:
+        # Saludo / briefing explícito → respuesta determinística instantánea (sin modelo).
+        snapshot = build_operational_snapshot(compact=True)
+        if should_deterministic_operational_response(user_message, history):
+            log.info(f"→ Briefing determinístico (fast path) — {tag}")
+            response, det_tag = deterministic_operational_response(snapshot)
+            try:
+                save_last_briefing(response, snapshot)
+            except Exception:
+                log.warning("No pude guardar last-briefing.json", exc_info=True)
+            return response, det_tag
+        # Conversación fluida → DeepSeek (rápido, API, sin timeouts de CPU). Le anteponemos
+        # el snapshot operativo para que tenga contexto real de AGENDA/IMPORTANT.
+        log.info(f"→ DeepSeek (chat) — {tag}")
+        ds_system = f"[CONTEXTO OPERATIVO ACTUAL]\n{snapshot}\n\n{system_prompt}"
+        try:
+            response = call_deepseek(ds_system, history, user_message)
+        except Exception as e:
+            log.warning(f"DeepSeek excepción ({e})")
+            response = None
+        if response and response.strip() and not response.lstrip().startswith(("(error", "(sin respuesta", "(respuesta vac")):
+            _mark_last_route("deepseek")
+            if first_of_day or _wants_follow_up_briefing(user_message) or wants_explicit_briefing(user_message):
+                try:
+                    save_last_briefing(response, snapshot)
+                except Exception:
+                    log.warning("No pude guardar last-briefing.json", exc_info=True)
+            return response, "deepseek"
+        # DeepSeek falló → briefing determinístico (NO caemos en Ollama lento de CPU).
+        log.warning(f"DeepSeek no respondió ({tag}) — fallback determinístico")
+        fb, _ = deterministic_operational_response(snapshot)
+        return fb, "deepseek-fallback"
+
     if msg.startswith(OLLAMA_QUALITY_PREFIXES):
         return _ollama_route("override /oss")
 
@@ -4334,31 +8900,55 @@ def call_llm(
     if msg.startswith(OLLAMA_FORCE_PREFIXES):
         return _ollama_route("override /llama")
 
-    # Override Haiku explícito
-    if msg.startswith(("/haiku", "/rápido", "/rapido")):
-        log.info(f"→ Haiku ({CLAUDE_HAIKU}) — override /haiku")
-        return _call_claude_with_billing_check(call_haiku, api_key, system_prompt, history, user_message), "haiku"
+    # Override DeepSeek explícito (/deepseek, /ds)
+    if msg.startswith(DEEPSEEK_FORCE_PREFIXES):
+        log.info(f"→ DeepSeek ({DEEPSEEK_MODEL}) — override /deepseek")
+        response = call_deepseek(system_prompt, history, user_message)
+        return response or "(DeepSeek no respondió)", "deepseek"
 
-    # Análisis profundo / tools → Sonnet (prefijo explícito o auto: memoria / agentes)
-    if needs_claude(user_message) or needs_sonnet_auto(user_message):
-        reason = "prefijo /sonnet" if needs_claude(user_message) else (
-            "escritura memoria" if needs_memory_write(user_message) else "agentes legales"
+    # Override Haiku explícito
+    if msg.startswith(HAIKU_FORCE_PREFIXES):
+        log.info(f"→ Haiku ({CLAUDE_HAIKU}) — override /haiku")
+        cleaned = strip_override_prefix(user_message)
+        return _call_claude_with_billing_check(call_haiku, api_key, system_prompt, history, cleaned), "haiku"
+
+    # Análisis / búsqueda / datos / tools → Claude con tools.
+    # CONTROL DE COSTO: Sonnet (caro) SOLO para lo pesado — prefijo explícito
+    # (/sonnet, /profundo, /fuerte) o dictamen legal (needs_legal_sonnet).
+    # Todo lo demás que necesite tools (correos, recordatorios, kawiil-central,
+    # browser, memoria) corre en HAIKU, que soporta tool-use y cuesta ≈1/3.
+    if needs_claude(user_message) or needs_sonnet_auto(user_message) or needs_tools(user_message):
+        usa_sonnet = needs_claude(user_message) or needs_legal_sonnet(user_message) or needs_doc_sonnet(user_message)
+        modelo_tools = CLAUDE_SONNET if usa_sonnet else CLAUDE_HAIKU
+        reason = (
+            "prefijo /sonnet" if needs_claude(user_message) else
+            "dictamen legal" if needs_legal_sonnet(user_message) else
+            "documento PDF/PPTX/XLSX" if needs_doc_sonnet(user_message) else
+            "escritura memoria" if needs_memory_write(user_message) else
+            "herramienta/datos"
         )
-        log.info(f"→ Sonnet ({CLAUDE_SONNET}) — {reason}")
-        response = call_claude(api_key, system_prompt, history, user_message) or ""
+        log.info(f"→ {'Sonnet' if usa_sonnet else 'Haiku'} ({modelo_tools}) con tools — {reason}")
+        cleaned = strip_override_prefix(user_message)
+        response = call_claude(api_key, system_prompt, history, cleaned, model=modelo_tools) or ""
         if _is_billing_error(response):
+            # Sin créditos: si era una nota de memoria, sálvala en local para no perder el aprendizaje.
+            if needs_memory_write(user_message):
+                fb = try_deterministic_memory_write(user_message, strict=False)
+                if fb is not None:
+                    log.info("→ Memoria directa (fallback sin créditos)")
+                    return fb, "memoria-directa-fallback"
             if needs_sonnet_auto(user_message) and not needs_claude(user_message):
                 return _sonnet_auto_billing_msg(user_message), "sonnet-billing-error"
             return _billing_error_msg(), "sonnet-billing-error"
-        tag = "sonnet"
+        tag = "sonnet" if usa_sonnet else "haiku-tools"
         if needs_memory_write(user_message) and not needs_claude(user_message):
-            tag = "sonnet-memory"
+            tag = "haiku-memory" if not usa_sonnet else "sonnet-memory"
         elif needs_legal_sonnet(user_message) and not needs_claude(user_message):
             tag = "sonnet-legal"
         return response, tag
 
-    # Default: Ollama local
-    return _ollama_route("chat default")
+    # Default: conversación fluida → DeepSeek
+    return _deepseek_route("chat default")
 
 
 def _is_billing_error(text: str) -> bool:
@@ -4399,22 +8989,73 @@ def _call_claude_with_billing_check(fn, api_key, system_prompt, history, user_me
 # ===== Formatters por canal =====
 def format_for_telegram(text: str) -> str:
     """
-    Convierte Markdown estándar (lo que Claude produce) a Markdown legacy de Telegram.
-    Reglas:
-      - `**bold**` → `*bold*`
-      - Headers `#`, `##`, `###` → línea en negrita
-      - El resto se mantiene
+    Convierte Markdown estándar (lo que Claude produce) a HTML de Telegram.
+
+    Telegram legacy Markdown es frágil: un `*` o backtick desbalanceado devuelve
+    HTTP 400 y el mensaje cae a texto crudo (asteriscos literales). HTML de Telegram
+    es predecible — generamos pares de tags balanceados. Tags soportados:
+    <b> <i> <u> <s> <code> <pre> <a>.
     """
     if not text:
         return text
-    # 1) Headers a negrita en línea propia
-    text = re.sub(r"^#{1,6}\s+(.+)$", r"*\1*", text, flags=re.MULTILINE)
-    # 2) ** ** → * * (negrita). Evita captura greedy.
-    # Reemplazo de a pares: cada ** se vuelve * (más simple y correcto que regex de pares balanceados).
-    # Estrategia: ** consecutivos → un solo *
-    text = text.replace("**", "*")
-    # 3) Telegram Markdown legacy NO acepta ___ ni ~~. Lo dejamos pasar literal o lo borramos.
-    text = re.sub(r"~~(.+?)~~", r"\1", text)  # tachado: quitar
+    import html as _html
+    # 1) Proteger bloques de código ``` ``` y spans `code` (no tocar su interior)
+    placeholders: list = []
+
+    def _stash(m):
+        placeholders.append(m.group(0))
+        return f"\x00{len(placeholders)-1}\x00"
+
+    text = re.sub(r"```[\s\S]*?```", _stash, text)
+    text = re.sub(r"`[^`\n]+`", _stash, text)
+    # 2) Escapar caracteres especiales de HTML en el resto
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    # 2b) Tablas markdown → líneas legibles (Telegram NO renderiza tablas; los `|`
+    # y la fila `|---|` salían en crudo). Cada fila → celdas unidas por "  —  ".
+    def _detable_line(ln: str):
+        s = ln.strip()
+        if "|" not in s:
+            return ln
+        core_s = s.strip("|").strip()
+        # Fila separadora (|---|:--:|) → eliminar
+        if core_s and set(core_s) <= set("-:| "):
+            return None
+        cells = [c.strip() for c in s.strip("|").split("|")]
+        cells = [c for c in cells if c != ""]
+        if len(cells) >= 2:
+            return "• " + "  —  ".join(cells)
+        return ln
+    _tl = []
+    for _ln in text.split("\n"):
+        r = _detable_line(_ln)
+        if r is not None:
+            _tl.append(r)
+    text = "\n".join(_tl)
+    # 2c) Viñetas (-, *, +) → • para que no queden asteriscos/guiones sueltos.
+    text = re.sub(r"(?m)^(\s*)[-*+]\s+", r"\1• ", text)
+    # 3) Headers → negrita en su propia línea
+    text = re.sub(r"^#{1,6}\s+(.+)$", r"<b>\1</b>", text, flags=re.MULTILINE)
+    # 4) Negrita **x** y __x__
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text, flags=re.DOTALL)
+    text = re.sub(r"__(.+?)__", r"<b>\1</b>", text, flags=re.DOTALL)
+    # 5) Tachado ~~x~~
+    text = re.sub(r"~~(.+?)~~", r"<s>\1</s>", text, flags=re.DOTALL)
+    # 6) Cursiva *x* / _x_ (un solo marcador, sin pegar a palabra para no romper a*b)
+    text = re.sub(r"(?<![\w*])\*([^*\n]+?)\*(?![\w*])", r"<i>\1</i>", text)
+    text = re.sub(r"(?<![\w_])_([^_\n]+?)_(?![\w_])", r"<i>\1</i>", text)
+    # 7) Links [texto](url)
+    text = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", r'<a href="\2">\1</a>', text)
+    # 8) Restaurar code spans como <code>/<pre> (escapando su interior)
+    def _restore(m):
+        raw = placeholders[int(m.group(1))]
+        if raw.startswith("```"):
+            inner = raw.strip("`")
+            inner = _html.escape(inner)
+            return f"<pre>{inner}</pre>"
+        inner = _html.escape(raw.strip("`"))
+        return f"<code>{inner}</code>"
+
+    text = re.sub(r"\x00(\d+)\x00", _restore, text)
     return text
 
 

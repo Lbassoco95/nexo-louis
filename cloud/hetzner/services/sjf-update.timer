@@ -1,0 +1,13 @@
+[Unit]
+Description=Dispara el harvester SJF de Louis (diario)
+Documentation=https://github.com/Lbassoco95/kawiil-agents
+
+[Timer]
+# El Semanario publica los jueves; corremos diario por la mañana (hora del server)
+# con margen aleatorio para no pegarle al API siempre al mismo segundo.
+OnCalendar=*-*-* 13:30:00
+RandomizedDelaySec=900
+Persistent=true
+
+[Install]
+WantedBy=timers.target

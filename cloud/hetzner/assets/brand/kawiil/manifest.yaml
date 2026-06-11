@@ -1,0 +1,76 @@
+# Manifiesto de marca — Kawiil
+# Catálogo para que la IA (Louis / Cowork) elija el asset correcto por contexto.
+# Confirmados = vistos directamente. "revisar" = inferido por nombre, Polo confirma.
+
+marca: Kawiil MX
+colores:
+  azul_brillante: "#1a6ef5"   # wordmark KAWIIL MX
+  azul_marino:    "#0a1a8c"   # isotipo (mano + espiral "Manik")
+  texto:          "#1a1a1a"
+tipografia: "Georgia / sans del kit (pendiente confirmar)"
+
+assets:
+  - archivo: usos_kawiil_1.png
+    tipo: logo_horizontal
+    contenido: "Wordmark 'KAWIIL MX'"
+    color: azul_brillante
+    fondo: claro
+    uso: "Encabezado de documentos (briefing, boletines) sobre fondo claro"
+    confirmado: true
+  - archivo: Manik_2.png
+    tipo: isotipo
+    contenido: "Mano con espiral (símbolo Manik)"
+    color: azul_marino
+    fondo: claro
+    uso: "Símbolo / marca de agua / favicon sobre fondo claro"
+    confirmado: true
+  - archivo: Manik_1.png
+    tipo: isotipo
+    contenido: "Mano con espiral (símbolo Manik)"
+    color: blanco
+    fondo: oscuro
+    uso: "Isotipo para fondos oscuros / portadas"
+    confirmado: true
+  - archivo: usos_kawiil_2.png
+    tipo: logo_variante
+    uso: "Variante de uso (revisar)"
+    confirmado: false
+  - archivo: usos_kawiil_3.png
+    tipo: logo_variante
+    uso: "Variante de uso (revisar)"
+    confirmado: false
+  - archivo: usos_kawiil_4.png
+    tipo: logo_variante
+    uso: "Variante de uso (revisar)"
+    confirmado: false
+  - archivo: usos_kawiil_5.png
+    tipo: logo_variante
+    uso: "Variante de uso (revisar)"
+    confirmado: false
+  - archivo: usos_kawiil_6.png
+    tipo: logo_variante
+    uso: "Variante de uso (revisar)"
+    confirmado: false
+  - archivo: usos_kawiil_7.png
+    tipo: logo_variante
+    uso: "Variante de uso (revisar)"
+    confirmado: false
+  - archivo: usos_kawiil_8.png
+    tipo: logo_variante
+    uso: "Variante de uso (revisar)"
+    confirmado: false
+  - archivo: "manik v2.png"
+    tipo: isotipo_alt
+    uso: "Isotipo alta resolución (revisar)"
+    confirmado: false
+  - archivo: manik-navidad.png
+    tipo: estacional
+    uso: "Versión navideña (uso estacional)"
+    confirmado: false
+
+# Reglas de selección por contexto (las usa el generador / Louis):
+seleccion:
+  encabezado_documento_claro: usos_kawiil_1.png
+  simbolo_fondo_claro: Manik_2.png
+  simbolo_fondo_oscuro: Manik_1.png
+# Yoltik: pendiente — Polo cargará el kit de Yoltik después (brand/yoltik/).

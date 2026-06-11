@@ -25,6 +25,10 @@ Subcomandos:
                                                      formato inicio/fin: YYYY-MM-DDTHH:MM (hora local CDMX)
   responder-evento <tenant> <event_id> <accept|decline|tentative> ["<comentario>"] [send_response]
                                                      acepta/rechaza/tentativo en invitación
+  eliminar-evento <tenant> <event_id> ["<comentario>"]
+                                                     cancela (organizador→notifica asistentes) o borra el evento
+  actualizar-evento <tenant> <event_id> campo=valor [campo=valor ...]
+                                                     modifica subject/inicio/fin/asistentes/body/ubicacion
   pendientes-evento <tenant> [hoy|manana|semana|mes] lista solo eventos donde no he respondido (notResponded)
 
   mandar-correo <tenant> <to> "<subject>" "<body>" [cc] [text|html]
@@ -695,6 +699,74 @@ def cmd_pendientes_evento(args):
         print()
 
 
+def cmd_eliminar_evento(args):
+    """Cancela un evento (si soy organizador → notifica a los asistentes) o lo
+    elimina de mi calendario (si soy invitado o no tiene asistentes)."""
+    if len(args) < 2:
+        print("Uso: m365.py eliminar-evento <tenant> <event_id> [\"<comentario>\"]", file=sys.stderr)
+        sys.exit(1)
+    tenant, eid = args[0], args[1]
+    comment = args[2] if len(args) > 2 else "Cancelado"
+    token = get_access_token(tenant)
+    # Averigua si soy el organizador para decidir entre cancelar (notifica) o borrar.
+    try:
+        ev = graph_get(token, f"/me/events/{eid}?$select=subject,isOrganizer,attendees")
+    except RuntimeError as e:
+        print(f"ERROR: no encontré el evento {eid[:30]}...: {e}", file=sys.stderr)
+        sys.exit(1)
+    subj = ev.get("subject", "(sin título)")
+    is_org = ev.get("isOrganizer", False)
+    tiene_asistentes = bool(ev.get("attendees"))
+    if is_org and tiene_asistentes:
+        # /cancel envía mensaje de cancelación a los asistentes y cancela la junta.
+        graph_post(token, f"/me/events/{eid}/cancel", {"comment": comment})
+        print(f"OK: evento CANCELADO — se notificó a los asistentes")
+        print(f"    {subj}")
+    else:
+        graph_delete(token, f"/me/events/{eid}")
+        print(f"OK: evento ELIMINADO de tu calendario")
+        print(f"    {subj}")
+
+
+def cmd_actualizar_evento(args):
+    """Modifica un evento existente (hora, asunto, asistentes, lugar, etc).
+    Si soy organizador y el evento tiene asistentes, Graph les envía la
+    actualización automáticamente."""
+    if len(args) < 3:
+        print("Uso: m365.py actualizar-evento <tenant> <event_id> campo=valor [campo=valor ...]", file=sys.stderr)
+        print("Campos: subject, inicio (YYYY-MM-DDTHH:MM), fin, asistentes (a,b,c), body, ubicacion", file=sys.stderr)
+        sys.exit(1)
+    tenant, eid = args[0], args[1]
+    token = get_access_token(tenant)
+    body = {}
+    for kv in args[2:]:
+        if "=" not in kv:
+            continue
+        k, v = kv.split("=", 1)
+        k = k.strip().lower()
+        if k in ("subject", "asunto", "titulo", "título"):
+            body["subject"] = v
+        elif k in ("inicio", "start"):
+            body["start"] = {"dateTime": v, "timeZone": "Central Standard Time (Mexico)"}
+        elif k in ("fin", "end"):
+            body["end"] = {"dateTime": v, "timeZone": "Central Standard Time (Mexico)"}
+        elif k in ("body", "cuerpo", "descripcion", "descripción"):
+            body["body"] = {"contentType": "Text", "content": v}
+        elif k in ("ubicacion", "ubicación", "location", "lugar"):
+            body["location"] = {"displayName": v}
+        elif k in ("asistentes", "attendees"):
+            body["attendees"] = [
+                {"emailAddress": {"address": a.strip()}, "type": "required"}
+                for a in v.split(",") if a.strip()
+            ]
+    if not body:
+        print("ERROR: no diste ningún campo válido a actualizar", file=sys.stderr)
+        sys.exit(1)
+    graph_patch(token, f"/me/events/{eid}", body)
+    print(f"OK: evento actualizado ({eid[:30]}...)")
+    print(f"    Campos modificados: {', '.join(body.keys())}")
+
+
 def cmd_mandar_correo(args):
     if len(args) < 4:
         print("Uso: m365.py mandar-correo <tenant> <to> \"<subject>\" \"<body>\" [cc] [text|html]", file=sys.stderr)
@@ -739,6 +811,8 @@ COMMANDS = {
     "calendario": cmd_calendario,
     "crear-evento": cmd_crear_evento,
     "responder-evento": cmd_responder_evento,
+    "eliminar-evento": cmd_eliminar_evento,
+    "actualizar-evento": cmd_actualizar_evento,
     "pendientes-evento": cmd_pendientes_evento,
     "mandar-correo": cmd_mandar_correo,
     "attachments-listar": cmd_attachments_listar,
