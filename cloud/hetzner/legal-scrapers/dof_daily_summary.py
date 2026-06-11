@@ -138,7 +138,7 @@ def notificar_kawiil_central(titulo, cuerpo, tipo):
         print(f"WARN: no notifiqué a Kawiil Central: {e}", file=sys.stderr)
 
 
-def build_html(relevantes, resto_counts, total, fecha, rows=None):
+def build_html(relevantes, resto_counts, total, fecha, rows=None, ed_label=""):
     # Motor HTML interactivo ÚNICO (mismo look que el análisis legal y el SJF).
     if "/opt/openclaw/scripts" not in sys.path:
         sys.path.insert(0, "/opt/openclaw/scripts")
@@ -203,8 +203,9 @@ def build_html(relevantes, resto_counts, total, fecha, rows=None):
            + "\n".join(f"- [{(r['tipo_nota_raw'] or '').strip() or 'doc'}] "
                        f"{(r['titulo'] or '').strip()} (cód {r['cod_nota']})"
                        for r in fuente_ctx[:200]))
+    titulo_ed = f"{fl} · Edición {ed_label}" if ed_label else fl
     return LH.render_page(
-        f"📰 Diario Oficial — {fl}", "Diario Oficial de la Federación",
+        f"📰 Diario Oficial — {titulo_ed}", "Diario Oficial de la Federación",
         body, ctx_md=ctx, con_chat=True, resumen=resumen,
         chat_titulo="💬 Pregúntale a Louis sobre el DOF de hoy",
         fuente="Fuente: Diario Oficial de la Federación (SEGOB)")
@@ -212,34 +213,57 @@ def build_html(relevantes, resto_counts, total, fecha, rows=None):
 
 
 def main():
-    # El DOF no publica sábado/domingo: el boletín DIARIO descansa esos días.
-    # (El backfill histórico es otro proceso y sigue corriendo.) --force lo ignora.
-    if dt.datetime.now().weekday() >= 5 and "--force" not in sys.argv:
-        print("Fin de semana: el DOF no publica; boletín diario omitido.")
+    # Flags:
+    #   --ves / --vespertina  → reporta la edición VESPERTINA (default: MATUTINA)
+    #   --ayer                → edición del día hábil anterior (compat con el flujo viejo)
+    #   --force               → ignora fin de semana y el "ya enviado"
+    # Por default reporta la edición del DÍA EN CURSO (la hora del server es CDMX).
+    args = [a.lower() for a in sys.argv[1:]]
+    force = "--force" in args
+    usar_ayer = "--ayer" in args
+    edicion = "VES" if ("--ves" in args or "--vespertina" in args) else "MAT"
+    eds = ("VES",) if edicion == "VES" else ("MAT", "EXT")  # MAT arrastra las extraordinarias
+    ed_label = EDIC.get(edicion, edicion)
+
+    # El DOF no publica sábado/domingo: el boletín descansa esos días.
+    if dt.datetime.now().weekday() >= 5 and not force:
+        print("Fin de semana: el DOF no publica; boletín omitido.")
         return 0
     if not Path(DB).exists():
         print(f"ERROR: no existe {DB}", file=sys.stderr)
         return 1
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
-    # La edición del DÍA HÁBIL ANTERIOR (fecha < hoy): el lunes reporta el viernes,
-    # el martes el lunes, etc. Cada edición se reporta a la mañana siguiente.
-    fecha = conn.execute("SELECT MAX(fecha) FROM notas WHERE fecha < date('now')").fetchone()[0]
+
+    if usar_ayer:
+        fecha = conn.execute(
+            "SELECT MAX(fecha) FROM notas WHERE fecha < date('now','localtime')").fetchone()[0]
+    else:
+        fecha = dt.date.today().isoformat()  # HOY (server en CDMX)
     if not fecha:
-        print("Sin fechas validas", file=sys.stderr)
+        print("Sin fechas válidas", file=sys.stderr)
+        conn.close()
         return 1
+
+    # Estado por (fecha, edición): MAT y VES se mandan por separado, una vez cada una.
     state = Path(os.environ.get("DOF_STATE", "/opt/openclaw/state/dof_last_sent.txt"))
-    last_sent = state.read_text().strip() if state.exists() else ""
-    if fecha == last_sent and "--force" not in sys.argv:
-        print(f"DOF {fecha} ya enviado; sin edicion nueva, skip")
+    state_key = f"{fecha}_{edicion}"
+    enviados = state.read_text().split() if state.exists() else []
+    if state_key in enviados and not force:
+        print(f"DOF {state_key} ya enviado; skip")
         conn.close()
         return 0
+
+    ph = ",".join("?" * len(eds))
     rows = conn.execute(
-        "SELECT cod_nota, edicion, seccion, nombre_cod_orga_uno, tipo_nota_raw, titulo "
-        "FROM notas WHERE fecha=? ORDER BY seccion, nombre_cod_orga_uno, cod_nota", (fecha,)).fetchall()
+        f"SELECT cod_nota, edicion, seccion, nombre_cod_orga_uno, tipo_nota_raw, titulo "
+        f"FROM notas WHERE fecha=? AND edicion IN ({ph}) "
+        f"ORDER BY seccion, nombre_cod_orga_uno, cod_nota", (fecha, *eds)).fetchall()
     conn.close()
     if not rows:
-        send_msg(f"📰 <b>DOF</b> — sin notas para {fecha_larga(fecha)}.")
+        # Sin esa edición todavía (la VESPERTINA no sale todos los días; la MATUTINA
+        # puede no estar sincronizada aún). No mandamos nada para no hacer ruido.
+        print(f"Sin notas para {fecha} edición {edicion}; no envío.")
         return 0
 
     relevantes, resto_counts = [], {}
@@ -251,19 +275,21 @@ def main():
             resto_counts[cat] = resto_counts.get(cat, 0) + 1
 
     fl = fecha_larga(fecha)
-    caption = (f"📰 <b>Diario Oficial</b> — {esc(fl)}\n"
+    caption = (f"📰 <b>Diario Oficial</b> — {esc(fl)} · <b>Edición {ed_label}</b>\n"
                f"<b>{len(relevantes)}</b> documentos relevantes (leyes/decretos/acuerdos/circulares…) "
                f"de {len(rows)} publicaciones. Detalle por dependencia en el adjunto.")
-    fname = f"DOF_{fecha.replace('-', '')}.html"
-    ok = send_doc(build_html(relevantes, resto_counts, len(rows), fecha, rows), fname, caption)
+    fname = f"DOF_{fecha.replace('-', '')}_{edicion}.html"
+    ok = send_doc(build_html(relevantes, resto_counts, len(rows), fecha, rows, ed_label), fname, caption)
     if ok:
         try:
             state.parent.mkdir(parents=True, exist_ok=True)
-            state.write_text(fecha)
+            # Conserva solo las marcas recientes (últimas ~30) para no crecer sin fin.
+            nuevos = [x for x in enviados if x != state_key][-30:] + [state_key]
+            state.write_text(" ".join(nuevos))
         except Exception as e:
             print(f"WARN: no guardé estado: {e}", file=sys.stderr)
         notificar_kawiil_central(
-            titulo=f"DOF — {fl}",
+            titulo=f"DOF {ed_label} — {fl}",
             cuerpo=(f"{len(relevantes)} documentos normativos relevantes "
                     f"(leyes/decretos/acuerdos/circulares…) de {len(rows)} publicaciones. "
                     f"El detalle por dependencia llegó al Telegram de Louis."),
