@@ -1,8 +1,11 @@
 [Unit]
-Description=Dispara el harvest del DOF (ediciones recientes) — diario, mañana CDMX
+Description=Dispara el harvest del DOF (ediciones recientes) — mañana y tarde CDMX
 
 [Timer]
+# Mañana: trae la matutina antes del boletín de las 09:00.
 OnCalendar=*-*-* 08:30:00 America/Mexico_City
+# Tarde: trae la vespertina antes del boletín de las 18:30.
+OnCalendar=Mon..Fri *-*-* 18:00:00 America/Mexico_City
 RandomizedDelaySec=300
 Persistent=true
 
