@@ -7433,18 +7433,24 @@ _DISTILL_TARGETS = {
 _DISTILL_SYSTEM = (
     "Eres el módulo de memoria de Louis, asistente ejecutivo de Polo (Kawiil, despacho "
     "legal/tech en México). Te paso la conversación de HOY entre Polo y Louis. Extrae SOLO "
-    "hechos DURABLES que valga la pena recordar a largo plazo y clasifícalos. Devuelve "
-    "EXCLUSIVAMENTE un JSON válido con estas llaves (arrays de strings, una frase corta por "
-    'hecho; usa [] si no hay nada):\n'
+    "hechos DURABLES y ESPECÍFICOS que valga la pena recordar a largo plazo y clasifícalos. "
+    "Devuelve EXCLUSIVAMENTE un JSON válido con estas llaves (arrays de strings, una frase "
+    'corta por hecho; usa [] si no hay nada):\n'
     '{"PEOPLE": [], "CLIENTES": [], "AGENDA": [], "IMPORTANT": []}\n\n'
     "Reglas:\n"
     "- PEOPLE: datos durables de personas (rol, empresa, relación, junta recurrente, preferencias).\n"
     "- CLIENTES: datos de clientes/prospectos (razón social, RFC, contacto, estatus, servicio).\n"
-    "- AGENDA: pendientes/tareas/compromisos por hacer.\n"
+    "- AGENDA: pendientes/tareas/compromisos por hacer DE POLO (no tareas internas de Louis).\n"
     "- IMPORTANT: decisiones, hechos clave o instrucciones permanentes de Polo.\n"
+    "- Cada hecho debe ser ESPECÍFICO: con nombre propio, empresa, fecha, monto o dato concreto. "
+    "Si es vago o genérico, OMÍTELO.\n"
+    "- NO guardes hechos sobre Louis mismo, el sistema, el bot, la memoria, los archivos .md, ni "
+    "tareas de mantenimiento ('actualizar AGENDA', 'consolidar memoria', 'Louis es asistente…'). "
+    "Solo el MUNDO de Polo: personas, clientes, casos, compromisos, decisiones.\n"
     "- NO incluyas charla trivial, saludos, briefings, ni cosas efímeras (clima, '¿qué hay hoy?').\n"
     "- NO inventes: solo lo explícito en la conversación. Usa nombres correctos y completos.\n"
-    "- Si no hay NADA durable, devuelve todos los arrays vacíos.\n"
+    "- Ante la duda, NO lo guardes. Mejor pocos hechos sólidos que muchos genéricos.\n"
+    "- Si no hay NADA durable y específico, devuelve todos los arrays vacíos.\n"
     "Responde SOLO el JSON, sin explicación ni markdown."
 )
 
