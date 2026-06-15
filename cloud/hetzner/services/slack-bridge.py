@@ -124,24 +124,39 @@ def main():
                 sys_prompt = core.load_system_prompt(channel="slack")
                 return core.call_claude_with_image(api_key, sys_prompt, img_b64, media_type, prompt_text or "")
             elif mimetype.startswith("audio/") or mimetype in ("video/mp4", "video/webm"):
-                # Transcribir con whisper
+                # Transcribir con whisper. Modelos por preferencia: medium → small →
+                # base; degrada si medium se tarda demasiado (CPU) para no fallar.
                 whisper_bin = "/usr/local/bin/whisper-cli"
                 ffmpeg_bin = "/usr/bin/ffmpeg"
-                whisper_model = HOME_OC / "whisper-models" / "ggml-medium.bin"
-                if not Path(whisper_bin).exists() or not whisper_model.exists():
+                whisper_dir = HOME_OC / "whisper-models"
+                modelos = [(n, whisper_dir / f"ggml-{n}.bin", tout)
+                           for n, tout in (("medium", 240), ("small", 150), ("base", 90))
+                           if (whisper_dir / f"ggml-{n}.bin").exists()]
+                if not Path(whisper_bin).exists() or not modelos:
                     return "(audio recibido pero whisper no está instalado en este servidor)"
+                threads = str(max(4, os.cpu_count() or 4))
+                transcript = ""
                 with tempfile.TemporaryDirectory() as td:
                     wav = Path(td) / "audio.wav"
                     subprocess.run([ffmpeg_bin,"-y","-i",str(tmp_path),"-ar","16000","-ac","1",str(wav)], capture_output=True, timeout=60)
-                    r = subprocess.run(
-                        [whisper_bin,"-m",str(whisper_model),"-f",str(wav),"-l","es","-otxt","-of",str(Path(td)/"t"),"--no-prints"],
-                        capture_output=True, text=True, timeout=180,
-                    )
-                    tx_path = Path(td) / "t.txt"
-                    transcript = tx_path.read_text().strip() if tx_path.exists() else r.stdout.strip()
+                    for nombre, modelo, tout in modelos:
+                        of = Path(td) / f"t_{nombre}"
+                        try:
+                            r = subprocess.run(
+                                [whisper_bin,"-m",str(modelo),"-f",str(wav),"-l","es","-t",threads,"-otxt","-of",str(of),"--no-prints"],
+                                capture_output=True, text=True, timeout=tout,
+                            )
+                        except subprocess.TimeoutExpired:
+                            continue
+                        if r.returncode != 0:
+                            continue
+                        tx_path = of.with_suffix(".txt")
+                        transcript = tx_path.read_text().strip() if tx_path.exists() else r.stdout.strip()
+                        if transcript:
+                            break
                 # Devuelve transcript + procesa como texto normal vía LLM
                 if not transcript:
-                    return "(no logré transcribir el audio)"
+                    return "(no logré transcribir el audio — muy largo o servidor saturado; intenta de nuevo o más corto)"
                 composed = (prompt_text + "\n\n" if prompt_text else "") + f"Transcripción del audio: {transcript}"
                 # Procesar con Haiku (o Claude si tiene tools)
                 sys_prompt = core.load_system_prompt(channel="slack")
