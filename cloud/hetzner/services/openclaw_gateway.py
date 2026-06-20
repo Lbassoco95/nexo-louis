@@ -222,44 +222,76 @@ _TABLERO_HTML = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Tablero Kawiil — Seguimiento</title>
 <style>
-:root{--bg:#0e1116;--card:#161b22;--bd:#262d36;--tx:#e6edf3;--mut:#8b949e;--ac:#58a6ff;--warn:#d29922;--bad:#f85149;}
+:root{--bg:#0e1116;--card:#161b22;--bd:#262d36;--tx:#e6edf3;--mut:#8b949e;--ac:#58a6ff;--warn:#d29922;--bad:#f85149;--ok:#3fb950;}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif}
 header{padding:16px 20px;border-bottom:1px solid var(--bd);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
 h1{font-size:18px;margin:0}.upd{color:var(--mut);font-size:12px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:16px;padding:20px}
+.nav a{color:var(--ac);margin-left:14px;font-size:13px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;padding:20px}
 .card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:16px}
 .card h2{font-size:14px;margin:0 0 10px}
-.li{padding:7px 0;border-top:1px solid var(--bd);font-size:13px}.li:first-of-type{border-top:0}
+.li{padding:8px 0;border-top:1px solid var(--bd);font-size:13px}.li:first-of-type{border-top:0}
+.click{cursor:pointer}.click:hover{color:var(--ac)}
 .tag{font-size:11px;color:var(--mut)}.b-bad{color:var(--bad)}.b-warn{color:var(--warn)}
+.pill{font-size:10px;padding:1px 7px;border-radius:9px;border:1px solid var(--bd);color:var(--mut)}
 .empty{color:var(--mut);font-style:italic}a{color:var(--ac);text-decoration:none}
+#ov{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:flex-start;justify-content:center;padding:40px 16px;z-index:9}
+#mod{background:var(--card);border:1px solid var(--bd);border-radius:14px;max-width:820px;width:100%;max-height:85vh;overflow:auto;padding:22px}
+#mod h3{margin:0 0 6px}#mbody pre{white-space:pre-wrap;word-wrap:break-word;font:13px/1.55 ui-monospace,Menlo,monospace;color:var(--tx)}
+.x{float:right;cursor:pointer;color:var(--mut);font-size:20px}
 </style></head>
 <body>
-<header><h1>🧭 Tablero Kawiil — Seguimiento</h1><span class="upd" id="upd">cargando…</span></header>
+<header><h1>🧭 Tablero Kawiil</h1>
+  <span class="nav"><a href="/tablero">Seguimiento</a><a href="/dashboard">Agentes (grafo)</a></span>
+  <span class="upd" id="upd">cargando…</span></header>
 <div class="grid" id="grid"></div>
+<div id="ov" onclick="if(event.target.id==='ov')cerrar()"><div id="mod">
+  <span class="x" onclick="cerrar()">✕</span>
+  <h3 id="mtitle">…</h3><div id="mbody"></div></div></div>
 <script>
 function esc(s){return (s||'').toString().replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
+function ea2(s){return esc(s).replace(/"/g,'&quot;')}
 function vc(t){t=(t||'').toLowerCase();if(t.includes('vence hoy')||t.includes('urgente'))return 'b-bad';if(/\d{1,2}:\d{2}/.test(t)||t.includes('hoy'))return 'b-warn';return ''}
+function cerrar(){document.getElementById('ov').style.display='none'}
+async function abrirEnt(f){
+  const ov=document.getElementById('ov');ov.style.display='flex';
+  document.getElementById('mtitle').textContent='Cargando…';document.getElementById('mbody').innerHTML='';
+  try{
+    const d=await fetch('/v1/entregable?f='+encodeURIComponent(f)).then(r=>r.json());
+    if(!d.ok){document.getElementById('mtitle').textContent='No disponible';document.getElementById('mbody').textContent=d.error||'';return;}
+    document.getElementById('mtitle').textContent=(d.meta&&d.meta.titulo)||f;
+    const head=Object.entries(d.meta||{}).filter(([k])=>['cliente','estado','fecha_actualizacion','tipo','autor'].includes(k)).map(([k,v])=>k+': '+v).join('  ·  ');
+    document.getElementById('mbody').innerHTML='<div class="tag" style="margin-bottom:12px">'+esc(head)+'</div><pre>'+esc(d.cuerpo||'(sin contenido)')+'</pre>';
+  }catch(e){document.getElementById('mbody').textContent='error: '+e}
+}
 async function load(){
  try{
   const [t,a]=await Promise.all([
     fetch('/v1/tablero').then(r=>r.json()),
     fetch('/v1/activity').then(r=>r.json()).catch(()=>({}))]);
   const g=document.getElementById('grid');g.innerHTML='';
+  // Vencimientos
   let v=(t.vencimientos||[]).map(x=>`<div class="li ${vc(x)}">${esc(x)}</div>`).join('')||'<div class="empty">sin vencimientos</div>';
   g.innerHTML+=`<div class="card"><h2>⏰ Vencimientos / seguimiento</h2>${v}</div>`;
-  g.innerHTML+=`<div class="card"><h2>📦 Entregables (Cerebro)</h2><div class="li">${esc(t.entregables||'(sin datos)').replace(/\n/g,'<br>')}</div></div>`;
+  // Entregables clickeables
+  let ents=(t.entregables||[]).map(x=>`<div class="li click" onclick="abrirEnt('${ea2(x.archivo)}')">${esc(x.icono)} ${esc(x.titulo)}${x.cliente?' — '+esc(x.cliente):''} <span class="pill">${esc(x.estado)}</span></div>`).join('')||'<div class="empty">sin entregables</div>';
+  g.innerHTML+=`<div class="card"><h2>📦 Entregables (Cerebro) <span class="tag">— clic para ver</span></h2><div class="tag" style="margin-bottom:6px">${esc(t.entregables_resumen||'')}</div>${ents}</div>`;
+  // SJF clickeable → SCJN
   let s=t.sjf||{};
-  let sj=(s.recientes||[]).map(x=>`<div class="li"><span class="tag">${esc(x.fecha)} · ${esc(x.reg)}</span><br>${esc(x.rubro)}</div>`).join('')||'<div class="empty">n/d</div>';
-  g.innerHTML+=`<div class="card"><h2>⚖️ SJF — últimas tesis</h2><div class="tag">total ${esc(s.total||0)} · último ingreso ${esc(s.ultima_fecha||'?')}</div>${sj}</div>`;
+  let sj=(s.recientes||[]).map(x=>`<div class="li"><a href="${ea2(x.url)}" target="_blank" rel="noopener">${esc(x.rubro)}</a><br><span class="tag">${esc(x.fecha)} · reg ${esc(x.reg)}</span></div>`).join('')|| (s.error?`<div class="empty">error: ${esc(s.error)}</div>`:'<div class="empty">n/d</div>');
+  g.innerHTML+=`<div class="card"><h2>⚖️ SJF — últimas tesis <span class="tag">— clic para abrir en SCJN</span></h2><div class="tag" style="margin-bottom:6px">total ${esc(s.total||0)} · último ingreso ${esc(s.ultima_fecha||'?')}</div>${sj}</div>`;
+  // DOF
   let d=t.dof||{};
-  let df=(d.dias||[]).map(x=>{let e=Object.entries(x.ediciones||{}).map(([k,n])=>k+':'+n).join(' · ');return `<div class="li">${esc(x.fecha)} — ${esc(e)}</div>`}).join('')||'<div class="empty">n/d</div>';
+  let df=(d.dias||[]).map(x=>{let e=Object.entries(x.ediciones||{}).map(([k,n])=>k+':'+n).join(' · ');return `<div class="li">${esc(x.fecha)} — ${esc(e)}</div>`}).join('')||(d.error?`<div class="empty">error: ${esc(d.error)}</div>`:'<div class="empty">n/d</div>');
   g.innerHTML+=`<div class="card"><h2>📰 DOF — publicaciones</h2>${df}</div>`;
+  // Agentes
   let ev=(a&&(a.events||a.activity||a.recent))||[];
-  let ea=Array.isArray(ev)?ev.slice(0,10).map(x=>`<div class="li">${esc(typeof x==='string'?x:(x.title||x.summary||x.agent||x.name||JSON.stringify(x).slice(0,90)))}</div>`).join(''):'';
-  g.innerHTML+=`<div class="card"><h2>🤖 Agentes — actividad</h2>${ea||'<div class="empty">sin actividad reciente</div>'}<div class="li"><a href="/dashboard">→ dashboard completo de agentes</a></div></div>`;
+  let ealist=Array.isArray(ev)?ev.slice(0,10).map(x=>`<div class="li">${esc(typeof x==='string'?x:(x.title||x.summary||x.agent||x.name||JSON.stringify(x).slice(0,90)))}</div>`).join(''):'';
+  g.innerHTML+=`<div class="card"><h2>🤖 Agentes — actividad</h2>${ealist||'<div class="empty">sin actividad reciente</div>'}<div class="li"><a href="/dashboard">→ ver grafo completo de agentes</a></div></div>`;
   document.getElementById('upd').textContent='Actualizado '+(t.generado||'')+' · auto-refresh 60s';
  }catch(e){document.getElementById('upd').textContent='error: '+e}
 }
+document.addEventListener('keydown',e=>{if(e.key==='Escape')cerrar()});
 load();setInterval(load,60000);
 </script></body></html>"""
 
@@ -436,6 +468,16 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/v1/tablero":
             try:
                 self._send_json(200, core.build_tablero_data())
+            except Exception as e:
+                self._send_json(500, {"error": str(e)[:200]})
+            return
+        # Drill-down: detalle de un entregable de Cerebro (?f=<archivo>).
+        if self.path.startswith("/v1/entregable"):
+            from urllib.parse import urlparse, parse_qs
+            q = parse_qs(urlparse(self.path).query)
+            archivo = (q.get("f") or [""])[0]
+            try:
+                self._send_json(200, core._entregable_detalle(archivo))
             except Exception as e:
                 self._send_json(500, {"error": str(e)[:200]})
             return

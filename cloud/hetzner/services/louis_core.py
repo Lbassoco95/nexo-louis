@@ -1452,24 +1452,37 @@ def _cerebro_entregables_snapshot() -> str:
 
 _SJF_DB_TABLERO = Path(os.environ.get("SJF_DB_PATH", str(HOME_OC / "legal" / "sjf" / "biblioteca.db")))
 _DOF_DB_TABLERO = Path(os.environ.get("DOF_DB_PATH", str(HOME_OC / "legal" / "dof" / "biblioteca_dof.db")))
+_SJF_TESIS_URL = "https://sjf2.scjn.gob.mx/detalle/tesis/{reg}"
+
+
+def _open_db_lectura(path: Path):
+    """Abre una BD para SOLO LECTURA tolerando WAL (el harvester escribe en vivo).
+    NO usamos ?mode=ro porque falla con WAL; usamos PRAGMA query_only."""
+    con = sqlite3.connect(str(path), timeout=5)
+    con.row_factory = sqlite3.Row
+    try:
+        con.execute("PRAGMA query_only=ON")
+    except Exception:
+        pass
+    return con
 
 
 def _sjf_resumen_tablero() -> dict:
-    """Resumen del SJF para el tablero: total, último ingreso y últimas tesis."""
+    """Resumen del SJF para el tablero: total, último ingreso y últimas tesis (clickeables)."""
     out = {"ok": False, "total": 0, "ultima_fecha": None, "recientes": []}
     try:
-        con = sqlite3.connect(f"file:{_SJF_DB_TABLERO}?mode=ro", uri=True)
-        con.row_factory = sqlite3.Row
+        con = _open_db_lectura(_SJF_DB_TABLERO)
         out["total"] = con.execute("SELECT COUNT(*) FROM tesis").fetchone()[0]
         out["ultima_fecha"] = con.execute("SELECT MAX(fecha_publicacion) FROM tesis").fetchone()[0]
         for r in con.execute("SELECT registro_digital AS reg, rubro, fecha_publicacion AS fecha "
-                             "FROM tesis ORDER BY registro_digital DESC LIMIT 8"):
-            out["recientes"].append({"reg": r["reg"], "rubro": (r["rubro"] or "").strip()[:150],
-                                     "fecha": (r["fecha"] or "")[:10]})
+                             "FROM tesis ORDER BY registro_digital DESC LIMIT 10"):
+            out["recientes"].append({"reg": r["reg"], "rubro": (r["rubro"] or "").strip()[:160],
+                                     "fecha": (r["fecha"] or "")[:10],
+                                     "url": _SJF_TESIS_URL.format(reg=r["reg"])})
         con.close()
         out["ok"] = True
     except Exception as e:
-        out["error"] = str(e)[:140]
+        out["error"] = f"{type(e).__name__}: {e}"[:160]
     return out
 
 
@@ -1477,8 +1490,7 @@ def _dof_resumen_tablero() -> dict:
     """Resumen del DOF para el tablero: últimos 2 días con conteo por edición."""
     out = {"ok": False, "dias": []}
     try:
-        con = sqlite3.connect(f"file:{_DOF_DB_TABLERO}?mode=ro", uri=True)
-        con.row_factory = sqlite3.Row
+        con = _open_db_lectura(_DOF_DB_TABLERO)
         fechas = [r[0] for r in con.execute(
             "SELECT DISTINCT fecha FROM notas WHERE fecha IS NOT NULL ORDER BY fecha DESC LIMIT 2")]
         for f in fechas:
@@ -1488,8 +1500,60 @@ def _dof_resumen_tablero() -> dict:
         con.close()
         out["ok"] = True
     except Exception as e:
-        out["error"] = str(e)[:140]
+        out["error"] = f"{type(e).__name__}: {e}"[:160]
     return out
+
+
+_ICONO_ESTADO = {"borrador": "📝", "listo": "✅", "en_vobo": "🔄", "aprobado": "✔️", "archivado": "📦"}
+
+
+def _entregables_lista_tablero() -> list:
+    """Lista de entregables (clickeables) con su metadata, para el tablero."""
+    out = []
+    if not ENTREGABLES_PATH.exists():
+        return out
+    for f in sorted(ENTREGABLES_PATH.glob("*.md")):
+        if f.name.startswith("_"):
+            continue
+        meta = _cerebro_parsear_fm(f)
+        est = meta.get("estado", "?")
+        out.append({
+            "archivo": f.name,
+            "titulo": meta.get("titulo", f.stem),
+            "cliente": meta.get("cliente", ""),
+            "estado": est,
+            "icono": _ICONO_ESTADO.get(est, "❓"),
+            "fecha": meta.get("fecha_actualizacion", meta.get("fecha", "")),
+        })
+    # briefs pendientes de dispatch
+    if BRIEFS_PATH.exists():
+        for f in sorted(BRIEFS_PATH.glob("*.md")):
+            meta = _cerebro_parsear_fm(f)
+            out.append({"archivo": "_briefs/" + f.name, "titulo": meta.get("titulo", f.stem),
+                        "cliente": meta.get("cliente", ""), "estado": "brief", "icono": "📨",
+                        "fecha": meta.get("fecha", "")})
+    return out
+
+
+def _entregable_detalle(archivo: str) -> dict:
+    """Cuerpo + metadata de un entregable, para el drill-down del tablero.
+    Valida el nombre contra path-traversal (solo archivos dentro de ENTREGABLES_PATH)."""
+    nombre = (archivo or "").strip()
+    if not nombre or ".." in nombre or nombre.startswith("/"):
+        return {"ok": False, "error": "nombre inválido"}
+    sub = nombre[len("_briefs/"):] if nombre.startswith("_briefs/") else None
+    path = (BRIEFS_PATH / sub) if sub else (ENTREGABLES_PATH / nombre)
+    try:
+        path = path.resolve()
+        base = (BRIEFS_PATH if sub else ENTREGABLES_PATH).resolve()
+        if base not in path.parents or path.suffix != ".md" or not path.exists():
+            return {"ok": False, "error": "no encontrado"}
+        content = path.read_text(encoding="utf-8")
+        meta = _cerebro_parsear_fm(path)
+        cuerpo = re.sub(r"^---\n.*?\n---\n?", "", content, flags=re.DOTALL).strip()
+        return {"ok": True, "archivo": nombre, "meta": meta, "cuerpo": cuerpo[:20000]}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"[:160]}
 
 
 def build_tablero_data() -> dict:
@@ -1498,7 +1562,8 @@ def build_tablero_data() -> dict:
     return {
         "generado": datetime.now(TZ_CDMX).strftime("%Y-%m-%d %H:%M"),
         "vencimientos": _extract_deadlines(agenda, 15),
-        "entregables": _cerebro_entregables_snapshot(),
+        "entregables_resumen": _cerebro_entregables_snapshot(),
+        "entregables": _entregables_lista_tablero(),
         "sjf": _sjf_resumen_tablero(),
         "dof": _dof_resumen_tablero(),
     }
