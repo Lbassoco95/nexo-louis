@@ -18,6 +18,9 @@ services:
       CEREBRO_PORT: ${CEREBRO_PORT:-4040}
       ACME_EMAIL: ${ACME_EMAIL}
       OPENCLAW_PORT: ${OPENCLAW_PORT:-3000}
+      # Basic-auth del tablero/dashboards (genera el hash con 'caddy hash-password')
+      TABLERO_USER: ${TABLERO_USER:-polo}
+      TABLERO_HASH: ${TABLERO_HASH:-}
     healthcheck:
       # Admin API de Caddy (HTTP plano en :2019). Antes apuntaba a :80, que redirige a
       # HTTPS y reventaba el TLS (ssl_client) → unhealthy + fuga de zombies.

@@ -1450,6 +1450,60 @@ def _cerebro_entregables_snapshot() -> str:
     return " | ".join(partes) + briefs_str + nudge
 
 
+_SJF_DB_TABLERO = Path(os.environ.get("SJF_DB_PATH", str(HOME_OC / "legal" / "sjf" / "biblioteca.db")))
+_DOF_DB_TABLERO = Path(os.environ.get("DOF_DB_PATH", str(HOME_OC / "legal" / "dof" / "biblioteca_dof.db")))
+
+
+def _sjf_resumen_tablero() -> dict:
+    """Resumen del SJF para el tablero: total, último ingreso y últimas tesis."""
+    out = {"ok": False, "total": 0, "ultima_fecha": None, "recientes": []}
+    try:
+        con = sqlite3.connect(f"file:{_SJF_DB_TABLERO}?mode=ro", uri=True)
+        con.row_factory = sqlite3.Row
+        out["total"] = con.execute("SELECT COUNT(*) FROM tesis").fetchone()[0]
+        out["ultima_fecha"] = con.execute("SELECT MAX(fecha_publicacion) FROM tesis").fetchone()[0]
+        for r in con.execute("SELECT registro_digital AS reg, rubro, fecha_publicacion AS fecha "
+                             "FROM tesis ORDER BY registro_digital DESC LIMIT 8"):
+            out["recientes"].append({"reg": r["reg"], "rubro": (r["rubro"] or "").strip()[:150],
+                                     "fecha": (r["fecha"] or "")[:10]})
+        con.close()
+        out["ok"] = True
+    except Exception as e:
+        out["error"] = str(e)[:140]
+    return out
+
+
+def _dof_resumen_tablero() -> dict:
+    """Resumen del DOF para el tablero: últimos 2 días con conteo por edición."""
+    out = {"ok": False, "dias": []}
+    try:
+        con = sqlite3.connect(f"file:{_DOF_DB_TABLERO}?mode=ro", uri=True)
+        con.row_factory = sqlite3.Row
+        fechas = [r[0] for r in con.execute(
+            "SELECT DISTINCT fecha FROM notas WHERE fecha IS NOT NULL ORDER BY fecha DESC LIMIT 2")]
+        for f in fechas:
+            ed = {(row["edicion"] or "?"): row["n"] for row in con.execute(
+                "SELECT edicion, COUNT(*) AS n FROM notas WHERE fecha=? GROUP BY edicion", (f,))}
+            out["dias"].append({"fecha": f, "ediciones": ed})
+        con.close()
+        out["ok"] = True
+    except Exception as e:
+        out["error"] = str(e)[:140]
+    return out
+
+
+def build_tablero_data() -> dict:
+    """Datos en vivo para el tablero de seguimiento (lo consume el gateway en /v1/tablero)."""
+    agenda = _read_space_file("AGENDA.md")
+    return {
+        "generado": datetime.now(TZ_CDMX).strftime("%Y-%m-%d %H:%M"),
+        "vencimientos": _extract_deadlines(agenda, 15),
+        "entregables": _cerebro_entregables_snapshot(),
+        "sjf": _sjf_resumen_tablero(),
+        "dof": _dof_resumen_tablero(),
+    }
+
+
 def _generar_visual_gamma(texto: str, formato: str = "social",
                           export: str = "png", instrucciones: str = "") -> str:
     """Llama a gamma_gen.py (API de Gamma) y devuelve los enlaces. Server-side."""

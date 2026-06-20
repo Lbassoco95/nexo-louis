@@ -217,6 +217,53 @@ tick(); setInterval(tick, 2000);
 </html>"""
 
 
+_TABLERO_HTML = r"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tablero Kawiil — Seguimiento</title>
+<style>
+:root{--bg:#0e1116;--card:#161b22;--bd:#262d36;--tx:#e6edf3;--mut:#8b949e;--ac:#58a6ff;--warn:#d29922;--bad:#f85149;}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif}
+header{padding:16px 20px;border-bottom:1px solid var(--bd);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+h1{font-size:18px;margin:0}.upd{color:var(--mut);font-size:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:16px;padding:20px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:16px}
+.card h2{font-size:14px;margin:0 0 10px}
+.li{padding:7px 0;border-top:1px solid var(--bd);font-size:13px}.li:first-of-type{border-top:0}
+.tag{font-size:11px;color:var(--mut)}.b-bad{color:var(--bad)}.b-warn{color:var(--warn)}
+.empty{color:var(--mut);font-style:italic}a{color:var(--ac);text-decoration:none}
+</style></head>
+<body>
+<header><h1>🧭 Tablero Kawiil — Seguimiento</h1><span class="upd" id="upd">cargando…</span></header>
+<div class="grid" id="grid"></div>
+<script>
+function esc(s){return (s||'').toString().replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
+function vc(t){t=(t||'').toLowerCase();if(t.includes('vence hoy')||t.includes('urgente'))return 'b-bad';if(/\d{1,2}:\d{2}/.test(t)||t.includes('hoy'))return 'b-warn';return ''}
+async function load(){
+ try{
+  const [t,a]=await Promise.all([
+    fetch('/v1/tablero').then(r=>r.json()),
+    fetch('/v1/activity').then(r=>r.json()).catch(()=>({}))]);
+  const g=document.getElementById('grid');g.innerHTML='';
+  let v=(t.vencimientos||[]).map(x=>`<div class="li ${vc(x)}">${esc(x)}</div>`).join('')||'<div class="empty">sin vencimientos</div>';
+  g.innerHTML+=`<div class="card"><h2>⏰ Vencimientos / seguimiento</h2>${v}</div>`;
+  g.innerHTML+=`<div class="card"><h2>📦 Entregables (Cerebro)</h2><div class="li">${esc(t.entregables||'(sin datos)').replace(/\n/g,'<br>')}</div></div>`;
+  let s=t.sjf||{};
+  let sj=(s.recientes||[]).map(x=>`<div class="li"><span class="tag">${esc(x.fecha)} · ${esc(x.reg)}</span><br>${esc(x.rubro)}</div>`).join('')||'<div class="empty">n/d</div>';
+  g.innerHTML+=`<div class="card"><h2>⚖️ SJF — últimas tesis</h2><div class="tag">total ${esc(s.total||0)} · último ingreso ${esc(s.ultima_fecha||'?')}</div>${sj}</div>`;
+  let d=t.dof||{};
+  let df=(d.dias||[]).map(x=>{let e=Object.entries(x.ediciones||{}).map(([k,n])=>k+':'+n).join(' · ');return `<div class="li">${esc(x.fecha)} — ${esc(e)}</div>`}).join('')||'<div class="empty">n/d</div>';
+  g.innerHTML+=`<div class="card"><h2>📰 DOF — publicaciones</h2>${df}</div>`;
+  let ev=(a&&(a.events||a.activity||a.recent))||[];
+  let ea=Array.isArray(ev)?ev.slice(0,10).map(x=>`<div class="li">${esc(typeof x==='string'?x:(x.title||x.summary||x.agent||x.name||JSON.stringify(x).slice(0,90)))}</div>`).join(''):'';
+  g.innerHTML+=`<div class="card"><h2>🤖 Agentes — actividad</h2>${ea||'<div class="empty">sin actividad reciente</div>'}<div class="li"><a href="/dashboard">→ dashboard completo de agentes</a></div></div>`;
+  document.getElementById('upd').textContent='Actualizado '+(t.generado||'')+' · auto-refresh 60s';
+ }catch(e){document.getElementById('upd').textContent='error: '+e}
+}
+load();setInterval(load,60000);
+</script></body></html>"""
+
+
 def _build_activity_payload() -> dict:
     """Arma el JSON que consume el dashboard: catálogo de agentes + eventos recientes.
 
@@ -379,6 +426,18 @@ class Handler(BaseHTTPRequestHandler):
         # Feed de actividad de agentes (JSON) que consume el dashboard.
         if self.path == "/v1/activity":
             self._send_json(200, _build_activity_payload())
+            return
+
+        # Tablero de seguimiento (vencimientos + entregables + SJF + DOF + agentes).
+        # Protegido por basic-auth en Caddy (datos de clientes/legal).
+        if self.path in ("/tablero", "/seguimiento"):
+            self._send_html(200, _TABLERO_HTML)
+            return
+        if self.path == "/v1/tablero":
+            try:
+                self._send_json(200, core.build_tablero_data())
+            except Exception as e:
+                self._send_json(500, {"error": str(e)[:200]})
             return
 
         if self.path == "/v1/status":
