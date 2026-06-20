@@ -1125,7 +1125,8 @@ def _extract_deadlines(agenda_text: str, max_items: int = 12) -> list[str]:
             continue
         if not _DEADLINE_RE.search(line):
             continue
-        clean = re.sub(r"^\s*-\s*\[\s*\]\s*", "", line).strip().lstrip("*").strip()
+        clean = re.sub(r"^\s*-\s*\[\s*\]\s*", "", line).strip()
+        clean = clean.replace("**", "").strip().strip("*").strip()  # quita negritas markdown
         low = clean.lower()
         if "vence hoy" in low or "vence el día de hoy" in low or "urgente" in low or re.search(r"\bhoy\b", low):
             urgentes.append(clean)
