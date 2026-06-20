@@ -1339,6 +1339,92 @@ def _cerebro_crear_brief(tarea: str, cliente: str, insumos: str = "",
     )
 
 
+_ESTADOS_ENTREGABLE = ("borrador", "listo", "en_vobo", "aprobado", "archivado")
+
+
+def _entregable_registrar(titulo: str, cliente: str = "", contenido: str = "",
+                          tipo: str = "documento", estado: str = "borrador",
+                          preparado_por: str = "Louis") -> str:
+    """Escribe un entregable a ENTREGABLES_PATH con frontmatter. Cierra el ciclo:
+    el trabajo de un agente (o de Louis) queda como entregable y aparece en el
+    tablero/seguimiento. estado por defecto 'borrador' (para tu Vo.Bo.)."""
+    titulo = (titulo or "").strip()
+    if not titulo:
+        return "ERROR: el entregable necesita un título."
+    if estado not in _ESTADOS_ENTREGABLE:
+        estado = "borrador"
+    ENTREGABLES_PATH.mkdir(parents=True, exist_ok=True)
+    ahora = datetime.now(TZ_CDMX)
+    slug = re.sub(r"[^a-z0-9]+", "-", titulo.lower()).strip("-")[:55] or "entregable"
+    path = ENTREGABLES_PATH / f"{ahora.strftime('%Y-%m-%d')}-{slug}.md"
+    n = 1
+    while path.exists():
+        n += 1
+        path = ENTREGABLES_PATH / f"{ahora.strftime('%Y-%m-%d')}-{slug}-{n}.md"
+    cliente = _normalizar_clientes(cliente or "")
+    fm = (f"---\ntitulo: {titulo}\ntipo: {tipo}\ncliente: {cliente}\n"
+          f"estado: {estado}\npreparado_por: {preparado_por}\n"
+          f"fecha_creacion: {ahora.strftime('%Y-%m-%d')}\n"
+          f"fecha_actualizacion: {ahora.strftime('%Y-%m-%d %H:%M')}\n---\n\n")
+    path.write_text(fm + (contenido or "").strip() + "\n", encoding="utf-8")
+    return f"OK entregable registrado: {path.name} (estado={estado}, cliente={cliente or '—'})"
+
+
+def _entregable_actualizar_estado(nombre: str, nuevo_estado: str) -> str:
+    """Cambia el 'estado' en el frontmatter de un entregable (borrador→listo→en_vobo→aprobado…)."""
+    if nuevo_estado not in _ESTADOS_ENTREGABLE:
+        return f"ERROR: estado inválido '{nuevo_estado}'. Usa: {', '.join(_ESTADOS_ENTREGABLE)}."
+    if not ENTREGABLES_PATH.exists():
+        return "Cerebro no disponible."
+    termino = (nombre or "").lower().strip()
+    cand = None
+    for f in ENTREGABLES_PATH.glob("*.md"):
+        if f.name.startswith("_"):
+            continue
+        meta = _cerebro_parsear_fm(f)
+        if termino in f.name.lower() or termino in meta.get("titulo", "").lower():
+            cand = f
+            break
+    if not cand:
+        return f"No encontré un entregable que coincida con «{nombre}». Usa cerebro_listar."
+    txt = cand.read_text(encoding="utf-8")
+    ahora = datetime.now(TZ_CDMX).strftime("%Y-%m-%d %H:%M")
+    if re.search(r"(?m)^estado:\s*.*$", txt):
+        txt = re.sub(r"(?m)^estado:\s*.*$", f"estado: {nuevo_estado}", txt, count=1)
+    if re.search(r"(?m)^fecha_actualizacion:\s*.*$", txt):
+        txt = re.sub(r"(?m)^fecha_actualizacion:\s*.*$", f"fecha_actualizacion: {ahora}", txt, count=1)
+    cand.write_text(txt, encoding="utf-8")
+    return f"OK '{cand.name}' → estado={nuevo_estado}."
+
+
+def _encargar_a_agente(agente: str, tarea: str, cliente: str = "", contexto: str = "") -> str:
+    """Fase 5 — Orquestación. Louis canaliza: invoca al agente, GUARDA su resultado
+    como entregable BORRADOR (para tu Vo.Bo.) y te avisa. Cierra el ciclo
+    info→agente→entregable→seguimiento. No finaliza solo (queda en borrador)."""
+    salida = _invocar_agente(agente, tarea, contexto, None, enviar_doc=False)
+    if salida.startswith("ERROR"):
+        return salida
+    cuerpo = salida
+    pref = f"[{agente} respondió]"
+    if cuerpo.startswith(pref):
+        cuerpo = cuerpo[len(pref):].strip()
+    cuerpo = re.sub(r"^\[.*? respondió[^\]]*\]\s*", "", cuerpo).strip()
+    titulo = tarea.strip()[:80].rstrip(".?!") or f"Trabajo de {agente}"
+    reg = _entregable_registrar(titulo, cliente, cuerpo, tipo="agente",
+                                estado="borrador", preparado_por=agente)
+    if not reg.startswith("OK"):
+        return f"{agente} entregó, pero no pude guardar el entregable: {reg}"
+    _encolar_notificacion(
+        f"🧩 *{agente}* terminó un borrador: *{titulo}*"
+        + (f" ({cliente})" if cliente else "")
+        + "\nQuedó en Cerebro como BORRADOR para tu Vo.Bo. — lo ves en el tablero.",
+        canal="telegram")
+    return (f"✅ Encargué a *{agente}* y guardé su trabajo como BORRADOR en Cerebro.\n"
+            f"• {titulo}{(' — '+cliente) if cliente else ''}\n"
+            f"Revísalo en el tablero; cuando lo apruebes dime «marca {titulo[:30]}… como listo».\n\n"
+            f"**Vista previa:**\n{cuerpo[:600]}…")
+
+
 def _cerebro_sync_agenda() -> str:
     """
     Compara los pendientes abiertos de AGENDA.md con el estado real en el
@@ -3741,6 +3827,60 @@ TOOLS_DEFINITION = [
                 "contexto": {"type": "string", "description": "Contexto adicional relevante."},
             },
             "required": ["tarea", "cliente"],
+        },
+    },
+    {
+        "name": "encargar_a_agente",
+        "description": (
+            "ORQUESTACIÓN: Louis canaliza trabajo a un agente kawiil-* y GUARDA su resultado "
+            "como entregable BORRADOR en Cerebro (para Vo.Bo. de Polo), avisándole. Cierra el "
+            "ciclo info→agente→entregable→seguimiento. Úsalo cuando una tarea le toca a un agente "
+            "especializado (ej. kawiil-nelli compliance, kawiil-amatl contratos, kawiil-investigacion "
+            "research). NO finaliza solo: queda en borrador. Saca el nombre con listar_agentes."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agente": {"type": "string", "description": "Nombre del agente (ej. kawiil-nelli)."},
+                "tarea": {"type": "string", "description": "Instrucción clara de lo que debe producir."},
+                "cliente": {"type": "string", "description": "Cliente al que corresponde (opcional)."},
+                "contexto": {"type": "string", "description": "Insumos/contexto para el agente (opcional)."},
+            },
+            "required": ["agente", "tarea"],
+        },
+    },
+    {
+        "name": "entregable_registrar",
+        "description": (
+            "Guarda un entregable en Cerebro (aparece en el tablero/seguimiento). Úsalo para "
+            "persistir trabajo terminado (tuyo o de un agente) como documento. estado por defecto "
+            "'borrador' (esperando Vo.Bo. de Polo)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "titulo": {"type": "string"},
+                "cliente": {"type": "string"},
+                "contenido": {"type": "string", "description": "Cuerpo del entregable (markdown)."},
+                "tipo": {"type": "string", "default": "documento"},
+                "estado": {"type": "string", "enum": list(_ESTADOS_ENTREGABLE), "default": "borrador"},
+            },
+            "required": ["titulo", "contenido"],
+        },
+    },
+    {
+        "name": "entregable_actualizar_estado",
+        "description": (
+            "Cambia el estado de un entregable (borrador→listo→en_vobo→aprobado→archivado). "
+            "Úsalo cuando Polo aprueba o avanza un entregable (ej. 'marca X como listo/aprobado')."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "nombre": {"type": "string", "description": "Título o nombre de archivo del entregable."},
+                "nuevo_estado": {"type": "string", "enum": list(_ESTADOS_ENTREGABLE)},
+            },
+            "required": ["nombre", "nuevo_estado"],
         },
     },
     {
@@ -8657,6 +8797,16 @@ def execute_tool(name: str, args: dict) -> str:
                 args.get("insumos", ""), args.get("urgencia", "normal"),
                 args.get("contexto", ""),
             )
+        elif name == "encargar_a_agente":
+            return _encargar_a_agente(
+                args["agente"], args["tarea"],
+                args.get("cliente", ""), args.get("contexto", ""))
+        elif name == "entregable_registrar":
+            return _entregable_registrar(
+                args["titulo"], args.get("cliente", ""), args.get("contenido", ""),
+                args.get("tipo", "documento"), args.get("estado", "borrador"))
+        elif name == "entregable_actualizar_estado":
+            return _entregable_actualizar_estado(args["nombre"], args["nuevo_estado"])
         elif name == "cerebro_sync_agenda":
             return _cerebro_sync_agenda()
         elif name == "generar_visual_gamma":
