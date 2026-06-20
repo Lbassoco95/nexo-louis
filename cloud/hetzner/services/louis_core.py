@@ -1989,6 +1989,56 @@ def try_deterministic_memory_write(user_message: str, strict: bool = True) -> st
     return f"✅ Anotado en *{fname}*:\n• {rest}"
 
 
+# ===== Captura activa de tareas (Fase 2 de seguimiento) =====
+_TASK_CAPTURE_RE = re.compile(
+    r"^\s*(?:"
+    r"recu[eé]rdame\s+que|recu[eé]rdame\s+de(?:\s+que)?|"
+    r"ag[eé]nda(?:me)?\s+que|ag[eé]ndame|agendar\s+que|"
+    r"pendiente\s*:|pendiente\s+de\s+que|queda\s+pendiente\s+que|"
+    r"hay\s+que|tengo\s+que|tenemos\s+que|"
+    r"no\s+se\s+me\s+olvide|no\s+olvid(?:ar|es)|"
+    r"agrega\s+pendiente|a[ñn]ade\s+pendiente"
+    r")[:,\s]+(.+)$",
+    re.IGNORECASE | re.DOTALL,
+)
+# Si lo capturado arranca con interrogativo, es una PREGUNTA, no una tarea.
+_TASK_QUESTION_GUARD = re.compile(
+    r"^\s*(?:qu[eé]\b|cu[aá]l|cu[aá]nto|cu[aá]ndo|c[oó]mo|d[oó]nde|por\s+qu[eé]|qui[eé]n)",
+    re.IGNORECASE,
+)
+
+
+def try_deterministic_task_capture(user_message: str) -> str | None:
+    """Fase 2 — Captura activa. Si el mensaje es una TAREA en lenguaje natural
+    ('recuérdame que…', 'hay que…', 'pendiente: …', 'tengo que…', 'no se me olvide…'),
+    la agrega a AGENDA.md como '- [ ]' al instante y confirma. Sin modelo.
+    Va DESPUÉS de try_deterministic_reminder (recordatorios con hora) y de
+    try_deterministic_memory_write (anota/apunta:). None si no aplica."""
+    if not user_message:
+        return None
+    msg = strip_override_prefix(user_message.strip())
+    if msg.endswith(("?", "？")):
+        return None
+    m = _TASK_CAPTURE_RE.match(msg)
+    if not m:
+        return None
+    body = (m.group(1) or "").strip().strip(":,.· ").strip()
+    if _TASK_QUESTION_GUARD.match(body):
+        return None
+    if len(body) < 6 or len(body.split()) < 2:  # exige sustancia, evita falsos positivos
+        return None
+    body = _normalizar_clientes(body)
+    fecha = datetime.now(TZ_CDMX).strftime("%Y-%m-%d")
+    result = execute_tool("append_to_memory",
+                          {"filename": "AGENDA.md", "content": f"- [ ] {body}  · [capturado {fecha}]"})
+    if not result.startswith("OK"):
+        return f"⚠️ No pude agregar la tarea: {result}"
+    if "ya estaba" in result:
+        return f"👍 Ya lo tenías en la AGENDA:\n• {body}"
+    return (f"✅ Lo agregué a tu *AGENDA* como pendiente:\n• {body}\n"
+            f"Te doy seguimiento — aparecerá en tu briefing.")
+
+
 def should_deterministic_operational_response(user_message: str, history: list | None = None) -> bool:
     """Briefing instantáneo solo en primer saludo o pedido explícito (no en charla con historial)."""
     msg = (user_message or "").strip()
@@ -8868,6 +8918,13 @@ def call_llm(
     if det_mem is not None:
         _mark_last_route("memoria-directa")
         return det_mem, "memoria-directa"
+
+    # Captura activa (Fase 2): tarea en lenguaje natural ("hay que…", "pendiente: …",
+    # "recuérdame que …" sin hora) → la registra en AGENDA al instante y confirma.
+    det_task = try_deterministic_task_capture(user_message)
+    if det_task is not None:
+        _mark_last_route("tarea-directa")
+        return det_task, "tarea-directa"
 
     def _ollama_route(tag: str) -> tuple:
         if _needs_sonnet_hint(user_message) and not _sonnet_hint_already_shown():
