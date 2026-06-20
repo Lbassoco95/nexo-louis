@@ -1598,6 +1598,84 @@ def build_intraday_nudge(slot: str = "tarde") -> str | None:
     return "\n".join(lines)
 
 
+def build_weekly_review() -> str:
+    """Fase 4 — Review semanal coach. Resumen de cómo vamos: cerrados, abiertos,
+    lo que vence, y lo ESTANCADO (capturado hace 7+ días sin moverse)."""
+    from datetime import date
+    agenda = _read_space_file("AGENDA.md")
+    hoy = datetime.now(TZ_CDMX).date()
+    abiertos, cerrados, estancados = 0, 0, []
+    for line in agenda.splitlines():
+        if re.match(r"^\s*-\s*\[[xX]\]", line):
+            cerrados += 1
+            continue
+        if not re.match(r"^\s*-\s*\[\s*\]\s+", line):
+            continue
+        abiertos += 1
+        txt = re.sub(r"^\s*-\s*\[\s*\]\s*", "", line.strip()).replace("**", "").strip()
+        mcap = re.search(r"\[(?:auto|capturado)\s+(\d{4}-\d{2}-\d{2})\]", line)
+        if mcap:
+            try:
+                edad = (hoy - date.fromisoformat(mcap.group(1))).days
+                if edad >= 7:
+                    estancados.append((edad, re.sub(r"\s*·?\s*\[(?:auto|capturado)[^\]]*\]", "", txt).strip()))
+            except Exception:
+                pass
+    deadlines = _extract_deadlines(agenda, 10)
+    dup = limpiar_agenda_duplicados(dry_run=True)
+    n_dup = 0
+    m = re.search(r"quitar[íi]a (\d+)", dup)
+    if m:
+        n_dup = int(m.group(1))
+
+    lines = [f"📊 *Review semanal — {hoy.strftime('%d %b %Y')}*", ""]
+    lines.append(f"✅ Cerrados (marcados): *{cerrados}*  ·  🟢 Abiertos: *{abiertos}*")
+    if deadlines:
+        lines.append("\n⏰ *Con vencimiento / hora — a cerrar:*")
+        lines += [f"• {d}" for d in deadlines[:8]]
+    if estancados:
+        estancados.sort(reverse=True)
+        lines.append(f"\n🐌 *Estancados (7+ días sin moverse) — {len(estancados)}:*")
+        lines += [f"• ({e}d) {t}" for e, t in estancados[:8]]
+    snap = _cerebro_entregables_snapshot()
+    if snap:
+        lines.append(f"\n📦 *Entregables:* {snap.splitlines()[0]}")
+    if n_dup:
+        lines.append(f"\n🧹 Detecté *{n_dup} duplicado(s)* en la AGENDA — dime «limpia la agenda» y los quito (con respaldo).")
+    lines.append("\n🎯 _Enfoque: cierra primero lo que vence. Los estancados de 14+ días, "
+                 "¿siguen vivos? Dime «ya hice X», «quita X» o «sigue pendiente X»._")
+    return "\n".join(lines)
+
+
+def limpiar_agenda_duplicados(dry_run: bool = True) -> str:
+    """Barrido de duplicados en AGENDA.md: pendientes abiertos '- [ ]' con el mismo
+    texto (normalizado). Conserva el primero. Con dry_run=False aplica y respalda."""
+    import shutil
+    path = SPACE / "AGENDA.md"
+    if not path.exists():
+        return "AGENDA.md no existe."
+    lines = path.read_text().splitlines()
+    seen, out, removed = set(), [], []
+    for line in lines:
+        if re.match(r"^\s*-\s*\[\s*\]\s+", line):
+            norm = _distill_norm(re.sub(r"^\s*-\s*\[\s*\]\s*", "", line))
+            if len(norm) > 8:
+                if norm in seen:
+                    removed.append(line.strip())
+                    continue
+                seen.add(norm)
+        out.append(line)
+    if not removed:
+        return "✅ Sin duplicados en AGENDA."
+    if dry_run:
+        return (f"DRY-RUN: quitaría {len(removed)} duplicado(s):\n"
+                + "\n".join("- " + r[:90] for r in removed))
+    ts = datetime.now(TZ_CDMX).strftime("%Y%m%d-%H%M%S")
+    shutil.copy2(path, path.with_suffix(f".md.bak-{ts}"))
+    path.write_text("\n".join(out) + "\n")
+    return f"OK: {len(removed)} duplicado(s) eliminados. Backup .bak-{ts}"
+
+
 def _generar_visual_gamma(texto: str, formato: str = "social",
                           export: str = "png", instrucciones: str = "") -> str:
     """Llama a gamma_gen.py (API de Gamma) y devuelve los enlaces. Server-side."""
@@ -9073,6 +9151,12 @@ def call_llm(
     if det_task is not None:
         _mark_last_route("tarea-directa")
         return det_task, "tarea-directa"
+
+    # Limpieza de duplicados de la AGENDA bajo demanda ("limpia la agenda").
+    if re.search(r"(?i)\blimpia(?:r)?\s+(?:la\s+|mi\s+)?agenda\b|\bquita(?:r)?\s+(?:los\s+)?duplicados\b",
+                 (user_message or "")):
+        _mark_last_route("limpieza-agenda")
+        return limpiar_agenda_duplicados(dry_run=False), "limpieza-agenda"
 
     def _ollama_route(tag: str) -> tuple:
         if _needs_sonnet_hint(user_message) and not _sonnet_hint_already_shown():
