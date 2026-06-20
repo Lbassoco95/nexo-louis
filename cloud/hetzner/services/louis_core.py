@@ -1109,6 +1109,39 @@ def _extract_critical_important(important: str) -> str:
     return ""
 
 
+_DEADLINE_RE = re.compile(
+    r"(?i)(vence|deadline|entrega(?:r)?\b|l[ií]mite|\bhoy\b|urgente|"
+    r"\b\d{1,2}:\d{2}\b|"
+    r"\b\d{1,2}[-/ ](?:ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)|"
+    r"\b(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[áa]bado|domingo)\b)")
+
+
+def _extract_deadlines(agenda_text: str, max_items: int = 12) -> list[str]:
+    """Pendientes abiertos '- [ ]' con señal de fecha/hora/vencimiento, ordenados por
+    urgencia: vence-hoy/urgente primero, luego los que traen hora, luego el resto."""
+    urgentes, conhora, otros = [], [], []
+    for line in agenda_text.splitlines():
+        if not re.match(r"^\s*-\s*\[\s*\]\s+", line):
+            continue
+        if not _DEADLINE_RE.search(line):
+            continue
+        clean = re.sub(r"^\s*-\s*\[\s*\]\s*", "", line).strip().lstrip("*").strip()
+        low = clean.lower()
+        if "vence hoy" in low or "vence el día de hoy" in low or "urgente" in low or re.search(r"\bhoy\b", low):
+            urgentes.append(clean)
+        elif re.search(r"\b\d{1,2}:\d{2}\b", clean):
+            conhora.append(clean)
+        else:
+            otros.append(clean)
+    vistos, out = set(), []
+    for it in urgentes + conhora + otros:
+        k = it.lower()[:60]
+        if k not in vistos:
+            vistos.add(k)
+            out.append(it)
+    return out[:max_items]
+
+
 def build_operational_snapshot(compact: bool = True) -> str:
     """Datos reales de AGENDA/IMPORTANT/JOURNAL para anclar respuestas (sin inventar)."""
     agenda = _read_space_file("AGENDA.md")
@@ -1121,6 +1154,13 @@ def build_operational_snapshot(compact: bool = True) -> str:
     hoy = _extract_markdown_section(agenda, "Para HOY") or _extract_markdown_section(agenda, "Para hoy")
     urgent_block = _extract_markdown_section(agenda, "URGENTE")
     open_all = _open_checkbox_lines(agenda, 15 if compact else 25)
+
+    # Encabeza con lo que VENCE / tiene hora / urge — para que el seguimiento salte primero.
+    deadlines = _extract_deadlines(agenda, 8 if compact else 12)
+    if deadlines:
+        lines.append("*⏰ VENCE / CON HORA / URGENTE*")
+        lines.extend(f"- {d}" for d in deadlines)
+        lines.append("")
 
     lines.append("*Para HOY*")
     if hoy:
@@ -1400,7 +1440,13 @@ def _cerebro_entregables_snapshot() -> str:
     partes = [f"{e}:{n}" for e, n in sorted(conteo.items())]
     n_briefs = len(list(BRIEFS_PATH.glob("*.md"))) if BRIEFS_PATH.exists() else 0
     briefs_str = f" | briefs_dispatch:{n_briefs}" if n_briefs else ""
-    return " | ".join(partes) + briefs_str
+    # Nudge de seguimiento: 'listo' = terminado y esperando tu Vo.Bo.
+    nudge = ""
+    if conteo.get("listo"):
+        nudge = f"\n→ {conteo['listo']} entregable(s) LISTO esperando tu Vo.Bo."
+    if n_briefs:
+        nudge += f"\n→ {n_briefs} brief(s) pendiente(s) de dispatch a agentes."
+    return " | ".join(partes) + briefs_str + nudge
 
 
 def _generar_visual_gamma(texto: str, formato: str = "social",
