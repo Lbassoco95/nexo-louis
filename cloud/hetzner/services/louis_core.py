@@ -1569,6 +1569,35 @@ def build_tablero_data() -> dict:
     }
 
 
+def build_intraday_nudge(slot: str = "tarde") -> str | None:
+    """Fase 3 — Chequeo intradía. Devuelve un mensaje CORTO de seguimiento SOLO si hay
+    algo accionable hoy (vencimientos abiertos, entregables LISTO esperando Vo.Bo.,
+    briefs pendientes). None si no hay nada → el scheduler no manda nada (silencioso)."""
+    agenda = _read_space_file("AGENDA.md")
+    ds = _extract_deadlines(agenda, 15)
+    urgentes = [d for d in ds if ("vence hoy" in d.lower() or "urgente" in d.lower()
+                or re.search(r"\bhoy\b", d.lower()) or re.search(r"\b\d{1,2}:\d{2}\b", d))]
+    ents = _entregables_lista_tablero()
+    listos = [e for e in ents if e.get("estado") == "listo"]
+    briefs = [e for e in ents if e.get("estado") == "brief"]
+    if not urgentes and not listos and not briefs:
+        return None
+    titulo = {"tarde": "🔔 Seguimiento de mediodía",
+              "cierre": "🌆 Cierre del día"}.get(slot, "🔔 Seguimiento")
+    lines = [f"*{titulo}* — esto sigue abierto:"]
+    if urgentes:
+        lines.append("\n⏰ *Pendientes de hoy:*")
+        lines += [f"• {d}" for d in urgentes[:8]]
+    if listos:
+        lines.append(f"\n✅ *{len(listos)} entregable(s) LISTO* esperando tu Vo.Bo.:")
+        lines += [f"• {e['titulo']}" + (f" ({e['cliente']})" if e.get("cliente") else "")
+                  for e in listos[:5]]
+    if briefs:
+        lines.append(f"\n📨 *{len(briefs)} brief(s)* pendiente(s) de dispatch a agentes.")
+    lines.append("\n_Marca lo hecho con /agenda o dime «ya hice X»._")
+    return "\n".join(lines)
+
+
 def _generar_visual_gamma(texto: str, formato: str = "social",
                           export: str = "png", instrucciones: str = "") -> str:
     """Llama a gamma_gen.py (API de Gamma) y devuelve los enlaces. Server-side."""
