@@ -281,7 +281,7 @@ def telegram_download_file(token: str, file_path: str, dest: Path):
 
 
 # ===== Whisper transcripción =====
-def transcribe_audio(audio_ogg: Path) -> str:
+def transcribe_audio(audio_ogg: Path, duration_s: int = 0) -> str:
     whisper_bin = find_binary(WHISPER_CANDIDATES)
     ffmpeg_bin = find_binary(FFMPEG_CANDIDATES)
     if not whisper_bin:
@@ -291,11 +291,20 @@ def transcribe_audio(audio_ogg: Path) -> str:
     if not WHISPER_MODEL.exists():
         return f"(error: modelo whisper no encontrado en {WHISPER_MODEL})"
 
+    # Timeout por modelo: escala con la duración real del audio para que los audios
+    # largos ya NO se rindan por un límite fijo. En CPU multinúcleo whisper.cpp corre
+    # ~1-2x realtime; damos holgura (≈2.5x + 60s) con una cota superior de 15 min para
+    # no bloquear el bridge indefinidamente.
+    def _scaled(base: int) -> int:
+        if duration_s <= 0:
+            return base
+        return min(900, max(base, int(duration_s * 2.5) + 60))
+
     # Modelos por orden de preferencia: medium (mejor precisión) → small → base
     # (más rápidos). Si medium se tarda demasiado en CPU, degradamos en vez de fallar.
     whisper_dir = WHISPER_MODEL.parent
-    modelos = [(n, whisper_dir / f"ggml-{n}.bin", tout)
-               for n, tout in (("medium", 240), ("small", 150), ("base", 90))
+    modelos = [(n, whisper_dir / f"ggml-{n}.bin", _scaled(tout))
+               for n, tout in (("medium", 300), ("small", 200), ("base", 120))
                if (whisper_dir / f"ggml-{n}.bin").exists()]
     if not modelos:
         return f"(error: no encontré ningún modelo whisper en {whisper_dir})"
@@ -336,8 +345,8 @@ def transcribe_audio(audio_ogg: Path) -> str:
                 return texto
             ultimo = "transcripción vacía"
         log.error(f"todos los modelos whisper fallaron: {ultimo}")
-        return ("(no pude transcribir el audio — está muy largo o el servidor está "
-                "saturado; intenta de nuevo o mándalo más corto)")
+        return ("(no pude transcribir el audio — el servidor está saturado o el audio "
+                "viene dañado; intenta de nuevo en un momento)")
 
 
 # ===== Main loop =====
@@ -530,14 +539,22 @@ def process_update(update, telegram_token, chat_id, api_key, system_prompt):
     elif voice or audio:
         a = voice or audio
         file_id = a["file_id"]
-        log.info(f"Audio recibido (file_id={file_id})")
-        telegram_send_message(telegram_token, chat_id, "🎙️ Transcribiendo audio...", parse_mode=None)
+        dur = int(a.get("duration") or 0)
+        log.info(f"Audio recibido (file_id={file_id}, dur={dur}s)")
+        # Aviso de progreso proporcional al largo: en audios largos la transcripción
+        # tarda, así que avisamos para que no parezca colgado.
+        if dur >= 90:
+            aviso = (f"🎙️ Audio de ~{dur // 60}:{dur % 60:02d} min — transcribiendo, "
+                     "puede tardar un poco. Te aviso al terminar…")
+        else:
+            aviso = "🎙️ Transcribiendo audio..."
+        telegram_send_message(telegram_token, chat_id, aviso, parse_mode=None)
         try:
             file_path = telegram_get_file_path(telegram_token, file_id)
             with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
                 tmp_path = Path(tmp.name)
             telegram_download_file(telegram_token, file_path, tmp_path)
-            transcript = transcribe_audio(tmp_path)
+            transcript = transcribe_audio(tmp_path, duration_s=dur)
             tmp_path.unlink(missing_ok=True)
             log.info(f"Transcripción: {transcript[:200]}")
             telegram_send_message(
