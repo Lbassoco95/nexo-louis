@@ -2555,12 +2555,20 @@ def _reason_briefing(snapshot: str) -> str | None:
     hoy = _fmt_dt_es(datetime.now(get_active_tz()))
     sys = (
         "Eres Louis, asistente ejecutivo de Polo (CEO de Kawiil). Redacta su BRIEFING "
-        "matutino a partir de los datos de AGENDA/IMPORTANT/JOURNAL/CLIENTES de abajo. "
-        "REGLAS: saluda en 1 línea; PRIORIZA lo crítico de hoy en máx. 5 viñetas, agrupando "
-        "y descartando duplicados, ruido y entradas viejas; sé conciso y accionable; resalta "
-        "deadlines reales. NO vuelques los datos crudos, NO inventes nada que no esté en los "
-        "datos, NO repitas. Español de México. Usa **negrita** para lo clave y viñetas con '- '. "
-        "NADA de encabezados '#' ni tablas. Cierra con '¿Por dónde empezamos?'.\n\n"
+        "matutino a partir de los datos de abajo (AGENDA/IMPORTANT/JOURNAL/CLIENTES).\n"
+        "FORMATO ESTRICTO:\n"
+        "- Saluda en 1 línea.\n"
+        "- Luego viñetas con '- ', UN SOLO TEMA por viñeta. NUNCA combines dos asuntos "
+        "distintos en una misma viñeta (p.ej. NO juntes 'CVs' con 'CNBV Sylon': son dos viñetas).\n"
+        "- Cada viñeta empieza con un **título corto en negrita** que DESCRIBE exactamente lo que "
+        "dice su propio texto — el título y el cuerpo deben coincidir (nada de título genérico y "
+        "cuerpo de otra cosa).\n"
+        "- ORDENA por urgencia: lo que VENCE HOY o tiene hora va primero; luego el resto.\n"
+        "- Máximo 7 viñetas, concisas y accionables; resalta deadlines reales con su hora/fecha.\n"
+        "REGLAS: descarta duplicados, ruido y entradas viejas; NO vuelques los datos crudos; "
+        "NO inventes nada que no esté en los datos; NO repitas. Español de México. Usa **negrita** "
+        "solo en el título de cada viñeta. NADA de encabezados '#' ni tablas. "
+        "Cierra con '¿Por dónde empezamos?'.\n\n"
         f"Hoy es {hoy} (CDMX)."
     )
     headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
