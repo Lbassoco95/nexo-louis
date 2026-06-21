@@ -1544,6 +1544,7 @@ _SJF_TESIS_URL = "https://sjf2.scjn.gob.mx/detalle/tesis/{reg}"
 def _open_db_lectura(path: Path):
     """Abre una BD para SOLO LECTURA tolerando WAL (el harvester escribe en vivo).
     NO usamos ?mode=ro porque falla con WAL; usamos PRAGMA query_only."""
+    import sqlite3
     con = sqlite3.connect(str(path), timeout=5)
     con.row_factory = sqlite3.Row
     try:
