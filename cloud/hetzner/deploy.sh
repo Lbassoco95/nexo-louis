@@ -298,6 +298,17 @@ if [[ -f scripts/import-legal-agents.sh ]]; then
   bash scripts/import-legal-agents.sh && ok "Agentes legales importados" \
     || warn "import-legal-agents falló (¿sin acceso a github? continúo)"
 fi
+# Control de alimentación — semilla idempotente de ALIMENTACION.md (no pisa el historial)
+if [[ -f "spaces/general/ALIMENTACION.md" ]]; then
+  mkdir -p /opt/openclaw/spaces/general
+  if [[ ! -f /opt/openclaw/spaces/general/ALIMENTACION.md ]]; then
+    install -m 0644 -o "$SYSTEM_USER" -g "$SYSTEM_USER" \
+      "spaces/general/ALIMENTACION.md" /opt/openclaw/spaces/general/ALIMENTACION.md
+    ok "ALIMENTACION.md sembrado (control de alimentación listo)"
+  else
+    log "ALIMENTACION.md ya existe — conservo el historial"
+  fi
+fi
 # Briefing matutino 7:00 CDMX recurrente (lo consume el scheduler)
 if [[ -f scripts/seed-morning-briefing.sh ]]; then
   bash scripts/seed-morning-briefing.sh && ok "Briefing matutino agendado (7:00 CDMX)" \

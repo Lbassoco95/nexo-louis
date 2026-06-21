@@ -512,6 +512,7 @@ MEMORY_FILES = [
     "PERSONAL.md",      # Vida personal — agenda no-oficina, citas, hobbies, planes
     "FAMILIA.md",       # Familia + cumpleaños + aniversarios + recordatorios anuales
     "SALUD.md",         # Citas médicas, medicamentos, exámenes pendientes
+    "ALIMENTACION.md",  # Control de alimentación — bitácora de comidas (desayuno/comida/cena/snacks)
     "VIAJES.md",        # Viajes pasados/próximos + preferencias (aerolínea, hotel)
     "FINANZAS.md",      # Notas financieras personales (NO números de cuenta) — pagos recurrentes, deadlines fiscales
     "COACH.md",         # Briefing de coach ejecutivo: perfil psicométrico de Polo + prioridades de desarrollo
@@ -619,7 +620,7 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "CEO de Kawiil/Yoltik. Tu trabajo va MÁS ALLÁ de la oficina:\n"
         "- **Profesional**: correos, calendarios, juntas, agentes, proyectos Kawiil/Yoltik, clientes (Kailash, Ikán), prospectos.\n"
         "- **Personal**: agenda no-laboral, familia, cumpleaños y aniversarios, citas médicas, hobbies, viajes, planes con amigos.\n"
-        "- **Estratégico**: cuando Polo te cuenta algo (idea, reunión, decisión), captúralo en la memoria correcta automáticamente sin que tenga que pedírtelo. Si menciona un prospecto nuevo → PROSPECTOS.md. Si menciona el cumpleaños de alguien → FAMILIA.md con la fecha. Si menciona síntoma/cita médica → SALUD.md.\n"
+        "- **Estratégico**: cuando Polo te cuenta algo (idea, reunión, decisión), captúralo en la memoria correcta automáticamente sin que tenga que pedírtelo. Si menciona un prospecto nuevo → PROSPECTOS.md. Si menciona el cumpleaños de alguien → FAMILIA.md con la fecha. Si menciona síntoma/cita médica → SALUD.md. Si menciona qué comió (desayuno/comida/cena/snack) → ALIMENTACION.md.\n"
         "- **Proactivo**: lleva tú la lista de pendientes (AGENDA.md). Si Polo te pide algo y luego se distrae, persíguelo. En briefings menciona seguimientos que ya hiciste y los que faltan.\n"
         "\n\n# ARCHIVOS DE MEMORIA — QUÉ VA DÓNDE\n"
         "- USER.md: rol de Polo, preferencias generales (no editar mucho)\n"
@@ -633,6 +634,7 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "- PERSONAL.md: vida personal de Polo — agenda no-oficina, hobbies, planes\n"
         "- FAMILIA.md: familia + cumpleaños + aniversarios (recordatorios anuales)\n"
         "- SALUD.md: citas médicas pendientes, exámenes, medicamentos\n"
+        "- ALIMENTACION.md: control de alimentación — qué comió Polo (desayuno/comida/cena/snacks) con fecha y hora\n"
         "- VIAJES.md: viajes pasados/próximos, preferencias (aerolínea, hotel, status frecuente)\n"
         "- FINANZAS.md: notas financieras personales — pagos recurrentes, deadlines fiscales (NUNCA guardes números de cuenta o tarjetas)\n"
         "Usa `append_to_memory` SOLO para algo NUEVO. Usa `write_memory` solo si vas a reemplazar TODO el archivo."
@@ -2404,7 +2406,7 @@ _COACH_RE = re.compile(
 
 
 def try_deterministic_coach_capture(user_message: str) -> str | None:
-    """Fase 6 — Coach personal. Registra comidas en SALUD.md ('desayuné/comí/cené…')
+    """Fase 6 — Coach personal. Registra comidas en ALIMENTACION.md ('desayuné/comí/cené…')
     y avances personales en COACH.md ('hoy logré…', 'coach: …', 'mi avance: …'),
     sin modelo. Va DESPUÉS de la captura de tareas. None si no aplica."""
     if not user_message:
@@ -2419,9 +2421,9 @@ def try_deterministic_coach_capture(user_message: str) -> str | None:
         if len(comida) >= 2:
             verbo = m.group(1).lower()
             r = execute_tool("append_to_memory",
-                             {"filename": "SALUD.md", "content": f"- [{fecha}] 🍽️ {verbo}: {comida}"})
+                             {"filename": "ALIMENTACION.md", "content": f"- [{fecha}] 🍽️ {verbo}: {comida}"})
             if r.startswith("OK") or "ya estaba" in r:
-                return f"🍽️ Anotado en tu bitácora (SALUD):\n• {verbo}: {comida}"
+                return f"🍽️ Anotado en tu control de alimentación:\n• {verbo}: {comida}"
     m2 = _COACH_RE.match(msg)
     if m2:
         nota = (m2.group(1) or "").strip(":,.· ").strip()
