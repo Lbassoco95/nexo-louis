@@ -1397,11 +1397,50 @@ def _entregable_actualizar_estado(nombre: str, nuevo_estado: str) -> str:
     return f"OK '{cand.name}' → estado={nuevo_estado}."
 
 
+def _contexto_cliente(cliente: str, max_chars: int = 4000) -> str:
+    """Reúne lo que Cerebro/memoria YA saben de un cliente (entregables, AGENDA,
+    CLIENTES/PEOPLE/IMPORTANT) para inyectarlo al agente — así Louis se mantiene
+    actualizado de lo que se trabaja (incl. lo de Cowork) sin que Polo reenvíe todo."""
+    cliente = (cliente or "").strip()
+    if not cliente:
+        return ""
+    cl = cliente.lower()[:14]
+    partes = []
+    ents = []
+    if ENTREGABLES_PATH.exists():
+        for f in sorted(ENTREGABLES_PATH.glob("*.md")):
+            if f.name.startswith("_"):
+                continue
+            meta = _cerebro_parsear_fm(f)
+            if cl in meta.get("cliente", "").lower() or cl in meta.get("titulo", "").lower():
+                ents.append(f"- {meta.get('titulo', f.stem)} [{meta.get('estado','?')}]")
+    if ents:
+        partes.append("Entregables en Cerebro de este cliente (incluye lo trabajado en Cowork):\n"
+                      + "\n".join(ents[:12]))
+    agenda = _read_space_file("AGENDA.md")
+    al = [l.strip(" -") for l in agenda.splitlines() if cl in l.lower() and l.strip()]
+    if al:
+        partes.append("Pendientes/AGENDA relacionados:\n" + "\n".join("- " + x for x in al[:10]))
+    for fname in ("CLIENTES.md", "PEOPLE.md", "IMPORTANT.md"):
+        txt = _read_space_file(fname)
+        hits = [l.strip() for l in txt.splitlines() if cl in l.lower() and l.strip()]
+        if hits:
+            partes.append(f"De {fname}:\n" + "\n".join(hits[:6]))
+    if not partes:
+        return ""
+    ctx = (f"## Lo que YA sabemos de {cliente} (Cerebro + memoria — úsalo como base, "
+           f"no lo repitas literal):\n\n" + "\n\n".join(partes))
+    return ctx[:max_chars]
+
+
 def _encargar_a_agente(agente: str, tarea: str, cliente: str = "", contexto: str = "") -> str:
     """Fase 5 — Orquestación. Louis canaliza: invoca al agente, GUARDA su resultado
     como entregable BORRADOR (para tu Vo.Bo.) y te avisa. Cierra el ciclo
-    info→agente→entregable→seguimiento. No finaliza solo (queda en borrador)."""
-    salida = _invocar_agente(agente, tarea, contexto, None, enviar_doc=False)
+    info→agente→entregable→seguimiento. No finaliza solo (queda en borrador).
+    Inyecta automáticamente el contexto del cliente (Cerebro/memoria)."""
+    ctx_cli = _contexto_cliente(cliente)
+    contexto_full = (ctx_cli + "\n\n" + contexto).strip() if ctx_cli else contexto
+    salida = _invocar_agente(agente, tarea, contexto_full, None, enviar_doc=False)
     if salida.startswith("ERROR"):
         return salida
     cuerpo = salida

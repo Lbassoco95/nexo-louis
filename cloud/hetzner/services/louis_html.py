@@ -312,6 +312,16 @@ def _md_body(md: str) -> str:
     """Convierte markdown básico al cuerpo HTML (secciones H2 colapsables, tablas con
     celdas de color, callouts, listas, citas). NO incluye header/chat — eso lo hace render_page."""
     esc = _html.escape
+
+    def inline(s: str) -> str:
+        """Escapa y aplica markdown inline (negrita/itálica/código). Se usa en TODO
+        (encabezados incluidos) para que no queden ** ni * sueltos."""
+        s = esc(s)
+        s = _re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
+        s = _re.sub(r"(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])", r"<em>\1</em>", s)
+        s = _re.sub(r"`(.+?)`", r"<code>\1</code>", s)
+        return s
+
     lines = md.split("\n")
     body_parts: list[str] = []
     in_table = False
@@ -345,14 +355,11 @@ def _md_body(md: str) -> str:
                 in_table = False
                 table_open = False
 
-        line_esc = esc(line)
-        line_esc = _re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", line_esc)
-        line_esc = _re.sub(r"\*(.+?)\*", r"<em>\1</em>", line_esc)
-        line_esc = _re.sub(r"`(.+?)`", r"<code>\1</code>", line_esc)
+        line_esc = inline(line)
         m = _re.match(r"^(#{1,4})\s+(.+)", line)
         if m:
             lvl = len(m.group(1))
-            txt = esc(m.group(2))
+            txt = inline(m.group(2))
             if lvl == 1:
                 body_parts.append(f"<h1>{txt}</h1>")
             elif lvl == 2:
