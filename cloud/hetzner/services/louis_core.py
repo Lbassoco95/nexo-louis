@@ -1109,6 +1109,40 @@ def _extract_critical_important(important: str) -> str:
     return ""
 
 
+_DEADLINE_RE = re.compile(
+    r"(?i)(vence|deadline|entrega(?:r)?\b|l[ií]mite|\bhoy\b|urgente|"
+    r"\b\d{1,2}:\d{2}\b|"
+    r"\b\d{1,2}[-/ ](?:ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)|"
+    r"\b(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[áa]bado|domingo)\b)")
+
+
+def _extract_deadlines(agenda_text: str, max_items: int = 12) -> list[str]:
+    """Pendientes abiertos '- [ ]' con señal de fecha/hora/vencimiento, ordenados por
+    urgencia: vence-hoy/urgente primero, luego los que traen hora, luego el resto."""
+    urgentes, conhora, otros = [], [], []
+    for line in agenda_text.splitlines():
+        if not re.match(r"^\s*-\s*\[\s*\]\s+", line):
+            continue
+        if not _DEADLINE_RE.search(line):
+            continue
+        clean = re.sub(r"^\s*-\s*\[\s*\]\s*", "", line).strip()
+        clean = clean.replace("**", "").strip().strip("*").strip()  # quita negritas markdown
+        low = clean.lower()
+        if "vence hoy" in low or "vence el día de hoy" in low or "urgente" in low or re.search(r"\bhoy\b", low):
+            urgentes.append(clean)
+        elif re.search(r"\b\d{1,2}:\d{2}\b", clean):
+            conhora.append(clean)
+        else:
+            otros.append(clean)
+    vistos, out = set(), []
+    for it in urgentes + conhora + otros:
+        k = it.lower()[:60]
+        if k not in vistos:
+            vistos.add(k)
+            out.append(it)
+    return out[:max_items]
+
+
 def build_operational_snapshot(compact: bool = True) -> str:
     """Datos reales de AGENDA/IMPORTANT/JOURNAL para anclar respuestas (sin inventar)."""
     agenda = _read_space_file("AGENDA.md")
@@ -1121,6 +1155,13 @@ def build_operational_snapshot(compact: bool = True) -> str:
     hoy = _extract_markdown_section(agenda, "Para HOY") or _extract_markdown_section(agenda, "Para hoy")
     urgent_block = _extract_markdown_section(agenda, "URGENTE")
     open_all = _open_checkbox_lines(agenda, 15 if compact else 25)
+
+    # Encabeza con lo que VENCE / tiene hora / urge — para que el seguimiento salte primero.
+    deadlines = _extract_deadlines(agenda, 8 if compact else 12)
+    if deadlines:
+        lines.append("*⏰ VENCE / CON HORA / URGENTE*")
+        lines.extend(f"- {d}" for d in deadlines)
+        lines.append("")
 
     lines.append("*Para HOY*")
     if hoy:
@@ -1298,6 +1339,131 @@ def _cerebro_crear_brief(tarea: str, cliente: str, insumos: str = "",
     )
 
 
+_ESTADOS_ENTREGABLE = ("borrador", "listo", "en_vobo", "aprobado", "archivado")
+
+
+def _entregable_registrar(titulo: str, cliente: str = "", contenido: str = "",
+                          tipo: str = "documento", estado: str = "borrador",
+                          preparado_por: str = "Louis") -> str:
+    """Escribe un entregable a ENTREGABLES_PATH con frontmatter. Cierra el ciclo:
+    el trabajo de un agente (o de Louis) queda como entregable y aparece en el
+    tablero/seguimiento. estado por defecto 'borrador' (para tu Vo.Bo.)."""
+    titulo = (titulo or "").strip()
+    if not titulo:
+        return "ERROR: el entregable necesita un título."
+    if estado not in _ESTADOS_ENTREGABLE:
+        estado = "borrador"
+    ENTREGABLES_PATH.mkdir(parents=True, exist_ok=True)
+    ahora = datetime.now(TZ_CDMX)
+    slug = re.sub(r"[^a-z0-9]+", "-", titulo.lower()).strip("-")[:55] or "entregable"
+    path = ENTREGABLES_PATH / f"{ahora.strftime('%Y-%m-%d')}-{slug}.md"
+    n = 1
+    while path.exists():
+        n += 1
+        path = ENTREGABLES_PATH / f"{ahora.strftime('%Y-%m-%d')}-{slug}-{n}.md"
+    cliente = _normalizar_clientes(cliente or "")
+    fm = (f"---\ntitulo: {titulo}\ntipo: {tipo}\ncliente: {cliente}\n"
+          f"estado: {estado}\npreparado_por: {preparado_por}\n"
+          f"fecha_creacion: {ahora.strftime('%Y-%m-%d')}\n"
+          f"fecha_actualizacion: {ahora.strftime('%Y-%m-%d %H:%M')}\n---\n\n")
+    path.write_text(fm + (contenido or "").strip() + "\n", encoding="utf-8")
+    return f"OK entregable registrado: {path.name} (estado={estado}, cliente={cliente or '—'})"
+
+
+def _entregable_actualizar_estado(nombre: str, nuevo_estado: str) -> str:
+    """Cambia el 'estado' en el frontmatter de un entregable (borrador→listo→en_vobo→aprobado…)."""
+    if nuevo_estado not in _ESTADOS_ENTREGABLE:
+        return f"ERROR: estado inválido '{nuevo_estado}'. Usa: {', '.join(_ESTADOS_ENTREGABLE)}."
+    if not ENTREGABLES_PATH.exists():
+        return "Cerebro no disponible."
+    termino = (nombre or "").lower().strip()
+    cand = None
+    for f in ENTREGABLES_PATH.glob("*.md"):
+        if f.name.startswith("_"):
+            continue
+        meta = _cerebro_parsear_fm(f)
+        if termino in f.name.lower() or termino in meta.get("titulo", "").lower():
+            cand = f
+            break
+    if not cand:
+        return f"No encontré un entregable que coincida con «{nombre}». Usa cerebro_listar."
+    txt = cand.read_text(encoding="utf-8")
+    ahora = datetime.now(TZ_CDMX).strftime("%Y-%m-%d %H:%M")
+    if re.search(r"(?m)^estado:\s*.*$", txt):
+        txt = re.sub(r"(?m)^estado:\s*.*$", f"estado: {nuevo_estado}", txt, count=1)
+    if re.search(r"(?m)^fecha_actualizacion:\s*.*$", txt):
+        txt = re.sub(r"(?m)^fecha_actualizacion:\s*.*$", f"fecha_actualizacion: {ahora}", txt, count=1)
+    cand.write_text(txt, encoding="utf-8")
+    return f"OK '{cand.name}' → estado={nuevo_estado}."
+
+
+def _contexto_cliente(cliente: str, max_chars: int = 4000) -> str:
+    """Reúne lo que Cerebro/memoria YA saben de un cliente (entregables, AGENDA,
+    CLIENTES/PEOPLE/IMPORTANT) para inyectarlo al agente — así Louis se mantiene
+    actualizado de lo que se trabaja (incl. lo de Cowork) sin que Polo reenvíe todo."""
+    cliente = (cliente or "").strip()
+    if not cliente:
+        return ""
+    cl = cliente.lower()[:14]
+    partes = []
+    ents = []
+    if ENTREGABLES_PATH.exists():
+        for f in sorted(ENTREGABLES_PATH.glob("*.md")):
+            if f.name.startswith("_"):
+                continue
+            meta = _cerebro_parsear_fm(f)
+            if cl in meta.get("cliente", "").lower() or cl in meta.get("titulo", "").lower():
+                ents.append(f"- {meta.get('titulo', f.stem)} [{meta.get('estado','?')}]")
+    if ents:
+        partes.append("Entregables en Cerebro de este cliente (incluye lo trabajado en Cowork):\n"
+                      + "\n".join(ents[:12]))
+    agenda = _read_space_file("AGENDA.md")
+    al = [l.strip(" -") for l in agenda.splitlines() if cl in l.lower() and l.strip()]
+    if al:
+        partes.append("Pendientes/AGENDA relacionados:\n" + "\n".join("- " + x for x in al[:10]))
+    for fname in ("CLIENTES.md", "PEOPLE.md", "IMPORTANT.md"):
+        txt = _read_space_file(fname)
+        hits = [l.strip() for l in txt.splitlines() if cl in l.lower() and l.strip()]
+        if hits:
+            partes.append(f"De {fname}:\n" + "\n".join(hits[:6]))
+    if not partes:
+        return ""
+    ctx = (f"## Lo que YA sabemos de {cliente} (Cerebro + memoria — úsalo como base, "
+           f"no lo repitas literal):\n\n" + "\n\n".join(partes))
+    return ctx[:max_chars]
+
+
+def _encargar_a_agente(agente: str, tarea: str, cliente: str = "", contexto: str = "") -> str:
+    """Fase 5 — Orquestación. Louis canaliza: invoca al agente, GUARDA su resultado
+    como entregable BORRADOR (para tu Vo.Bo.) y te avisa. Cierra el ciclo
+    info→agente→entregable→seguimiento. No finaliza solo (queda en borrador).
+    Inyecta automáticamente el contexto del cliente (Cerebro/memoria)."""
+    ctx_cli = _contexto_cliente(cliente)
+    contexto_full = (ctx_cli + "\n\n" + contexto).strip() if ctx_cli else contexto
+    salida = _invocar_agente(agente, tarea, contexto_full, None, enviar_doc=False)
+    if salida.startswith("ERROR"):
+        return salida
+    cuerpo = salida
+    pref = f"[{agente} respondió]"
+    if cuerpo.startswith(pref):
+        cuerpo = cuerpo[len(pref):].strip()
+    cuerpo = re.sub(r"^\[.*? respondió[^\]]*\]\s*", "", cuerpo).strip()
+    titulo = tarea.strip()[:80].rstrip(".?!") or f"Trabajo de {agente}"
+    reg = _entregable_registrar(titulo, cliente, cuerpo, tipo="agente",
+                                estado="borrador", preparado_por=agente)
+    if not reg.startswith("OK"):
+        return f"{agente} entregó, pero no pude guardar el entregable: {reg}"
+    _encolar_notificacion(
+        f"🧩 *{agente}* terminó un borrador: *{titulo}*"
+        + (f" ({cliente})" if cliente else "")
+        + "\nQuedó en Cerebro como BORRADOR para tu Vo.Bo. — lo ves en el tablero.",
+        canal="telegram")
+    return (f"✅ Encargué a *{agente}* y guardé su trabajo como BORRADOR en Cerebro.\n"
+            f"• {titulo}{(' — '+cliente) if cliente else ''}\n"
+            f"Revísalo en el tablero; cuando lo apruebes dime «marca {titulo[:30]}… como listo».\n\n"
+            f"**Vista previa:**\n{cuerpo[:600]}…")
+
+
 def _cerebro_sync_agenda() -> str:
     """
     Compara los pendientes abiertos de AGENDA.md con el estado real en el
@@ -1400,7 +1566,240 @@ def _cerebro_entregables_snapshot() -> str:
     partes = [f"{e}:{n}" for e, n in sorted(conteo.items())]
     n_briefs = len(list(BRIEFS_PATH.glob("*.md"))) if BRIEFS_PATH.exists() else 0
     briefs_str = f" | briefs_dispatch:{n_briefs}" if n_briefs else ""
-    return " | ".join(partes) + briefs_str
+    # Nudge de seguimiento: 'listo' = terminado y esperando tu Vo.Bo.
+    nudge = ""
+    if conteo.get("listo"):
+        nudge = f"\n→ {conteo['listo']} entregable(s) LISTO esperando tu Vo.Bo."
+    if n_briefs:
+        nudge += f"\n→ {n_briefs} brief(s) pendiente(s) de dispatch a agentes."
+    return " | ".join(partes) + briefs_str + nudge
+
+
+_SJF_DB_TABLERO = Path(os.environ.get("SJF_DB_PATH", str(HOME_OC / "legal" / "sjf" / "biblioteca.db")))
+_DOF_DB_TABLERO = Path(os.environ.get("DOF_DB_PATH", str(HOME_OC / "legal" / "dof" / "biblioteca_dof.db")))
+_SJF_TESIS_URL = "https://sjf2.scjn.gob.mx/detalle/tesis/{reg}"
+
+
+def _open_db_lectura(path: Path):
+    """Abre una BD para SOLO LECTURA tolerando WAL (el harvester escribe en vivo).
+    NO usamos ?mode=ro porque falla con WAL; usamos PRAGMA query_only."""
+    import sqlite3
+    con = sqlite3.connect(str(path), timeout=5)
+    con.row_factory = sqlite3.Row
+    try:
+        con.execute("PRAGMA query_only=ON")
+    except Exception:
+        pass
+    return con
+
+
+def _sjf_resumen_tablero() -> dict:
+    """Resumen del SJF para el tablero: total, último ingreso y últimas tesis (clickeables)."""
+    out = {"ok": False, "total": 0, "ultima_fecha": None, "recientes": []}
+    try:
+        con = _open_db_lectura(_SJF_DB_TABLERO)
+        out["total"] = con.execute("SELECT COUNT(*) FROM tesis").fetchone()[0]
+        out["ultima_fecha"] = con.execute("SELECT MAX(fecha_publicacion) FROM tesis").fetchone()[0]
+        for r in con.execute("SELECT registro_digital AS reg, rubro, fecha_publicacion AS fecha "
+                             "FROM tesis ORDER BY registro_digital DESC LIMIT 10"):
+            out["recientes"].append({"reg": r["reg"], "rubro": (r["rubro"] or "").strip()[:160],
+                                     "fecha": (r["fecha"] or "")[:10],
+                                     "url": _SJF_TESIS_URL.format(reg=r["reg"])})
+        con.close()
+        out["ok"] = True
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {e}"[:160]
+    return out
+
+
+def _dof_resumen_tablero() -> dict:
+    """Resumen del DOF para el tablero: últimos 2 días con conteo por edición."""
+    out = {"ok": False, "dias": []}
+    try:
+        con = _open_db_lectura(_DOF_DB_TABLERO)
+        fechas = [r[0] for r in con.execute(
+            "SELECT DISTINCT fecha FROM notas WHERE fecha IS NOT NULL ORDER BY fecha DESC LIMIT 2")]
+        for f in fechas:
+            ed = {(row["edicion"] or "?"): row["n"] for row in con.execute(
+                "SELECT edicion, COUNT(*) AS n FROM notas WHERE fecha=? GROUP BY edicion", (f,))}
+            out["dias"].append({"fecha": f, "ediciones": ed})
+        con.close()
+        out["ok"] = True
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {e}"[:160]
+    return out
+
+
+_ICONO_ESTADO = {"borrador": "📝", "listo": "✅", "en_vobo": "🔄", "aprobado": "✔️", "archivado": "📦"}
+
+
+def _entregables_lista_tablero() -> list:
+    """Lista de entregables (clickeables) con su metadata, para el tablero."""
+    out = []
+    if not ENTREGABLES_PATH.exists():
+        return out
+    for f in sorted(ENTREGABLES_PATH.glob("*.md")):
+        if f.name.startswith("_"):
+            continue
+        meta = _cerebro_parsear_fm(f)
+        est = meta.get("estado", "?")
+        out.append({
+            "archivo": f.name,
+            "titulo": meta.get("titulo", f.stem),
+            "cliente": meta.get("cliente", ""),
+            "estado": est,
+            "icono": _ICONO_ESTADO.get(est, "❓"),
+            "fecha": meta.get("fecha_actualizacion", meta.get("fecha", "")),
+        })
+    # briefs pendientes de dispatch
+    if BRIEFS_PATH.exists():
+        for f in sorted(BRIEFS_PATH.glob("*.md")):
+            meta = _cerebro_parsear_fm(f)
+            out.append({"archivo": "_briefs/" + f.name, "titulo": meta.get("titulo", f.stem),
+                        "cliente": meta.get("cliente", ""), "estado": "brief", "icono": "📨",
+                        "fecha": meta.get("fecha", "")})
+    return out
+
+
+def _entregable_detalle(archivo: str) -> dict:
+    """Cuerpo + metadata de un entregable, para el drill-down del tablero.
+    Valida el nombre contra path-traversal (solo archivos dentro de ENTREGABLES_PATH)."""
+    nombre = (archivo or "").strip()
+    if not nombre or ".." in nombre or nombre.startswith("/"):
+        return {"ok": False, "error": "nombre inválido"}
+    sub = nombre[len("_briefs/"):] if nombre.startswith("_briefs/") else None
+    path = (BRIEFS_PATH / sub) if sub else (ENTREGABLES_PATH / nombre)
+    try:
+        path = path.resolve()
+        base = (BRIEFS_PATH if sub else ENTREGABLES_PATH).resolve()
+        if base not in path.parents or path.suffix != ".md" or not path.exists():
+            return {"ok": False, "error": "no encontrado"}
+        content = path.read_text(encoding="utf-8")
+        meta = _cerebro_parsear_fm(path)
+        cuerpo = re.sub(r"^---\n.*?\n---\n?", "", content, flags=re.DOTALL).strip()
+        return {"ok": True, "archivo": nombre, "meta": meta, "cuerpo": cuerpo[:20000]}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"[:160]}
+
+
+def build_tablero_data() -> dict:
+    """Datos en vivo para el tablero de seguimiento (lo consume el gateway en /v1/tablero)."""
+    agenda = _read_space_file("AGENDA.md")
+    return {
+        "generado": datetime.now(TZ_CDMX).strftime("%Y-%m-%d %H:%M"),
+        "vencimientos": _extract_deadlines(agenda, 15),
+        "entregables_resumen": _cerebro_entregables_snapshot(),
+        "entregables": _entregables_lista_tablero(),
+        "sjf": _sjf_resumen_tablero(),
+        "dof": _dof_resumen_tablero(),
+    }
+
+
+def build_intraday_nudge(slot: str = "tarde") -> str | None:
+    """Fase 3 — Chequeo intradía. Devuelve un mensaje CORTO de seguimiento SOLO si hay
+    algo accionable hoy (vencimientos abiertos, entregables LISTO esperando Vo.Bo.,
+    briefs pendientes). None si no hay nada → el scheduler no manda nada (silencioso)."""
+    agenda = _read_space_file("AGENDA.md")
+    ds = _extract_deadlines(agenda, 15)
+    urgentes = [d for d in ds if ("vence hoy" in d.lower() or "urgente" in d.lower()
+                or re.search(r"\bhoy\b", d.lower()) or re.search(r"\b\d{1,2}:\d{2}\b", d))]
+    ents = _entregables_lista_tablero()
+    listos = [e for e in ents if e.get("estado") == "listo"]
+    briefs = [e for e in ents if e.get("estado") == "brief"]
+    if not urgentes and not listos and not briefs:
+        return None
+    titulo = {"tarde": "🔔 Seguimiento de mediodía",
+              "cierre": "🌆 Cierre del día"}.get(slot, "🔔 Seguimiento")
+    lines = [f"*{titulo}* — esto sigue abierto:"]
+    if urgentes:
+        lines.append("\n⏰ *Pendientes de hoy:*")
+        lines += [f"• {d}" for d in urgentes[:8]]
+    if listos:
+        lines.append(f"\n✅ *{len(listos)} entregable(s) LISTO* esperando tu Vo.Bo.:")
+        lines += [f"• {e['titulo']}" + (f" ({e['cliente']})" if e.get("cliente") else "")
+                  for e in listos[:5]]
+    if briefs:
+        lines.append(f"\n📨 *{len(briefs)} brief(s)* pendiente(s) de dispatch a agentes.")
+    lines.append("\n_Marca lo hecho con /agenda o dime «ya hice X»._")
+    return "\n".join(lines)
+
+
+def build_weekly_review() -> str:
+    """Fase 4 — Review semanal coach. Resumen de cómo vamos: cerrados, abiertos,
+    lo que vence, y lo ESTANCADO (capturado hace 7+ días sin moverse)."""
+    from datetime import date
+    agenda = _read_space_file("AGENDA.md")
+    hoy = datetime.now(TZ_CDMX).date()
+    abiertos, cerrados, estancados = 0, 0, []
+    for line in agenda.splitlines():
+        if re.match(r"^\s*-\s*\[[xX]\]", line):
+            cerrados += 1
+            continue
+        if not re.match(r"^\s*-\s*\[\s*\]\s+", line):
+            continue
+        abiertos += 1
+        txt = re.sub(r"^\s*-\s*\[\s*\]\s*", "", line.strip()).replace("**", "").strip()
+        mcap = re.search(r"\[(?:auto|capturado)\s+(\d{4}-\d{2}-\d{2})\]", line)
+        if mcap:
+            try:
+                edad = (hoy - date.fromisoformat(mcap.group(1))).days
+                if edad >= 7:
+                    estancados.append((edad, re.sub(r"\s*·?\s*\[(?:auto|capturado)[^\]]*\]", "", txt).strip()))
+            except Exception:
+                pass
+    deadlines = _extract_deadlines(agenda, 10)
+    dup = limpiar_agenda_duplicados(dry_run=True)
+    n_dup = 0
+    m = re.search(r"quitar[íi]a (\d+)", dup)
+    if m:
+        n_dup = int(m.group(1))
+
+    lines = [f"📊 *Review semanal — {hoy.strftime('%d %b %Y')}*", ""]
+    lines.append(f"✅ Cerrados (marcados): *{cerrados}*  ·  🟢 Abiertos: *{abiertos}*")
+    if deadlines:
+        lines.append("\n⏰ *Con vencimiento / hora — a cerrar:*")
+        lines += [f"• {d}" for d in deadlines[:8]]
+    if estancados:
+        estancados.sort(reverse=True)
+        lines.append(f"\n🐌 *Estancados (7+ días sin moverse) — {len(estancados)}:*")
+        lines += [f"• ({e}d) {t}" for e, t in estancados[:8]]
+    snap = _cerebro_entregables_snapshot()
+    if snap:
+        lines.append(f"\n📦 *Entregables:* {snap.splitlines()[0]}")
+    if n_dup:
+        lines.append(f"\n🧹 Detecté *{n_dup} duplicado(s)* en la AGENDA — dime «limpia la agenda» y los quito (con respaldo).")
+    lines.append("\n🎯 _Enfoque: cierra primero lo que vence. Los estancados de 14+ días, "
+                 "¿siguen vivos? Dime «ya hice X», «quita X» o «sigue pendiente X»._")
+    return "\n".join(lines)
+
+
+def limpiar_agenda_duplicados(dry_run: bool = True) -> str:
+    """Barrido de duplicados en AGENDA.md: pendientes abiertos '- [ ]' con el mismo
+    texto (normalizado). Conserva el primero. Con dry_run=False aplica y respalda."""
+    import shutil
+    path = SPACE / "AGENDA.md"
+    if not path.exists():
+        return "AGENDA.md no existe."
+    lines = path.read_text().splitlines()
+    seen, out, removed = set(), [], []
+    for line in lines:
+        if re.match(r"^\s*-\s*\[\s*\]\s+", line):
+            norm = _distill_norm(re.sub(r"^\s*-\s*\[\s*\]\s*", "", line))
+            if len(norm) > 8:
+                if norm in seen:
+                    removed.append(line.strip())
+                    continue
+                seen.add(norm)
+        out.append(line)
+    if not removed:
+        return "✅ Sin duplicados en AGENDA."
+    if dry_run:
+        return (f"DRY-RUN: quitaría {len(removed)} duplicado(s):\n"
+                + "\n".join("- " + r[:90] for r in removed))
+    ts = datetime.now(TZ_CDMX).strftime("%Y%m%d-%H%M%S")
+    shutil.copy2(path, path.with_suffix(f".md.bak-{ts}"))
+    path.write_text("\n".join(out) + "\n")
+    return f"OK: {len(removed)} duplicado(s) eliminados. Backup .bak-{ts}"
 
 
 def _generar_visual_gamma(texto: str, formato: str = "social",
@@ -1940,6 +2339,99 @@ def try_deterministic_memory_write(user_message: str, strict: bool = True) -> st
     if not result.startswith("OK"):
         return f"⚠️ No pude guardar en {fname}: {result}"
     return f"✅ Anotado en *{fname}*:\n• {rest}"
+
+
+# ===== Captura activa de tareas (Fase 2 de seguimiento) =====
+_TASK_CAPTURE_RE = re.compile(
+    r"^\s*(?:"
+    r"recu[eé]rdame\s+que|recu[eé]rdame\s+de(?:\s+que)?|"
+    r"ag[eé]nda(?:me)?\s+que|ag[eé]ndame|agendar\s+que|"
+    r"pendiente\s*:|pendiente\s+de\s+que|queda\s+pendiente\s+que|"
+    r"hay\s+que|tengo\s+que|tenemos\s+que|"
+    r"no\s+se\s+me\s+olvide|no\s+olvid(?:ar|es)|"
+    r"agrega\s+pendiente|a[ñn]ade\s+pendiente"
+    r")[:,\s]+(.+)$",
+    re.IGNORECASE | re.DOTALL,
+)
+# Si lo capturado arranca con interrogativo, es una PREGUNTA, no una tarea.
+_TASK_QUESTION_GUARD = re.compile(
+    r"^\s*(?:qu[eé]\b|cu[aá]l|cu[aá]nto|cu[aá]ndo|c[oó]mo|d[oó]nde|por\s+qu[eé]|qui[eé]n)",
+    re.IGNORECASE,
+)
+
+
+def try_deterministic_task_capture(user_message: str) -> str | None:
+    """Fase 2 — Captura activa. Si el mensaje es una TAREA en lenguaje natural
+    ('recuérdame que…', 'hay que…', 'pendiente: …', 'tengo que…', 'no se me olvide…'),
+    la agrega a AGENDA.md como '- [ ]' al instante y confirma. Sin modelo.
+    Va DESPUÉS de try_deterministic_reminder (recordatorios con hora) y de
+    try_deterministic_memory_write (anota/apunta:). None si no aplica."""
+    if not user_message:
+        return None
+    msg = strip_override_prefix(user_message.strip())
+    if msg.endswith(("?", "？")):
+        return None
+    m = _TASK_CAPTURE_RE.match(msg)
+    if not m:
+        return None
+    body = (m.group(1) or "").strip().strip(":,.· ").strip()
+    if _TASK_QUESTION_GUARD.match(body):
+        return None
+    if len(body) < 6 or len(body.split()) < 2:  # exige sustancia, evita falsos positivos
+        return None
+    body = _normalizar_clientes(body)
+    fecha = datetime.now(TZ_CDMX).strftime("%Y-%m-%d")
+    result = execute_tool("append_to_memory",
+                          {"filename": "AGENDA.md", "content": f"- [ ] {body}  · [capturado {fecha}]"})
+    if not result.startswith("OK"):
+        return f"⚠️ No pude agregar la tarea: {result}"
+    if "ya estaba" in result:
+        return f"👍 Ya lo tenías en la AGENDA:\n• {body}"
+    return (f"✅ Lo agregué a tu *AGENDA* como pendiente:\n• {body}\n"
+            f"Te doy seguimiento — aparecerá en tu briefing.")
+
+
+# ===== Coach personal (Fase 6): bitácora de comidas + avances =====
+_MEAL_RE = re.compile(
+    r"^\s*(?:hoy\s+|ya\s+|me\s+)*(desayun[ée]|almorc[ée]|com[íi]|cen[ée]|merend[ée])\b[:,\s]+(.+)$",
+    re.IGNORECASE | re.DOTALL,
+)
+_COACH_RE = re.compile(
+    r"^\s*(?:coach\s*[:,]|registra\s+mi\s+avance|anota\s+mi\s+avance|mi\s+avance\s*[:,]|"
+    r"avanc[ée]\s+(?:en|con|el|la|mi)|hoy\s+logr[ée]|logr[ée]\b)\s*[:,]?\s*(.+)$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def try_deterministic_coach_capture(user_message: str) -> str | None:
+    """Fase 6 — Coach personal. Registra comidas en SALUD.md ('desayuné/comí/cené…')
+    y avances personales en COACH.md ('hoy logré…', 'coach: …', 'mi avance: …'),
+    sin modelo. Va DESPUÉS de la captura de tareas. None si no aplica."""
+    if not user_message:
+        return None
+    msg = strip_override_prefix(user_message.strip())
+    if msg.endswith(("?", "？")):
+        return None
+    fecha = datetime.now(TZ_CDMX).strftime("%Y-%m-%d %H:%M")
+    m = _MEAL_RE.match(msg)
+    if m:
+        comida = (m.group(2) or "").strip(":,.· ").strip()
+        if len(comida) >= 2:
+            verbo = m.group(1).lower()
+            r = execute_tool("append_to_memory",
+                             {"filename": "SALUD.md", "content": f"- [{fecha}] 🍽️ {verbo}: {comida}"})
+            if r.startswith("OK") or "ya estaba" in r:
+                return f"🍽️ Anotado en tu bitácora (SALUD):\n• {verbo}: {comida}"
+    m2 = _COACH_RE.match(msg)
+    if m2:
+        nota = (m2.group(1) or "").strip(":,.· ").strip()
+        if len(nota) >= 4:
+            r = execute_tool("append_to_memory",
+                             {"filename": "COACH.md", "content": f"- [{fecha}] [avance] {nota}"})
+            if r.startswith("OK") or "ya estaba" in r:
+                return (f"📈 Avance registrado (COACH):\n• {nota}\n"
+                        f"Voy llevando la cuenta para tu review.")
+    return None
 
 
 def should_deterministic_operational_response(user_message: str, history: list | None = None) -> bool:
@@ -3418,6 +3910,60 @@ TOOLS_DEFINITION = [
                 "contexto": {"type": "string", "description": "Contexto adicional relevante."},
             },
             "required": ["tarea", "cliente"],
+        },
+    },
+    {
+        "name": "encargar_a_agente",
+        "description": (
+            "ORQUESTACIÓN: Louis canaliza trabajo a un agente kawiil-* y GUARDA su resultado "
+            "como entregable BORRADOR en Cerebro (para Vo.Bo. de Polo), avisándole. Cierra el "
+            "ciclo info→agente→entregable→seguimiento. Úsalo cuando una tarea le toca a un agente "
+            "especializado (ej. kawiil-nelli compliance, kawiil-amatl contratos, kawiil-investigacion "
+            "research). NO finaliza solo: queda en borrador. Saca el nombre con listar_agentes."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agente": {"type": "string", "description": "Nombre del agente (ej. kawiil-nelli)."},
+                "tarea": {"type": "string", "description": "Instrucción clara de lo que debe producir."},
+                "cliente": {"type": "string", "description": "Cliente al que corresponde (opcional)."},
+                "contexto": {"type": "string", "description": "Insumos/contexto para el agente (opcional)."},
+            },
+            "required": ["agente", "tarea"],
+        },
+    },
+    {
+        "name": "entregable_registrar",
+        "description": (
+            "Guarda un entregable en Cerebro (aparece en el tablero/seguimiento). Úsalo para "
+            "persistir trabajo terminado (tuyo o de un agente) como documento. estado por defecto "
+            "'borrador' (esperando Vo.Bo. de Polo)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "titulo": {"type": "string"},
+                "cliente": {"type": "string"},
+                "contenido": {"type": "string", "description": "Cuerpo del entregable (markdown)."},
+                "tipo": {"type": "string", "default": "documento"},
+                "estado": {"type": "string", "enum": list(_ESTADOS_ENTREGABLE), "default": "borrador"},
+            },
+            "required": ["titulo", "contenido"],
+        },
+    },
+    {
+        "name": "entregable_actualizar_estado",
+        "description": (
+            "Cambia el estado de un entregable (borrador→listo→en_vobo→aprobado→archivado). "
+            "Úsalo cuando Polo aprueba o avanza un entregable (ej. 'marca X como listo/aprobado')."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "nombre": {"type": "string", "description": "Título o nombre de archivo del entregable."},
+                "nuevo_estado": {"type": "string", "enum": list(_ESTADOS_ENTREGABLE)},
+            },
+            "required": ["nombre", "nuevo_estado"],
         },
     },
     {
@@ -8334,6 +8880,16 @@ def execute_tool(name: str, args: dict) -> str:
                 args.get("insumos", ""), args.get("urgencia", "normal"),
                 args.get("contexto", ""),
             )
+        elif name == "encargar_a_agente":
+            return _encargar_a_agente(
+                args["agente"], args["tarea"],
+                args.get("cliente", ""), args.get("contexto", ""))
+        elif name == "entregable_registrar":
+            return _entregable_registrar(
+                args["titulo"], args.get("cliente", ""), args.get("contenido", ""),
+                args.get("tipo", "documento"), args.get("estado", "borrador"))
+        elif name == "entregable_actualizar_estado":
+            return _entregable_actualizar_estado(args["nombre"], args["nuevo_estado"])
         elif name == "cerebro_sync_agenda":
             return _cerebro_sync_agenda()
         elif name == "generar_visual_gamma":
@@ -8821,6 +9377,25 @@ def call_llm(
     if det_mem is not None:
         _mark_last_route("memoria-directa")
         return det_mem, "memoria-directa"
+
+    # Captura activa (Fase 2): tarea en lenguaje natural ("hay que…", "pendiente: …",
+    # "recuérdame que …" sin hora) → la registra en AGENDA al instante y confirma.
+    det_task = try_deterministic_task_capture(user_message)
+    if det_task is not None:
+        _mark_last_route("tarea-directa")
+        return det_task, "tarea-directa"
+
+    # Limpieza de duplicados de la AGENDA bajo demanda ("limpia la agenda").
+    if re.search(r"(?i)\blimpia(?:r)?\s+(?:la\s+|mi\s+)?agenda\b|\bquita(?:r)?\s+(?:los\s+)?duplicados\b",
+                 (user_message or "")):
+        _mark_last_route("limpieza-agenda")
+        return limpiar_agenda_duplicados(dry_run=False), "limpieza-agenda"
+
+    # Coach personal (Fase 6): comidas → SALUD.md, avances → COACH.md.
+    det_coach = try_deterministic_coach_capture(user_message)
+    if det_coach is not None:
+        _mark_last_route("coach-directo")
+        return det_coach, "coach-directo"
 
     def _ollama_route(tag: str) -> tuple:
         if _needs_sonnet_hint(user_message) and not _sonnet_hint_already_shown():

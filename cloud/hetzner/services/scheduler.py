@@ -166,6 +166,52 @@ MORNING_BRIEFING_MARKER = "__morning_briefing__"
 # Indexación legal en background: tick cada 10 min (10 × 60s), 10 docs por agente
 LEGAL_BG_TICK_INTERVAL = 10  # cada cuántos ticks de 60s correr el bg-indexer
 
+# Chequeos intradía (Fase 3): horas CDMX en que Louis empuja seguimiento si hay algo.
+INTRADAY_SLOTS = {13: "tarde", 18: "cierre"}
+INTRADAY_STATE = HOME_OC / "state" / "intraday_sent.json"
+
+# Review semanal coach (Fase 4): lunes 08:00 CDMX, una vez por semana ISO.
+WEEKLY_REVIEW_STATE = HOME_OC / "state" / "weekly_review_sent.json"
+
+
+def _weekly_ya(wk: str) -> bool:
+    try:
+        return json.loads(WEEKLY_REVIEW_STATE.read_text()).get("week") == wk
+    except Exception:
+        return False
+
+
+def _weekly_marca(wk: str):
+    try:
+        WEEKLY_REVIEW_STATE.parent.mkdir(parents=True, exist_ok=True)
+        WEEKLY_REVIEW_STATE.write_text(json.dumps({"week": wk}, ensure_ascii=False))
+    except Exception as e:
+        log.warning(f"no pude guardar weekly_review_sent.json: {e}")
+
+
+def _intraday_ya(slot: str, hoy: str) -> bool:
+    try:
+        d = json.loads(INTRADAY_STATE.read_text())
+        return d.get("date") == hoy and slot in d.get("slots", [])
+    except Exception:
+        return False
+
+
+def _intraday_marca(slot: str, hoy: str):
+    d = {"date": hoy, "slots": []}
+    try:
+        old = json.loads(INTRADAY_STATE.read_text())
+        if old.get("date") == hoy:
+            d = old
+    except Exception:
+        pass
+    d["slots"] = sorted(set(d.get("slots", []) + [slot]))
+    try:
+        INTRADAY_STATE.parent.mkdir(parents=True, exist_ok=True)
+        INTRADAY_STATE.write_text(json.dumps(d, ensure_ascii=False))
+    except Exception as e:
+        log.warning(f"no pude guardar intraday_sent.json: {e}")
+
 
 # ===== Queue I/O =====
 def read_queue() -> list:
@@ -314,6 +360,37 @@ def main():
                     log.info(f"auto-memoria: {r}")
         except Exception as e:
             log.warning(f"auto-memoria tick falló: {e}")
+
+        # Chequeos intradía (Fase 3): a las 13:00 y 18:00 CDMX, empuja seguimiento SOLO
+        # si hay algo abierto (vencimientos de hoy, entregables listo, briefs). Una vez
+        # por slot/día. Silencioso si no hay nada que reportar.
+        try:
+            _now = datetime.now(TZ_CDMX)
+            _slot = INTRADAY_SLOTS.get(_now.hour)
+            _hoy = _now.strftime("%Y-%m-%d")
+            if _slot and not _intraday_ya(_slot, _hoy):
+                msg = core.build_intraday_nudge(_slot)
+                if msg:
+                    send_telegram(msg)
+                    log.info(f"intraday nudge enviado ({_slot})")
+                _intraday_marca(_slot, _hoy)  # marca aunque no haya nada (no recalcular cada tick)
+        except Exception as e:
+            log.warning(f"intraday check falló: {e}")
+
+        # Review semanal coach (Fase 4): lunes 08:00 CDMX, una vez por semana.
+        try:
+            _n = datetime.now(TZ_CDMX)
+            if _n.weekday() == 0 and _n.hour == 8:
+                _ic = _n.isocalendar()
+                _wk = f"{_ic[0]}-W{_ic[1]:02d}"
+                if not _weekly_ya(_wk):
+                    rev = core.build_weekly_review()
+                    if rev:
+                        send_telegram(rev)
+                        log.info(f"review semanal enviado ({_wk})")
+                    _weekly_marca(_wk)
+        except Exception as e:
+            log.warning(f"review semanal falló: {e}")
 
         time.sleep(TICK_SECONDS)
 

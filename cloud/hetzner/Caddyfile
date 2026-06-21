@@ -24,6 +24,14 @@
         -Server
     }
 
+    # Tablero / dashboards protegidos con usuario+contraseña (datos de clientes/legal).
+    # TABLERO_USER y TABLERO_HASH vienen del entorno del container (compose → .env).
+    # Hash: docker exec louis-caddy caddy hash-password --plaintext 'TU_PASSWORD'
+    @tablero path / /dashboard* /agentes* /tablero* /seguimiento* /v1/tablero* /v1/activity*
+    basic_auth @tablero {
+        {$TABLERO_USER} {$TABLERO_HASH}
+    }
+
     # OpenClaw corre nativo en el host, en localhost:OPENCLAW_PORT
     reverse_proxy 127.0.0.1:{$OPENCLAW_PORT} {
         # WebSocket / SSE — OpenClaw lo usa para streaming de respuestas

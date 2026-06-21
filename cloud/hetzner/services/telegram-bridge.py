@@ -291,6 +291,16 @@ def transcribe_audio(audio_ogg: Path) -> str:
     if not WHISPER_MODEL.exists():
         return f"(error: modelo whisper no encontrado en {WHISPER_MODEL})"
 
+    # Modelos por orden de preferencia: medium (mejor precisión) → small → base
+    # (más rápidos). Si medium se tarda demasiado en CPU, degradamos en vez de fallar.
+    whisper_dir = WHISPER_MODEL.parent
+    modelos = [(n, whisper_dir / f"ggml-{n}.bin", tout)
+               for n, tout in (("medium", 240), ("small", 150), ("base", 90))
+               if (whisper_dir / f"ggml-{n}.bin").exists()]
+    if not modelos:
+        return f"(error: no encontré ningún modelo whisper en {whisper_dir})"
+    threads = str(max(4, os.cpu_count() or 4))  # usa todos los cores → mucho más rápido
+
     with tempfile.TemporaryDirectory() as td:
         wav_path = Path(td) / "audio.wav"
         r = subprocess.run(
@@ -301,26 +311,33 @@ def transcribe_audio(audio_ogg: Path) -> str:
             log.error(f"ffmpeg falló: {r.stderr}")
             return "(error convirtiendo audio)"
 
-        r = subprocess.run(
-            [
-                whisper_bin,
-                "-m", str(WHISPER_MODEL),
-                "-f", str(wav_path),
-                "-l", "es",
-                "-otxt",
-                "-of", str(Path(td) / "transcript"),
-                "--no-prints",
-            ],
-            capture_output=True, text=True, timeout=120,
-        )
-        if r.returncode != 0:
-            log.error(f"whisper falló: {r.stderr}")
-            return "(error transcribiendo)"
-
-        txt_path = Path(td) / "transcript.txt"
-        if txt_path.exists():
-            return txt_path.read_text().strip()
-        return r.stdout.strip()
+        ultimo = ""
+        for nombre, modelo, tout in modelos:
+            of = Path(td) / f"transcript_{nombre}"
+            try:
+                r = subprocess.run(
+                    [whisper_bin, "-m", str(modelo), "-f", str(wav_path),
+                     "-l", "es", "-t", threads, "-otxt", "-of", str(of), "--no-prints"],
+                    capture_output=True, text=True, timeout=tout,
+                )
+            except subprocess.TimeoutExpired:
+                log.warning(f"whisper '{nombre}' excedió {tout}s; pruebo un modelo más ligero")
+                ultimo = f"timeout {tout}s ({nombre})"
+                continue
+            if r.returncode != 0:
+                log.error(f"whisper '{nombre}' falló: {r.stderr[:300]}")
+                ultimo = (r.stderr or "")[:200]
+                continue
+            txt_path = of.with_suffix(".txt")
+            texto = txt_path.read_text().strip() if txt_path.exists() else r.stdout.strip()
+            if texto:
+                if nombre != modelos[0][0]:
+                    log.info(f"Transcrito con modelo de respaldo '{nombre}'")
+                return texto
+            ultimo = "transcripción vacía"
+        log.error(f"todos los modelos whisper fallaron: {ultimo}")
+        return ("(no pude transcribir el audio — está muy largo o el servidor está "
+                "saturado; intenta de nuevo o mándalo más corto)")
 
 
 # ===== Main loop =====
