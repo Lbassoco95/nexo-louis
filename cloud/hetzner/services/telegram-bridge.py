@@ -386,6 +386,22 @@ def _agenda_mark_done(h8):
     return None
 
 
+_META_RE = re.compile(r"\s*·\s*\[(?:auto|capturado)[^\]]*\]")
+_MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+
+
+def _fmt_item(txt: str, maxlen: int = 150) -> str:
+    """Limpia un pendiente para mostrarlo bonito en Telegram (parse_mode=HTML):
+    quita el metadato de captura (· [auto …]), recorta, escapa HTML y convierte la
+    negrita Markdown (**texto**) en <b>texto</b> para que NO salgan los asteriscos."""
+    t = _META_RE.sub("", txt).strip()
+    if len(t) > maxlen:
+        t = t[:maxlen].rstrip() + "…"
+    t = _htmlmod.escape(t)
+    t = _MD_BOLD_RE.sub(r"<b>\1</b>", t)
+    return t
+
+
 def _agenda_panel():
     """Devuelve (texto_html, reply_markup) con los pendientes y un botón por cada uno."""
     items = _agenda_open_items()
@@ -394,7 +410,7 @@ def _agenda_panel():
     lines = ["📋 <b>Pendientes abiertos</b> — toca el número para cerrarlo:\n"]
     row, keyboard = [], []
     for i, (h, txt) in enumerate(items, 1):
-        lines.append(f"<b>{i}.</b> {_htmlmod.escape(txt)[:110]}")
+        lines.append(f"<b>{i}.</b> {_fmt_item(txt)}")
         row.append({"text": f"✅ {i}", "callback_data": f"done:{h}"})
         if len(row) == 4:
             keyboard.append(row)
@@ -454,8 +470,14 @@ def handle_callback(cbq, token, chat_id):
         return
     if data.startswith("done:"):
         cerrado = _agenda_mark_done(data.split(":", 1)[1])
-        telegram_answer_callback(token, cbq_id,
-                                 f"✅ Hecho: {cerrado[:40]}" if cerrado else "Ya estaba cerrado o cambió")
+        # Toast efímero (texto plano, sin markdown) + confirmación persistente bien
+        # formateada con el texto COMPLETO de la tarea cerrada.
+        if cerrado:
+            plano = _MD_BOLD_RE.sub(r"\1", _META_RE.sub("", cerrado)).strip()
+            telegram_answer_callback(token, cbq_id, f"✅ Hecho: {plano[:180]}")
+            telegram_send_panel(token, chat_id, f"✅ <b>Cerrado:</b> {_fmt_item(cerrado, maxlen=300)}")
+        else:
+            telegram_answer_callback(token, cbq_id, "Ya estaba cerrado o cambió")
         txt, mk = _agenda_panel()
         telegram_edit(token, chat_id, mid, txt, mk)
         return
