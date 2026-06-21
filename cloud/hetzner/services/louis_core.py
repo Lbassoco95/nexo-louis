@@ -645,6 +645,15 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "contradice (ej. el mismo cliente dos veces con datos distintos). Regla: novedad → append_to_memory; "
         "corrección → reemplazar_pendiente; completado → completar_pendiente. La AGENDA debe quedar con UNA "
         "sola versión vigente de cada cosa.\n"
+        "\n# CONTEXTO COMPLETO EN CADA PENDIENTE — EMPRESA/CLIENTE (CRÍTICO)\n"
+        "Un pendiente SIN la empresa/cliente NO está bien definido. Cuando anotes un asunto de cliente "
+        "(alta/apertura de cuenta, onboarding, KYC, expediente, contrato, fondeo, trámite o seguimiento a "
+        "un cliente), la línea de AGENDA SIEMPRE debe decir de qué EMPRESA/CLIENTE es + el contexto clave "
+        "(qué falta, quién responde, estatus). Si Polo no lo dijo explícito, INFIÉRELO del historial "
+        "reciente de la conversación; si aun así no te queda claro de qué empresa es, PREGÚNTASELO a Polo "
+        "ANTES de guardar — no anotes la tarea a medias ni adivines. "
+        "Mal: '- [ ] dar seguimiento al alta de cuenta'. "
+        "Bien: '- [ ] Vizum Technologies — seguimiento al alta de cuenta (CNBV aún no aprueba; resp. Polo)'.\n"
         "\n# NO CONFIRMES SIN HABER ESCRITO (CERO 'YA QUEDÓ' FALSOS)\n"
         "PROHIBIDO decir 'anotado', 'corregido', 'actualizado', 'listo', 'ya quedó' si NO llamaste la tool "
         "de memoria en este turno y devolvió OK. Confirma SOLO lo que la tool reportó: si devolvió 'no "
@@ -2360,6 +2369,16 @@ _TASK_QUESTION_GUARD = re.compile(
     r"^\s*(?:qu[eé]\b|cu[aá]l|cu[aá]nto|cu[aá]ndo|c[oó]mo|d[oó]nde|por\s+qu[eé]|qui[eé]n)",
     re.IGNORECASE,
 )
+# Asuntos de cliente que NO quedan bien definidos sin la empresa/cliente. Si se capturan
+# "en seco" perdemos el contexto (de qué empresa es). Por eso estas tareas NO van por el
+# carril determinístico: se defieren al modelo, que las enriquece con la empresa (inferida
+# del historial) o pregunta antes de guardar. Ver regla "CONTEXTO COMPLETO EN CADA PENDIENTE".
+_TASK_NEEDS_CONTEXT_RE = re.compile(
+    r"(?i)\b("
+    r"alta\s+de\s+(?:la\s+)?cuenta|apertura\s+de\s+(?:la\s+)?cuenta|abrir\s+(?:la\s+)?cuenta|"
+    r"alta\s+de\s+cliente|apertura\s+de\s+cliente|onboarding|kyc|expediente|contrato|fonde\w+"
+    r")\b"
+)
 
 
 def try_deterministic_task_capture(user_message: str) -> str | None:
@@ -2382,6 +2401,10 @@ def try_deterministic_task_capture(user_message: str) -> str | None:
     if len(body) < 6 or len(body.split()) < 2:  # exige sustancia, evita falsos positivos
         return None
     body = _normalizar_clientes(body)
+    # Asunto de cliente (alta de cuenta, onboarding, contrato…) → al modelo, que lo
+    # enriquezca con la empresa/contexto o pregunte. NO lo guardamos a medias en seco.
+    if _TASK_NEEDS_CONTEXT_RE.search(body):
+        return None
     fecha = datetime.now(TZ_CDMX).strftime("%Y-%m-%d")
     result = execute_tool("append_to_memory",
                           {"filename": "AGENDA.md", "content": f"- [ ] {body}  · [capturado {fecha}]"})
