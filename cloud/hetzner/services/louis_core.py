@@ -9103,12 +9103,65 @@ def call_haiku(api_key: str, system_prompt: str, history: list, user_message: st
     return "".join(text_blocks).strip() or "(sin respuesta)"
 
 
+# ===== Visión de comida (control de alimentación por foto) =====
+# Polo manda la foto del plato por Telegram → Claude (multimodal) identifica el
+# alimento y estima su nutrición → lo anotamos en ALIMENTACION.md. La base de datos
+# de fondo para verificar productos empaquetados es Open Food Facts (futuro: barcode).
+_FOOD_VISION_HINT = (
+    "\n\n[CONTROL DE ALIMENTACIÓN] Si la imagen es comida, un platillo, bebida o snack, "
+    "EMPIEZA tu respuesta EXACTAMENTE con estas dos líneas (sin nada antes):\n"
+    "COMIDA:: <nombre corto del platillo + porción estimada>\n"
+    "NUTRICION:: ~<kcal> kcal · P <g>g · C <g>g · G <g>g (estimado)\n"
+    "y debajo, en lenguaje natural, explica brevemente qué ves y notas útiles "
+    "(ingredientes, si luce saludable, etc.). Las cifras son una ESTIMACIÓN visual, dilo así. "
+    "Si la imagen NO es comida, NO uses esas líneas y analízala normalmente."
+)
+
+_FOOD_COMIDA_RE = re.compile(r"(?im)^\s*COMIDA::\s*(.+?)\s*$")
+_FOOD_NUTRI_RE = re.compile(r"(?im)^\s*NUTRICION::\s*(.+?)\s*$")
+_FOOD_MARKER_RE = re.compile(r"(?im)^\s*(?:COMIDA|NUTRICION)::.*$\n?")
+
+
+def _registrar_comida_de_foto(text: str) -> str:
+    """Si la respuesta de visión trae los marcadores COMIDA::/NUTRICION::, registra la
+    comida en ALIMENTACION.md y devuelve una respuesta limpia (sin marcadores) para Polo.
+    Si no hay marcadores (no era comida), devuelve el texto tal cual."""
+    mc = _FOOD_COMIDA_RE.search(text)
+    if not mc:
+        return text
+    nombre = mc.group(1).strip()[:140]
+    mn = _FOOD_NUTRI_RE.search(text)
+    nutri = mn.group(1).strip()[:140] if mn else ""
+    fecha = datetime.now(TZ_CDMX).strftime("%Y-%m-%d %H:%M")
+    linea = f"- [{fecha}] 🍽️ (foto) {nombre}" + (f" — {nutri}" if nutri else "")
+    logged = False
+    try:
+        r = execute_tool("append_to_memory", {"filename": "ALIMENTACION.md", "content": linea})
+        logged = r.startswith("OK") or "ya estaba" in r
+    except Exception:
+        log.exception("No pude registrar la comida de la foto en ALIMENTACION.md")
+    # Limpia los marcadores y arma una respuesta legible para Telegram (Markdown).
+    cuerpo = _FOOD_MARKER_RE.sub("", text).strip()
+    encabezado = f"🍽️ *{nombre}*"
+    if nutri:
+        encabezado += f"\n_{nutri}_"
+    salida = encabezado + (f"\n\n{cuerpo}" if cuerpo else "")
+    if logged:
+        salida += "\n\n✅ Anotado en tu control de alimentación."
+    return salida
+
+
 def call_claude_with_image(api_key: str, system_prompt: str, image_b64: str, media_type: str, caption: str = "") -> str:
     """
     Manda imagen + caption a Claude Sonnet (multimodal). Sin tools — solo análisis.
     media_type: 'image/jpeg', 'image/png', 'image/gif', 'image/webp'
+
+    Caso especial COMIDA: si la imagen es un platillo/bebida/snack, Claude identifica
+    el alimento y estima su nutrición; aquí lo registramos en ALIMENTACION.md (control
+    de alimentación) automáticamente. Si NO es comida, se comporta como análisis normal.
     """
     user_text = caption.strip() if caption and caption.strip() else "Analiza esta imagen. Descríbeme qué ves y dime si hay alguna acción que deba tomar."
+    user_text = user_text + _FOOD_VISION_HINT
     headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
     body = {
         "model": CLAUDE_SONNET,
@@ -9128,7 +9181,8 @@ def call_claude_with_image(api_key: str, system_prompt: str, image_b64: str, med
         log.exception("Vision API falló")
         return f"(error analizando imagen: {e})"
     blocks = [b.get("text", "") for b in resp.get("content", []) if b.get("type") == "text"]
-    return "".join(blocks).strip() or "(sin respuesta del análisis)"
+    text = "".join(blocks).strip() or "(sin respuesta del análisis)"
+    return _registrar_comida_de_foto(text)
 
 
 def _sanitize_tool_blocks(messages: list) -> list:
