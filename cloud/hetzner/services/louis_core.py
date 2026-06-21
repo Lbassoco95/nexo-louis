@@ -2391,6 +2391,49 @@ def try_deterministic_task_capture(user_message: str) -> str | None:
             f"Te doy seguimiento — aparecerá en tu briefing.")
 
 
+# ===== Coach personal (Fase 6): bitácora de comidas + avances =====
+_MEAL_RE = re.compile(
+    r"^\s*(?:hoy\s+|ya\s+|me\s+)*(desayun[ée]|almorc[ée]|com[íi]|cen[ée]|merend[ée])\b[:,\s]+(.+)$",
+    re.IGNORECASE | re.DOTALL,
+)
+_COACH_RE = re.compile(
+    r"^\s*(?:coach\s*[:,]|registra\s+mi\s+avance|anota\s+mi\s+avance|mi\s+avance\s*[:,]|"
+    r"avanc[ée]\s+(?:en|con|el|la|mi)|hoy\s+logr[ée]|logr[ée]\b)\s*[:,]?\s*(.+)$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def try_deterministic_coach_capture(user_message: str) -> str | None:
+    """Fase 6 — Coach personal. Registra comidas en SALUD.md ('desayuné/comí/cené…')
+    y avances personales en COACH.md ('hoy logré…', 'coach: …', 'mi avance: …'),
+    sin modelo. Va DESPUÉS de la captura de tareas. None si no aplica."""
+    if not user_message:
+        return None
+    msg = strip_override_prefix(user_message.strip())
+    if msg.endswith(("?", "？")):
+        return None
+    fecha = datetime.now(TZ_CDMX).strftime("%Y-%m-%d %H:%M")
+    m = _MEAL_RE.match(msg)
+    if m:
+        comida = (m.group(2) or "").strip(":,.· ").strip()
+        if len(comida) >= 2:
+            verbo = m.group(1).lower()
+            r = execute_tool("append_to_memory",
+                             {"filename": "SALUD.md", "content": f"- [{fecha}] 🍽️ {verbo}: {comida}"})
+            if r.startswith("OK") or "ya estaba" in r:
+                return f"🍽️ Anotado en tu bitácora (SALUD):\n• {verbo}: {comida}"
+    m2 = _COACH_RE.match(msg)
+    if m2:
+        nota = (m2.group(1) or "").strip(":,.· ").strip()
+        if len(nota) >= 4:
+            r = execute_tool("append_to_memory",
+                             {"filename": "COACH.md", "content": f"- [{fecha}] [avance] {nota}"})
+            if r.startswith("OK") or "ya estaba" in r:
+                return (f"📈 Avance registrado (COACH):\n• {nota}\n"
+                        f"Voy llevando la cuenta para tu review.")
+    return None
+
+
 def should_deterministic_operational_response(user_message: str, history: list | None = None) -> bool:
     """Briefing instantáneo solo en primer saludo o pedido explícito (no en charla con historial)."""
     msg = (user_message or "").strip()
@@ -9347,6 +9390,12 @@ def call_llm(
                  (user_message or "")):
         _mark_last_route("limpieza-agenda")
         return limpiar_agenda_duplicados(dry_run=False), "limpieza-agenda"
+
+    # Coach personal (Fase 6): comidas → SALUD.md, avances → COACH.md.
+    det_coach = try_deterministic_coach_capture(user_message)
+    if det_coach is not None:
+        _mark_last_route("coach-directo")
+        return det_coach, "coach-directo"
 
     def _ollama_route(tag: str) -> tuple:
         if _needs_sonnet_hint(user_message) and not _sonnet_hint_already_shown():
