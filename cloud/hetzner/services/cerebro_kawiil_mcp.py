@@ -107,6 +107,15 @@ mcp = FastMCP(
         "dispara por TELEGRAM (el canal real de Polo). NUNCA uses las 'tareas programadas' nativas "
         "de Claude para esto: esas NO llegan a Telegram y Polo no las recibe. Si NO te dio la hora, "
         "PREGÚNTASELA antes; nunca inventes una hora.\n"
+        "AL CERRAR UN ENTREGABLE DE CLIENTE (flujo completo, en este orden):\n"
+        "  1) `entregable_registrar(...)` con el `contenido` COMPLETO del documento "
+        "(fuente de verdad que Louis podrá leer y retomar).\n"
+        "  2) `aprender(...)` el contexto clave (cliente, folios, base legal, estatus).\n"
+        "  3) por CADA fecha/deadline del trabajo, un `recordar(...)` para que Louis le "
+        "avise a Polo por Telegram (con holgura antes del vencimiento).\n"
+        "  4) un `recordar(...)` que PROPONGA a Polo cargar el proyecto a kawiil-central "
+        "(donde vive el cliente); Louis lo crea cuando Polo confirme.\n"
+        "  Si después editas el documento, persiste los cambios con `entregable_actualizar(...)`.\n"
         "Principio: datos duros, sin interpretación."
     ),
     # Detrás de Caddy con dominio propio: el Host no es localhost. Desactivamos
@@ -774,10 +783,15 @@ def entregable_registrar(
     estado: str = "borrador",
     descripcion: str = "",
     responsable: str = "Cowork",
+    contenido: str = "",
 ) -> str:
     """
     Registra un entregable producido en Cowork.
     estado: borrador | listo | en_vobo | aprobado | archivado
+    `contenido` (opcional pero RECOMENDADO): el CUERPO COMPLETO del documento en markdown.
+    Se guarda como fuente de verdad compartida → Louis puede LEERLO y RETOMARLO
+    (entregable_estado completo=True). Conforme lo edites en Cowork, persiste los cambios
+    con entregable_actualizar() para que la última versión quede compartida.
     """
     estado = estado.lower()
     if estado not in ESTADOS_VALIDOS:
@@ -786,7 +800,7 @@ def entregable_registrar(
     fecha    = datetime.now().strftime("%Y-%m-%d")
     filepath = ENTREGABLES_PATH / f"{fecha}-{_slug(titulo)}.md"
     if filepath.exists():
-        return f"Ya existe: {filepath.name}. Usa entregable_actualizar_estado()."
+        return f"Ya existe: {filepath.name}. Usa entregable_actualizar_estado() o entregable_actualizar()."
     content = (
         f"---\ntitulo: {titulo}\ncliente: {cliente}\nestado: {estado}\n"
         f"responsable: {responsable}\nfecha_creacion: {fecha}\n"
@@ -794,10 +808,46 @@ def entregable_registrar(
         f"# {titulo}\n\n"
         f"**Cliente:** {cliente} | **Estado:** {estado} | **Responsable:** {responsable}\n\n"
         f"## Descripción\n\n{descripcion or 'Sin descripción.'}\n\n"
+        f"## Contenido\n\n{contenido or '(pendiente — agrega el cuerpo con entregable_actualizar)'}\n\n"
         f"## Historial\n\n- {fecha} — Registrado como `{estado}` por {responsable}\n"
     )
     filepath.write_text(content, encoding="utf-8")
-    return f"✅ {filepath.name} | estado:{estado}"
+    _invalidate(filepath)
+    return f"✅ {filepath.name} | estado:{estado}{' | con contenido' if contenido else ''}"
+
+
+@mcp.tool()
+def entregable_actualizar(nombre_o_titulo: str, contenido: str, nota: str = "") -> str:
+    """Actualiza el CUERPO (contenido) de un entregable existente — la fuente de verdad
+    compartida. Úsalo cuando edites el documento en Cowork, para que la última versión
+    quede guardada y Louis pueda leerla/retomarla (entregable_estado completo=True).
+    Reemplaza la sección '## Contenido', bumpea fecha_actualizacion y deja rastro en el
+    historial."""
+    contenido = (contenido or "").strip()
+    if len(contenido) < 10:
+        return "Dame el contenido del documento (mín. 10 caracteres)."
+    ENTREGABLES_PATH.mkdir(parents=True, exist_ok=True)
+    termino = nombre_o_titulo.lower()
+    fecha   = datetime.now().strftime("%Y-%m-%d")
+    nuevo_bloque = f"## Contenido\n\n{contenido}\n\n"
+    for f in ENTREGABLES_PATH.glob("*.md"):
+        if f.name.startswith("_"):
+            continue
+        meta = _parsear_fm(f)
+        if termino in f.stem.lower() or termino in meta.get("titulo", "").lower():
+            txt = f.read_text(encoding="utf-8")
+            if re.search(r"(?ms)^## Contenido\b.*?(?=^## |\Z)", txt):
+                txt = re.sub(r"(?ms)^## Contenido\b.*?(?=^## |\Z)", lambda m: nuevo_bloque, txt, count=1)
+            elif re.search(r"(?m)^## Historial\b", txt):
+                txt = re.sub(r"(?m)^## Historial\b", lambda m: nuevo_bloque + "## Historial", txt, count=1)
+            else:
+                txt = txt.rstrip() + "\n\n" + nuevo_bloque
+            txt = re.sub(r"(?m)^fecha_actualizacion:.*$", lambda m: f"fecha_actualizacion: {fecha}", txt, count=1)
+            entrada = f"- {fecha} — contenido actualizado" + (f": {nota}" if nota else "")
+            f.write_text(txt.rstrip() + f"\n{entrada}\n", encoding="utf-8")
+            _invalidate(f)
+            return f"✅ Contenido actualizado en «{meta.get('titulo', f.stem)}». Louis puede retomarlo."
+    return f"No encontrado: «{nombre_o_titulo}». Regístralo primero con entregable_registrar()."
 
 
 @mcp.tool()
