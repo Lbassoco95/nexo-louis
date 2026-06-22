@@ -176,6 +176,44 @@ Los bots de Telegram/Slack y la API de kawiil-agents NO deben quedar detrás
 de Access (siguen webhooks/HTTP de servicios). Por eso `agents.kawiil.mx`
 queda público (autenticado por token).
 
+## Caddy en bucle de reinicio (`Restarting`) → cae TODO el proxy
+
+Síntoma: `docker ps` muestra `louis-caddy ... Restarting`, y los dominios
+públicos no responden (`curl https://cerebro.kawiil-central.mx/health` da
+`Couldn't connect`), aunque el servicio interno sí responde
+(`curl http://127.0.0.1:4040/health` → OK). Como Caddy carga toda la config de
+golpe, **un solo bloque roto tira todos los sitios** (Louis, Cerebro, agents).
+
+Diagnóstico:
+```bash
+sudo docker logs --tail 40 louis-caddy
+```
+
+Causa más común — **`TABLERO_HASH` mal escapado**. El hash bcrypt trae `$`
+(`$2a$14$...`); docker-compose los interpola y se los come, dejando un valor
+corrupto. En los logs verás:
+```
+http_basic: base64-decoding password: illegal base64 data at input byte 45
+```
+y warnings tipo `WARN The "hP" variable is not set`.
+
+Fix:
+```bash
+# Ver qué valor recibió realmente el contenedor:
+sudo docker inspect louis-caddy --format '{{range .Config.Env}}{{println .}}{{end}}' | grep TABLERO_HASH
+
+# En /opt/louis/.env, escapa CADA `$` como `$$` (comillas simples para que el
+# shell no toque los `$`):
+sudo sed -i 's|^TABLERO_HASH=.*|TABLERO_HASH=$$2a$$14$$<resto-del-bcrypt>|' /opt/louis/.env
+
+# Recrea Caddy y verifica:
+cd /opt/louis && sudo docker compose up -d caddy
+sudo docker inspect louis-caddy --format '{{range .Config.Env}}{{println .}}{{end}}' | grep TABLERO_HASH
+# Debe mostrar `$` sencillos: TABLERO_HASH=$2a$14$... (bcrypt completo)
+```
+Caddy detecta el prefijo `$2a$` y usa bcrypt directo; si los `$` faltan, intenta
+base64 y truena. Ver también el comentario en `docker-compose.yml` y `.env.example`.
+
 ## Cuando algo se rompe
 
 1. `./verify.sh` — primera línea de diagnóstico.

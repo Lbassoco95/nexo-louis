@@ -19,6 +19,8 @@ services:
       ACME_EMAIL: ${ACME_EMAIL}
       OPENCLAW_PORT: ${OPENCLAW_PORT:-3000}
       # Basic-auth del tablero/dashboards (genera el hash con 'caddy hash-password')
+      # ⚠️ El bcrypt trae `$`; en .env escápalos como `$$` o compose se los come y
+      # Caddy entra en bucle de reinicio ("illegal base64 data"). Ver .env.example.
       TABLERO_USER: ${TABLERO_USER:-polo}
       TABLERO_HASH: ${TABLERO_HASH:-}
     healthcheck:
