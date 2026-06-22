@@ -102,9 +102,11 @@ mcp = FastMCP(
         "  6. memoria_leer()          → archivo de memoria completo\n"
         "  7. legal_buscar()          → acervo SJF/DOF\n"
         "Los writes (registrar, marcar_hecho, dispatch) tienen respuesta corta.\n"
-        "RECORDATORIOS: si Polo dice 'recuérdame'/'avísame' algo a una hora, usa "
-        "`recordar(...)` — escribe en la cola que Louis dispara por Telegram. Si NO te "
-        "dio la hora, PREGÚNTASELA antes; nunca inventes una hora.\n"
+        "RECORDATORIOS (IMPORTANTE): si Polo dice 'recuérdame'/'avísame' algo a una hora, usa "
+        "SIEMPRE la herramienta `recordar(...)` de ESTE Cerebro — escribe en la cola que Louis "
+        "dispara por TELEGRAM (el canal real de Polo). NUNCA uses las 'tareas programadas' nativas "
+        "de Claude para esto: esas NO llegan a Telegram y Polo no las recibe. Si NO te dio la hora, "
+        "PREGÚNTASELA antes; nunca inventes una hora.\n"
         "Principio: datos duros, sin interpretación."
     ),
     # Detrás de Caddy con dominio propio: el Host no es localhost. Desactivamos
