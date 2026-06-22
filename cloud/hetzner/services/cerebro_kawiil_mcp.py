@@ -25,6 +25,7 @@ import re
 import base64
 import hashlib
 import html as _html
+import json
 import secrets
 import sqlite3
 import sys
@@ -581,6 +582,84 @@ def agenda_editar(patron: str, nuevo_texto: str) -> str:
     f.write_text("\n".join(lineas) + "\n", encoding="utf-8")
     _invalidate(f)
     return "✅ AGENDA actualizada."
+
+
+# ── Aprendizaje: Cowork siembra contexto en la memoria de Louis ─────────────
+_APRENDER_DESTINOS = {
+    "IMPORTANT": "IMPORTANT.md",
+    "PROJECTS": "PROJECTS.md",
+    "PEOPLE": "PEOPLE.md",
+    "CLIENTES": "CLIENTES.md",
+    "LEARNINGS": "LEARNINGS.md",
+}
+
+
+def _norm_line(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "")).strip().lower()
+
+
+@mcp.tool()
+def aprender(detalle: str, archivo: str = "IMPORTANT", cliente: str = "") -> str:
+    """
+    Enseña a Louis un hecho/contexto DURABLE desde Cowork — queda en su memoria de
+    largo plazo (la lee en cada sesión de Telegram/Slack). Úsalo cuando Polo te da
+    contexto que conviene que Louis recuerde: datos de un cliente/proyecto, una
+    decisión, una preferencia, una persona o una instrucción permanente.
+    archivo: IMPORTANT | PROJECTS | PEOPLE | CLIENTES | LEARNINGS
+      - IMPORTANT: decisiones/hechos clave o instrucciones permanentes
+      - PROJECTS:  estado/contexto vivo de un proyecto o caso
+      - PEOPLE:    datos durables de una persona (rol, empresa, relación)
+      - CLIENTES:  datos de un cliente/prospecto (razón social, contacto, estatus)
+      - LEARNINGS: reglas/lecciones de cómo trabaja Polo
+    `cliente` (opcional) antepone la empresa/cliente para que el contexto quede bien definido.
+    """
+    detalle = (detalle or "").strip()
+    if len(detalle) < 4:
+        return "Dame un detalle con sustancia (mín. 4 caracteres)."
+    nombre = archivo.strip().upper().replace(".MD", "")
+    fname = _APRENDER_DESTINOS.get(nombre)
+    if not fname:
+        return f"archivo inválido. Opciones: {', '.join(_APRENDER_DESTINOS)}"
+    f = SPACES_PATH / fname
+    fecha = datetime.now().strftime("%Y-%m-%d")
+    cuerpo = f"{cliente.strip()} — {detalle}" if cliente.strip() else detalle
+    objetivo = _norm_line(cuerpo)
+    for l in _read_cached(f).splitlines():       # dedup: no repetir lo equivalente
+        if objetivo and objetivo in _norm_line(l):
+            return f"👍 Ya estaba en {nombre}, no dupliqué."
+    existente = f.read_text(encoding="utf-8") if f.exists() else ""
+    with f.open("a", encoding="utf-8") as fh:
+        if existente and not existente.endswith("\n"):
+            fh.write("\n")
+        fh.write(f"- [{fecha}] {cuerpo}  · [Cowork]\n")
+    _invalidate(f)
+    return f"🧠 Aprendido en {nombre}: {cuerpo[:120]}"
+
+
+@mcp.tool()
+def bitacora_cowork(resumen: str, cliente: str = "") -> str:
+    """
+    Registra una nota de lo trabajado en esta sesión de Cowork. Se guarda en la
+    bitácora que Louis DESTILA cada noche → de ahí extrae hechos durables a PEOPLE/
+    CLIENTES/AGENDA/IMPORTANT automáticamente. Úsalo al cerrar un tema o al final de
+    la sesión, con un resumen de qué se hizo y qué contexto nuevo surgió.
+    """
+    resumen = (resumen or "").strip()
+    if len(resumen) < 8:
+        return "Dame un resumen con sustancia (mín. 8 caracteres)."
+    ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    texto = f"[Cowork{(' · ' + cliente.strip()) if cliente.strip() else ''}] {resumen}"
+    # 1) Línea JSONL que el destilador nocturno de Louis ingiere (mismo formato que Telegram).
+    jl = SPACES_PATH / "cowork-history.jsonl"
+    with jl.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"ts": ts, "role": "user", "content": texto}, ensure_ascii=False) + "\n")
+    _invalidate(jl)
+    # 2) Copia legible en COWORK.md (para revisión humana).
+    md = SPACES_PATH / "COWORK.md"
+    with md.open("a", encoding="utf-8") as fh:
+        fh.write(f"- [{ts[:16].replace('T', ' ')}] {texto}\n")
+    _invalidate(md)
+    return "📓 Bitácora guardada — Louis lo destilará esta noche a su memoria."
 
 
 @mcp.tool()

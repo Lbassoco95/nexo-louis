@@ -8054,9 +8054,11 @@ def _distill_save_state(today: str, resumen: str):
 
 
 def _distill_collect_today(today: str, max_chars: int = 18000) -> str:
-    """Junta los turnos de HOY (telegram+slack) en un transcript para destilar."""
+    """Junta los turnos de HOY (telegram+slack+cowork) en un transcript para destilar.
+    cowork-history.jsonl lo escribe el MCP Cerebro (tool bitacora_cowork) — así lo que
+    Polo trabaja en Cowork también se aprende a memoria durable cada noche."""
     turns = []
-    for fname in ("telegram-history.jsonl", "slack-history.jsonl"):
+    for fname in ("telegram-history.jsonl", "slack-history.jsonl", "cowork-history.jsonl"):
         p = SPACE / fname
         if not p.exists():
             continue
