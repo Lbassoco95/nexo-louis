@@ -31,7 +31,7 @@ import sqlite3
 import sys
 import time
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -53,6 +53,13 @@ ENTREGABLES_PATH = Path(os.environ.get("ENTREGABLES_PATH", "/opt/openclaw/entreg
 SJF_DB_PATH      = Path(os.environ.get("SJF_DB_PATH", "/opt/openclaw/legal/sjf.db"))
 DOF_DB_PATH      = Path(os.environ.get("DOF_DB_PATH", "/opt/openclaw/legal/dof.db"))
 CACHE_TTL        = int(os.environ.get("CEREBRO_CACHE_TTL", "60"))
+
+# Cola de recordatorios que lee el scheduler de Louis (misma que usa el bridge de
+# Telegram). Lo que Cowork agende aquí, Louis lo dispara. CDMX no usa DST → -06:00 fijo.
+OPENCLAW_HOME    = Path(os.environ.get("OPENCLAW_HOME", "/opt/openclaw"))
+REMINDERS_QUEUE  = OPENCLAW_HOME / "reminders" / "queue.jsonl"
+TZ_CDMX          = timezone(timedelta(hours=-6))
+REMINDER_RECURRENCIAS = {"daily", "weekly", "monthly", "yearly"}
 
 ESTADOS_VALIDOS = {"borrador", "listo", "en_vobo", "aprobado", "archivado"}
 ICONO_ESTADO    = {"borrador": "📝", "listo": "✅", "en_vobo": "🔄",
@@ -95,6 +102,9 @@ mcp = FastMCP(
         "  6. memoria_leer()          → archivo de memoria completo\n"
         "  7. legal_buscar()          → acervo SJF/DOF\n"
         "Los writes (registrar, marcar_hecho, dispatch) tienen respuesta corta.\n"
+        "RECORDATORIOS: si Polo dice 'recuérdame'/'avísame' algo a una hora, usa "
+        "`recordar(...)` — escribe en la cola que Louis dispara por Telegram. Si NO te "
+        "dio la hora, PREGÚNTASELA antes; nunca inventes una hora.\n"
         "Principio: datos duros, sin interpretación."
     ),
     # Detrás de Caddy con dominio propio: el Host no es localhost. Desactivamos
@@ -660,6 +670,99 @@ def bitacora_cowork(resumen: str, cliente: str = "") -> str:
         fh.write(f"- [{ts[:16].replace('T', ' ')}] {texto}\n")
     _invalidate(md)
     return "📓 Bitácora guardada — Louis lo destilará esta noche a su memoria."
+
+
+@mcp.tool()
+def recordar(mensaje: str, fecha_hora: str = "", en_minutos: int = 0,
+             recurrencia: str = "") -> str:
+    """
+    Programa un RECORDATORIO que Louis enviará a Polo por Telegram a la hora indicada.
+    Úsalo cuando Polo diga 'recuérdame', 'avísame', 'mándame X a tal hora'. Escribe en
+    la MISMA cola que dispara Louis — así un recordatorio pedido desde Cowork SÍ llega
+    (antes se perdían: Cowork no tenía esta herramienta).
+
+    - fecha_hora: ISO 8601 con zona, ej '2026-06-23T06:00:00-06:00' (hora de CDMX). Si
+      no pones zona se asume CDMX. Calcula la fecha REAL desde HOY; si dudas del día/
+      fecha actual, llama antes cerebro_estado().
+    - en_minutos: alternativa para tiempo relativo ('en 30 min'/'en 2 h' → 30 / 120).
+      El servidor calcula la hora con el reloj real (más confiable para relativos).
+    - recurrencia (opcional): 'daily' | 'weekly' | 'monthly' | 'yearly'.
+
+    IMPORTANTE: si Polo NO te dio hora/fecha, NO inventes una — pregúntasela primero
+    y solo entonces llama esta herramienta con la hora confirmada.
+    """
+    mensaje = (mensaje or "").strip()
+    if len(mensaje) < 3:
+        return "Dame el texto del recordatorio (mín. 3 caracteres)."
+    rec = (recurrencia or "").strip().lower() or None
+    if rec and rec not in REMINDER_RECURRENCIAS:
+        return f"recurrencia inválida. Opciones: {', '.join(sorted(REMINDER_RECURRENCIAS))}."
+    try:
+        if en_minutos and int(en_minutos) > 0:
+            dt = datetime.now(TZ_CDMX) + timedelta(minutes=int(en_minutos))
+        elif fecha_hora.strip():
+            dt = datetime.fromisoformat(fecha_hora.strip())
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=TZ_CDMX)
+        else:
+            return ("Falta la hora. Pregúntale a Polo a qué hora/fecha quiere el "
+                    "recordatorio y vuelve a llamar con 'fecha_hora' (ISO) o 'en_minutos'.")
+    except Exception as e:
+        return (f"fecha_hora inválida '{fecha_hora}'. Usa ISO 8601, ej "
+                f"'2026-06-23T06:00:00-06:00'. ({e})")
+    ahora = datetime.now(TZ_CDMX)
+    if dt < ahora - timedelta(minutes=1):
+        return (f"Esa hora ({dt.strftime('%Y-%m-%d %H:%M')}) ya pasó (ahora son las "
+                f"{ahora.strftime('%H:%M')} CDMX). Confirma la fecha/hora con Polo.")
+    entry = {
+        "id": secrets.token_hex(4),
+        "fire_at": dt.isoformat(),
+        "message": mensaje,
+        "channel": "telegram",
+        "mode": "raw",          # texto exacto, sin reformular
+        "recurrence": rec,
+        "created_at": datetime.now(TZ_CDMX).isoformat(),
+        "source": "cowork",
+    }
+    try:
+        REMINDERS_QUEUE.parent.mkdir(parents=True, exist_ok=True)
+        with REMINDERS_QUEUE.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        return f"No pude guardar el recordatorio: {e}"
+    rec_txt = f" · se repite {rec}" if rec else ""
+    return (f"⏰ Recordatorio agendado para {dt.strftime('%Y-%m-%d %H:%M')} CDMX{rec_txt}. "
+            f"Louis se lo enviará a Polo por Telegram.\nMensaje: {mensaje[:120]}")
+
+
+@mcp.tool()
+def recordatorios_pendientes() -> str:
+    """Lista los recordatorios PENDIENTES (aún sin disparar) que Louis tiene en cola.
+    Útil para confirmarle a Polo qué tiene agendado, o antes de crear uno nuevo. Omite
+    el briefing matutino automático del sistema."""
+    if not REMINDERS_QUEUE.exists():
+        return "(no hay recordatorios pendientes)"
+    items = []
+    for line in REMINDERS_QUEUE.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        if d.get("message") == "__morning_briefing__":
+            continue
+        items.append(d)
+    if not items:
+        return "(no hay recordatorios pendientes)"
+    items.sort(key=lambda e: e.get("fire_at", ""))
+    out = [f"{len(items)} recordatorio(s) pendiente(s):"]
+    for d in items[:30]:
+        fa = str(d.get("fire_at", "?"))[:16].replace("T", " ")
+        rectxt = f" ({d['recurrence']})" if d.get("recurrence") else ""
+        out.append(f"• {fa}{rectxt} — {str(d.get('message',''))[:80]}")
+    return "\n".join(out)
 
 
 @mcp.tool()

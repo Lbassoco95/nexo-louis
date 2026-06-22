@@ -654,6 +654,20 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "ANTES de guardar — no anotes la tarea a medias ni adivines. "
         "Mal: '- [ ] dar seguimiento al alta de cuenta'. "
         "Bien: '- [ ] Vizum Technologies — seguimiento al alta de cuenta (CNBV aún no aprueba; resp. Polo)'.\n"
+        "\n# VARIOS PENDIENTES EN UN MENSAJE → SEPÁRALOS (CRÍTICO)\n"
+        "Cuando Polo dicte VARIOS asuntos en un mismo mensaje (ej. 'estos pendientes son… enviar a JC y "
+        "Carmen…, también JC me debe una cotización…, también ver kawiil-central…'), NUNCA los guardes "
+        "como UN solo pendiente. Identifica cada asunto distinto y guárdalo como una entrada SEPARADA, "
+        "una por tarea concreta y accionable, cada una con su empresa/proyecto y contexto. Llama la tool de "
+        "memoria UNA VEZ POR PENDIENTE. Mal: una sola línea gigante con todo el párrafo. Bien: varias "
+        "líneas '- [ ]', una por asunto. Al confirmar, enumérale a Polo los pendientes que separaste.\n"
+        "\n# SI FALTA LA HORA O EL CONTEXTO, PREGUNTA — NO INVENTES NI DESCARTES (CRÍTICO)\n"
+        "Tu meta es que cada pendiente quede COMPLETO y con seguimiento correcto. Si Polo te pide "
+        "recordarle o agendar algo pero NO te dio la HORA o la FECHA, NO inventes una hora ni lo dejes "
+        "pasar: PREGÚNTASELA. Mientras tanto guarda el pendiente marcando lo que falta "
+        "('- [ ] … (falta hora — confirmar)') y regresa a él hasta completarlo. Igual si falta el "
+        "cliente/dueño/contexto: infiérelo del historial o pregunta. Solo programa un recordatorio con "
+        "`agendar_recordatorio` usando una hora que Polo CONFIRMÓ — nunca una inventada.\n"
         "\n# NO CONFIRMES SIN HABER ESCRITO (CERO 'YA QUEDÓ' FALSOS)\n"
         "PROHIBIDO decir 'anotado', 'corregido', 'actualizado', 'listo', 'ya quedó' si NO llamaste la tool "
         "de memoria en este turno y devolvió OK. Confirma SOLO lo que la tool reportó: si devolvió 'no "
@@ -2299,6 +2313,26 @@ def try_deterministic_reminder(user_message: str) -> str | None:
     return f"⏰ Listo, te recuerdo en {unidad_txt} (a las {hh}): *{mensaje}*"
 
 
+def _looks_multi_item(text: str) -> bool:
+    """Heurística: ¿el mensaje dicta VARIOS pendientes distintos? Si sí, conviene
+    deferirlo al modelo para que los SEPARE en entradas distintas (el carril
+    determinístico los pegaría en una sola línea gigante). Conservadora: solo dispara
+    con señales claras de multi-tema, para no robarle captura simple al fast-path."""
+    t = (text or "").strip()
+    if len(t) < 80:
+        return False
+    # Lista explícita: 'estos/varios pendientes son…'
+    if re.search(r"(?i)\b(estos|varios|mis)\s+pendientes\b", t) or re.search(r"(?i)\bpendientes\s+(son|:)", t):
+        return True
+    # Conectores de enumeración en texto largo (también/además/por otro lado)
+    if re.search(r"(?i)\b(tambi[eé]n|adem[aá]s|por\s+otro\s+lado|asimismo)\b", t) and len(t) > 140:
+        return True
+    # Viñetas o numeración con 2+ ítems
+    if len(re.findall(r"(?m)^\s*(?:\d+[\.\)]|[-•*])\s+\S", t)) >= 2:
+        return True
+    return False
+
+
 def try_deterministic_memory_write(user_message: str, strict: bool = True) -> str | None:
     """Guarda una nota en memoria SIN Claude (append directo).
 
@@ -2343,6 +2377,12 @@ def try_deterministic_memory_write(user_message: str, strict: bool = True) -> st
 
     rest = rest.lstrip(":").strip()
     if not rest:
+        return None
+
+    # Varios pendientes en un mensaje → deferir al modelo para que los SEPARE en entradas
+    # distintas (el carril determinístico los pegaría como uno solo). Solo en fast-path
+    # (strict); en el fallback permisivo preferimos guardar algo a perderlo.
+    if strict and _looks_multi_item(rest):
         return None
 
     fecha = datetime.now(TZ_CDMX).strftime("%Y-%m-%d %H:%M")
@@ -2401,6 +2441,9 @@ def try_deterministic_task_capture(user_message: str) -> str | None:
     if len(body) < 6 or len(body.split()) < 2:  # exige sustancia, evita falsos positivos
         return None
     body = _normalizar_clientes(body)
+    # Varios pendientes en un mismo dictado → al modelo para separarlos (no pegarlos en uno).
+    if _looks_multi_item(body):
+        return None
     # Asunto de cliente (alta de cuenta, onboarding, contrato…) → al modelo, que lo
     # enriquezca con la empresa/contexto o pregunte. NO lo guardamos a medias en seco.
     if _TASK_NEEDS_CONTEXT_RE.search(body):
@@ -2571,16 +2614,48 @@ def _resolve_ollama_model(user_message: str) -> tuple[str, int]:
     return OLLAMA_FAST_MODEL, OLLAMA_CHAT_TIMEOUT
 
 
+BRIEFING_TENANTS = [t.strip() for t in os.environ.get("BRIEFING_TENANTS", "kawiil,yoltik").split(",") if t.strip()]
+
+
+def _briefing_calendar_block(rango: str = "hoy") -> str:
+    """Trae el calendario M365 EN VIVO (la ÚNICA fuente de verdad de horas de juntas)
+    para el briefing. Devuelve texto compacto con los eventos reales, o '' si no hay
+    acceso/eventos. Aislado al briefing → NO añade latencia al chat normal."""
+    bloques = []
+    for t in BRIEFING_TENANTS:
+        try:
+            out = _run_m365_tool("m365_calendario", {"tenant": t, "rango": rango})
+        except Exception as e:
+            out = f"ERROR {e}"
+        out = (out or "").strip()
+        if out and not out.startswith("ERROR") and "(OK, sin output)" not in out:
+            bloques.append(f"[{t}]\n{out}")
+    return "\n".join(bloques)
+
+
 def _reason_briefing(snapshot: str) -> str | None:
     """Briefing matutino RAZONADO por Claude Haiku (barato): prioriza y sintetiza en
-    vez de volcar la memoria cruda. None si no hay API o falla → cae a determinístico."""
+    vez de volcar la memoria cruda. None si no hay API o falla → cae a determinístico.
+    Las HORAS de juntas salen SOLO del calendario M365 en vivo, NO de la memoria."""
     api_key = load_anthropic_key()
     if not api_key:
         return None
     hoy = _fmt_dt_es(datetime.now(get_active_tz()))
+    cal = _briefing_calendar_block("hoy")
     sys = (
         "Eres Louis, asistente ejecutivo de Polo (CEO de Kawiil). Redacta su BRIEFING "
-        "matutino a partir de los datos de abajo (AGENDA/IMPORTANT/JOURNAL/CLIENTES).\n"
+        "matutino a partir de los datos de abajo.\n"
+        "FUENTES (CRÍTICO):\n"
+        "- El bloque CALENDARIO es la ÚNICA fuente de verdad para HORAS de juntas/reuniones. "
+        "Una junta CON HORA solo puede venir de ahí.\n"
+        "- AGENDA/CLIENTES/IMPORTANT/JOURNAL son TAREAS y contexto, NO juntas agendadas. Si un "
+        "pendiente menciona una hora (ej. '12:00') pero NO aparece en el CALENDARIO, NO lo "
+        "presentes como junta confirmada: trátalo como 'pendiente de agendar' (o como deadline) y "
+        "señala que falta fijar/confirmar la hora. Un link para agendar (Reclaim/Calendly) significa "
+        "que HAY QUE agendar, NO que ya está a esa hora.\n"
+        "- Si el bloque CALENDARIO viene vacío, NO inventes NINGUNA hora de junta: di explícitamente "
+        "que no hay juntas confirmadas en el calendario hoy.\n"
+        "- Si algo hay que agendar y no tiene hora, márcalo 'pendiente de agendar' y sugiere a Polo fijarla.\n"
         "FORMATO ESTRICTO:\n"
         "- Saluda en 1 línea.\n"
         "- Luego viñetas con '- ', UN SOLO TEMA por viñeta. NUNCA combines dos asuntos "
@@ -2588,7 +2663,7 @@ def _reason_briefing(snapshot: str) -> str | None:
         "- Cada viñeta empieza con un **título corto en negrita** que DESCRIBE exactamente lo que "
         "dice su propio texto — el título y el cuerpo deben coincidir (nada de título genérico y "
         "cuerpo de otra cosa).\n"
-        "- ORDENA por urgencia: lo que VENCE HOY o tiene hora va primero; luego el resto.\n"
+        "- ORDENA por urgencia: primero las JUNTAS del CALENDARIO y lo que VENCE HOY; luego el resto.\n"
         "- Máximo 7 viñetas, concisas y accionables; resalta deadlines reales con su hora/fecha.\n"
         "REGLAS: descarta duplicados, ruido y entradas viejas; NO vuelques los datos crudos; "
         "NO inventes nada que no esté en los datos; NO repitas. Español de México. Usa **negrita** "
@@ -2596,12 +2671,18 @@ def _reason_briefing(snapshot: str) -> str | None:
         "Cierra con '¿Por dónde empezamos?'.\n\n"
         f"Hoy es {hoy} (CDMX)."
     )
+    cal_txt = (
+        f"CALENDARIO HOY (M365 EN VIVO — fuente de verdad de horas):\n{cal}\n\n"
+        if cal else
+        "CALENDARIO HOY: (sin juntas confirmadas en el calendario / sin acceso) — "
+        "NO afirmes horas de juntas hoy.\n\n"
+    )
     headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
     body = {
         "model": CLAUDE_HAIKU,
         "max_tokens": 900,
         "system": sys,
-        "messages": [{"role": "user", "content": f"DATOS (memoria viva):\n{snapshot[:6000]}"}],
+        "messages": [{"role": "user", "content": f"{cal_txt}DATOS (memoria viva):\n{snapshot[:6000]}"}],
     }
     try:
         resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=60)
