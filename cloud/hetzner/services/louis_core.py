@@ -714,6 +714,16 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "- Correo/agenda/juntas → tools `m365_*`.\n"
         "Solo di que algo no se pudo si la tool DEVOLVIÓ un error — y entonces reporta el error textual. "
         "Está PROHIBIDO decir 'no tengo acceso' cuando existe una tool para eso.\n"
+        "\n# DOCUMENTOS QUE POLO HACE EN COWORK — SÍ LOS TIENES (vía Cerebro)\n"
+        "Los documentos/entregables que Polo produce en Cowork y quedan REGISTRADOS viven en el "
+        "almacén compartido Cowork↔Louis, y TÚ LOS PUEDES LEER. Cuando Polo pregunte por 'el "
+        "documento/archivo/minuta que hice en Cowork' (para una reunión, cliente o tema), PRIMERO "
+        "búscalo ahí: `cerebro_listar` para ubicarlo y `cerebro_leer` para traer su contenido. "
+        "PROHIBIDO responder 'no tengo acceso a Cowork' o mandar a Polo a Dropbox/OneDrive/Mac sin "
+        "haber consultado el Cerebro primero. Distinción clave: los CHATS crudos de Cowork no los "
+        "ves, pero los DOCUMENTOS registrados SÍ. Si tras buscar de verdad no aparece, dilo claro: "
+        "'no veo ese documento registrado en el Cerebro — ¿lo registraste en Cowork con "
+        "entregable_registrar?', y ofrécele registrarlo o que te lo pegue.\n"
         "\n# NO TE DETENGAS A MEDIAS — EJECUTA EN EL MISMO TURNO (proactividad)\n"
         "Eres un asistente PROACTIVO: completas la tarea de principio a fin SIN que Polo tenga que "
         "empujarte turno por turno. PROHIBIDO terminar un turno con frases de relleno como 'déjame "
@@ -1292,6 +1302,37 @@ def _cerebro_proyecto_estado(nombre: str) -> str:
                     lineas.append(f"  {campo}: {meta[campo]}")
             return "\n".join(lineas)
     return f"No encontrado: «{nombre}»"
+
+
+def _cerebro_leer(nombre: str, max_chars: int = 12000) -> str:
+    """Lee el CONTENIDO COMPLETO (cuerpo) de un entregable del almacén compartido por
+    título/cliente/palabra clave. Para TRAER documentos que Polo produjo en Cowork —
+    Louis los puede leer/retomar. Devuelve el más reciente que coincida."""
+    if not ENTREGABLES_PATH.exists():
+        return f"Cerebro no disponible en {ENTREGABLES_PATH}."
+    termino = (nombre or "").strip().lower()
+    if not termino:
+        return "Dame el título o cliente del documento que buscas."
+    candidatos = []
+    for f in ENTREGABLES_PATH.glob("*.md"):
+        if f.name.startswith("_"):
+            continue
+        meta = _cerebro_parsear_fm(f)
+        if (termino in f.stem.lower()
+                or termino in meta.get("titulo", "").lower()
+                or termino in meta.get("cliente", "").lower()):
+            candidatos.append((f, meta))
+    if not candidatos:
+        return (f"No veo un documento que coincida con «{nombre}» en el almacén compartido "
+                f"(Cerebro). Si lo hiciste en Cowork, confirma que ahí se registró con "
+                f"entregable_registrar. Usa cerebro_listar para ver lo que sí está disponible.")
+    f, meta = sorted(candidatos, key=lambda c: c[0].stat().st_mtime, reverse=True)[0]
+    content = f.read_text(encoding="utf-8")
+    cuerpo = re.sub(r"^---\n.*?\n---\n?", "", content, flags=re.DOTALL).strip()
+    if len(cuerpo) > max_chars:
+        cuerpo = cuerpo[:max_chars] + "\n…[truncado]"
+    return (f"📄 {meta.get('titulo', f.stem)} (cliente: {meta.get('cliente','?')} · "
+            f"estado: {meta.get('estado','?')})\n\n{cuerpo}")
 
 
 def _cerebro_crear_brief(tarea: str, cliente: str, insumos: str = "",
@@ -4003,6 +4044,24 @@ TOOLS_DEFINITION = [
             "type": "object",
             "properties": {
                 "nombre": {"type": "string", "description": "Nombre o título del entregable."},
+            },
+            "required": ["nombre"],
+        },
+    },
+    {
+        "name": "cerebro_leer",
+        "description": (
+            "Lee el CONTENIDO COMPLETO de un documento/entregable del almacén compartido "
+            "Cowork↔Louis (lo que Polo produjo en Cowork y quedó registrado). ÚSALO cuando "
+            "Polo pregunte por 'el documento/archivo/minuta que hice en Cowork' para una "
+            "reunión, cliente o tema. NUNCA respondas que 'no tienes acceso a Cowork': los "
+            "documentos REGISTRADOS sí los puedes leer aquí. Busca por título, cliente o "
+            "palabra clave."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "nombre": {"type": "string", "description": "Título, cliente o palabra clave del documento."},
             },
             "required": ["nombre"],
         },
@@ -8990,6 +9049,8 @@ def execute_tool(name: str, args: dict) -> str:
             return _cerebro_listar(args.get("estado", ""), args.get("cliente", ""))
         elif name == "cerebro_proyecto_estado":
             return _cerebro_proyecto_estado(args["nombre"])
+        elif name == "cerebro_leer":
+            return _cerebro_leer(args["nombre"])
         elif name == "cerebro_crear_brief":
             return _cerebro_crear_brief(
                 args["tarea"], args["cliente"],
