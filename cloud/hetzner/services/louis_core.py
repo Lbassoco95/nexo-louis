@@ -2209,6 +2209,22 @@ _DOC_DONE_RE = re.compile(
     r"enviamos|entregamos|mandamos|generamos|envi[eé]|entregu[eé]|mand[eé])\b",
     re.IGNORECASE)
 
+# Recordatorio/aviso: si el mensaje pide recordar/avisar, NO es un pedido de generar
+# documento (aunque mencione 'dictamen', 'plantilla', 'PDF' dentro del recordatorio).
+_REMINDER_GUARD_RE = re.compile(
+    r"\b(recu[eé]rda(?:me)?|recordar(?:me)?|recordatorio|av[ií]sa(?:me)?|"
+    r"al[aá]rma(?:me)?|pon(?:me)?\s+(?:un\s+)?(?:recordatorio|alarma|aviso))\b",
+    re.IGNORECASE)
+
+# Negación explícita de generar documento: 'no había que generar', 'no quiero un
+# documento', 'no era un doc', 'no generes'.
+_DOC_NO_INTENT_RE = re.compile(
+    r"\bno\s+(hab[ií]a\s+que|hace\s+falta|es\s+necesario|hay\s+que|"
+    r"quiero|quer[ií]a|necesito|era|son|es)\b[^.]{0,40}\b(document\w*|doc|pdf|"
+    r"pptx?|xlsx?|generar?|gener\w*)\b"
+    r"|\bno\s+gener(?:es|e|ar)\b",
+    re.IGNORECASE)
+
 
 def needs_doc_sonnet(user_message: str) -> bool:
     """True si Polo pide GENERAR un documento (PDF/PPTX/XLSX). Usa Sonnet — sigue
@@ -2224,6 +2240,13 @@ def needs_doc_sonnet(user_message: str) -> bool:
     if _DOC_NEGATIVE_RE.search(msg):
         return False
     if _DOC_DONE_RE.search(msg):
+        return False
+    # Recordatorio/aviso → NO es pedido de generar documento (aunque mencione 'dictamen',
+    # 'plantilla', etc. dentro del recordatorio). Ej: 'recuérdame enviar el dictamen S250'.
+    if _REMINDER_GUARD_RE.search(msg):
+        return False
+    # Negación explícita: 'no había que generar', 'no quiero documento', 'no era un doc'.
+    if _DOC_NO_INTENT_RE.search(msg):
         return False
     return bool(_DOC_TYPE_RE.search(msg) and _DOC_VERB_RE.search(msg))
 
