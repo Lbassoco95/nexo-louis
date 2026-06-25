@@ -1028,6 +1028,11 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "¿la intento de otra forma?') — sin tripas técnicas.\n"
         "• Si vas a crear VARIAS tareas, créalas TODAS en el mismo turno y al final dale a Polo la lista "
         "de lo que quedó — NO narres paso por paso ni te detengas a media lista.\n"
+        "• NUNCA inventes que kawiil-central está 'bloqueado', 'en mantenimiento' o que 'falló la sesión' "
+        "si NO llamaste la tool y viste el error real. Cuando Polo te reporte avances/cambios ('ya hice X', "
+        "'reagenda Y'), ACTUALIZA las tareas con las tools (`kawiil_central_actualizar_tarea`/"
+        "`kawiil_central_asignar_tarea`) EN ESE TURNO; si una tool devuelve error, repórtalo TEXTUAL — "
+        "nunca un pretexto inventado.\n"
         "\n"
         "FLUJO RECOMENDADO cuando Polo te dice algo como 'avancé X' o 'creemos tarea para Y':\n"
         "1. Si es la primera vez de la sesión, llama `kawiil_central_estado()` para verificar conectividad "
@@ -2267,6 +2272,30 @@ def needs_doc_sonnet(user_message: str) -> bool:
 def needs_sonnet_auto(user_message: str) -> bool:
     """Ruta Sonnet sin prefijo: escritura memoria, agentes legales o documentos."""
     return needs_memory_write(user_message) or needs_legal_sonnet(user_message) or needs_doc_sonnet(user_message)
+
+
+# Operaciones de kawiil-central (crear/asignar/actualizar tareas o proyectos) son
+# multi-paso (resolver usuario→id, proyecto, INSERT/UPDATE). Haiku las botá: usa SQL
+# crudo, narra plomería y hasta FABRICA errores ('bloqueo de sesión') sin intentar.
+# Sonnet sí sigue las tools y no inventa → forzamos Sonnet para esos mensajes.
+_KAWIIL_SONNET_RE = re.compile(
+    r"\bkawiil[\s\-]*central\b"
+    r"|\b(crea(?:r|le|me)?|agr[eé]ga(?:le|me)?|registra|asigna|as[ií]gna(?:le)?|"
+    r"actualiza|reasigna|reagenda|reagendar|mueve|cierra|marca)\b[^.\n]{0,55}\b"
+    r"(tarea|tareas|proyecto|proyectos)\b"
+    r"|\btareas?\s+(de|para|a)\s+\w+",
+    re.IGNORECASE)
+
+
+def needs_kawiil_sonnet(user_message: str) -> bool:
+    """True si el mensaje opera kawiil-central (tareas/proyectos) o lo menciona explícito.
+    Fuerza Sonnet: Haiku botá estas operaciones multi-paso e inventa fallos."""
+    if not user_message:
+        return False
+    msg = user_message.strip()
+    if msg.lower().startswith(OLLAMA_FORCE_PREFIXES + HAIKU_FORCE_PREFIXES):
+        return False
+    return bool(_KAWIIL_SONNET_RE.search(msg))
 
 
 def _memory_write_billing_msg() -> str:
@@ -9760,12 +9789,14 @@ def call_llm(
     # Todo lo demás que necesite tools (correos, recordatorios, kawiil-central,
     # browser, memoria) corre en HAIKU, que soporta tool-use y cuesta ≈1/3.
     if needs_claude(user_message) or needs_sonnet_auto(user_message) or needs_tools(user_message):
-        usa_sonnet = needs_claude(user_message) or needs_legal_sonnet(user_message) or needs_doc_sonnet(user_message)
+        usa_sonnet = (needs_claude(user_message) or needs_legal_sonnet(user_message)
+                      or needs_doc_sonnet(user_message) or needs_kawiil_sonnet(user_message))
         modelo_tools = CLAUDE_SONNET if usa_sonnet else CLAUDE_HAIKU
         reason = (
             "prefijo /sonnet" if needs_claude(user_message) else
             "dictamen legal" if needs_legal_sonnet(user_message) else
             "documento PDF/PPTX/XLSX" if needs_doc_sonnet(user_message) else
+            "kawiil-central (tareas/proyectos)" if needs_kawiil_sonnet(user_message) else
             "escritura memoria" if needs_memory_write(user_message) else
             "herramienta/datos"
         )
