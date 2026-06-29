@@ -262,13 +262,13 @@ fi
 # el parámetro ?isSemanal=true. Aquí instalamos el harvester corregido + su timer.
 log "[7b] Instalando harvester SJF + timer diario"
 mkdir -p /opt/openclaw/legal/sjf
-for f in sjf_harvest.py sjf_weekly_summary.py sjf_biblioteca.py; do
+for f in sjf_harvest.py sjf_weekly_summary.py sjf_biblioteca.py sjf_backfill.py; do
   if [[ -f "legal-scrapers/${f}" ]]; then
     install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" "legal-scrapers/${f}" "/opt/openclaw/legal/sjf/${f}"
   fi
 done
-# update diario + resumen semanal (lunes)
-for unit in sjf-update sjf-weekly; do
+# update diario + resumen semanal (lunes) + backfill histórico (cada 2h)
+for unit in sjf-update sjf-weekly sjf-backfill; do
   if [[ -f "services/${unit}.service" && -f "services/${unit}.timer" ]]; then
     sed -e "s|@@SYSTEM_USER@@|${SYSTEM_USER}|g" -e "s|@@OPENCLAW_HOME@@|/opt/openclaw|g" \
         "services/${unit}.service" > "/etc/systemd/system/${unit}.service"
@@ -277,13 +277,13 @@ for unit in sjf-update sjf-weekly; do
   fi
 done
 systemctl daemon-reload
-for t in sjf-update.timer sjf-weekly.timer; do
+for t in sjf-update.timer sjf-weekly.timer sjf-backfill.timer; do
   if [[ -f "/etc/systemd/system/${t}" ]]; then
     systemctl enable --now "$t"
     systemctl is-active --quiet "$t" && ok "${t} activo" || warn "${t} no levantó — systemctl status ${t}"
   fi
 done
-ok "SJF: harvester diario (13:30) + resumen semanal (lun 8:00) en /opt/openclaw/legal/sjf/"
+ok "SJF: harvester diario (13:30) + backfill histórico (c/2h) + resumen semanal (lun 8:00)"
 
 # ── 8) Seeds: agentes + briefing matutino (idempotentes) ──────
 log "[8/8] Sembrando agentes y briefing matutino"

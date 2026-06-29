@@ -1,0 +1,14 @@
+[Unit]
+Description=SJF backfill histórico — rellena el acervo judicial hacia atrás (cada 2h)
+Documentation=https://github.com/Lbassoco95/nexo-louis
+
+[Timer]
+# 800 tesis × 12 corridas/día = ~9,600/día → ~24 días para completar las ~231K pendientes.
+# Corre cada 2h. El harvest diario (sjf-update) va a las 13:30 UTC; el lote de las 12:00
+# termina antes (~9 min) así que no se solapan significativamente.
+OnCalendar=*-*-* 00/2:00:00
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

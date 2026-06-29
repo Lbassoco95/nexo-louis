@@ -178,6 +178,12 @@ CEREBRO_DIGEST_STATE = HOME_OC / "state" / "cerebro_digest_sent.json"
 # Review semanal coach (Fase 4): lunes 08:00 CDMX, una vez por semana ISO.
 WEEKLY_REVIEW_STATE = HOME_OC / "state" / "weekly_review_sent.json"
 
+# Alerta Mac offline (Fase 6): si la Mac lleva >15 min sin heartbeat, avisa a Polo
+# UNA vez; cooldown de 2h entre repeticiones. Cuando vuelve, notifica de vuelta.
+MAC_OFFLINE_STATE = HOME_OC / "state" / "mac_offline_alerted.json"
+MAC_OFFLINE_THRESHOLD_S = 15 * 60   # 15 min sin heartbeat = alerta
+MAC_OFFLINE_COOLDOWN_S  = 2 * 3600  # mínimo 2h entre alertas repetidas
+
 
 def _weekly_ya(wk: str) -> bool:
     try:
@@ -356,6 +362,73 @@ def tick():
         write_queue(to_keep)
 
 
+def _mac_offline_alert_check():
+    """Alerta proactiva cuando la Mac lleva >15 min sin heartbeat.
+    Primera alerta inmediata; repeticiones cada 2h mientras siga offline.
+    Cuando vuelve a estar en línea manda notificación de vuelta."""
+    hb = core.MAC_HEARTBEAT_FILE
+    if not hb.exists():
+        return
+    try:
+        data = json.loads(hb.read_text())
+        ts = datetime.fromisoformat(data.get("ts", "").replace("Z", "+00:00"))
+        delta_s = int((datetime.now(timezone.utc) - ts).total_seconds())
+    except Exception:
+        return
+    if delta_s < 0:
+        return  # timestamp futuro — reloj inconsistente
+
+    prev = {}
+    if MAC_OFFLINE_STATE.exists():
+        try:
+            prev = json.loads(MAC_OFFLINE_STATE.read_text())
+        except Exception:
+            pass
+    was_alerted = prev.get("alerted", False)
+
+    if delta_s < MAC_OFFLINE_THRESHOLD_S:
+        # Mac está online
+        if was_alerted:
+            send_telegram("🟢 Tu Mac está de vuelta en línea.")
+            log.info("mac volvió online — notificado a Polo")
+            MAC_OFFLINE_STATE.parent.mkdir(parents=True, exist_ok=True)
+            MAC_OFFLINE_STATE.write_text(json.dumps({"alerted": False}))
+        return
+
+    # Mac offline — verificar cooldown antes de re-alertar
+    last_ts_str = prev.get("last_alerted_ts", "")
+    if last_ts_str:
+        try:
+            last_ts = datetime.fromisoformat(last_ts_str)
+            if last_ts.tzinfo is None:
+                last_ts = last_ts.replace(tzinfo=TZ_CDMX)
+            if (datetime.now(TZ_CDMX) - last_ts).total_seconds() < MAC_OFFLINE_COOLDOWN_S:
+                return
+        except Exception:
+            pass
+
+    mins = delta_s // 60
+    batt = data.get("battery_pct")
+    on_ac = data.get("on_ac_power", False)
+    if batt is not None and not on_ac and batt <= 15:
+        detalle = f" (batería crítica {batt}%, sin AC — puede haberse apagado sola)"
+    elif batt is not None:
+        detalle = f" (batería {batt}%{'🔌' if on_ac else ''})"
+    else:
+        detalle = ""
+
+    send_telegram(f"⚠️ Tu Mac lleva {mins} min sin reportarse{detalle}. ¿Está dormida o apagada?")
+    log.info(f"mac offline: alerta enviada ({mins} min sin heartbeat, batt={batt}%, ac={on_ac})")
+
+    MAC_OFFLINE_STATE.parent.mkdir(parents=True, exist_ok=True)
+    MAC_OFFLINE_STATE.write_text(json.dumps({
+        "alerted": True,
+        "last_alerted_ts": datetime.now(TZ_CDMX).isoformat(),
+        "delta_s": delta_s,
+        "batt": batt,
+    }, ensure_ascii=False))
+
+
 def main():
     log.info("=== louis-scheduler arrancando ===")
     log.info(f"Queue: {QUEUE_FILE}")
@@ -435,6 +508,14 @@ def main():
                     _weekly_marca(_wk)
         except Exception as e:
             log.warning(f"review semanal falló: {e}")
+
+        # Mac offline (Fase 6): cada 5 ticks (5 min). Alerta cuando lleva >15 min
+        # sin heartbeat; re-alerta cada 2h; notifica cuando vuelve.
+        if tick_count % 5 == 0:
+            try:
+                _mac_offline_alert_check()
+            except Exception as e:
+                log.warning(f"mac offline check falló: {e}")
 
         time.sleep(TICK_SECONDS)
 
