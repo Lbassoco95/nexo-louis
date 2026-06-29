@@ -13,12 +13,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Varios paths se hardcodean a /opt/louis (cron, Caddy mount, docs). Validamos
-# que el paquete esté ahí para no introducir bugs sutiles después.
-if [[ "$SCRIPT_DIR" != "/opt/louis" ]]; then
-  echo "ERROR: este paquete debe vivir en /opt/louis (estás en $SCRIPT_DIR)"
-  echo "Mueve la carpeta:  sudo mv \"$SCRIPT_DIR\" /opt/louis  &&  cd /opt/louis"
-  exit 1
+# Rutas válidas para el repo (legacy /opt/louis o ubicación actual /opt/nexo-louis/cloud/hetzner).
+# El runtime usa @@OPENCLAW_HOME@@ → /opt/openclaw, no depende de dónde vive el repo.
+_VALID_DIRS=("/opt/louis" "/opt/nexo-louis/cloud/hetzner")
+_ok_dir=false
+for _d in "${_VALID_DIRS[@]}"; do [[ "$SCRIPT_DIR" == "$_d" ]] && _ok_dir=true; done
+if ! $_ok_dir; then
+  echo "WARN: directorio inesperado ($SCRIPT_DIR) — continuando de todas formas."
 fi
 
 # ── Helpers ────────────────────────────────────────────────────
