@@ -1076,6 +1076,28 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "Si pides 'password', NUNCA se imprime en chat — solo se confirma longitud y se queda disponible para uso interno (ej: browser_login lo usa).\n"
         "Cada acceso queda en /opt/openclaw/logs/vault-access.log con timestamp + razón. "
         "Si Polo te pide ver explícitamente un password en chat: confirma 2 veces antes de mandarlo."
+        "\n\n# FUENTES DE VERDAD — JERARQUÍA (CRÍTICO — no respondas de AGENDA.md sin verificar)\n"
+        "AGENDA.md es un CACHE MANUAL — puede estar días o semanas atrasada respecto a lo que\n"
+        "realmente pasó. Para el estado REAL de documentos, tareas y asuntos legales, usa SIEMPRE\n"
+        "las fuentes en vivo PRIMERO, antes de citar AGENDA:\n"
+        "1. DOCUMENTOS/ENTREGABLES (lo que se trabajó en Cowork) → `cerebro_listar(cliente=X)`\n"
+        "   El snapshot incluye ya los 5 más recientes — úsalos como punto de partida.\n"
+        "2. TAREAS Y PROYECTOS (estado real de KawiilOS) → `kawiil_central_tareas()` o\n"
+        "   `kawiil_central_proyectos()`. AGENDA.md puede decir 'pendiente' cuando kawiil-central\n"
+        "   ya tiene la tarea cerrada.\n"
+        "3. CONOCIMIENTO INDEXADO (lo que los agentes analizaron) → `legal_conocimiento(agente)`\n"
+        "   antes de responder sobre temas legales/regulatorios.\n"
+        "4. AGENDA.md → pendientes capturados manualmente por Polo; útil para seguimiento pero\n"
+        "   NO como estatus definitivo de algo que pudo avanzar en Cowork/kawiil-central.\n"
+        "\n"
+        "COMPORTAMIENTO CORRECTO cuando Polo pregunta por el avance de un cliente o caso:\n"
+        "  - Primero: revisa el snapshot (arriba en el ⚡ SNAPSHOT OPERATIVO) — ¿aparece en\n"
+        "    'Cowork reciente'? Si sí, ya sabes lo que se produjo sin hacer otro call.\n"
+        "  - Si necesita más detalle: `cerebro_listar(cliente=X)` → ve los documentos exactos.\n"
+        "  - Para tasks: `kawiil_central_tareas()` con filtros → estado REAL.\n"
+        "\n"
+        "PROHIBIDO: decir 'el amparo está pendiente' solo por AGENDA.md sin verificar si Cerebro\n"
+        "ya tiene un entregable 'listo' de ese asunto, o si kawiil-central lo marcó como cerrado.\n"
         "\n\n# RESPONDE TU PROPIO CONTEXTO ANTES DE PREGUNTAR A POLO (CRÍTICO)\n"
         "Cuando Polo hace una pregunta sobre algo que TÚ MISMO mencionaste (en un briefing,\n"
         "pendiente de AGENDA, o mensaje anterior de esta conversación), CONSULTA TU PROPIO\n"
@@ -1101,6 +1123,17 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "   (ej. 'tendría que ir nuevamente'), anótalo en AGENDA en ese mismo turno.\n"
         "NO hagas la actualización y luego preguntes qué amparo era o de qué CVs habla Polo —\n"
         "si el contexto de la conversación ya lo establece, úsalo."
+        "\n\n# CONOCIMIENTO INDEXADO DE AGENTES — CONSÚLTALO ANTES DE RESPONDER\n"
+        "Los agentes kawiil-* han analizado y resumido documentos, tesis SJF y publicaciones DOF\n"
+        "relevantes a su área. Este conocimiento EXISTE y ya está indexado — no tienes que rebuscar.\n"
+        "ANTES de responder una pregunta legal, fiscal, laboral o regulatoria:\n"
+        "  1. Llama `legal_conocimiento(agente)` para ver qué analizó ese agente.\n"
+        "     Ej: LFPIORPI → kawiil-tepantli | ISR/SAT → kawiil-ollin | laboral → kawiil-tequitl\n"
+        "  2. Si el agente tiene el tema indexado, cita los IDs reales que devuelve — NO fabriques.\n"
+        "  3. Si no está indexado, dilo claro: 'no encuentro ese tema en el conocimiento de X agente'.\n"
+        "PROHIBIDO responder de memoria sobre leyes, reglamentos o tesis sin consultar primero\n"
+        "el conocimiento indexado disponible — puedes tener datos desactualizados de tu entrenamiento.\n"
+        "Usa `consejo_experto_legal(area, pregunta)` para el flujo completo legal (internacional + MX)."
     )
     return "\n".join(parts)
 
@@ -1659,29 +1692,50 @@ def _encolar_notificacion(mensaje: str, canal: str = "telegram") -> None:
 
 def _cerebro_entregables_snapshot() -> str:
     """
-    Resumen ultra-compacto del cerebro para incrustar en build_operational_snapshot().
-    Una sola línea por estado. Sin coste extra en tokens.
+    Resumen del cerebro para build_operational_snapshot(): conteos + últimos 5 títulos.
+    Incluir los títulos recientes es lo que permite a Louis saber QUÉ se trabajó en
+    Cowork sin tener que leer cada archivo completo.
     """
     if not ENTREGABLES_PATH.exists():
         return ""
     conteo: dict[str, int] = {}
+    all_items: list = []
     for f in ENTREGABLES_PATH.glob("*.md"):
         if not f.name.startswith("_"):
             meta = _cerebro_parsear_fm(f)
             e = meta.get("estado", "?")
             conteo[e] = conteo.get(e, 0) + 1
+            all_items.append((f, meta))
     if not conteo:
         return ""
     partes = [f"{e}:{n}" for e, n in sorted(conteo.items())]
     n_briefs = len(list(BRIEFS_PATH.glob("*.md"))) if BRIEFS_PATH.exists() else 0
     briefs_str = f" | briefs_dispatch:{n_briefs}" if n_briefs else ""
-    # Nudge de seguimiento: 'listo' = terminado y esperando tu Vo.Bo.
     nudge = ""
     if conteo.get("listo"):
         nudge = f"\n→ {conteo['listo']} entregable(s) LISTO esperando tu Vo.Bo."
     if n_briefs:
         nudge += f"\n→ {n_briefs} brief(s) pendiente(s) de dispatch a agentes."
-    return " | ".join(partes) + briefs_str + nudge
+    # Últimos 5 entregables (por fecha de modificación): para que Louis sepa QUÉ se trabajó.
+    all_items.sort(key=lambda x: x[0].stat().st_mtime, reverse=True)
+    recientes = []
+    for f, meta in all_items[:5]:
+        titulo = meta.get("titulo", f.stem)
+        cliente = meta.get("cliente", "")
+        estado = meta.get("estado", "?")
+        fecha = meta.get("fecha_actualizacion", "")[:10]
+        icono = {"borrador": "📝", "listo": "✅", "en_vobo": "🔄",
+                 "aprobado": "✔️", "archivado": "📦"}.get(estado, "❓")
+        partes_item = [f"{icono} {titulo} [{estado}]"]
+        if cliente:
+            partes_item.append(cliente)
+        if fecha:
+            partes_item.append(fecha)
+        recientes.append("  • " + " — ".join(partes_item))
+    recientes_str = ""
+    if recientes:
+        recientes_str = "\nCowork reciente (últimos trabajados):\n" + "\n".join(recientes)
+    return " | ".join(partes) + briefs_str + nudge + recientes_str
 
 
 _SJF_DB_TABLERO = Path(os.environ.get("SJF_DB_PATH", str(HOME_OC / "legal" / "sjf" / "biblioteca.db")))
@@ -2808,12 +2862,22 @@ def _reason_briefing(snapshot: str) -> str | None:
         "CALENDARIO HOY: (sin juntas confirmadas en el calendario / sin acceso) — "
         "NO afirmes horas de juntas hoy.\n\n"
     )
+    # Cerebro: entregables recientes (documentos producidos en Cowork) — incluirlos
+    # permite al briefing mencionar qué se avanzó sin que Polo tenga que repetirlo.
+    cerebro_txt = ""
+    try:
+        cerebro_raw = _cerebro_entregables_snapshot()
+        if cerebro_raw:
+            cerebro_txt = f"CEREBRO KAWIIL (documentos Cowork — lo que se ha producido):\n{cerebro_raw}\n\n"
+    except Exception:
+        pass
     headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
     body = {
         "model": CLAUDE_HAIKU,
         "max_tokens": 900,
         "system": sys,
-        "messages": [{"role": "user", "content": f"{cal_txt}DATOS (memoria viva):\n{snapshot[:6000]}"}],
+        "messages": [{"role": "user", "content":
+                       f"{cal_txt}{cerebro_txt}DATOS (memoria viva):\n{snapshot[:5500]}"}],
     }
     try:
         resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=60)
