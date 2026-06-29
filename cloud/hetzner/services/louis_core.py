@@ -5430,9 +5430,10 @@ def _legal_indexar_background_tick(limite: int = 10) -> str:
         except Exception as e:
             log.warning(f"legal bg priority {agente}: {e}")
 
-    # 2) Rotación normal: siguiente agente en la lista
+    # 2) Rotación normal: siguiente agente en la lista (skip if already in priority this tick)
+    already_processed = {e.get("agente", "") for e in priority[:3]}
     agente = _legal_bg_next_agent()
-    if agente:
+    if agente and agente not in already_processed:
         try:
             r = _legal_indexar_agente(agente, forzar=False, limite=limite, background=True)
             resultados.append(f"[bg] {r}")
