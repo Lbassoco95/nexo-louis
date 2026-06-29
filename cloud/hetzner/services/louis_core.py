@@ -1076,6 +1076,31 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "Si pides 'password', NUNCA se imprime en chat — solo se confirma longitud y se queda disponible para uso interno (ej: browser_login lo usa).\n"
         "Cada acceso queda en /opt/openclaw/logs/vault-access.log con timestamp + razón. "
         "Si Polo te pide ver explícitamente un password en chat: confirma 2 veces antes de mandarlo."
+        "\n\n# RESPONDE TU PROPIO CONTEXTO ANTES DE PREGUNTAR A POLO (CRÍTICO)\n"
+        "Cuando Polo hace una pregunta sobre algo que TÚ MISMO mencionaste (en un briefing,\n"
+        "pendiente de AGENDA, o mensaje anterior de esta conversación), CONSULTA TU PROPIO\n"
+        "CONTEXTO primero y da la respuesta TÚ. NUNCA regreses la pregunta de vuelta a Polo\n"
+        "sin haber buscado en tu memoria.\n"
+        "Ejemplos:\n"
+        "• Polo: '¿de cuáles CVs me hablas?' → Tú: busca en AGENDA.md (en tu contexto de memoria)\n"
+        "  qué pendiente de CVs hay. Si dice 'CVs candidatos Jefe Fábrica Joshui' → responde\n"
+        "  exactamente eso: 'Me refería a los CVs de candidatos para el Jefe de Fábrica en Joshui.'\n"
+        "• Polo: '¿qué amparo dijiste?' → revisa AGENDA/IMPORTANT, da el nombre real del caso.\n"
+        "• Polo: '¿cuál proyecto mencionaste?' → cita el pendiente exacto de AGENDA.\n"
+        "Solo di 'no sé' si el pendiente genuinamente no tiene ese detalle y dilo claro:\n"
+        "'El pendiente dice «analizar CVs» sin especificar cuáles — ¿son los de Joshui u otro?'\n"
+        "Regla: si la respuesta ESTÁ en tu contexto de memoria, dala. Si NO está, pregunta UNA\n"
+        "sola cosa concreta, no un menú de 3 opciones.\n"
+        "\n\n# CUANDO POLO REPORTA AVANCES — CIERRA EL CICLO EN ESE TURNO\n"
+        "Cuando Polo diga 'ya se hizo X', 'Fernando fue a ver lo del amparo', 'ya entregamos\n"
+        "el informe', DEBES hacer DOS cosas en el MISMO turno:\n"
+        "1. Llama la tool de actualización (kawiil_central_actualizar_tarea, completar_pendiente,\n"
+        "   etc.) para registrar el avance donde corresponda.\n"
+        "2. Confirma QUÉ actualizaste y QUÉ queda pendiente del mismo tema — SIN preguntar\n"
+        "   información que ya tienes en tu contexto. Si el avance deja algo nuevo pendiente\n"
+        "   (ej. 'tendría que ir nuevamente'), anótalo en AGENDA en ese mismo turno.\n"
+        "NO hagas la actualización y luego preguntes qué amparo era o de qué CVs habla Polo —\n"
+        "si el contexto de la conversación ya lo establece, úsalo."
     )
     return "\n".join(parts)
 
@@ -9541,6 +9566,21 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
     _system_cached = [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
     if _hora_block:
         _system_cached.append({"type": "text", "text": _hora_block})
+    # Snapshot operativo en vivo (no cacheado — cambia cada llamada). Pone un resumen
+    # PRIORIZADO de AGENDA/IMPORTANT/Cerebro arriba del contexto para que Claude no
+    # "pierda" pendientes urgentes sepultados en los archivos completos de memoria.
+    try:
+        _snap_live = build_operational_snapshot(compact=True)
+        if _snap_live:
+            _system_cached.append({"type": "text", "text": (
+                "# ⚡ SNAPSHOT OPERATIVO (en vivo — consulta esto antes de responder)\n"
+                "Resumen priorizado de tu propia AGENDA/IMPORTANT/Cerebro en este instante.\n"
+                "ÚSALO para responder preguntas de Polo sobre pendientes sin pedirle que\n"
+                "los repita, y para saber a QUÉ te referiste en mensajes/briefings previos.\n\n"
+                + _snap_live
+            )})
+    except Exception:
+        pass
     _stall_retries = 0
     _reminder_retries = 0
     for _loop_i in range(max_loops):  # noqa: B007
