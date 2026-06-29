@@ -170,6 +170,11 @@ LEGAL_BG_TICK_INTERVAL = 10  # cada cuántos ticks de 60s correr el bg-indexer
 INTRADAY_SLOTS = {13: "tarde", 18: "cierre"}
 INTRADAY_STATE = HOME_OC / "state" / "intraday_sent.json"
 
+# Digest proactivo Cerebro + agentes (Fase 5): 10:00 y 14:00 CDMX.
+# Devuelve None si no hay nada nuevo → silencioso.
+CEREBRO_SLOTS = {10: "cerebro", 14: "cerebro"}
+CEREBRO_DIGEST_STATE = HOME_OC / "state" / "cerebro_digest_sent.json"
+
 # Review semanal coach (Fase 4): lunes 08:00 CDMX, una vez por semana ISO.
 WEEKLY_REVIEW_STATE = HOME_OC / "state" / "weekly_review_sent.json"
 
@@ -211,6 +216,30 @@ def _intraday_marca(slot: str, hoy: str):
         INTRADAY_STATE.write_text(json.dumps(d, ensure_ascii=False))
     except Exception as e:
         log.warning(f"no pude guardar intraday_sent.json: {e}")
+
+
+def _cerebro_digest_ya(slot: str, hoy: str) -> bool:
+    try:
+        d = json.loads(CEREBRO_DIGEST_STATE.read_text())
+        return d.get("date") == hoy and slot in d.get("slots", [])
+    except Exception:
+        return False
+
+
+def _cerebro_digest_marca(slot: str, hoy: str):
+    d = {"date": hoy, "slots": []}
+    try:
+        old = json.loads(CEREBRO_DIGEST_STATE.read_text())
+        if old.get("date") == hoy:
+            d = old
+    except Exception:
+        pass
+    d["slots"] = sorted(set(d.get("slots", []) + [slot]))
+    try:
+        CEREBRO_DIGEST_STATE.parent.mkdir(parents=True, exist_ok=True)
+        CEREBRO_DIGEST_STATE.write_text(json.dumps(d, ensure_ascii=False))
+    except Exception as e:
+        log.warning(f"no pude guardar cerebro_digest_sent.json: {e}")
 
 
 # ===== Queue I/O =====
@@ -376,6 +405,21 @@ def main():
                 _intraday_marca(_slot, _hoy)  # marca aunque no haya nada (no recalcular cada tick)
         except Exception as e:
             log.warning(f"intraday check falló: {e}")
+
+        # Digest Cerebro + agentes (Fase 5): 10:00 y 14:00 CDMX. Silencioso si
+        # no hay entregables nuevos ni docs indexados por los agentes.
+        try:
+            _now = datetime.now(TZ_CDMX)
+            _cslot = CEREBRO_SLOTS.get(_now.hour)
+            _hoy = _now.strftime("%Y-%m-%d")
+            if _cslot and not _cerebro_digest_ya(str(_now.hour), _hoy):
+                msg = core.build_cerebro_followup(slot=_cslot)
+                if msg:
+                    send_telegram(msg)
+                    log.info(f"cerebro digest enviado (hora={_now.hour}h, slot={_cslot})")
+                _cerebro_digest_marca(str(_now.hour), _hoy)
+        except Exception as e:
+            log.warning(f"cerebro digest falló: {e}")
 
         # Review semanal coach (Fase 4): lunes 08:00 CDMX, una vez por semana.
         try:

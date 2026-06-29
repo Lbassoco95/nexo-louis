@@ -88,6 +88,8 @@ OLLAMA_MEMORY_LIMITS = {
 TZ_CDMX = timezone(timedelta(hours=-6))
 STATE_DIR = HOME_OC / "state"
 LAST_BRIEFING_FILE = STATE_DIR / "last-briefing.json"
+# Rastreo de entregables ya notificados proactivamente (para no repetir el mismo aviso)
+CEREBRO_CHECK_STATE = STATE_DIR / "cerebro_last_check.json"
 
 # Frases de "relleno" con que el modelo a veces TERMINA el turno sin ejecutar la tool
 # (se queda esperando otro mensaje de Polo). Disparan el auto-continue anti-stall.
@@ -1934,6 +1936,141 @@ def build_weekly_review() -> str:
     lines.append("\n🎯 _Enfoque: cierra primero lo que vence. Los estancados de 14+ días, "
                  "¿siguen vivos? Dime «ya hice X», «quita X» o «sigue pendiente X»._")
     return "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SEGUIMIENTO PROACTIVO — Cerebro + Agentes
+# Louis rastrea qué hay nuevo en Cerebro y qué indexaron los agentes sin
+# esperar a que Polo pregunte. El scheduler llama build_cerebro_followup()
+# a las 10:00 y 14:00; devuelve None → silencio, texto → aviso a Polo.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _cerebro_seen_files() -> set:
+    """Entregables cuyo nombre ya fue notificado en un digest proactivo."""
+    try:
+        return set(json.loads(CEREBRO_CHECK_STATE.read_text()).get("seen", []))
+    except Exception:
+        return set()
+
+
+def _cerebro_mark_seen(names: list):
+    """Marca los nombres como notificados. Mantiene solo los últimos 300."""
+    try:
+        seen = list(_cerebro_seen_files() | set(names))[-300:]
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        CEREBRO_CHECK_STATE.write_text(json.dumps(
+            {"seen": seen, "ts": datetime.now(TZ_CDMX).isoformat()},
+            ensure_ascii=False))
+    except Exception:
+        pass
+
+
+def _agent_knowledge_recientes(agente: str, h: int = 24) -> list[str]:
+    """Títulos de docs indexados por el agente en las últimas h horas."""
+    docs_dir = KNOWLEDGE_BASE / agente / "docs"
+    if not docs_dir.exists():
+        return []
+    cutoff = datetime.now(TZ_CDMX) - timedelta(hours=h)
+    out = []
+    for f in docs_dir.glob("*.md"):
+        try:
+            if datetime.fromtimestamp(f.stat().st_mtime, tz=TZ_CDMX) >= cutoff:
+                first = (f.read_text().splitlines() or [""])[0].lstrip("# ").strip()[:80]
+                out.append(first)
+        except Exception:
+            pass
+    return out[:5]
+
+
+def build_cerebro_followup(slot: str = "cerebro") -> str | None:
+    """Digest proactivo de Cerebro + agentes. Devuelve None si nada nuevo.
+
+    slot: "cerebro" (10h / 14h) | "cierre" (18h) — cambia el encabezado.
+    El scheduler llama esto y solo envía cuando hay contenido.
+    """
+    lineas: list[str] = []
+
+    # ── 1. Entregables NUEVOS en Cerebro desde la última revisión ─────────
+    seen = _cerebro_seen_files()
+    nuevos: list[tuple] = []
+    if ENTREGABLES_PATH.exists():
+        cutoff = datetime.now(TZ_CDMX) - timedelta(hours=14)
+        for f in sorted(ENTREGABLES_PATH.glob("*.md"),
+                        key=lambda x: x.stat().st_mtime, reverse=True):
+            if f.name.startswith("_"):
+                continue
+            try:
+                if (datetime.fromtimestamp(f.stat().st_mtime, tz=TZ_CDMX) >= cutoff
+                        and f.name not in seen):
+                    nuevos.append((f.name, _cerebro_parsear_fm(f)))
+            except Exception:
+                pass
+
+    if nuevos:
+        _cerebro_mark_seen([n for n, _ in nuevos])
+        lineas.append("📥 *Nuevo en Cerebro (Cowork hoy):*")
+        for fname, meta in nuevos[:6]:
+            titulo = meta.get("titulo", fname)
+            cliente = meta.get("cliente", "")
+            estado = meta.get("estado", "?")
+            icono = {"listo": "✅", "en_vobo": "🔄", "borrador": "📝",
+                     "aprobado": "✔️"}.get(estado, "❓")
+            lineas.append(
+                f"  {icono} *{titulo}*"
+                + (f" — {cliente}" if cliente else "")
+                + f" [{estado}]"
+            )
+
+    # ── 2. Entregables 'listo' pendientes de tu Vo.Bo. ────────────────────
+    listos_vobo: list[str] = []
+    if ENTREGABLES_PATH.exists():
+        for f in ENTREGABLES_PATH.glob("*.md"):
+            if not f.name.startswith("_"):
+                meta = _cerebro_parsear_fm(f)
+                if meta.get("estado") == "listo":
+                    cli = meta.get("cliente", "")
+                    listos_vobo.append(
+                        meta.get("titulo", f.stem)
+                        + (f" ({cli})" if cli else "")
+                    )
+    if listos_vobo:
+        lineas.append(f"\n✅ *{len(listos_vobo)} entregable(s) esperando tu Vo.Bo.:*")
+        lineas += [f"  • {t}" for t in listos_vobo[:5]]
+
+    # ── 3. Briefs pendientes de dispatch a agentes ────────────────────────
+    n_briefs = len(list(BRIEFS_PATH.glob("*.md"))) if BRIEFS_PATH.exists() else 0
+    if n_briefs:
+        lineas.append(f"\n📨 *{n_briefs} brief(s)* listos para dispatch a agentes.")
+
+    # ── 4. Agentes: lo que indexaron en las últimas 24h ───────────────────
+    agent_news: dict[str, list[str]] = {}
+    if AGENTS_DIR.exists():
+        for af in sorted(AGENTS_DIR.glob("kawiil-*.md")):
+            recientes = _agent_knowledge_recientes(af.stem, h=24)
+            if recientes:
+                agent_news[af.stem] = recientes
+
+    if agent_news:
+        lineas.append("\n🧠 *Agentes indexaron hoy:*")
+        for ag, docs in list(agent_news.items())[:5]:
+            cfg = KAWIIL_KNOWLEDGE_MAP.get(ag, {})
+            label = cfg.get("label", ag)
+            primer = docs[0][:55]
+            lineas.append(
+                f"  • *{ag}* ({label}): {len(docs)} doc(s)\n"
+                f"    └ {primer}…"
+            )
+
+    if not lineas:
+        return None
+
+    titulos = {
+        "cerebro": "📦 Cerebro + Agentes",
+        "cierre": "🌆 Cierre — Cerebro + Agentes",
+    }
+    titulo = titulos.get(slot, "📦 Cerebro")
+    pie = "\n\n_Responde con «dame el detalle de X» o «despáchame X a un agente» para continuar._"
+    return f"*{titulo}*\n\n" + "\n".join(lineas) + pie
 
 
 def limpiar_agenda_duplicados(dry_run: bool = True) -> str:
