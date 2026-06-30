@@ -606,19 +606,43 @@ def _finish_user_input(telegram_token, chat_id, api_key, system_prompt, user_inp
 def _audio_bg_worker(telegram_token, chat_id, file_id, dur, api_key, system_prompt):
     """Background thread: download → transcribe → transcript → LLM → respond.
     Runs in _audio_pool so the main bridge loop stays responsive."""
+    # Directorio persistente: si el servicio se reinicia durante la transcripción
+    # el archivo queda en disco y puede recuperarse manualmente.
+    audio_dir = HOME_OC / "state" / "audio-pending"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    saved_path = audio_dir / f"audio_{int(time.time())}_{file_id[:16]}.ogg"
     try:
+        # 1. Descargar y guardar en ubicación persistente
         file_path = telegram_get_file_path(telegram_token, file_id)
-        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
-            tmp_path = Path(tmp.name)
-        telegram_download_file(telegram_token, file_path, tmp_path)
-        transcript = transcribe_audio(tmp_path, duration_s=dur)
-        tmp_path.unlink(missing_ok=True)
+        telegram_download_file(telegram_token, file_path, saved_path)
+        log.info(f"Audio guardado en {saved_path} ({dur}s)")
+
+        # 2. Transcribir
+        transcript = transcribe_audio(saved_path, duration_s=dur)
         log.info(f"Transcripción (bg): {transcript[:200]}")
+
+        # 3. Detectar fallo de Whisper — NO pasar un mensaje de error al LLM
+        _FAIL = ("(no pude transcribir", "(error:", "(error convirtiendo", "(error: whisper", "(error: ffmpeg")
+        if any(transcript.lower().startswith(m.lower()) for m in _FAIL) or not transcript.strip():
+            log.error(f"Transcripción fallida para {saved_path}: {transcript[:120]}")
+            telegram_send_message(
+                telegram_token, chat_id,
+                f"❌ No pude transcribir el audio ({dur // 60}:{dur % 60:02d} min). "
+                f"El servidor de voz falló o el audio llegó dañado.\n"
+                f"🔁 Vuelve a mandarlo — corre en segundo plano y no bloquea el chat.",
+                parse_mode=None,
+            )
+            saved_path.unlink(missing_ok=True)
+            return
+
+        # 4. Confirmar transcript al usuario
         telegram_send_message(
             telegram_token, chat_id,
             f"📝 Te escuché:\n«{transcript}»",
             parse_mode=None,
         )
+
+        # 5. Para grabaciones largas (≥2 min): extracción estructurada de tareas
         es_grabacion = dur >= 120
         if es_grabacion:
             min_s = f"{dur // 60} min {dur % 60}s"
@@ -640,10 +664,17 @@ def _audio_bg_worker(telegram_token, chat_id, file_id, dur, api_key, system_prom
             )
         else:
             user_input = transcript
+
+        # 6. Responder con LLM — audio ya procesado, borrar archivo persistente
+        saved_path.unlink(missing_ok=True)
         _finish_user_input(telegram_token, chat_id, api_key, system_prompt, user_input)
+
     except Exception as e:
-        log.exception("Error en audio background worker")
-        telegram_send_message(telegram_token, chat_id, f"❌ Error procesando audio: {e}", parse_mode=None)
+        log.exception(f"Error en audio background worker (file_id={file_id})")
+        telegram_send_message(telegram_token, chat_id,
+                              f"❌ Error procesando audio: {e}\n"
+                              f"🔁 Vuelve a mandarlo.", parse_mode=None)
+        saved_path.unlink(missing_ok=True)
 
 
 def process_update(update, telegram_token, chat_id, api_key, system_prompt):
