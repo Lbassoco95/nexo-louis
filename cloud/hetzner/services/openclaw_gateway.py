@@ -573,6 +573,40 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
 
+        # Servir archivos estáticos públicos (resúmenes DOF, etc.) desde /opt/openclaw/docs/
+        if self.path.startswith("/docs/"):
+            path_clean = self.path.split("?")[0]
+            rel = path_clean[len("/docs/"):]
+            if not rel or ".." in rel or rel.startswith("/"):
+                self._send_json(400, {"error": "invalid path"})
+                return
+            docs_root = Path("/opt/openclaw/docs")
+            fpath = (docs_root / rel).resolve()
+            # Evitar directory traversal
+            if not str(fpath).startswith(str(docs_root.resolve())):
+                self._send_json(403, {"error": "forbidden"})
+                return
+            if not fpath.exists() or not fpath.is_file():
+                self._send_json(404, {"error": f"not found: {rel}"})
+                return
+            ctype = {".html": "text/html; charset=utf-8",
+                     ".json": "application/json; charset=utf-8",
+                     ".css": "text/css; charset=utf-8",
+                     ".js": "application/javascript; charset=utf-8",
+                     }.get(fpath.suffix.lower(), "application/octet-stream")
+            try:
+                body = fpath.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Cache-Control", "public, max-age=3600")
+                self.end_headers()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                return
+            self._safe_write(body)
+            return
+
         self._send_json(404, {"error": f"GET {self.path} no existe"})
 
     # ---------- POST ----------

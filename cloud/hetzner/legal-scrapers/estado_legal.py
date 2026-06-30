@@ -10,7 +10,7 @@ from pathlib import Path
 SJF_DB = os.environ.get("SJF_DB_PATH", "/opt/openclaw/legal/sjf/biblioteca.db")
 DOF_DB = os.environ.get("DOF_DB_PATH", "/opt/openclaw/legal/dof/biblioteca_dof.db")
 CREDS = os.environ.get("TELEGRAM_CREDS", "/opt/openclaw/credentials/telegram.env")
-SJF_UNIVERSO = 262016  # tesis totales conocidas del SJF (todas las epocas)
+SJF_UNIVERSO = 0  # fallback obsoleto; se calcula dinámicamente desde la BD
 
 
 def creds():
@@ -78,11 +78,11 @@ def main():
     # ── SJF ──────────────────────────────────────────────────────────
     if Path(SJF_DB).exists():
         total = _q1(SJF_DB, "SELECT COUNT(*) FROM tesis") or 0
-        universo = _q1(SJF_DB, "SELECT value FROM progress WHERE key='universe_total'") or SJF_UNIVERSO
+        universo_raw = _q1(SJF_DB, "SELECT value FROM progress WHERE key='universe_total'")
         try:
-            universo = int(universo)
+            universo = int(universo_raw) if universo_raw else total
         except Exception:
-            universo = SJF_UNIVERSO
+            universo = total
         faltan = max(universo - total, 0)
         ult = _q1(SJF_DB, "SELECT substr(MAX(fecha_publicacion),1,10) FROM tesis WHERE fecha_publicacion!=''") or "—"
         dias = _dias(ult)

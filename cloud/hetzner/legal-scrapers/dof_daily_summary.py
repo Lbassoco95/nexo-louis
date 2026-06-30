@@ -16,6 +16,8 @@ from pathlib import Path
 
 DB = os.environ.get("DOF_DB_PATH", "/opt/openclaw/legal/dof/biblioteca_dof.db")
 CREDS = os.environ.get("TELEGRAM_CREDS", "/opt/openclaw/credentials/telegram.env")
+DOCS_DIR = Path(os.environ.get("DOF_DOCS_DIR", "/opt/openclaw/docs/dof"))
+LOUIS_DOMAIN = os.environ.get("LOUIS_DOMAIN", "")
 URL = "https://www.dof.gob.mx/nota_detalle.php?codigo={cod}&fecha={f}"
 MES = ["", "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
        "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
@@ -125,6 +127,47 @@ def send_msg(text):
         return False
 
 
+def save_html_public(content: bytes, fname: str) -> str:
+    """Guarda el HTML en DOCS_DIR y devuelve la URL pública. '' si no hay dominio configurado."""
+    try:
+        DOCS_DIR.mkdir(parents=True, exist_ok=True)
+        (DOCS_DIR / fname).write_bytes(content)
+    except Exception as e:
+        print(f"WARN: no guardé HTML en disco: {e}", file=sys.stderr)
+        return ""
+    if LOUIS_DOMAIN:
+        return f"https://{LOUIS_DOMAIN}/docs/dof/{fname}"
+    return ""
+
+
+def indexar_normativas_dof(relevantes, fecha):
+    """Best-effort: encola las normativas relevantes del día para indexación prioritaria."""
+    if not relevantes:
+        return
+    try:
+        if "/opt/openclaw/scripts" not in sys.path:
+            sys.path.insert(0, "/opt/openclaw/scripts")
+        import louis_core as L
+        km = getattr(L, "KAWIIL_KNOWLEDGE_MAP", {})
+        encolados = 0
+        for r in relevantes:
+            texto = f"{(r['titulo'] or '').lower()} {(r['nombre_cod_orga_uno'] or '').lower()}"
+            agentes_match = [ag for ag, cfg in km.items()
+                             if any(k.lower() in texto for k in cfg.get("dof", []))]
+            if not agentes_match:
+                agentes_match = ["kawiil-nelli"]
+            for ag in agentes_match[:2]:
+                L._legal_enqueue_priority(
+                    ag,
+                    f"DOF {fecha}: {r['titulo'][:120]} [{r['tipo_nota_raw'] or 'doc'}]",
+                    "DOF diario — normativa publicada hoy")
+                encolados += 1
+        if encolados:
+            print(f"Encoladas {encolados} entradas DOF para indexación prioritaria")
+    except Exception as e:
+        print(f"WARN: no encolé normativas DOF: {e}", file=sys.stderr)
+
+
 def notificar_kawiil_central(titulo, cuerpo, tipo):
     """Best-effort: avisa en el app de Kawiil Central (solo a Polo por defecto).
     No rompe el boletín si falla (import o BD)."""
@@ -138,7 +181,7 @@ def notificar_kawiil_central(titulo, cuerpo, tipo):
         print(f"WARN: no notifiqué a Kawiil Central: {e}", file=sys.stderr)
 
 
-def build_html(relevantes, resto_counts, total, fecha, rows=None, ed_label=""):
+def build_html(relevantes, resto_counts, total, fecha, rows=None, ed_label="", resto_rows=None):
     # Motor HTML interactivo ÚNICO (mismo look que el análisis legal y el SJF).
     if "/opt/openclaw/scripts" not in sys.path:
         sys.path.insert(0, "/opt/openclaw/scripts")
@@ -173,12 +216,41 @@ def build_html(relevantes, resto_counts, total, fecha, rows=None, ed_label=""):
     n_rel = len(relevantes)
     n_resto = sum(resto_counts.values())
     n_deps = len(grupos)
+    # Categorías que son puro ruido — solo mostrar conteo, sin títulos individuales
+    CATS_SOLO_CUENTA = {"Avisos judiciales y generales", "Edictos"}
     if n_resto:
-        resto_li = "".join(f"<li>{esc(cat)}: <strong>{n}</strong></li>"
-                           for cat, n in sorted(resto_counts.items(), key=lambda x: -x[1]))
-        body += (f'<details class="sec"><summary>Resto identificado (no detallado) '
+        resto_secc = []
+        ruido_items = []
+        for cat, n in sorted(resto_counts.items(), key=lambda x: -x[1]):
+            cat_rows = (resto_rows or {}).get(cat, [])
+            if cat_rows and cat not in CATS_SOLO_CUENTA:
+                MAX_SHOW = 40
+                filas = []
+                for r in cat_rows[:MAX_SHOW]:
+                    cod = r["cod_nota"]
+                    tipo = esc(r["tipo_nota_raw"] or "")
+                    ttag = f'<span class="tag">{tipo}</span> ' if tipo else ""
+                    link = URL.format(cod=cod, f=ddmm)
+                    filas.append(
+                        f'<tr><td class="cod"><a href="{link}">{cod}</a></td>'
+                        f'<td>{ttag}{esc(r["titulo"]).rstrip(". ")}</td></tr>')
+                mas = (f'<p style="color:#888;font-size:.85em;margin:6px 0 0">'
+                       f'+ {len(cat_rows) - MAX_SHOW} más</p>'
+                       if len(cat_rows) > MAX_SHOW else "")
+                resto_secc.append(
+                    f'<details class="sec"><summary>{esc(cat)} '
+                    f'<span class="c">({n})</span></summary><div class="sec-body">'
+                    f'<table><tbody>{"".join(filas)}</tbody></table>{mas}</div></details>')
+            else:
+                ruido_items.append(f"<li>{esc(cat)}: <strong>{n}</strong></li>")
+        if ruido_items:
+            resto_secc.append(
+                f'<details class="sec"><summary>Avisos / Edictos '
+                f'<span class="c">({sum(v for k, v in resto_counts.items() if k in CATS_SOLO_CUENTA)})</span>'
+                f'</summary><div class="sec-body"><ul>{"".join(ruido_items)}</ul></div></details>')
+        body += (f'<details class="sec"><summary>Resto identificado '
                  f'<span class="c">({n_resto})</span></summary><div class="sec-body">'
-                 f'<ul>{resto_li}</ul></div></details>')
+                 + "".join(resto_secc) + '</div></details>')
 
     # Tarjetas KPI arriba (dashboard, no lista)
     kpis = LH.kpi_cards([
@@ -266,20 +338,24 @@ def main():
         print(f"Sin notas para {fecha} edición {edicion}; no envío.")
         return 0
 
-    relevantes, resto_counts = [], {}
+    relevantes, resto_counts, resto_rows = [], {}, {}
     for r in rows:
         clase, cat = clasifica(r)
         if clase == "relevante":
             relevantes.append(r)
         else:
             resto_counts[cat] = resto_counts.get(cat, 0) + 1
+            resto_rows.setdefault(cat, []).append(r)
 
     fl = fecha_larga(fecha)
+    fname = f"DOF_{fecha.replace('-', '')}_{edicion}.html"
+    html_content = build_html(relevantes, resto_counts, len(rows), fecha, rows, ed_label, resto_rows)
+    public_url = save_html_public(html_content, fname)
+    url_line = f'\n🔗 <a href="{public_url}">Ver en navegador</a>' if public_url else ""
     caption = (f"📰 <b>Diario Oficial</b> — {esc(fl)} · <b>Edición {ed_label}</b>\n"
                f"<b>{len(relevantes)}</b> documentos relevantes (leyes/decretos/acuerdos/circulares…) "
-               f"de {len(rows)} publicaciones. Detalle por dependencia en el adjunto.")
-    fname = f"DOF_{fecha.replace('-', '')}_{edicion}.html"
-    ok = send_doc(build_html(relevantes, resto_counts, len(rows), fecha, rows, ed_label), fname, caption)
+               f"de {len(rows)} publicaciones. Detalle por dependencia en el adjunto.{url_line}")
+    ok = send_doc(html_content, fname, caption)
     if ok:
         try:
             state.parent.mkdir(parents=True, exist_ok=True)
@@ -294,6 +370,7 @@ def main():
                     f"(leyes/decretos/acuerdos/circulares…) de {len(rows)} publicaciones. "
                     f"El detalle por dependencia llegó al Telegram de Louis."),
             tipo="dof_resumen")
+        indexar_normativas_dof(relevantes, fecha)
     print("Enviado" if ok else "Falló el envío")
     return 0 if ok else 1
 
