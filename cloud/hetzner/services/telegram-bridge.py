@@ -565,9 +565,11 @@ def process_update(update, telegram_token, chat_id, api_key, system_prompt):
         log.info(f"Audio recibido (file_id={file_id}, dur={dur}s)")
         # Aviso de progreso proporcional al largo: en audios largos la transcripción
         # tarda, así que avisamos para que no parezca colgado.
+        es_grabacion = dur >= 120  # 2+ min = grabación de reunión, no nota rápida
         if dur >= 90:
+            nota_extra = (" Al terminar extraeré las tareas y compromisos." if es_grabacion else "")
             aviso = (f"🎙️ Audio de ~{dur // 60}:{dur % 60:02d} min — transcribiendo, "
-                     "puede tardar un poco. Te aviso al terminar…")
+                     f"puede tardar un poco.{nota_extra} Te aviso al terminar…")
         else:
             aviso = "🎙️ Transcribiendo audio..."
         telegram_send_message(telegram_token, chat_id, aviso, parse_mode=None)
@@ -584,7 +586,29 @@ def process_update(update, telegram_token, chat_id, api_key, system_prompt):
                 f"📝 Te escuché:\n«{transcript}»",
                 parse_mode=None,
             )
-            user_input = transcript
+            # Grabaciones largas = reunión/conversación de trabajo: inyectar instrucción
+            # de extracción de tareas para que Louis las cree en Kawiil Central
+            # automáticamente, sin que Polo tenga que pedirlo.
+            if es_grabacion:
+                min_s = f"{dur // 60} min {dur % 60}s"
+                user_input = (
+                    f"[GRABACIÓN DE REUNIÓN/CONVERSACIÓN — {min_s}]\n\n"
+                    f"TRANSCRIPCIÓN COMPLETA:\n{transcript}\n\n"
+                    f"INSTRUCCIÓN (ejecutar TODO en este orden):\n"
+                    f"1. Resume en 3-5 bullets: qué se trató, quiénes participaron "
+                    f"(si se mencionan), decisiones tomadas.\n"
+                    f"2. Lista TODAS las tareas, compromisos y pendientes que se "
+                    f"mencionaron. Para cada uno: qué, quién es responsable (si no se "
+                    f"menciona asumir Polo), para cuándo (si no se menciona dejar sin "
+                    f"fecha), y para qué empresa/proyecto (Kawiil, Yoltik, cliente).\n"
+                    f"3. Para CADA tarea identificada usa kawiil_central_crear_tarea "
+                    f"(busca el proyecto correcto con kawiil_central_listar_proyectos "
+                    f"si no lo tienes en contexto).\n"
+                    f"4. Termina con un mensaje tipo: '✅ Acta guardada — N tareas creadas "
+                    f"en Kawiil Central.' con la lista de las tareas creadas."
+                )
+            else:
+                user_input = transcript
         except Exception as e:
             log.exception("Error procesando audio")
             telegram_send_message(telegram_token, chat_id, f"❌ Error procesando audio: {e}", parse_mode=None)
