@@ -875,7 +875,8 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "- `slack_resumen(canales, msgs_por_canal)` — EN UN SOLO CALL lista canales Y lee mensajes "
         "recientes. ES LA TOOL PRINCIPAL. Sin args lee los primeros 8 canales; con "
         "canales=['cumplimiento-sylon','cumplimiento'] lee esos.\n"
-        "- `slack_leer(canal, limite)` — lee un canal específico por nombre o ID.\n"
+        "- `slack_leer(canal, limite)` — lee un canal específico por nombre o ID. Si un mensaje tiene '↳ [thread: N respuesta(s)]', el mensaje raíz puede estar cortado — usa `slack_leer_thread` para ver el thread completo.\n"
+        "- `slack_leer_thread(canal, thread_ts)` — lee el thread/hilo completo de un mensaje. ÚSALA siempre que slack_leer indique que hay un thread con respuestas — ahí suelen estar los documentos y detalles que piden.\n"
         "- `slack_canales` — lista los canales donde estás invitado.\n"
         "- `slack_dm_leer(usuario)` — SOLO lee el DM entre el BOT y ese usuario (no aplica a otros).\n"
         "LÍMITE REAL DE SLACK (díselo claro, NO prometas lo imposible): un bot NO puede leer los DMs "
@@ -3939,6 +3940,18 @@ TOOLS_DEFINITION = [
         },
     },
     {
+        "name": "slack_leer_thread",
+        "description": "Lee el hilo (thread) completo de un mensaje de Slack. Úsala cuando slack_leer indique '↳ [thread: N respuesta(s)]' para ver los documentos/detalles que se pusieron en el thread. Necesitas el nombre del canal y el thread_ts (timestamp del mensaje raíz, que aparece en la nota del thread).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "canal": {"type": "string", "description": "Nombre o ID del canal (ej: 'cumplimiento-vizum')"},
+                "thread_ts": {"type": "string", "description": "Timestamp del mensaje raíz del thread (ej: '1751234567.123456')"},
+            },
+            "required": ["canal", "thread_ts"],
+        },
+    },
+    {
         "name": "slack_dm_leer",
         "description": "Lee los mensajes directos (DMs) recientes del usuario indicado con Louis-Nexo. Usa el nombre de usuario o ID (U…). Útil cuando Polo pregunta qué le mandaron por DM.",
         "input_schema": {
@@ -5698,11 +5711,58 @@ def _slack_leer(canal: str, limite: int = 20) -> str:
             ts = float(m.get("ts", 0))
             dt = _dt.datetime.fromtimestamp(ts).strftime("%d/%m %H:%M")
             user = _uname(m.get("user", "?"))
-            text = m.get("text", "(sin texto)")[:300]
-            lines.append(f"[{dt}] {user}: {text}")
+            text = m.get("text", "(sin texto)")[:2000]
+            reply_count = m.get("reply_count", 0)
+            thread_ts = m.get("thread_ts")
+            line = f"[{dt}] {user}: {text}"
+            if reply_count and thread_ts:
+                line += f"\n  ↳ [thread: {reply_count} respuesta(s) — usa slack_leer_thread('{canal}', '{thread_ts}') para verlas]"
+            lines.append(line)
         return "\n".join(lines)
     except Exception as e:
         return f"ERROR leyendo Slack #{canal}: {e}"
+
+
+def _slack_leer_thread(canal: str, thread_ts: str) -> str:
+    """Lee todas las respuestas de un thread específico en un canal."""
+    client, err = _slack_client()
+    if err:
+        return err
+    try:
+        channel_id = canal
+        if not canal.startswith("C") and not canal.startswith("D"):
+            target = canal.lower().lstrip("#")
+            channel_id = None
+            for ch in _slack_all_channels(client, "public_channel,private_channel"):
+                if ch.get("name", "").lower() == target:
+                    channel_id = ch["id"]
+                    break
+            if not channel_id:
+                return f"No encontré el canal '#{canal}'."
+        replies = client.conversations_replies(channel=channel_id, ts=thread_ts, limit=50)
+        msgs = replies.get("messages", [])
+        if not msgs:
+            return f"No hay mensajes en ese thread."
+        users: dict = {}
+        def _uname(uid: str) -> str:
+            if uid not in users:
+                try:
+                    r = client.users_info(user=uid)
+                    users[uid] = r["user"].get("real_name") or r["user"].get("name") or uid
+                except Exception:
+                    users[uid] = uid
+            return users[uid]
+        import datetime as _dt
+        lines = [f"Thread completo ({len(msgs)} mensajes):"]
+        for m in msgs:
+            ts = float(m.get("ts", 0))
+            dt = _dt.datetime.fromtimestamp(ts).strftime("%d/%m %H:%M")
+            user = _uname(m.get("user", "?"))
+            text = m.get("text", "(sin texto)")[:3000]
+            lines.append(f"[{dt}] {user}: {text}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"ERROR leyendo thread Slack: {e}"
 
 
 def _slack_dm_leer(usuario: str, limite: int = 20) -> str:
@@ -9399,6 +9459,8 @@ def execute_tool(name: str, args: dict) -> str:
             return _slack_canales()
         elif name == "slack_leer":
             return _slack_leer(args["canal"], args.get("limite", 20))
+        elif name == "slack_leer_thread":
+            return _slack_leer_thread(args["canal"], args["thread_ts"])
         elif name == "slack_dm_leer":
             return _slack_dm_leer(args["usuario"], args.get("limite", 20))
         elif name == "dropbox_buscar":
