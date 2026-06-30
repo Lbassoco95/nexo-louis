@@ -3732,6 +3732,18 @@ TOOLS_DEFINITION = [
         },
     },
     {
+        "name": "kawiil_central_actualizar_proyecto",
+        "description": "Actualiza un proyecto existente: cambia status ('activo','pausado','completado','archivado'), responsable, descripción u otros campos. ÚSALA para cerrar, pausar o archivar proyectos — es más confiable que kawiil_central_query. Confirma con Polo antes de archivar.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "proyecto_id": {"type": "string", "description": "UUID del proyecto (usa kawiil_central_proyectos para buscarlo)"},
+                "cambios": {"type": "object", "description": "Campos a actualizar (ej: {\"status\": \"archivado\"} o {\"status\": \"completado\", \"description\": \"Amparo resuelto\"})"},
+            },
+            "required": ["proyecto_id", "cambios"],
+        },
+    },
+    {
         "name": "kawiil_central_actualizar_tarea",
         "description": "Actualiza una tarea existente — útil para mover de estado, reasignar, ajustar deadline. Pásale el id de la tarea y los campos a cambiar. Para registrar un AVANCE/comentario usa kawiil_central_avance.",
         "input_schema": {
@@ -7988,6 +8000,41 @@ def _kawiil_central_crear_proyecto(name: str, client_id: str = "", area: str = "
         return f"❌ No se pudo crear el proyecto: {e}"
 
 
+def _kawiil_central_actualizar_proyecto(proyecto_id: str, cambios: dict) -> str:
+    """Actualiza campos de un proyecto (status, responsible_id, description, etc.)."""
+    if not proyecto_id or not cambios:
+        return "❌ Necesito proyecto_id y cambios."
+    conn, err = _kawiil_central_pg()
+    if err:
+        return err
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema='public' AND table_name='projects'")
+        cols = {r[0] for r in cur.fetchall()}
+        valid = {k: v for k, v in cambios.items() if k in cols}
+        if not valid:
+            conn.close()
+            return f"❌ Ningún campo válido en `projects`. Columnas: {sorted(cols)}"
+        if "updated_at" in cols and "updated_at" not in valid:
+            valid["updated_at"] = datetime.now(timezone.utc).isoformat()
+        set_clause = ", ".join(f"{k} = %s" for k in valid.keys())
+        sql = f"UPDATE public.projects SET {set_clause} WHERE id::text = %s RETURNING id, name"
+        conn.autocommit = True
+        cur.execute(sql, list(valid.values()) + [str(proyecto_id)])
+        row = cur.fetchone()
+        _kawiil_central_audit(f"actualizar_proyecto {proyecto_id}",
+                              sql + " :: " + json.dumps(valid, default=str))
+        conn.close()
+        if not row:
+            return f"❌ No encontré proyecto con id `{proyecto_id}`."
+        return f"✅ Proyecto actualizado: *{row[1]}* — cambios: {valid}"
+    except Exception as e:
+        try: conn.close()
+        except Exception: pass
+        return f"❌ Error al actualizar proyecto: {e}"
+
+
 def _kawiil_central_crear_tarea(titulo: str, proyecto_id: str, descripcion: str = "",
                                  asignado_a: str = "", prioridad: str = "",
                                  deadline: str = "", campos_extra: dict = None,
@@ -8010,6 +8057,30 @@ def _kawiil_central_crear_tarea(titulo: str, proyecto_id: str, descripcion: str 
     if proyecto_id:
         if "project_id" in cols: data["project_id"] = proyecto_id
         elif "proyecto_id" in cols: data["proyecto_id"] = proyecto_id
+
+    # Hereda organization_id del proyecto — requerido por las políticas RLS de Supabase
+    # para que el frontend pueda ver la tarea creada por Louis.
+    if proyecto_id and "organization_id" in cols:
+        try:
+            cur.execute("SELECT organization_id FROM public.projects WHERE id::text = %s",
+                        (str(proyecto_id),))
+            prow = cur.fetchone()
+            if prow and prow[0]:
+                data["organization_id"] = prow[0]
+        except Exception:
+            pass
+
+    # created_by → Polo como autor por defecto; sin esto la tarea no pasa el RLS del frontend.
+    if "created_by" in cols:
+        polo_uid = (_kawiil_central_resolver_usuario(conn, "polo")
+                    or _kawiil_central_resolver_usuario(conn, "leopoldo"))
+        if polo_uid:
+            data["created_by"] = polo_uid
+
+    # Status por defecto si la tabla lo requiere
+    if "status" in cols:
+        data["status"] = "pending"
+
     if descripcion:
         for c in ("description", "descripcion", "body", "details"):
             if c in cols:
@@ -9289,6 +9360,8 @@ def execute_tool(name: str, args: dict) -> str:
             return _kawiil_central_crear_proyecto(args["name"], args.get("client_id", ""),
                                                   args.get("area", ""), args.get("descripcion", ""),
                                                   args.get("service_tags", ""))
+        elif name == "kawiil_central_actualizar_proyecto":
+            return _kawiil_central_actualizar_proyecto(args["proyecto_id"], args["cambios"])
         elif name == "kawiil_central_asignar_tarea":
             return _kawiil_central_asignar_tarea(args["tarea_id"], args["persona"])
         elif name == "kawiil_central_actualizar_tarea":
