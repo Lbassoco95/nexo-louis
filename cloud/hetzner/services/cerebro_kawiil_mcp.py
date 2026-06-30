@@ -311,7 +311,7 @@ def cerebro_estado() -> str:
 
     # Memoria: solo indica qué archivos existen y su tamaño
     partes_mem = []
-    for nombre in ("AGENDA", "IMPORTANT", "JOURNAL", "PROJECTS", "PEOPLE"):
+    for nombre in ("SEGUIMIENTOS", "IMPORTANT", "JOURNAL", "PROJECTS", "PEOPLE"):
         f = SPACES_PATH / f"{nombre}.md"
         if f.exists():
             partes_mem.append(f"{nombre}({f.stat().st_size//1024}KB)")
@@ -353,17 +353,17 @@ def cerebro_estado() -> str:
 @mcp.tool()
 def agenda_pendientes() -> str:
     """
-    [COMPACTO] Solo los ítems sin hacer (- [ ]) de la AGENDA, máximo 20.
+    [COMPACTO] Solo los ítems sin hacer (- [ ]) de SEGUIMIENTOS, máximo 20.
     Usar en lugar de agenda_snapshot() cuando solo se necesita la lista de tareas.
     ~200 tokens típico.
     """
-    texto = _read_cached(SPACES_PATH / "AGENDA.md")
+    texto = _read_cached(SPACES_PATH / "SEGUIMIENTOS.md")
     if not texto:
-        return "AGENDA.md no disponible."
+        return "SEGUIMIENTOS.md no disponible."
 
     items = [l.strip() for l in texto.splitlines() if re.match(r"^\s*-\s*\[\s*\]\s+", l)]
     if not items:
-        return "Sin pendientes abiertos en AGENDA."
+        return "Sin pendientes abiertos en SEGUIMIENTOS."
     return f"Pendientes ({len(items)}):\n" + "\n".join(items[:20])
 
 
@@ -415,7 +415,7 @@ def agenda_snapshot() -> str:
     último IMPORTANT crítico y última entrada de JOURNAL. Truncado inteligente.
     Usar solo cuando agenda_pendientes() no es suficiente. ~500 tokens típico.
     """
-    agenda    = _read_cached(SPACES_PATH / "AGENDA.md")
+    agenda    = _read_cached(SPACES_PATH / "SEGUIMIENTOS.md")
     important = _read_cached(SPACES_PATH / "IMPORTANT.md")
     journal   = _read_cached(SPACES_PATH / "JOURNAL.md")
 
@@ -571,9 +571,9 @@ def legal_estado() -> str:
 @mcp.tool()
 def agenda_marcar_hecho(patron: str) -> str:
     """Marca como hecho (- [x]) el primer pendiente que contenga `patron`."""
-    f = SPACES_PATH / "AGENDA.md"
+    f = SPACES_PATH / "SEGUIMIENTOS.md"
     if not f.exists():
-        return "AGENDA.md no encontrada."
+        return "SEGUIMIENTOS.md no encontrada."
     content = f.read_text(encoding="utf-8")
     lineas, cambiado, original = [], False, ""
     for l in content.splitlines():
@@ -591,10 +591,10 @@ def agenda_marcar_hecho(patron: str) -> str:
 
 @mcp.tool()
 def agenda_editar(patron: str, nuevo_texto: str) -> str:
-    """Reemplaza la primera línea de AGENDA.md que contenga `patron` por `nuevo_texto`."""
-    f = SPACES_PATH / "AGENDA.md"
+    """Reemplaza la primera línea de SEGUIMIENTOS.md que contenga `patron` por `nuevo_texto`."""
+    f = SPACES_PATH / "SEGUIMIENTOS.md"
     if not f.exists():
-        return "AGENDA.md no encontrada."
+        return "SEGUIMIENTOS.md no encontrada."
     content = f.read_text(encoding="utf-8")
     lineas, cambiado = [], False
     for l in content.splitlines():
@@ -607,7 +607,7 @@ def agenda_editar(patron: str, nuevo_texto: str) -> str:
         return f"Sin línea con: «{patron}»"
     f.write_text("\n".join(lineas) + "\n", encoding="utf-8")
     _invalidate(f)
-    return "✅ AGENDA actualizada."
+    return "✅ SEGUIMIENTOS actualizado."
 
 
 # ── Aprendizaje: Cowork siembra contexto en la memoria de Louis ─────────────
@@ -667,7 +667,7 @@ def bitacora_cowork(resumen: str, cliente: str = "") -> str:
     """
     Registra una nota de lo trabajado en esta sesión de Cowork. Se guarda en la
     bitácora que Louis DESTILA cada noche → de ahí extrae hechos durables a PEOPLE/
-    CLIENTES/AGENDA/IMPORTANT automáticamente. Úsalo al cerrar un tema o al final de
+    CLIENTES/SEGUIMIENTOS/IMPORTANT automáticamente. Úsalo al cerrar un tema o al final de
     la sesión, con un resumen de qué se hizo y qué contexto nuevo surgió.
     """
     resumen = (resumen or "").strip()
@@ -906,8 +906,8 @@ def dispatch_preparar_brief(
     hora     = ahora.strftime("%H:%M")
     filepath = briefs_path / f"{fecha}-brief-{_slug(tarea)}.md"
 
-    # Contexto de AGENDA (solo líneas relevantes)
-    agenda_txt  = _read_cached(SPACES_PATH / "AGENDA.md")
+    # Contexto de SEGUIMIENTOS (solo líneas relevantes)
+    agenda_txt  = _read_cached(SPACES_PATH / "SEGUIMIENTOS.md")
     kws         = [tarea.lower()[:20], cliente.lower()[:15]]
     relevantes  = [l for l in agenda_txt.splitlines()
                    if any(k in l.lower() for k in kws)][:8]
@@ -934,7 +934,7 @@ def dispatch_preparar_brief(
         f"## Tarea\n{tarea}\n\n"
         f"## Insumos\n{insumos or 'Consultar acervo legal y memoria según aplique.'}\n\n"
         f"## Entregables previos del cliente\n{previos_txt}\n\n"
-        f"## AGENDA relevante\n{agenda_ctx}\n\n"
+        f"## SEGUIMIENTOS relevante\n{agenda_ctx}\n\n"
         f"## Contexto adicional\n{contexto_adicional or '(ninguno)'}\n\n"
         f"## Pasos para Cowork\n"
         f"1. Revisar insumos y entregables previos\n"

@@ -4,7 +4,7 @@
 Por qué existe: el briefing del LLM "razonaba" la agenda sobre la memoria y
 revivía juntas viejas (ej. inventaba una junta que ya había pasado). Aquí la
 agenda sale SOLO del calendario M365 EN VIVO + los pendientes abiertos de
-AGENDA.md. Cero interpretación, cero invención. Y como documento HTML, se ve
+SEGUIMIENTOS.md. Cero interpretación, cero invención. Y como documento HTML, se ve
 en tabla (no la lista fea de Telegram).
 
 Uso:
@@ -12,14 +12,14 @@ Uso:
 
 Fuentes de verdad:
   • Calendario: m365.py calendario <tenant> <hoy|manana>  (kawiil + yoltik)
-  • Pendientes: líneas '- [ ]' de AGENDA.md
+  • Pendientes: líneas '- [ ]' de SEGUIMIENTOS.md
 """
 import base64, datetime as dt, html, json, os, re, subprocess, sys, urllib.request, uuid
 from pathlib import Path
 
 HOME_OC = Path(os.environ.get("OPENCLAW_HOME", "/opt/openclaw"))
 SPACE = HOME_OC / "spaces" / "general"
-AGENDA = SPACE / "AGENDA.md"
+SEGUIMIENTOS = SPACE / "SEGUIMIENTOS.md"
 CREDS = os.environ.get("TELEGRAM_CREDS", str(HOME_OC / "credentials" / "telegram.env"))
 M365 = HOME_OC / "scripts" / "m365" / "m365.py"
 if not M365.exists():
@@ -144,10 +144,10 @@ def parse_m365(text, tenant):
 
 
 def pendientes_abiertos(max_items=25):
-    if not AGENDA.exists():
+    if not SEGUIMIENTOS.exists():
         return []
     items = []
-    for ln in AGENDA.read_text(encoding="utf-8").splitlines():
+    for ln in SEGUIMIENTOS.read_text(encoding="utf-8").splitlines():
         if re.match(r"^\s*-\s*\[\s*\]\s+", ln):
             txt = re.sub(r"^\s*-\s*\[\s*\]\s+", "", ln).strip()
             if txt:
@@ -178,7 +178,7 @@ def build_html(eventos, pend, fecha_obj, rango, err):
         lis = "".join(f"<li>{esc(p)}</li>" for p in pend)
         pend_html = f'<h2>📌 Pendientes abiertos ({len(pend)})</h2><ul class="pend">{lis}</ul>'
     else:
-        pend_html = '<h2>📌 Pendientes</h2><p class="vacio">Sin pendientes abiertos en AGENDA.</p>'
+        pend_html = '<h2>📌 Pendientes</h2><p class="vacio">Sin pendientes abiertos en SEGUIMIENTOS.</p>'
     nota = f'<p class="warn">⚠️ No pude leer parte del calendario: {esc(err)}</p>' if err else ""
     logo = logo_data_uri()
     logo_img = f'<img src="{logo}" alt="Kawiil" class="logo">' if logo else '<strong>KAWIIL MX</strong>'
@@ -207,7 +207,7 @@ td.t{{font-size:.72em;color:#999;text-transform:capitalize;width:64px}}
 <h2>⏰ Calendario ({len(eventos)} eventos)</h2>
 {cal}
 {pend_html}
-<div class="ft">Fuente: Calendario M365 en vivo ({", ".join(TENANTS)}) + AGENDA.md · Dato duro, sin interpretación · Louis (Kawiil)</div>
+<div class="ft">Fuente: Calendario M365 en vivo ({", ".join(TENANTS)}) + SEGUIMIENTOS.md · Dato duro, sin interpretación · Louis (Kawiil)</div>
 </body></html>"""
     return doc.encode("utf-8")
 

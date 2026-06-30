@@ -80,7 +80,7 @@ OLLAMA_MAX_SYSTEM_CHARS = 10_000
 OLLAMA_MAX_HISTORY_TURNS = 16
 OLLAMA_MEMORY_DEFAULT_SNIPPET = 300
 OLLAMA_MEMORY_LIMITS = {
-    "AGENDA.md": 3500,
+    "SEGUIMIENTOS.md": 3500,
     "IMPORTANT.md": 2000,
     "JOURNAL.md": 1200,
     "USER.md": None,
@@ -298,18 +298,18 @@ M365_HINT_RE = re.compile(
 # Escritura explícita en archivos de memoria → Sonnet + tools (nunca Ollama)
 MEMORY_WRITE_RE = re.compile(
     r"(?:"
-    r"\b(anota|anotar|guarda|guardar|registra|registrar)\b.*\b(?:agenda|AGENDA|clientes|CLIENTES|"
+    r"\b(anota|anotar|guarda|guardar|registra|registrar)\b.*\b(?:agenda|AGENDA|seguimientos|SEGUIMIENTOS|clientes|CLIENTES|"
     r"important|IMPORTANT|journal|JOURNAL|memoria|learnings|LEARNINGS|prospectos|PROSPECTOS)\b"
     r"|"
     r"\b(recuérdame|recuerdame|recuérdalo|recuerdalo)\b"
     r"|"
-    r"\bagrega\s+(?:a|en)\s+(?:la\s+)?(?:agenda|AGENDA|clientes|CLIENTES|important|journal|memoria)\b"
+    r"\bagrega\s+(?:a|en)\s+(?:la\s+)?(?:agenda|AGENDA|seguimientos|SEGUIMIENTOS|clientes|CLIENTES|important|journal|memoria)\b"
     r"|"
-    r"\bactualiza\s+(?:la\s+)?(?:agenda|AGENDA|clientes|CLIENTES|important)\b"
+    r"\bactualiza\s+(?:la\s+)?(?:agenda|AGENDA|seguimientos|SEGUIMIENTOS|clientes|CLIENTES|important)\b"
     r"|"
-    r"\bescribe\s+en\s+(?:la\s+)?(?:agenda|AGENDA|clientes|memoria|important)\b"
+    r"\bescribe\s+en\s+(?:la\s+)?(?:agenda|AGENDA|seguimientos|SEGUIMIENTOS|clientes|memoria|important)\b"
     r"|"
-    r"\b(anota|anotar)\s+(?:en\s+)?(?:agenda|AGENDA)\s*:"
+    r"\b(anota|anotar)\s+(?:en\s+)?(?:agenda|AGENDA|seguimientos|SEGUIMIENTOS)\s*:"
     r")",
     re.IGNORECASE,
 )
@@ -500,10 +500,10 @@ def http_post_json(url: str, headers: dict, body: dict, timeout: int = 120):
 # ===== Memoria estructurada =====
 # Memorias laborales + ejecutivas + personales. Louis lleva CRM ligero (CLIENTES,
 # PROSPECTOS), agenda personal (PERSONAL, FAMILIA), salud (SALUD), viajes (VIAJES)
-# y la operación normal de Kawiil/Yoltik (PROJECTS, PEOPLE, IMPORTANT, AGENDA).
+# y la operación normal de Kawiil/Yoltik (PROJECTS, PEOPLE, IMPORTANT, SEGUIMIENTOS).
 MEMORY_FILES = [
     "USER.md",          # Perfil de Polo (rol, preferencias generales)
-    "AGENDA.md",        # Pendientes operativos / del día / próximos
+    "SEGUIMIENTOS.md",        # Pendientes operativos / del día / próximos
     "JOURNAL.md",       # Log diario — qué pasó cada día
     "LEARNINGS.md",     # Reglas/preferencias aprendidas en conversación
     "IMPORTANT.md",     # Decisiones críticas, contexto load-bearing
@@ -573,7 +573,7 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "NO describas tu pipeline interno (no digas 'revisando snapshot', 'según instrucción', etc.).\n"
         "Si falta un dato en memoria/snapshot, dilo; no inventes plazos, casos ni placeholders.\n"
         "\n# BRIEFING DIARIO\n"
-        "En el system prompt recibes [CONTEXTO INTERNO] con AGENDA/IMPORTANT/JOURNAL parseados. "
+        "En el system prompt recibes [CONTEXTO INTERNO] con SEGUIMIENTOS/IMPORTANT/JOURNAL parseados. "
         "Úsalos como única fuente de pendientes.\n"
         "**Primera conversación del día** (hola / buenos días): saluda a Polo + triage URGENTE + "
         "máx. 4 bullets Para HOY fieles al contexto + ¿Por dónde empezamos?\n"
@@ -623,10 +623,10 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "- **Profesional**: correos, calendarios, juntas, agentes, proyectos Kawiil/Yoltik, clientes (Kailash, Ikán), prospectos.\n"
         "- **Personal**: agenda no-laboral, familia, cumpleaños y aniversarios, citas médicas, hobbies, viajes, planes con amigos.\n"
         "- **Estratégico**: cuando Polo te cuenta algo (idea, reunión, decisión), captúralo en la memoria correcta automáticamente sin que tenga que pedírtelo. Si menciona un prospecto nuevo → PROSPECTOS.md. Si menciona el cumpleaños de alguien → FAMILIA.md con la fecha. Si menciona síntoma/cita médica → SALUD.md. Si menciona qué comió (desayuno/comida/cena/snack) → ALIMENTACION.md.\n"
-        "- **Proactivo**: lleva tú la lista de pendientes (AGENDA.md). Si Polo te pide algo y luego se distrae, persíguelo. En briefings menciona seguimientos que ya hiciste y los que faltan.\n"
+        "- **Proactivo**: lleva tú la lista de pendientes (SEGUIMIENTOS.md). Si Polo te pide algo y luego se distrae, persíguelo. En briefings menciona seguimientos que ya hiciste y los que faltan.\n"
         "\n\n# ARCHIVOS DE MEMORIA — QUÉ VA DÓNDE\n"
         "- USER.md: rol de Polo, preferencias generales (no editar mucho)\n"
-        "- AGENDA.md: pendientes operativos del día/semana\n"
+        "- SEGUIMIENTOS.md: pendientes operativos del día/semana\n"
         "- IMPORTANT.md: decisiones críticas y contexto que NO debes olvidar\n"
         "- LEARNINGS.md: reglas/preferencias que Polo te enseña en conversación\n"
         "- PROJECTS.md: proyectos Kawiil/Yoltik (Ikán, Kailash Sprints, Nexo, etc) con estado\n"
@@ -645,12 +645,12 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "un dato), DEBES editar la línea existente con `reemplazar_pendiente(viejo, nuevo)` — NUNCA agregues "
         "una línea nueva ni crees secciones tipo 'HOJA NUEVA / ACTUALIZACIÓN <hora>'. Apilar duplica y se "
         "contradice (ej. el mismo cliente dos veces con datos distintos). Regla: novedad → append_to_memory; "
-        "corrección → reemplazar_pendiente; completado → completar_pendiente. La AGENDA debe quedar con UNA "
+        "corrección → reemplazar_pendiente; completado → completar_pendiente. SEGUIMIENTOS debe quedar con UNA"
         "sola versión vigente de cada cosa.\n"
         "\n# CONTEXTO COMPLETO EN CADA PENDIENTE — EMPRESA/CLIENTE (CRÍTICO)\n"
         "Un pendiente SIN la empresa/cliente NO está bien definido. Cuando anotes un asunto de cliente "
         "(alta/apertura de cuenta, onboarding, KYC, expediente, contrato, fondeo, trámite o seguimiento a "
-        "un cliente), la línea de AGENDA SIEMPRE debe decir de qué EMPRESA/CLIENTE es + el contexto clave "
+        "un cliente), la línea de SEGUIMIENTOS SIEMPRE debe decir de qué EMPRESA/CLIENTE es + el contexto clave "
         "(qué falta, quién responde, estatus). Si Polo no lo dijo explícito, INFIÉRELO del historial "
         "reciente de la conversación; si aun así no te queda claro de qué empresa es, PREGÚNTASELO a Polo "
         "ANTES de guardar — no anotes la tarea a medias ni adivines. "
@@ -678,7 +678,7 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "\n\n# CERRAR PENDIENTES — CRÍTICO PARA NO REPETIR TEMAS VIEJOS\n"
         "Cuando Polo avise que algo YA se hizo/entregó/envió/quedó (ej. 'ya entregamos Vizum a la CNBV', "
         "'ya se mandó la carta de Lupita', 'eso ya quedó'), DEBES llamar `completar_pendiente(texto)` con las "
-        "palabras clave para marcarlo - [x] en AGENDA. Si NO lo cierras, seguirá saliendo en cada revisión y "
+        "palabras clave para marcarlo - [x] en SEGUIMIENTOS. Si NO lo cierras, seguirá saliendo en cada revisión y "
         "parecerá que 'sacas temas viejos'. Cerrar lo hecho es tan importante como anotar lo nuevo."
         "\n\n# PROACTIVIDAD: REVISA AVANCES EN LOS DOCUMENTOS — NO SEAS SOLO REACTIVO\n"
         "Cuando un pendiente sea un ENTREGABLE (perfil de puesto, escrito, carta, dictamen, contrato, "
@@ -1078,18 +1078,18 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "Si pides 'password', NUNCA se imprime en chat — solo se confirma longitud y se queda disponible para uso interno (ej: browser_login lo usa).\n"
         "Cada acceso queda en /opt/openclaw/logs/vault-access.log con timestamp + razón. "
         "Si Polo te pide ver explícitamente un password en chat: confirma 2 veces antes de mandarlo."
-        "\n\n# FUENTES DE VERDAD — JERARQUÍA (CRÍTICO — no respondas de AGENDA.md sin verificar)\n"
-        "AGENDA.md es un CACHE MANUAL — puede estar días o semanas atrasada respecto a lo que\n"
+        "\n\n# FUENTES DE VERDAD — JERARQUÍA (CRÍTICO — no respondas de SEGUIMIENTOS.md sin verificar)\n"
+        "SEGUIMIENTOS.md es un CACHE MANUAL — puede estar días o semanas atrasada respecto a lo que\n"
         "realmente pasó. Para el estado REAL de documentos, tareas y asuntos legales, usa SIEMPRE\n"
-        "las fuentes en vivo PRIMERO, antes de citar AGENDA:\n"
+        "las fuentes en vivo PRIMERO, antes de citar SEGUIMIENTOS:\n"
         "1. DOCUMENTOS/ENTREGABLES (lo que se trabajó en Cowork) → `cerebro_listar(cliente=X)`\n"
         "   El snapshot incluye ya los 5 más recientes — úsalos como punto de partida.\n"
         "2. TAREAS Y PROYECTOS (estado real de KawiilOS) → `kawiil_central_tareas()` o\n"
-        "   `kawiil_central_proyectos()`. AGENDA.md puede decir 'pendiente' cuando kawiil-central\n"
+        "   `kawiil_central_proyectos()`. SEGUIMIENTOS.md puede decir 'pendiente' cuando kawiil-central\n"
         "   ya tiene la tarea cerrada.\n"
         "3. CONOCIMIENTO INDEXADO (lo que los agentes analizaron) → `legal_conocimiento(agente)`\n"
         "   antes de responder sobre temas legales/regulatorios.\n"
-        "4. AGENDA.md → pendientes capturados manualmente por Polo; útil para seguimiento pero\n"
+        "4. SEGUIMIENTOS.md → pendientes capturados manualmente por Polo; útil para seguimiento pero\n"
         "   NO como estatus definitivo de algo que pudo avanzar en Cowork/kawiil-central.\n"
         "\n"
         "COMPORTAMIENTO CORRECTO cuando Polo pregunta por el avance de un cliente o caso:\n"
@@ -1098,7 +1098,7 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "  - Si necesita más detalle: `cerebro_listar(cliente=X)` → ve los documentos exactos.\n"
         "  - Para tasks: `kawiil_central_tareas()` con filtros → estado REAL.\n"
         "\n"
-        "PROHIBIDO: decir 'el amparo está pendiente' solo por AGENDA.md sin verificar si Cerebro\n"
+        "PROHIBIDO: decir 'el amparo está pendiente' solo por SEGUIMIENTOS.md sin verificar si Cerebro\n"
         "ya tiene un entregable 'listo' de ese asunto, o si kawiil-central lo marcó como cerrado.\n"
         "\n\n# CEREBRO ↔ KAWIIL-CENTRAL — CRÚZALOS SIEMPRE (CRÍTICO)\n"
         "Cerebro y Kawiil-Central son dos sistemas separados. Cerebro guarda DOCUMENTOS producidos\n"
@@ -1126,15 +1126,15 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "pendiente, pero agrega '(sin tarea en kawiil-central — ¿la creo?)' al final.\n"
         "\n\n# RESPONDE TU PROPIO CONTEXTO ANTES DE PREGUNTAR A POLO (CRÍTICO)\n"
         "Cuando Polo hace una pregunta sobre algo que TÚ MISMO mencionaste (en un briefing,\n"
-        "pendiente de AGENDA, o mensaje anterior de esta conversación), CONSULTA TU PROPIO\n"
+        "pendiente de SEGUIMIENTOS, o mensaje anterior de esta conversación), CONSULTA TU PROPIO\n"
         "CONTEXTO primero y da la respuesta TÚ. NUNCA regreses la pregunta de vuelta a Polo\n"
         "sin haber buscado en tu memoria.\n"
         "Ejemplos:\n"
-        "• Polo: '¿de cuáles CVs me hablas?' → Tú: busca en AGENDA.md (en tu contexto de memoria)\n"
+        "• Polo: '¿de cuáles CVs me hablas?' → Tú: busca en SEGUIMIENTOS.md (en tu contexto de memoria)\n"
         "  qué pendiente de CVs hay. Si dice 'CVs candidatos Jefe Fábrica Joshui' → responde\n"
         "  exactamente eso: 'Me refería a los CVs de candidatos para el Jefe de Fábrica en Joshui.'\n"
-        "• Polo: '¿qué amparo dijiste?' → revisa AGENDA/IMPORTANT, da el nombre real del caso.\n"
-        "• Polo: '¿cuál proyecto mencionaste?' → cita el pendiente exacto de AGENDA.\n"
+        "• Polo: '¿qué amparo dijiste?' → revisa SEGUIMIENTOS/IMPORTANT, da el nombre real del caso.\n"
+        "• Polo: '¿cuál proyecto mencionaste?' → cita el pendiente exacto de SEGUIMIENTOS.\n"
         "Solo di 'no sé' si el pendiente genuinamente no tiene ese detalle y dilo claro:\n"
         "'El pendiente dice «analizar CVs» sin especificar cuáles — ¿son los de Joshui u otro?'\n"
         "Regla: si la respuesta ESTÁ en tu contexto de memoria, dala. Si NO está, pregunta UNA\n"
@@ -1146,7 +1146,7 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "   etc.) para registrar el avance donde corresponda.\n"
         "2. Confirma QUÉ actualizaste y QUÉ queda pendiente del mismo tema — SIN preguntar\n"
         "   información que ya tienes en tu contexto. Si el avance deja algo nuevo pendiente\n"
-        "   (ej. 'tendría que ir nuevamente'), anótalo en AGENDA en ese mismo turno.\n"
+        "   (ej. 'tendría que ir nuevamente'), anótalo en SEGUIMIENTOS en ese mismo turno.\n"
         "NO hagas la actualización y luego preguntes qué amparo era o de qué CVs habla Polo —\n"
         "si el contexto de la conversación ya lo establece, úsalo."
         "\n\n# CONOCIMIENTO INDEXADO DE AGENTES — CONSÚLTALO ANTES DE RESPONDER\n"
@@ -1167,17 +1167,17 @@ def load_system_prompt(channel: str = "telegram") -> str:
 OLLAMA_ANTI_HALLUCINATION_TAIL = (
     "\n\n# REGLAS OLLAMA (obligatorio)\n"
     "El bloque [CONTEXTO INTERNO] en este system prompt tiene prioridad sobre memoria genérica. "
-    "NO inventes tareas, nombres ni placeholders. Si falta un dato, di que no está en AGENDA/IMPORTANT.\n"
+    "NO inventes tareas, nombres ni placeholders. Si falta un dato, di que no está en SEGUIMIENTOS/IMPORTANT.\n"
     "NUNCA repitas etiquetas internas ([CONTEXTO INTERNO], INSTRUCCIÓN, SNAPSHOT) en tu respuesta.\n"
     "MEMORIA — SOLO LECTURA: puedes citar el contexto interno pero NO digas que ya anotaste, guardaste "
-    "o actualizaste un archivo. Si Polo pide guardar algo, indica que use `/sonnet anota en AGENDA: …` "
+    "o actualizaste un archivo. Si Polo pide guardar algo, indica que use `/sonnet anota en SEGUIMIENTOS: …` "
     "o escriba explícitamente qué guardar.\n"
 )
 
 OLLAMA_CHAT_STYLE_APPEND = (
     "\n\n# MODO CHARLA (con historial)\n"
     "Responde como asistente ejecutivo en conversación fluida con Polo. "
-    "Máximo 2-4 párrafos o bullets cortos; no vuelques listas completas de AGENDA. "
+    "Máximo 2-4 párrafos o bullets cortos; no vuelques listas de SEGUIMIENTOS. "
     "Usa el historial y el contexto interno; si ya diste briefing, no lo repitas entero.\n"
 )
 
@@ -1281,8 +1281,8 @@ def _extract_deadlines(agenda_text: str, max_items: int = 12) -> list[str]:
 
 
 def build_operational_snapshot(compact: bool = True) -> str:
-    """Datos reales de AGENDA/IMPORTANT/JOURNAL para anclar respuestas (sin inventar)."""
-    agenda = _read_space_file("AGENDA.md")
+    """Datos reales de SEGUIMIENTOS/IMPORTANT/JOURNAL para anclar respuestas (sin inventar)."""
+    agenda = _read_space_file("SEGUIMIENTOS.md")
     important = _read_space_file("IMPORTANT.md")
     journal = _read_space_file("JOURNAL.md")
     clientes = _read_space_file("CLIENTES.md")
@@ -1306,7 +1306,7 @@ def build_operational_snapshot(compact: bool = True) -> str:
     elif open_all:
         lines.extend(open_all[:10 if compact else 12])
     else:
-        lines.append("(sin pendientes abiertos en AGENDA)")
+        lines.append("(sin pendientes abiertos en SEGUIMIENTOS)")
 
     if urgent_block:
         lines.append("\n*URGENTE*")
@@ -1449,9 +1449,9 @@ def _cerebro_crear_brief(tarea: str, cliente: str, insumos: str = "",
     slug  = re.sub(r"[^a-z0-9]+", "-", tarea.lower()).strip("-")[:55]
     filepath = BRIEFS_PATH / f"{fecha}-brief-{slug}.md"
 
-    # Contexto AGENDA relevante (solo líneas que mencionen tarea o cliente)
+    # Contexto SEGUIMIENTOS relevante (solo líneas que mencionen tarea o cliente)
     agenda_txt = ""
-    agenda_f = SPACE / "AGENDA.md"
+    agenda_f = SPACE / "SEGUIMIENTOS.md"
     if agenda_f.exists():
         lineas = agenda_f.read_text(encoding="utf-8").splitlines()
         relevantes = [l for l in lineas if tarea.lower()[:20] in l.lower()
@@ -1566,7 +1566,7 @@ def _entregable_actualizar_estado(nombre: str, nuevo_estado: str) -> str:
 
 
 def _contexto_cliente(cliente: str, max_chars: int = 4000) -> str:
-    """Reúne lo que Cerebro/memoria YA saben de un cliente (entregables, AGENDA,
+    """Reúne lo que Cerebro/memoria YA saben de un cliente (entregables, SEGUIMIENTOS,
     CLIENTES/PEOPLE/IMPORTANT) para inyectarlo al agente — así Louis se mantiene
     actualizado de lo que se trabaja (incl. lo de Cowork) sin que Polo reenvíe todo."""
     cliente = (cliente or "").strip()
@@ -1585,10 +1585,10 @@ def _contexto_cliente(cliente: str, max_chars: int = 4000) -> str:
     if ents:
         partes.append("Entregables en Cerebro de este cliente (incluye lo trabajado en Cowork):\n"
                       + "\n".join(ents[:12]))
-    agenda = _read_space_file("AGENDA.md")
+    agenda = _read_space_file("SEGUIMIENTOS.md")
     al = [l.strip(" -") for l in agenda.splitlines() if cl in l.lower() and l.strip()]
     if al:
-        partes.append("Pendientes/AGENDA relacionados:\n" + "\n".join("- " + x for x in al[:10]))
+        partes.append("Pendientes/SEGUIMIENTOS relacionados:\n" + "\n".join("- " + x for x in al[:10]))
     for fname in ("CLIENTES.md", "PEOPLE.md", "IMPORTANT.md"):
         txt = _read_space_file(fname)
         hits = [l.strip() for l in txt.splitlines() if cl in l.lower() and l.strip()]
@@ -1634,13 +1634,13 @@ def _encargar_a_agente(agente: str, tarea: str, cliente: str = "", contexto: str
 
 def _cerebro_sync_agenda() -> str:
     """
-    Compara los pendientes abiertos de AGENDA.md con el estado real en el
+    Compara los pendientes abiertos de SEGUIMIENTOS.md con el estado real en el
     cerebro. Devuelve las discrepancias encontradas y encola una notificación
     si hay algo que Louis reportaba como pendiente pero ya está listo.
     """
-    agenda_f = SPACE / "AGENDA.md"
+    agenda_f = SPACE / "SEGUIMIENTOS.md"
     if not agenda_f.exists():
-        return "AGENDA.md no disponible."
+        return "SEGUIMIENTOS.md no disponible."
     if not ENTREGABLES_PATH.exists():
         return f"Cerebro no disponible en {ENTREGABLES_PATH}."
 
@@ -1656,7 +1656,7 @@ def _cerebro_sync_agenda() -> str:
                 if len(palabra) > 4:
                     indice.setdefault(palabra, meta.get("estado", "?"))
 
-    # Buscar pendientes de AGENDA que ya estén en el cerebro como listo/aprobado
+    # Buscar pendientes de SEGUIMIENTOS que ya estén en el cerebro como listo/aprobado
     agenda_txt = agenda_f.read_text(encoding="utf-8")
     pendientes = [l.strip() for l in agenda_txt.splitlines()
                   if re.match(r"^\s*-\s*\[\s*\]\s+", l)]
@@ -1668,15 +1668,15 @@ def _cerebro_sync_agenda() -> str:
             if len(titulo_cerebro) > 4 and titulo_cerebro in texto:
                 if estado_cerebro in ("listo", "aprobado", "en_vobo"):
                     discrepancias.append(
-                        f"• AGENDA dice pendiente → Cerebro dice «{estado_cerebro}»:\n"
-                        f"  AGENDA: {pend}\n"
+                        f"• SEGUIMIENTOS dice pendiente → Cerebro dice «{estado_cerebro}»:\n"
+                        f"  SEGUIMIENTOS: {pend}\n"
                         f"  Cerebro: {titulo_cerebro} ({estado_cerebro})"
                     )
                 break
 
     if not discrepancias:
         return (
-            f"Sincronización OK. {len(pendientes)} pendientes en AGENDA, "
+            f"Sincronización OK. {len(pendientes)} pendientes en SEGUIMIENTOS, "
             f"ninguno contradice el estado del Cerebro."
         )
 
@@ -1873,7 +1873,7 @@ def _entregable_detalle(archivo: str) -> dict:
 
 def build_tablero_data() -> dict:
     """Datos en vivo para el tablero de seguimiento (lo consume el gateway en /v1/tablero)."""
-    agenda = _read_space_file("AGENDA.md")
+    agenda = _read_space_file("SEGUIMIENTOS.md")
     return {
         "generado": datetime.now(TZ_CDMX).strftime("%Y-%m-%d %H:%M"),
         "vencimientos": _extract_deadlines(agenda, 15),
@@ -1888,7 +1888,7 @@ def build_intraday_nudge(slot: str = "tarde") -> str | None:
     """Fase 3 — Chequeo intradía. Devuelve un mensaje CORTO de seguimiento SOLO si hay
     algo accionable hoy (vencimientos abiertos, entregables LISTO esperando Vo.Bo.,
     briefs pendientes). None si no hay nada → el scheduler no manda nada (silencioso)."""
-    agenda = _read_space_file("AGENDA.md")
+    agenda = _read_space_file("SEGUIMIENTOS.md")
     ds = _extract_deadlines(agenda, 15)
     urgentes = [d for d in ds if ("vence hoy" in d.lower() or "urgente" in d.lower()
                 or re.search(r"\bhoy\b", d.lower()) or re.search(r"\b\d{1,2}:\d{2}\b", d))]
@@ -1917,7 +1917,7 @@ def build_weekly_review() -> str:
     """Fase 4 — Review semanal coach. Resumen de cómo vamos: cerrados, abiertos,
     lo que vence, y lo ESTANCADO (capturado hace 7+ días sin moverse)."""
     from datetime import date
-    agenda = _read_space_file("AGENDA.md")
+    agenda = _read_space_file("SEGUIMIENTOS.md")
     hoy = datetime.now(TZ_CDMX).date()
     abiertos, cerrados, estancados = 0, 0, []
     for line in agenda.splitlines():
@@ -2098,12 +2098,12 @@ def build_cerebro_followup(slot: str = "cerebro") -> str | None:
 
 
 def limpiar_agenda_duplicados(dry_run: bool = True) -> str:
-    """Barrido de duplicados en AGENDA.md: pendientes abiertos '- [ ]' con el mismo
+    """Barrido de duplicados en SEGUIMIENTOS.md: pendientes abiertos '- [ ]' con el mismo
     texto (normalizado). Conserva el primero. Con dry_run=False aplica y respalda."""
     import shutil
-    path = SPACE / "AGENDA.md"
+    path = SPACE / "SEGUIMIENTOS.md"
     if not path.exists():
-        return "AGENDA.md no existe."
+        return "SEGUIMIENTOS.md no existe."
     lines = path.read_text().splitlines()
     seen, out, removed = set(), [], []
     for line in lines:
@@ -2116,7 +2116,7 @@ def limpiar_agenda_duplicados(dry_run: bool = True) -> str:
                 seen.add(norm)
         out.append(line)
     if not removed:
-        return "✅ Sin duplicados en AGENDA."
+        return "✅ Sin duplicados en SEGUIMIENTOS."
     if dry_run:
         return (f"DRY-RUN: quitaría {len(removed)} duplicado(s):\n"
                 + "\n".join("- " + r[:90] for r in removed))
@@ -2283,7 +2283,7 @@ def build_ollama_internal_context(
             f"{ref}\n"
             f"{legal_mem}\n\n"
             "Tarea: Responde la pregunta de Polo de forma conversacional. Usa el historial del chat. "
-            "No vuelques toda la AGENDA; cita solo lo relevante. Máx. 2-4 párrafos o bullets cortos."
+            "No vuelques todos los SEGUIMIENTOS; cita solo lo relevante. Máx. 2-4 párrafos o bullets cortos."
         )
     snap_show = (
         snapshot
@@ -2413,7 +2413,7 @@ def _sonnet_hint_response() -> str:
         "Ejemplo:\n"
         "`/sonnet revisa mis correos de hoy en Yoltik y dame resumen ejecutivo`\n\n"
         "Requiere créditos Anthropic activos. En modo local te ayudo con agenda, "
-        "pendientes y seguimiento desde AGENDA.md."
+        "pendientes y seguimiento desde SEGUIMIENTOS.md."
     )
 
 
@@ -2540,10 +2540,10 @@ def needs_kawiil_sonnet(user_message: str) -> bool:
 
 def _memory_write_billing_msg() -> str:
     return (
-        "⚠️ Para *guardar en memoria* (AGENDA, CLIENTES, etc.) necesito Claude con tools.\n\n"
+        "⚠️ Para *guardar en memoria* (SEGUIMIENTOS, CLIENTES, etc.) necesito Claude con tools.\n\n"
         "Tu cuenta Anthropic está sin créditos. Cuando recargues, escribe por ejemplo:\n"
-        "`/sonnet anota en AGENDA: llamar a Gonzalo mañana 10:00`\n\n"
-        "Mientras tanto puedo *leer* pendientes desde AGENDA con un `hola` o preguntas de seguimiento."
+        "`/sonnet anota en SEGUIMIENTOS: llamar a Gonzalo mañana 10:00`\n\n"
+        "Mientras tanto puedo *leer* pendientes desde SEGUIMIENTOS con un `hola` o preguntas de seguimiento."
     )
 
 
@@ -2577,7 +2577,7 @@ def _format_memory_tool_confirmations(tool_results: list[str]) -> str:
 # append_to_memory, sin pasar por Sonnet. Es el carril de aprendizaje a prueba
 # de fallos — siempre disponible, gratis y local.
 _MEMORY_FILE_KEYWORDS = (
-    ("agenda", "AGENDA.md"),
+    ("agenda", "SEGUIMIENTOS.md"),
     ("prospecto", "PROSPECTOS.md"),
     ("cliente", "CLIENTES.md"),
     ("importante", "IMPORTANT.md"),
@@ -2605,7 +2605,7 @@ _MEMORY_TRIGGER_RE = re.compile(
     re.IGNORECASE,
 )
 # OJO: 'recuérdame/recuérdalo' NO van aquí — eso es un RECORDATORIO (scheduler vía
-# agendar_recordatorio), no una nota en AGENDA. Si se interceptan aquí, se guardan
+# agendar_recordatorio), no una nota en SEGUIMIENTOS. Si se interceptan aquí, se guardan
 # como nota y nunca disparan.
 _MEMORY_FILE_PREFIX_RE = re.compile(
     r"^(?:en|a|al)\s+(?:la\s+|el\s+|mi\s+)?([\wáéíóúñ]+)\s*:?\s*(.*)$",
@@ -2633,7 +2633,7 @@ _REMINDER_REL_RE = re.compile(
 def try_deterministic_reminder(user_message: str) -> str | None:
     """Crea un recordatorio RELATIVO ('recuérdame en N min/horas …') directo en el
     servidor, sin pasar por el modelo. La hora la calcula el reloj real → nunca falla
-    por mala hora del modelo ni se desvía a una nota en AGENDA. None si no aplica."""
+    por mala hora del modelo ni se desvía a una nota en SEGUIMIENTOS. None si no aplica."""
     if not user_message:
         return None
     m = _REMINDER_REL_RE.match(user_message.strip())
@@ -2683,7 +2683,7 @@ def try_deterministic_memory_write(user_message: str, strict: bool = True) -> st
     """Guarda una nota en memoria SIN Claude (append directo).
 
     strict=True  → solo dispara con señal explícita (dos puntos en el mensaje,
-                   o archivo nombrado: "anota en AGENDA: …"). Pensado como
+                   o archivo nombrado: "anota en SEGUIMIENTOS: …"). Pensado como
                    fast-path que ahorra créditos y funciona offline sin robarle
                    a Sonnet peticiones matizadas.
     strict=False → permisivo (sin ':'); usado como fallback cuando Sonnet falla
@@ -2710,7 +2710,7 @@ def try_deterministic_memory_write(user_message: str, strict: bool = True) -> st
         r"(anota|anotar|apunta|apuntar|registra|registrar|guarda|guardar|agrega|agregar)",
         trigger_word))
 
-    fname = "AGENDA.md"
+    fname = "SEGUIMIENTOS.md"
     explicit_file = False
     fpm = _MEMORY_FILE_PREFIX_RE.match(rest)
     if fpm:
@@ -2770,7 +2770,7 @@ _TASK_NEEDS_CONTEXT_RE = re.compile(
 def try_deterministic_task_capture(user_message: str) -> str | None:
     """Fase 2 — Captura activa. Si el mensaje es una TAREA en lenguaje natural
     ('recuérdame que…', 'hay que…', 'pendiente: …', 'tengo que…', 'no se me olvide…'),
-    la agrega a AGENDA.md como '- [ ]' al instante y confirma. Sin modelo.
+    la agrega a SEGUIMIENTOS.md como '- [ ]' al instante y confirma. Sin modelo.
     Va DESPUÉS de try_deterministic_reminder (recordatorios con hora) y de
     try_deterministic_memory_write (anota/apunta:). None si no aplica."""
     if not user_message:
@@ -2796,12 +2796,12 @@ def try_deterministic_task_capture(user_message: str) -> str | None:
         return None
     fecha = datetime.now(TZ_CDMX).strftime("%Y-%m-%d")
     result = execute_tool("append_to_memory",
-                          {"filename": "AGENDA.md", "content": f"- [ ] {body}  · [capturado {fecha}]"})
+                          {"filename": "SEGUIMIENTOS.md", "content": f"- [ ] {body}  · [capturado {fecha}]"})
     if not result.startswith("OK"):
         return f"⚠️ No pude agregar la tarea: {result}"
     if "ya estaba" in result:
-        return f"👍 Ya lo tenías en la AGENDA:\n• {body}"
-    return (f"✅ Lo agregué a tu *AGENDA* como pendiente:\n• {body}\n"
+        return f"👍 Ya lo tenías en SEGUIMIENTOS:\n• {body}"
+    return (f"✅ Lo agregué a tus *SEGUIMIENTOS* como pendiente:\n• {body}\n"
             f"Te doy seguimiento — aparecerá en tu briefing.")
 
 
@@ -2940,7 +2940,7 @@ def format_morning_briefing_deterministic(snapshot: str) -> str:
     return (
         f"*{saludo} Polo* — briefing {datetime.now(TZ_CDMX).strftime('%A %d %b %Y')} (CDMX)\n\n"
         f"{snapshot[:3200]}\n\n"
-        f"¿Por dónde empezamos?\n_(datos AGENDA/IMPORTANT · {ts})_"
+        f"¿Por dónde empezamos?\n_(datos SEGUIMIENTOS/IMPORTANT · {ts})_"
     )
 
 
@@ -3063,7 +3063,7 @@ def _trim_system_for_ollama(
     chat_mode: bool = False,
     ollama_model: str | None = None,
 ) -> str:
-    """Recorta system prompt priorizando AGENDA/IMPORTANT/JOURNAL."""
+    """Recorta system prompt priorizando SEGUIMIENTOS/IMPORTANT/JOURNAL."""
     model = ollama_model or OLLAMA_FAST_MODEL
     tail = OLLAMA_ANTI_HALLUCINATION_TAIL
     if chat_mode:
@@ -3144,7 +3144,7 @@ TENANT_ENUM = ["kawiil", "yoltik"]
 TOOLS_DEFINITION = [
     {
         "name": "read_memory",
-        "description": "Lee un archivo de memoria de Louis (AGENDA.md, USER.md, LEARNINGS.md, JOURNAL.md, IMPORTANT.md, PROJECTS.md, PEOPLE.md).",
+        "description": "Lee un archivo de memoria de Louis (SEGUIMIENTOS.md, USER.md, LEARNINGS.md, JOURNAL.md, IMPORTANT.md, PROJECTS.md, PEOPLE.md).",
         "input_schema": {
             "type": "object",
             "properties": {"filename": {"type": "string", "enum": MEMORY_FILES + ["JOURNAL.md"]}},
@@ -3177,22 +3177,22 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "completar_pendiente",
-        "description": "Marca como HECHO (- [x]) un pendiente de AGENDA.md cuando Polo avisa que algo ya se hizo/entregó/envió/quedó (ej. 'ya entregué Vizum', 'ya se mandó la carta de Lupita'). Busca las líneas de pendiente abiertas que coincidan con el texto y las cierra, para que dejen de aparecer en las revisiones. ÚSALO siempre que Polo reporte algo completado — así la AGENDA se mantiene limpia y no te saca temas viejos.",
+        "description": "Marca como HECHO (- [x]) un pendiente de SEGUIMIENTOS.md cuando Polo avisa que algo ya se hizo/entregó/envió/quedó (ej. 'ya entregué Vizum', 'ya se mandó la carta de Lupita'). Busca las líneas de pendiente abiertas que coincidan con el texto y las cierra, para que dejen de aparecer en las revisiones. ÚSALO siempre que Polo reporte algo completado — así la AGENDA se mantiene limpia y no te saca temas viejos.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "texto": {"type": "string", "description": "Palabras clave del pendiente que se completó (ej: 'Vizum CNBV comunicación', 'carta Lupita Correduría'). Se hace match flexible contra las líneas - [ ] de AGENDA."},
+                "texto": {"type": "string", "description": "Palabras clave del pendiente que se completó (ej: 'Vizum CNBV comunicación', 'carta Lupita Correduría'). Se hace match flexible contra las líneas - [ ] de SEGUIMIENTOS."},
             },
             "required": ["texto"],
         },
     },
     {
         "name": "reemplazar_pendiente",
-        "description": "CORRIGE/ACTUALIZA un pendiente existente de AGENDA.md EDITÁNDOLO en su lugar (no crea líneas nuevas ni 'hojas nuevas'). ÚSALO cuando Polo corrige un dato de algo ya anotado (ej. 'Casandra no es de Habib, es RPC de Fernando', 'el cliente es Joshui no Dazon', cambia un responsable/fecha). Busca la línea que coincida con `viejo` y la reemplaza COMPLETA por `nuevo`. Así no se duplica ni se contradice la AGENDA. Si necesitas AGREGAR algo nuevo usa append_to_memory; si algo se completó usa completar_pendiente.",
+        "description": "CORRIGE/ACTUALIZA un pendiente existente de SEGUIMIENTOS.md EDITÁNDOLO en su lugar (no crea líneas nuevas ni 'hojas nuevas'). ÚSALO cuando Polo corrige un dato de algo ya anotado (ej. 'Casandra no es de Habib, es RPC de Fernando', 'el cliente es Joshui no Dazon', cambia un responsable/fecha). Busca la línea que coincida con `viejo` y la reemplaza COMPLETA por `nuevo`. Así no se duplica ni se contradice la AGENDA. Si necesitas AGREGAR algo nuevo usa append_to_memory; si algo se completó usa completar_pendiente.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "viejo": {"type": "string", "description": "Palabras clave de la línea EXISTENTE a corregir (match flexible contra las líneas de AGENDA). Ej: 'Casandra Habib'."},
+                "viejo": {"type": "string", "description": "Palabras clave de la línea EXISTENTE a corregir (match flexible contra las líneas de SEGUIMIENTOS). Ej: 'Casandra Habib'."},
                 "nuevo": {"type": "string", "description": "El texto COMPLETO que debe quedar en esa línea (sin el '- [ ]', se conserva el estado de la casilla). Ej: 'Casandra — RPC a cargo de Fernando (vence 5-jun)'."},
             },
             "required": ["viejo", "nuevo"],
@@ -3277,7 +3277,7 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "create_reminder",
-        "description": "[LEGACY — prefiere agendar_recordatorio que SÍ dispara push, este solo escribe a AGENDA.md] Anota en AGENDA.md.",
+        "description": "[LEGACY — prefiere agendar_recordatorio que SÍ dispara push, este solo escribe a SEGUIMIENTOS.md] Anota en SEGUIMIENTOS.md.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -4469,7 +4469,7 @@ TOOLS_DEFINITION = [
     {
         "name": "cerebro_sync_agenda",
         "description": (
-            "Compara los pendientes abiertos de AGENDA.md con el estado real del cerebro. "
+            "Compara los pendientes abiertos de SEGUIMIENTOS.md con el estado real del cerebro. "
             "Detecta lo que Louis reporta como 'pendiente' pero ya está 'listo' o 'aprobado' en Cowork. "
             "Notifica a Polo por Telegram si hay discrepancias. "
             "Usar en briefing matutino o cuando Polo pregunta por el estado de proyectos."
@@ -8527,12 +8527,12 @@ def _corregir_nombre(mal: str, bien: str) -> str:
 # Resuelve el hueco de diseño: la charla normal corre en DeepSeek/Ollama (sin tools),
 # así que nada se guardaba a memoria de largo plazo. Esto corre 1×/día desde el
 # scheduler, lee la conversación del día, destila hechos durables con Haiku y los
-# agrega a PEOPLE/CLIENTES/AGENDA/IMPORTANT (con dedup y alias de clientes aplicado).
+# agrega a PEOPLE/CLIENTES/SEGUIMIENTOS/IMPORTANT (con dedup y alias de clientes aplicado).
 MEMORY_DISTILL_STATE = STATE_DIR / "last-memory-distill.json"
 _DISTILL_TARGETS = {
     "PEOPLE": "PEOPLE.md",
     "CLIENTES": "CLIENTES.md",
-    "AGENDA": "AGENDA.md",
+    "SEGUIMIENTOS": "SEGUIMIENTOS.md",
     "IMPORTANT": "IMPORTANT.md",
 }
 
@@ -8542,16 +8542,16 @@ _DISTILL_SYSTEM = (
     "hechos DURABLES y ESPECÍFICOS que valga la pena recordar a largo plazo y clasifícalos. "
     "Devuelve EXCLUSIVAMENTE un JSON válido con estas llaves (arrays de strings, una frase "
     'corta por hecho; usa [] si no hay nada):\n'
-    '{"PEOPLE": [], "CLIENTES": [], "AGENDA": [], "IMPORTANT": []}\n\n'
+    '{"PEOPLE": [], "CLIENTES": [], "SEGUIMIENTOS": [], "IMPORTANT": []}\n\n'
     "Reglas:\n"
     "- PEOPLE: datos durables de personas (rol, empresa, relación, junta recurrente, preferencias).\n"
     "- CLIENTES: datos de clientes/prospectos (razón social, RFC, contacto, estatus, servicio).\n"
-    "- AGENDA: pendientes/tareas/compromisos por hacer DE POLO (no tareas internas de Louis).\n"
+    "- SEGUIMIENTOS: seguimientos activos/compromisos por hacer DE POLO (no tareas internas de Louis).\n"
     "- IMPORTANT: decisiones, hechos clave o instrucciones permanentes de Polo.\n"
     "- Cada hecho debe ser ESPECÍFICO: con nombre propio, empresa, fecha, monto o dato concreto. "
     "Si es vago o genérico, OMÍTELO.\n"
     "- NO guardes hechos sobre Louis mismo, el sistema, el bot, la memoria, los archivos .md, ni "
-    "tareas de mantenimiento ('actualizar AGENDA', 'consolidar memoria', 'Louis es asistente…'). "
+    "tareas de mantenimiento ('actualizar SEGUIMIENTOS', 'consolidar memoria', 'Louis es asistente…'). "
     "Solo el MUNDO de Polo: personas, clientes, casos, compromisos, decisiones.\n"
     "- NO incluyas charla trivial, saludos, briefings, ni cosas efímeras (clima, '¿qué hay hoy?').\n"
     "- NO inventes: solo lo explícito en la conversación. Usa nombres correctos y completos.\n"
@@ -8641,7 +8641,7 @@ def _distill_append(fname: str, line: str) -> bool:
                 return False
     fecha = datetime.now(TZ_CDMX).strftime("%Y-%m-%d")
     entry = line
-    if fname == "AGENDA.md" and not entry.lstrip().startswith(("- [", "-[", "*", "-")):
+    if fname == "SEGUIMIENTOS.md" and not entry.lstrip().startswith(("- [", "-[", "*", "-")):
         entry = f"- [ ] {entry}"
     entry = f"{entry}  · [auto {fecha}]"
     with path.open("a") as f:
@@ -9155,9 +9155,9 @@ def execute_tool(name: str, args: dict) -> str:
         elif name == "zona_horaria":
             return _zona_horaria_tool(args.get("accion", "consultar"), args.get("zona", ""))
         elif name == "completar_pendiente":
-            path = SPACE / "AGENDA.md"
+            path = SPACE / "SEGUIMIENTOS.md"
             if not path.exists():
-                return "(AGENDA.md no existe)"
+                return "(SEGUIMIENTOS.md no existe)"
             texto = (args.get("texto") or "").strip().lower()
             # Palabras clave significativas (>3 letras) del texto a buscar.
             keys = [w for w in re.findall(r"\w+", texto) if len(w) > 3]
@@ -9179,9 +9179,9 @@ def execute_tool(name: str, args: dict) -> str:
             listado = "\n".join(f"  ✓ {c}" for c in cerradas)
             return f"OK cerré {len(cerradas)} pendiente(s):\n{listado}"
         elif name == "reemplazar_pendiente":
-            path = SPACE / "AGENDA.md"
+            path = SPACE / "SEGUIMIENTOS.md"
             if not path.exists():
-                return "(AGENDA.md no existe)"
+                return "(SEGUIMIENTOS.md no existe)"
             viejo = (args.get("viejo") or "").strip().lower()
             nuevo = (args.get("nuevo") or "").strip()
             keys = [w for w in re.findall(r"\w+", viejo) if len(w) > 3]
@@ -9218,10 +9218,10 @@ def execute_tool(name: str, args: dict) -> str:
         elif name == "create_reminder":
             script = SPACE / "scripts" / "crear-recordatorio.sh"
             if not script.exists():
-                agenda = SPACE / "AGENDA.md"
+                agenda = SPACE / "SEGUIMIENTOS.md"
                 with agenda.open("a") as f:
                     f.write(f"\n- [recordatorio] {args['datetime']} — {args['text']}\n")
-                return f"(no hay tool de iCloud en Hetzner, anotado en AGENDA: {args['text']} @ {args['datetime']})"
+                return f"(no hay tool de iCloud en Hetzner, anotado en SEGUIMIENTOS: {args['text']} @ {args['datetime']})"
             r = subprocess.run(
                 [str(script), args["text"], args["datetime"]],
                 capture_output=True, text=True, timeout=15,
@@ -9866,14 +9866,14 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
     if _hora_block:
         _system_cached.append({"type": "text", "text": _hora_block})
     # Snapshot operativo en vivo (no cacheado — cambia cada llamada). Pone un resumen
-    # PRIORIZADO de AGENDA/IMPORTANT/Cerebro arriba del contexto para que Claude no
+    # PRIORIZADO de SEGUIMIENTOS/IMPORTANT/Cerebro arriba del contexto para que Claude no
     # "pierda" pendientes urgentes sepultados en los archivos completos de memoria.
     try:
         _snap_live = build_operational_snapshot(compact=True)
         if _snap_live:
             _system_cached.append({"type": "text", "text": (
                 "# ⚡ SNAPSHOT OPERATIVO (en vivo — consulta esto antes de responder)\n"
-                "Resumen priorizado de tu propia AGENDA/IMPORTANT/Cerebro en este instante.\n"
+                "Resumen priorizado de tu propia SEGUIMIENTOS/IMPORTANT/Cerebro en este instante.\n"
                 "ÚSALO para responder preguntas de Polo sobre pendientes sin pedirle que\n"
                 "los repita, y para saber a QUÉ te referiste en mensajes/briefings previos.\n\n"
                 + _snap_live
@@ -10006,7 +10006,7 @@ def call_llm(
         _mark_last_route("recordatorio-directo")
         return det_rem, "recordatorio-directo"
 
-    # Aprendizaje a prueba de fallos: "anota en AGENDA: …" se guarda directo,
+    # Aprendizaje a prueba de fallos: "anota en SEGUIMIENTOS: …" se guarda directo,
     # sin gastar créditos y aunque Anthropic esté sin saldo.
     det_mem = try_deterministic_memory_write(user_message, strict=True)
     if det_mem is not None:
@@ -10014,7 +10014,7 @@ def call_llm(
         return det_mem, "memoria-directa"
 
     # Captura activa (Fase 2): tarea en lenguaje natural ("hay que…", "pendiente: …",
-    # "recuérdame que …" sin hora) → la registra en AGENDA al instante y confirma.
+    # "recuérdame que …" sin hora) → la registra en SEGUIMIENTOS al instante y confirma.
     det_task = try_deterministic_task_capture(user_message)
     if det_task is not None:
         _mark_last_route("tarea-directa")
@@ -10082,7 +10082,7 @@ def call_llm(
                 log.warning("No pude guardar last-briefing.json", exc_info=True)
             return response, det_tag
         # Conversación fluida → DeepSeek (rápido, API, sin timeouts de CPU). Le anteponemos
-        # el snapshot operativo para que tenga contexto real de AGENDA/IMPORTANT.
+        # el snapshot operativo para que tenga contexto real de SEGUIMIENTOS/IMPORTANT.
         log.info(f"→ DeepSeek (chat) — {tag}")
         ds_system = f"[CONTEXTO OPERATIVO ACTUAL]\n{snapshot}\n\n{system_prompt}"
         try:

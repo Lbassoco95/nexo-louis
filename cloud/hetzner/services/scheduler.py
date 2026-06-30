@@ -453,7 +453,7 @@ def main():
                 log.warning(f"legal bg tick falló: {e}")
 
         # Auto-memoria nocturna: destila la conversación del día a memoria de largo
-        # plazo (PEOPLE/CLIENTES/AGENDA/IMPORTANT). Idempotente por fecha — corre una
+        # plazo (PEOPLE/CLIENTES/SEGUIMIENTOS/IMPORTANT). Idempotente por fecha — corre una
         # sola vez aunque el tick caiga muchas veces en la ventana de las 23h. Silenciosa.
         try:
             if datetime.now(TZ_CDMX).hour == 23:

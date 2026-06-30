@@ -352,19 +352,19 @@ def transcribe_audio(audio_ogg: Path, duration_s: int = 0) -> str:
 # ===== Main loop =====
 # ═══════════════════════════════════════════════════════════════════════════
 # PANEL DE PENDIENTES CON BOTONES (callback_query) — control directo sin LLM.
-# Un clic = marca '- [x]' en AGENDA.md (operación a archivo, 0 tokens del modelo).
+# Un clic = marca '- [x]' en SEGUIMIENTOS.md (operación a archivo, 0 tokens del modelo).
 # ═══════════════════════════════════════════════════════════════════════════
 import html as _htmlmod
 
-_AGENDA = core.SPACE / "AGENDA.md"
+_SEGUIMIENTOS = core.SPACE / "SEGUIMIENTOS.md"
 
 
 def _agenda_open_items(limit=24):
-    """[(hash8, texto)] de los pendientes abiertos '- [ ]' de la AGENDA general."""
-    if not _AGENDA.exists():
+    """[(hash8, texto)] de los pendientes abiertos '- [ ]' de SEGUIMIENTOS."""
+    if not _SEGUIMIENTOS.exists():
         return []
     out = []
-    for line in _AGENDA.read_text().splitlines():
+    for line in _SEGUIMIENTOS.read_text().splitlines():
         m = re.match(r"^\s*-\s*\[\s*\]\s+(.+)", line)
         if m:
             out.append((hashlib.md5(line.encode("utf-8")).hexdigest()[:8], m.group(1).strip()))
@@ -375,13 +375,13 @@ def _agenda_open_items(limit=24):
 
 def _agenda_mark_done(h8):
     """Marca '- [x]' la línea cuyo md5[:8] coincide. Devuelve el texto cerrado o None."""
-    if not _AGENDA.exists():
+    if not _SEGUIMIENTOS.exists():
         return None
-    lines = _AGENDA.read_text().splitlines()
+    lines = _SEGUIMIENTOS.read_text().splitlines()
     for i, line in enumerate(lines):
         if re.match(r"^\s*-\s*\[\s*\]\s+", line) and hashlib.md5(line.encode("utf-8")).hexdigest()[:8] == h8:
             lines[i] = re.sub(r"\[\s*\]", "[x]", line, count=1)
-            _AGENDA.write_text("\n".join(lines) + "\n")
+            _SEGUIMIENTOS.write_text("\n".join(lines) + "\n")
             return re.sub(r"^\s*-\s*\[x\]\s+", "", lines[i]).strip()
     return None
 
@@ -406,7 +406,7 @@ def _agenda_panel():
     """Devuelve (texto_html, reply_markup) con los pendientes y un botón por cada uno."""
     items = _agenda_open_items()
     if not items:
-        return "✅ <b>AGENDA</b> — sin pendientes abiertos. ¡Vas al día!", None
+        return "✅ <b>Seguimientos</b> — sin pendientes abiertos. ¡Vas al día!", None
     lines = ["📋 <b>Pendientes abiertos</b> — toca el número para cerrarlo:\n"]
     row, keyboard = [], []
     for i, (h, txt) in enumerate(items, 1):
