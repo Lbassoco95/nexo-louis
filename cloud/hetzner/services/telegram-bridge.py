@@ -22,6 +22,8 @@ import subprocess
 import tempfile
 import shutil
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlencode
 import urllib.request
@@ -65,6 +67,10 @@ CREDS_TELEGRAM = HOME_OC / "credentials" / "telegram.env"
 OFFSET_FILE = HOME_OC / "credentials" / "telegram-bridge-offset.txt"
 HISTORY_FILE = SPACE / "telegram-history.jsonl"
 LOG_DIR = HOME_OC / "logs"
+# Protege HISTORY_FILE contra escrituras concurrentes (main thread + audio bg thread)
+_history_lock = threading.Lock()
+# Thread pool para transcripción de audio: max 2 jobs simultáneos
+_audio_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="audio-transcribe")
 LOG_FILE = LOG_DIR / "telegram-bridge.log"
 
 WHISPER_MODEL = HOME_OC / "whisper-models" / "ggml-medium.bin"
@@ -484,6 +490,162 @@ def handle_callback(cbq, token, chat_id):
     telegram_answer_callback(token, cbq_id, "")
 
 
+def _finish_user_input(telegram_token, chat_id, api_key, system_prompt, user_input):
+    """Runs the full LLM → response flow for a resolved user_input.
+    Called from both the main thread (text) and the audio background thread.
+    Thread-safe: uses _history_lock around all history reads/writes."""
+    import datetime as _dt_mod
+
+    if not user_input or not user_input.strip():
+        return
+
+    if user_input.strip().lower().lstrip("/") in ("nuevo", "reset", "limpia", "limpiar", "borra historial"):
+        with _history_lock:
+            try:
+                if HISTORY_FILE.exists():
+                    HISTORY_FILE.unlink()
+            except Exception as e:
+                log.warning(f"No pude borrar historial: {e}")
+        telegram_send_message(telegram_token, chat_id,
+                              "🧹 Listo, empecé de cero. El historial anterior se borró.", parse_mode=None)
+        return
+
+    if core.is_status_command(user_input):
+        response = core._verificar_conexiones(incluir_m365=False)
+        with _history_lock:
+            core.append_history(HISTORY_FILE, "user", user_input)
+            core.append_history(HISTORY_FILE, "assistant", response)
+        log.info(f"← status ({len(response)} chars)")
+        telegram_send_message(telegram_token, chat_id, response, parse_mode=None)
+        return
+
+    if core.is_agents_list_command(user_input):
+        response = core.format_agents_list_compact()
+        with _history_lock:
+            core.append_history(HISTORY_FILE, "user", user_input)
+            core.append_history(HISTORY_FILE, "assistant", response)
+        log.info(f"← agents-list ({len(response)} chars)")
+        telegram_send_message(telegram_token, chat_id, response, parse_mode="Markdown")
+        return
+
+    with _history_lock:
+        core.append_history(HISTORY_FILE, "user", user_input)
+        history = core.load_history(HISTORY_FILE, max_turns=28)[:-1]
+
+    if core.needs_doc_sonnet(user_input):
+        log.info("→ Documento directo (Sonnet escribe contenido → PDF/PPTX/XLSX)")
+        response, model_used = core.generar_documento_directo(api_key, system_prompt, history, user_input)
+        with _history_lock:
+            core.append_history(HISTORY_FILE, "assistant", response)
+        telegram_send_message(telegram_token, chat_id, response, parse_mode="Markdown")
+        for content, fname, cap in core.get_pending_files():
+            try:
+                telegram_send_document(telegram_token, chat_id, content, fname, caption=cap)
+                log.info(f"📎 documento enviado: {fname} ({len(content)} bytes)")
+            except Exception as e:
+                log.error(f"envío de documento {fname} falló: {e}")
+                telegram_send_message(telegram_token, chat_id, f"⚠️ No pude enviarte {fname}: {e}", parse_mode=None)
+        return
+
+    response, model_used = core.call_llm(
+        api_key, system_prompt, history, user_input, history_file=HISTORY_FILE
+    )
+    log.info(f"← {model_used} respondió ({len(response)} chars)")
+    with _history_lock:
+        core.append_history(HISTORY_FILE, "assistant", response)
+
+    pending_files = core.get_pending_files()
+
+    if not pending_files and core.needs_doc_sonnet(user_input) and len(response) > 1200:
+        try:
+            titulo = (user_input or "documento")[:70].strip().rstrip(".?!")
+            pdf = core._generar_pdf(titulo, response, "Louis")
+            if pdf:
+                fname = f"{titulo[:40].replace(' ', '_')}_{_dt_mod.datetime.now().strftime('%H%M%S')}.pdf"
+                pending_files = [(pdf, fname, f"📄 {titulo[:60]}")]
+                log.info(f"📎 PDF generado por red de seguridad: {fname} ({len(pdf)} bytes)")
+        except Exception as e:
+            log.warning(f"Red de seguridad PDF falló: {e}")
+    elif not pending_files and _promete_documento(response):
+        try:
+            log.info("→ Louis prometió documento sin entregarlo; generando vía flujo directo")
+            doc_resp, _m = core.generar_documento_directo(api_key, system_prompt, history, user_input)
+            telegram_send_message(telegram_token, chat_id, doc_resp, parse_mode="Markdown")
+            with _history_lock:
+                core.append_history(HISTORY_FILE, "assistant", doc_resp)
+            pending_files = core.get_pending_files()
+        except Exception as e:
+            log.warning(f"Red de seguridad (promesa de documento) falló: {e}")
+
+    html_body = None
+    if _is_html_response(response):
+        html_body = response.strip()
+    else:
+        html_body = _extract_html_from_fence(response)
+
+    if html_body:
+        fname = f"louis_{_dt_mod.datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+        caption = "📄 Análisis listo — abre en Safari → Compartir → Imprimir → PDF"
+        telegram_send_file(telegram_token, chat_id, html_body, fname, caption=caption)
+    elif pending_files:
+        short = response.strip()
+        if short:
+            telegram_send_message(telegram_token, chat_id, short[:1500], parse_mode="Markdown")
+    else:
+        telegram_send_message(telegram_token, chat_id, response, parse_mode="Markdown")
+
+    for content, fname, cap in pending_files:
+        try:
+            telegram_send_document(telegram_token, chat_id, content, fname, caption=cap)
+            log.info(f"📎 archivo enviado: {fname} ({len(content)} bytes)")
+        except Exception as e:
+            log.error(f"envío de archivo {fname} falló: {e}")
+            telegram_send_message(telegram_token, chat_id, f"⚠️ No pude enviarte {fname}: {e}", parse_mode=None)
+
+
+def _audio_bg_worker(telegram_token, chat_id, file_id, dur, api_key, system_prompt):
+    """Background thread: download → transcribe → transcript → LLM → respond.
+    Runs in _audio_pool so the main bridge loop stays responsive."""
+    try:
+        file_path = telegram_get_file_path(telegram_token, file_id)
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+        telegram_download_file(telegram_token, file_path, tmp_path)
+        transcript = transcribe_audio(tmp_path, duration_s=dur)
+        tmp_path.unlink(missing_ok=True)
+        log.info(f"Transcripción (bg): {transcript[:200]}")
+        telegram_send_message(
+            telegram_token, chat_id,
+            f"📝 Te escuché:\n«{transcript}»",
+            parse_mode=None,
+        )
+        es_grabacion = dur >= 120
+        if es_grabacion:
+            min_s = f"{dur // 60} min {dur % 60}s"
+            user_input = (
+                f"[GRABACIÓN DE REUNIÓN/CONVERSACIÓN — {min_s}]\n\n"
+                f"TRANSCRIPCIÓN COMPLETA:\n{transcript}\n\n"
+                f"INSTRUCCIÓN (ejecutar TODO en este orden):\n"
+                f"1. Resume en 3-5 bullets: qué se trató, quiénes participaron "
+                f"(si se mencionan), decisiones tomadas.\n"
+                f"2. Lista TODAS las tareas, compromisos y pendientes que se "
+                f"mencionaron. Para cada uno: qué, quién es responsable (si no se "
+                f"menciona asumir Polo), para cuándo (si no se menciona dejar sin "
+                f"fecha), y para qué empresa/proyecto (Kawiil, Yoltik, cliente).\n"
+                f"3. Para CADA tarea identificada usa kawiil_central_crear_tarea "
+                f"(busca el proyecto correcto con kawiil_central_listar_proyectos "
+                f"si no lo tienes en contexto).\n"
+                f"4. Termina con un mensaje tipo: '✅ Acta guardada — N tareas creadas "
+                f"en Kawiil Central.' con la lista de las tareas creadas."
+            )
+        else:
+            user_input = transcript
+        _finish_user_input(telegram_token, chat_id, api_key, system_prompt, user_input)
+    except Exception as e:
+        log.exception("Error en audio background worker")
+        telegram_send_message(telegram_token, chat_id, f"❌ Error procesando audio: {e}", parse_mode=None)
+
+
 def process_update(update, telegram_token, chat_id, api_key, system_prompt):
     msg = update.get("message")
     if not msg:
@@ -573,177 +735,18 @@ def process_update(update, telegram_token, chat_id, api_key, system_prompt):
         else:
             aviso = "🎙️ Transcribiendo audio..."
         telegram_send_message(telegram_token, chat_id, aviso, parse_mode=None)
-        try:
-            file_path = telegram_get_file_path(telegram_token, file_id)
-            with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
-                tmp_path = Path(tmp.name)
-            telegram_download_file(telegram_token, file_path, tmp_path)
-            transcript = transcribe_audio(tmp_path, duration_s=dur)
-            tmp_path.unlink(missing_ok=True)
-            log.info(f"Transcripción: {transcript[:200]}")
-            telegram_send_message(
-                telegram_token, chat_id,
-                f"📝 Te escuché:\n«{transcript}»",
-                parse_mode=None,
-            )
-            # Grabaciones largas = reunión/conversación de trabajo: inyectar instrucción
-            # de extracción de tareas para que Louis las cree en Kawiil Central
-            # automáticamente, sin que Polo tenga que pedirlo.
-            if es_grabacion:
-                min_s = f"{dur // 60} min {dur % 60}s"
-                user_input = (
-                    f"[GRABACIÓN DE REUNIÓN/CONVERSACIÓN — {min_s}]\n\n"
-                    f"TRANSCRIPCIÓN COMPLETA:\n{transcript}\n\n"
-                    f"INSTRUCCIÓN (ejecutar TODO en este orden):\n"
-                    f"1. Resume en 3-5 bullets: qué se trató, quiénes participaron "
-                    f"(si se mencionan), decisiones tomadas.\n"
-                    f"2. Lista TODAS las tareas, compromisos y pendientes que se "
-                    f"mencionaron. Para cada uno: qué, quién es responsable (si no se "
-                    f"menciona asumir Polo), para cuándo (si no se menciona dejar sin "
-                    f"fecha), y para qué empresa/proyecto (Kawiil, Yoltik, cliente).\n"
-                    f"3. Para CADA tarea identificada usa kawiil_central_crear_tarea "
-                    f"(busca el proyecto correcto con kawiil_central_listar_proyectos "
-                    f"si no lo tienes en contexto).\n"
-                    f"4. Termina con un mensaje tipo: '✅ Acta guardada — N tareas creadas "
-                    f"en Kawiil Central.' con la lista de las tareas creadas."
-                )
-            else:
-                user_input = transcript
-        except Exception as e:
-            log.exception("Error procesando audio")
-            telegram_send_message(telegram_token, chat_id, f"❌ Error procesando audio: {e}", parse_mode=None)
-            return
+        # Transcripción en background: el main loop SIGUE procesando mensajes mientras
+        # Whisper trabaja. Sin esto, un audio de 4 min podía bloquear el bridge ~20 min.
+        _audio_pool.submit(
+            _audio_bg_worker,
+            telegram_token, chat_id, file_id, dur, api_key, system_prompt
+        )
+        return  # main loop libre para seguir procesando
     else:
         log.info(f"Mensaje sin texto/audio, ignorando: {msg}")
         return
 
-    if not user_input or not user_input.strip():
-        return
-
-    # /nuevo, /reset, /limpia → borra el historial de conversación (empezar de cero)
-    if user_input.strip().lower().lstrip("/") in ("nuevo", "reset", "limpia", "limpiar", "borra historial"):
-        try:
-            if HISTORY_FILE.exists():
-                HISTORY_FILE.unlink()
-            log.info("Historial reiniciado por comando del usuario")
-        except Exception as e:
-            log.warning(f"No pude borrar historial: {e}")
-        telegram_send_message(telegram_token, chat_id,
-                              "🧹 Listo, empecé de cero. El historial anterior se borró.", parse_mode=None)
-        return
-
-    if core.is_status_command(user_input):
-        response = core._verificar_conexiones(incluir_m365=False)
-        model_used = "status"
-        core.append_history(HISTORY_FILE, "user", user_input)
-        core.append_history(HISTORY_FILE, "assistant", response)
-        log.info(f"← {model_used} ({len(response)} chars)")
-        telegram_send_message(telegram_token, chat_id, response, parse_mode=None)
-        return
-
-    if core.is_agents_list_command(user_input):
-        response = core.format_agents_list_compact()
-        model_used = "agents-list"
-        core.append_history(HISTORY_FILE, "user", user_input)
-        core.append_history(HISTORY_FILE, "assistant", response)
-        log.info(f"← {model_used} ({len(response)} chars)")
-        telegram_send_message(telegram_token, chat_id, response, parse_mode="Markdown")
-        return
-
-    core.append_history(HISTORY_FILE, "user", user_input)
-    # 28 turnos: ventana amplia para sostener tareas multi-paso (alta de clientes,
-    # proyectos y tareas en kawiil-central) sin perder el hilo entre mensajes.
-    history = core.load_history(HISTORY_FILE, max_turns=28)[:-1]
-
-    # Pedido de documento (PDF/PPTX/XLSX): flujo DIRECTO determinístico.
-    # No dependemos de tool-calling — Sonnet escribe el contenido, nosotros generamos
-    # el archivo. Esto garantiza la entrega del documento.
-    if core.needs_doc_sonnet(user_input):
-        log.info("→ Documento directo (Sonnet escribe contenido → PDF/PPTX/XLSX)")
-        response, model_used = core.generar_documento_directo(
-            api_key, system_prompt, history, user_input
-        )
-        core.append_history(HISTORY_FILE, "assistant", response)
-        telegram_send_message(telegram_token, chat_id, response, parse_mode="Markdown")
-        for content, fname, cap in core.get_pending_files():
-            try:
-                telegram_send_document(telegram_token, chat_id, content, fname, caption=cap)
-                log.info(f"📎 documento enviado: {fname} ({len(content)} bytes)")
-            except Exception as e:
-                log.error(f"envío de documento {fname} falló: {e}")
-                telegram_send_message(telegram_token, chat_id, f"⚠️ No pude enviarte {fname}: {e}", parse_mode=None)
-        return
-
-    # Pasamos el mensaje CRUDO: call_llm detecta /sonnet, /oss, /haiku, /llama
-    # y limpia el prefijo internamente antes de llamar al modelo.
-    response, model_used = core.call_llm(
-        api_key, system_prompt, history, user_input, history_file=HISTORY_FILE
-    )
-    log.info(f"← {model_used} respondió ({len(response)} chars)")
-    core.append_history(HISTORY_FILE, "assistant", response)
-
-    import datetime as _dt_mod
-
-    # Drenar archivos encolados por tools/agentes ANTES de enviar la respuesta.
-    pending_files = core.get_pending_files()
-
-    # Red de seguridad: si Polo pidió un documento y el modelo escribió el contenido
-    # como texto largo PERO no llamó generar_documento (no encoló archivo), generamos
-    # el PDF aquí mismo de forma determinística. Así nunca queda en "voy a generar".
-    if not pending_files and core.needs_doc_sonnet(user_input) and len(response) > 1200:
-        try:
-            titulo = (user_input or "documento")[:70].strip().rstrip(".?!")
-            pdf = core._generar_pdf(titulo, response, "Louis")
-            if pdf:
-                fname = f"{titulo[:40].replace(' ', '_')}_{_dt_mod.datetime.now().strftime('%H%M%S')}.pdf"
-                pending_files = [(pdf, fname, f"📄 {titulo[:60]}")]
-                log.info(f"📎 PDF generado por red de seguridad: {fname} ({len(pdf)} bytes)")
-        except Exception as e:
-            log.warning(f"Red de seguridad PDF falló: {e}")
-
-    # Red de seguridad #2: Louis PROMETIÓ un documento (en sus palabras) pero no
-    # encoló nada — el caso "voy a generar los perfiles de puesto" y no regresa. No
-    # dependía de que tu mensaje dijera 'PDF'. Lo generamos de verdad por el flujo
-    # directo (Sonnet escribe el contenido → archivo) para cerrar el seguimiento.
-    elif not pending_files and _promete_documento(response):
-        try:
-            log.info("→ Louis prometió documento sin entregarlo; generando vía flujo directo")
-            doc_resp, _m = core.generar_documento_directo(
-                api_key, system_prompt, history, user_input
-            )
-            telegram_send_message(telegram_token, chat_id, doc_resp, parse_mode="Markdown")
-            core.append_history(HISTORY_FILE, "assistant", doc_resp)
-            pending_files = core.get_pending_files()
-        except Exception as e:
-            log.warning(f"Red de seguridad (promesa de documento) falló: {e}")
-
-    # Detecta HTML completo en la respuesta (bloque ```html o <html>).
-    html_body = None
-    if _is_html_response(response):
-        html_body = response.strip()
-    else:
-        html_body = _extract_html_from_fence(response)
-
-    if html_body:
-        fname = f"louis_{_dt_mod.datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-        caption = "📄 Análisis listo — abre en Safari → Compartir → Imprimir → PDF"
-        telegram_send_file(telegram_token, chat_id, html_body, fname, caption=caption)
-    elif pending_files:
-        # Ya hay archivo(s) — manda un texto corto y deja que el archivo sea el entregable.
-        short = response.strip()
-        if short:
-            telegram_send_message(telegram_token, chat_id, short[:1500], parse_mode="Markdown")
-    else:
-        telegram_send_message(telegram_token, chat_id, response, parse_mode="Markdown")
-
-    # Manda archivos encolados (PDF, PPTX, XLSX, Dropbox, DOF, agentes).
-    for content, fname, cap in pending_files:
-        try:
-            telegram_send_document(telegram_token, chat_id, content, fname, caption=cap)
-            log.info(f"📎 archivo enviado: {fname} ({len(content)} bytes)")
-        except Exception as e:
-            log.error(f"envío de archivo {fname} falló: {e}")
-            telegram_send_message(telegram_token, chat_id, f"⚠️ No pude enviarte {fname}: {e}", parse_mode=None)
+    _finish_user_input(telegram_token, chat_id, api_key, system_prompt, user_input)
 
 
 def main():
