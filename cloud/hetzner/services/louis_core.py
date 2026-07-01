@@ -7996,13 +7996,13 @@ def _kawiil_central_asignar_tarea(tarea_id: str, persona: str) -> str:
     conn, err = _kawiil_central_pg()
     if err:
         return err
+    conn.autocommit = True
     uid = _kawiil_central_resolver_usuario(conn, persona)
     if not uid:
         conn.close()
         return f"❌ No encontré a '{persona}' en profiles. Dímelo como aparece en Kawiil Central (nombre o email)."
     ids = [t.strip() for t in re.split(r"[,\s]+", tarea_id) if t.strip()]
     try:
-        conn.autocommit = True
         cur = conn.cursor()
         cur.execute("UPDATE public.tasks SET assigned_to = %s WHERE id IN ("
                     + ",".join(["%s"] * len(ids)) + ")", [uid] + ids)
@@ -8031,6 +8031,7 @@ def _kawiil_central_crear_proyecto(name: str, client_id: str = "", area: str = "
     conn, err = _kawiil_central_pg()
     if err:
         return err
+    conn.autocommit = True
     cur = conn.cursor()
     try:
         cur.execute("SELECT id FROM public.organizations LIMIT 1")
@@ -8051,7 +8052,6 @@ def _kawiil_central_crear_proyecto(name: str, client_id: str = "", area: str = "
         cols_sql = ", ".join(data.keys())
         placeholders = ", ".join(["%s"] * len(data))
         sql = f"INSERT INTO public.projects ({cols_sql}) VALUES ({placeholders}) RETURNING id"
-        conn.autocommit = True
         cur.execute(sql, list(data.values()))
         new_id = cur.fetchone()[0]
         _kawiil_central_audit(f"crear_proyecto: {name}", sql + " :: " + json.dumps(data, default=str))
@@ -8072,6 +8072,7 @@ def _kawiil_central_actualizar_proyecto(proyecto_id: str, cambios: dict) -> str:
     conn, err = _kawiil_central_pg()
     if err:
         return err
+    conn.autocommit = True
     try:
         cur = conn.cursor()
         cur.execute("SELECT column_name FROM information_schema.columns "
@@ -8085,7 +8086,6 @@ def _kawiil_central_actualizar_proyecto(proyecto_id: str, cambios: dict) -> str:
             valid["updated_at"] = datetime.now(timezone.utc).isoformat()
         set_clause = ", ".join(f"{k} = %s" for k in valid.keys())
         sql = f"UPDATE public.projects SET {set_clause} WHERE id::text = %s RETURNING id, name"
-        conn.autocommit = True
         cur.execute(sql, list(valid.values()) + [str(proyecto_id)])
         row = cur.fetchone()
         _kawiil_central_audit(f"actualizar_proyecto {proyecto_id}",
@@ -8107,6 +8107,7 @@ def _kawiil_central_crear_tarea(titulo: str, proyecto_id: str, descripcion: str 
     conn, err = _kawiil_central_pg()
     if err:
         return err
+    conn.autocommit = True  # antes de cualquier SELECT para no abrir transacción implícita
     tabla = _kawiil_central_find_table(conn, ("tasks", "task", "tareas", "todos", "issues"))
     if not tabla:
         conn.close()
@@ -8183,7 +8184,6 @@ def _kawiil_central_crear_tarea(titulo: str, proyecto_id: str, descripcion: str 
     placeholders = ", ".join(["%s"] * len(data))
     sql = f"INSERT INTO public.{tabla} ({cols_sql}) VALUES ({placeholders}) RETURNING id"
     try:
-        conn.autocommit = True
         cur.execute(sql, list(data.values()))
         new_id = cur.fetchone()[0]
         _kawiil_central_audit(f"crear_tarea: {titulo}", sql + " :: " + json.dumps(data, default=str))
@@ -8201,6 +8201,7 @@ def _kawiil_central_actualizar_tarea(tarea_id: str, cambios: dict) -> str:
     conn, err = _kawiil_central_pg()
     if err:
         return err
+    conn.autocommit = True
     tabla = _kawiil_central_find_table(conn, ("tasks", "task", "tareas", "todos", "issues"))
     if not tabla:
         conn.close()
@@ -8218,7 +8219,6 @@ def _kawiil_central_actualizar_tarea(tarea_id: str, cambios: dict) -> str:
     set_clause = ", ".join(f"{k} = %s" for k in valid.keys())
     sql = f"UPDATE public.{tabla} SET {set_clause} WHERE id::text = %s RETURNING id"
     try:
-        conn.autocommit = True
         cur.execute(sql, list(valid.values()) + [str(tarea_id)])
         row = cur.fetchone()
         _kawiil_central_audit(f"actualizar_tarea {tarea_id}", sql + " :: " + json.dumps(valid, default=str))
