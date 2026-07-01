@@ -17,6 +17,7 @@ import sys
 import re
 import json
 import time
+import signal
 import hashlib
 import subprocess
 import tempfile
@@ -325,25 +326,46 @@ def transcribe_audio(audio_ogg: Path, duration_s: int = 0) -> str:
             log.error(f"ffmpeg falló: {r.stderr}")
             return "(error convirtiendo audio)"
 
+        def _run_whisper(cmd, tout):
+            """Ejecuta whisper en su propio process group para poder matarlo con killpg
+            incluso si está en D-state (cargando modelo de disco)."""
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True,
+                preexec_fn=os.setsid,  # nuevo process group → killpg los mata a todos
+            )
+            try:
+                stdout, stderr = proc.communicate(timeout=tout)
+                return proc.returncode, stdout, stderr
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    proc.kill()
+                try:
+                    proc.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+                raise
+
         ultimo = ""
         for nombre, modelo, tout in modelos:
             of = Path(td) / f"transcript_{nombre}"
+            cmd = [whisper_bin, "-m", str(modelo), "-f", str(wav_path),
+                   "-l", "es", "-t", threads, "-otxt", "-of", str(of)]
             try:
-                r = subprocess.run(
-                    [whisper_bin, "-m", str(modelo), "-f", str(wav_path),
-                     "-l", "es", "-t", threads, "-otxt", "-of", str(of), "--no-prints"],
-                    capture_output=True, text=True, timeout=tout,
-                )
+                rc, stdout, stderr = _run_whisper(cmd, tout)
             except subprocess.TimeoutExpired:
-                log.warning(f"whisper '{nombre}' excedió {tout}s; pruebo un modelo más ligero")
+                log.warning(f"whisper '{nombre}' excedió {tout}s (matado via killpg); pruebo modelo más ligero")
                 ultimo = f"timeout {tout}s ({nombre})"
                 continue
-            if r.returncode != 0:
-                log.error(f"whisper '{nombre}' falló: {r.stderr[:300]}")
-                ultimo = (r.stderr or "")[:200]
+            if rc != 0:
+                log.error(f"whisper '{nombre}' falló rc={rc}: {stderr[:300]}")
+                ultimo = (stderr or "")[:200]
                 continue
             txt_path = of.with_suffix(".txt")
-            texto = txt_path.read_text().strip() if txt_path.exists() else r.stdout.strip()
+            texto = txt_path.read_text().strip() if txt_path.exists() else stdout.strip()
             if texto:
                 if nombre != modelos[0][0]:
                     log.info(f"Transcrito con modelo de respaldo '{nombre}'")
@@ -791,12 +813,37 @@ def process_update(update, telegram_token, chat_id, api_key, system_prompt):
     _finish_user_input(telegram_token, chat_id, api_key, system_prompt, user_input)
 
 
+def _cleanup_stranded_audio(telegram_token, chat_id):
+    """Al arrancar: notifica audios que quedaron pendientes de sesiones anteriores."""
+    audio_dir = HOME_OC / "state" / "audio-pending"
+    if not audio_dir.exists():
+        return
+    stale = list(audio_dir.glob("*.ogg")) + list(audio_dir.glob("*.oga"))
+    if not stale:
+        return
+    for f in stale:
+        try:
+            f.unlink()
+        except Exception:
+            pass
+    n = len(stale)
+    telegram_send_message(
+        telegram_token, chat_id,
+        f"⚠️ El servicio se reinició mientras procesaba {n} audio(s) — la transcripción se interrumpió.\n"
+        f"🔁 Vuelve a mandar el/los audio(s) para procesarlos.",
+        parse_mode=None,
+    )
+    log.info(f"Limpiados {n} audio(s) pendientes de sesión anterior")
+
+
 def main():
     log.info("=== Telegram bridge v3 arrancando (louis_core + Markdown fix) ===")
     telegram_token, chat_id = load_credentials()
     api_key = core.load_anthropic_key()
     log.info(f"Ollama: {core.OLLAMA_BASE} ({core.OLLAMA_MODEL})  |  Claude: {core.CLAUDE_MODEL}")
     log.info("Credenciales cargadas. Entrando a long polling.")
+
+    _cleanup_stranded_audio(telegram_token, chat_id)
 
     offset = get_offset()
     system_prompt = core.load_system_prompt(channel="telegram")

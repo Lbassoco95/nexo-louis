@@ -877,6 +877,7 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "canales=['cumplimiento-sylon','cumplimiento'] lee esos.\n"
         "- `slack_leer(canal, limite)` — lee un canal específico por nombre o ID. Si un mensaje tiene '↳ [thread: N respuesta(s)]', el mensaje raíz puede estar cortado — usa `slack_leer_thread` para ver el thread completo.\n"
         "- `slack_leer_thread(canal, thread_ts)` — lee el thread/hilo completo de un mensaje. ÚSALA siempre que slack_leer indique que hay un thread con respuestas — ahí suelen estar los documentos y detalles que piden.\n"
+        "- `slack_buscar(query, canal?, limite?)` — BUSCA mensajes por keyword en todo Slack (o en un canal específico), sin importar cuándo se enviaron. ÚSALA cuando no encuentres algo en los mensajes recientes de slack_leer, para expedientes, clientes, o mensajes de hace semanas.\n"
         "- `slack_canales` — lista los canales donde estás invitado.\n"
         "- `slack_dm_leer(usuario)` — SOLO lee el DM entre el BOT y ese usuario (no aplica a otros).\n"
         "LÍMITE REAL DE SLACK (díselo claro, NO prometas lo imposible): un bot NO puede leer los DMs "
@@ -3974,6 +3975,19 @@ TOOLS_DEFINITION = [
         },
     },
     {
+        "name": "slack_buscar",
+        "description": "Busca mensajes en Slack por keyword, sin importar cuándo se enviaron. Usa esto cuando slack_leer no encuentra algo porque es un mensaje antiguo, o cuando necesitas buscar un expediente, cliente o tema específico. Requiere scope 'search:read' en el token; si no está disponible devuelve instrucciones alternativas.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Palabras clave a buscar (ej: 'Fernando Bonner expediente', 'Zitro apostilla')"},
+                "canal": {"type": "string", "description": "Nombre del canal donde buscar (opcional, ej: 'cumplimiento-vizum')"},
+                "limite": {"type": "integer", "default": 10, "description": "Número máximo de resultados"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "slack_dm_leer",
         "description": "Lee los mensajes directos (DMs) recientes del usuario indicado con Louis-Nexo. Usa el nombre de usuario o ID (U…). Útil cuando Polo pregunta qué le mandaron por DM.",
         "input_schema": {
@@ -5785,6 +5799,51 @@ def _slack_leer_thread(canal: str, thread_ts: str) -> str:
         return "\n".join(lines)
     except Exception as e:
         return f"ERROR leyendo thread Slack: {e}"
+
+
+def _slack_buscar(query: str, canal: str = "", limite: int = 10) -> str:
+    """Busca mensajes en Slack por keyword, sin importar cuándo se enviaron."""
+    client, err = _slack_client()
+    if err:
+        return err
+    try:
+        params = {"query": query, "count": min(limite, 20), "sort": "timestamp", "sort_dir": "desc"}
+        if canal:
+            params["query"] = f"{query} in:#{canal.lstrip('#')}"
+        result = client.search_messages(**params)
+        matches = result.get("messages", {}).get("matches", [])
+        if not matches:
+            return f"No encontré mensajes con '{query}'" + (f" en #{canal}" if canal else "") + "."
+        users: dict = {}
+        def _uname(uid: str) -> str:
+            if uid not in users:
+                try:
+                    r = client.users_info(user=uid)
+                    users[uid] = r["user"].get("real_name") or r["user"].get("name") or uid
+                except Exception:
+                    users[uid] = uid
+            return users[uid]
+        import datetime as _dt
+        lines = [f"Resultados para '{query}'" + (f" en #{canal}" if canal else "") + f" ({len(matches)}):"]
+        for m in matches:
+            ts = float(m.get("ts", 0))
+            dt = _dt.datetime.fromtimestamp(ts).strftime("%d/%m/%Y %H:%M")
+            user = _uname(m.get("user", "?"))
+            ch_name = m.get("channel", {}).get("name", "?")
+            text = m.get("text", "(sin texto)")[:1000]
+            thread_ts = m.get("thread_ts")
+            line = f"[{dt}] #{ch_name} — {user}: {text}"
+            if thread_ts and thread_ts != m.get("ts"):
+                line += f"\n  ↳ [en thread — usa slack_leer_thread('{ch_name}', '{thread_ts}') para ver hilo completo]"
+            lines.append(line)
+        return "\n\n".join(lines)
+    except Exception as e:
+        # search:read scope puede no estar disponible en todos los tokens de bot
+        if "missing_scope" in str(e) or "not_allowed_token_type" in str(e):
+            return (f"⚠️ Búsqueda Slack no disponible (el bot necesita scope 'search:read'). "
+                    f"Alternativa: usa slack_leer con limite=100 en el canal específico, "
+                    f"o pide a Polo que te mande una captura del hilo.")
+        return f"ERROR buscando en Slack: {e}"
 
 
 def _slack_dm_leer(usuario: str, limite: int = 20) -> str:
@@ -9485,6 +9544,8 @@ def execute_tool(name: str, args: dict) -> str:
             return _slack_leer(args["canal"], args.get("limite", 20))
         elif name == "slack_leer_thread":
             return _slack_leer_thread(args["canal"], args["thread_ts"])
+        elif name == "slack_buscar":
+            return _slack_buscar(args["query"], args.get("canal", ""), args.get("limite", 10))
         elif name == "slack_dm_leer":
             return _slack_dm_leer(args["usuario"], args.get("limite", 20))
         elif name == "dropbox_buscar":
