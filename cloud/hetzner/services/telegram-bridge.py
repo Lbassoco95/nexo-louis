@@ -297,20 +297,19 @@ def transcribe_audio(audio_ogg: Path, duration_s: int = 0) -> str:
     if not WHISPER_MODEL.exists():
         return f"(error: modelo whisper no encontrado en {WHISPER_MODEL})"
 
-    # Timeout por modelo: escala con la duración real del audio para que los audios
-    # largos ya NO se rindan por un límite fijo. En CPU multinúcleo whisper.cpp corre
-    # ~1-2x realtime; damos holgura (≈2.5x + 60s) con una cota superior de 15 min para
-    # no bloquear el bridge indefinidamente.
-    def _scaled(base: int) -> int:
-        if duration_s <= 0:
-            return base
-        return min(900, max(base, int(duration_s * 2.5) + 60))
+    # Timeout por modelo: cada modelo de fallback tiene su propio multiplicador
+    # decreciente. medium = 1.5x+30 (max 6min), small = 1.2x+30 (max 4min),
+    # base = 0.8x+30 (max 3min). Total máx para 4-min audio ≈ 13min vs los 33min anteriores.
+    def _scaled(dur: int, multiplier: float, cap: int) -> int:
+        if dur <= 0:
+            return cap // 2
+        return min(cap, max(cap // 3, int(dur * multiplier) + 30))
 
     # Modelos por orden de preferencia: medium (mejor precisión) → small → base
     # (más rápidos). Si medium se tarda demasiado en CPU, degradamos en vez de fallar.
     whisper_dir = WHISPER_MODEL.parent
-    modelos = [(n, whisper_dir / f"ggml-{n}.bin", _scaled(tout))
-               for n, tout in (("medium", 300), ("small", 200), ("base", 120))
+    modelos = [(n, whisper_dir / f"ggml-{n}.bin", _scaled(duration_s, mult, cap))
+               for n, mult, cap in (("medium", 1.5, 360), ("small", 1.2, 240), ("base", 0.8, 180))
                if (whisper_dir / f"ggml-{n}.bin").exists()]
     if not modelos:
         return f"(error: no encontré ningún modelo whisper en {whisper_dir})"
@@ -617,8 +616,22 @@ def _audio_bg_worker(telegram_token, chat_id, file_id, dur, api_key, system_prom
         telegram_download_file(telegram_token, file_path, saved_path)
         log.info(f"Audio guardado en {saved_path} ({dur}s)")
 
-        # 2. Transcribir
-        transcript = transcribe_audio(saved_path, duration_s=dur)
+        # 2. Transcribir — lanzar timer de progreso cada 5 min mientras corre
+        _stop_progress = threading.Event()
+        def _progress_ping():
+            for i in range(1, 6):  # máx 5 pings = 25 min antes de desistir
+                if _stop_progress.wait(timeout=300):
+                    return
+                elapsed = i * 5
+                telegram_send_message(telegram_token, chat_id,
+                    f"⏳ Aún transcribiendo el audio ({elapsed} min transcurridos)...",
+                    parse_mode=None)
+        _progress_thread = threading.Thread(target=_progress_ping, daemon=True)
+        _progress_thread.start()
+        try:
+            transcript = transcribe_audio(saved_path, duration_s=dur)
+        finally:
+            _stop_progress.set()
         log.info(f"Transcripción (bg): {transcript[:200]}")
 
         # 3. Detectar fallo de Whisper — NO pasar un mensaje de error al LLM
@@ -642,25 +655,23 @@ def _audio_bg_worker(telegram_token, chat_id, file_id, dur, api_key, system_prom
             parse_mode=None,
         )
 
-        # 5. Para grabaciones largas (≥2 min): extracción estructurada de tareas
+        # 5. Para grabaciones largas (≥2 min): extracción estructurada — CONFIRMAR antes de crear
         es_grabacion = dur >= 120
         if es_grabacion:
             min_s = f"{dur // 60} min {dur % 60}s"
             user_input = (
                 f"[GRABACIÓN DE REUNIÓN/CONVERSACIÓN — {min_s}]\n\n"
                 f"TRANSCRIPCIÓN COMPLETA:\n{transcript}\n\n"
-                f"INSTRUCCIÓN (ejecutar TODO en este orden):\n"
+                f"INSTRUCCIÓN (en este orden ESTRICTO):\n"
                 f"1. Resume en 3-5 bullets: qué se trató, quiénes participaron "
                 f"(si se mencionan), decisiones tomadas.\n"
-                f"2. Lista TODAS las tareas, compromisos y pendientes que se "
-                f"mencionaron. Para cada uno: qué, quién es responsable (si no se "
-                f"menciona asumir Polo), para cuándo (si no se menciona dejar sin "
-                f"fecha), y para qué empresa/proyecto (Kawiil, Yoltik, cliente).\n"
-                f"3. Para CADA tarea identificada usa kawiil_central_crear_tarea "
-                f"(busca el proyecto correcto con kawiil_central_listar_proyectos "
-                f"si no lo tienes en contexto).\n"
-                f"4. Termina con un mensaje tipo: '✅ Acta guardada — N tareas creadas "
-                f"en Kawiil Central.' con la lista de las tareas creadas."
+                f"2. Lista las tareas/compromisos identificados con: qué, responsable "
+                f"(si no se menciona asumir Polo), deadline (si no hay, sin fecha), "
+                f"proyecto/empresa.\n"
+                f"3. IMPORTANTE: NO crees las tareas todavía. Termina con: "
+                f"'¿Creo estas N tareas en Kawiil Central? Responde *sí* para confirmar "
+                f"o dime qué cambiar.' — y espera confirmación explícita de Polo "
+                f"ANTES de llamar kawiil_central_crear_tarea."
             )
         else:
             user_input = transcript
