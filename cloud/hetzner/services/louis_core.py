@@ -3706,18 +3706,28 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "kawiil_central_crear_tarea",
-        "description": "Crea una tarea en kawiil-central. Lee primero el schema con kawiil_central_describir('tasks') o equivalente. Devuelve el id de la tarea creada. SIEMPRE confirma con Polo el contenido antes de crear.",
+        "description": (
+            "Crea una tarea en kawiil-central. REGLAS DE ASIGNACIÓN Y ESTADO:\n"
+            "• `asignado_a` = el RESPONSABLE PRINCIPAL (quien entrega el resultado). Si Polo dice "
+            "'yo soy responsable y X es colaborador', pon asignado_a='Polo' y menciona al colaborador "
+            "en la descripción. NUNCA pongas al colaborador como responsable.\n"
+            "• `status` = 'completed' cuando el usuario diga 'ya lo hice', 'ya quedó', 'marcala como "
+            "completada', 'ya la resolví', o similar. NO la crees como 'pending' si ya está hecha.\n"
+            "• Valores de status válidos: 'pending' (default), 'in_progress', 'completed'.\n"
+            "• Confirma con Polo el contenido antes de crear."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "titulo": {"type": "string"},
                 "proyecto_id": {"type": "string", "description": "id del proyecto al que pertenece"},
-                "descripcion": {"type": "string"},
-                "asignado_a": {"type": "string", "description": "id o email del responsable"},
+                "descripcion": {"type": "string", "description": "Detalle, contexto, colaboradores y cualquier info extra"},
+                "asignado_a": {"type": "string", "description": "Nombre del RESPONSABLE PRINCIPAL (quien entrega). Si Polo es responsable pon 'Polo' o 'Leopoldo'."},
+                "status": {"type": "string", "enum": ["pending", "in_progress", "completed"], "description": "Estado inicial. Usa 'completed' si la tarea ya está hecha."},
                 "prioridad": {"type": "string", "enum": ["baja", "media", "alta", "urgente"]},
                 "deadline": {"type": "string", "description": "ISO 8601 date o datetime"},
-                "parent_task_id": {"type": "string", "description": "Si es SUB-TAREA, el id de la tarea padre. Se marca is_subtask=true automáticamente (así guarda las sub-tareas Kawiil Central). NO uses checklist para sub-tareas."},
-                "campos_extra": {"type": "object", "description": "Otros campos del schema que kawiil-central use (status default, labels, etc)"},
+                "parent_task_id": {"type": "string", "description": "Si es SUB-TAREA, el id de la tarea padre. Se marca is_subtask=true automáticamente."},
+                "campos_extra": {"type": "object", "description": "Otros campos del schema que kawiil-central use (labels, etc)"},
             },
             "required": ["titulo", "proyecto_id"],
         },
@@ -8115,7 +8125,7 @@ def _kawiil_central_actualizar_proyecto(proyecto_id: str, cambios: dict) -> str:
 def _kawiil_central_crear_tarea(titulo: str, proyecto_id: str, descripcion: str = "",
                                  asignado_a: str = "", prioridad: str = "",
                                  deadline: str = "", campos_extra: dict = None,
-                                 parent_task_id: str = "") -> str:
+                                 parent_task_id: str = "", status: str = "") -> str:
     conn, err = _kawiil_central_pg()
     if err:
         return err
@@ -8155,9 +8165,10 @@ def _kawiil_central_crear_tarea(titulo: str, proyecto_id: str, descripcion: str 
         if polo_uid:
             data["created_by"] = polo_uid
 
-    # Status por defecto si la tabla lo requiere
+    # Status: usa el valor explícito si se pasó, si no default "pending"
     if "status" in cols:
-        data["status"] = "pending"
+        _valid_statuses = {"pending", "in_progress", "completed", "done", "hecho", "cancelled"}
+        data["status"] = status if status and status in _valid_statuses else "pending"
 
     if descripcion:
         for c in ("description", "descripcion", "body", "details"):
@@ -9432,7 +9443,8 @@ def execute_tool(name: str, args: dict) -> str:
             return _kawiil_central_crear_tarea(args["titulo"], args["proyecto_id"],
                                                 args.get("descripcion", ""), args.get("asignado_a", ""),
                                                 args.get("prioridad", ""), args.get("deadline", ""),
-                                                args.get("campos_extra"), args.get("parent_task_id", ""))
+                                                args.get("campos_extra"), args.get("parent_task_id", ""),
+                                                args.get("status", ""))
         elif name == "kawiil_central_crear_proyecto":
             return _kawiil_central_crear_proyecto(args["name"], args.get("client_id", ""),
                                                   args.get("area", ""), args.get("descripcion", ""),
