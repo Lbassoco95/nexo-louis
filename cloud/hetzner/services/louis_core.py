@@ -1049,6 +1049,9 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "SIEMPRE llama `slack_leer_thread` en ese mensaje antes de concluir que es 'un cliente nuevo' — "
         "casi siempre el cliente ya aparece en el thread o en el contexto del canal. NUNCA asumas "
         "que es un cliente diferente al del canal donde está el mensaje sin haber leído el thread completo.\n"
+        "• STATUS EN KAWIIL CENTRAL (la BD usa ESPAÑOL): 'pendiente', 'en_progreso', 'completado', 'cancelado'. "
+        "Nunca uses 'pending', 'in_progress', 'completed' — el código los mapea automáticamente, pero para evitar "
+        "errores pasa SIEMPRE el valor en español.\n"
         "• NUNCA inventes que kawiil-central está 'bloqueado', 'en mantenimiento' o que 'falló la sesión' "
         "si NO llamaste la tool y viste el error real. Cuando Polo te reporte avances/cambios ('ya hice X', "
         "'reagenda Y'), ACTUALIZA las tareas con las tools (`kawiil_central_actualizar_tarea`/"
@@ -3724,7 +3727,7 @@ TOOLS_DEFINITION = [
                 "proyecto_id": {"type": "string", "description": "id del proyecto al que pertenece"},
                 "descripcion": {"type": "string", "description": "Detalle, contexto, colaboradores y cualquier info extra"},
                 "asignado_a": {"type": "string", "description": "Nombre del RESPONSABLE PRINCIPAL (quien entrega). Si Polo es responsable pon 'Polo' o 'Leopoldo'."},
-                "status": {"type": "string", "enum": ["pending", "in_progress", "completed"], "description": "Estado inicial. Usa 'completed' si la tarea ya está hecha."},
+                "status": {"type": "string", "enum": ["pendiente", "en_progreso", "completado", "cancelado"], "description": "Estado inicial. Usa 'completado' si la tarea ya está hecha, 'en_progreso' si está en curso."},
                 "prioridad": {"type": "string", "enum": ["baja", "media", "alta", "urgente"]},
                 "deadline": {"type": "string", "description": "ISO 8601 date o datetime"},
                 "parent_task_id": {"type": "string", "description": "Si es SUB-TAREA, el id de la tarea padre. Se marca is_subtask=true automáticamente."},
@@ -3779,7 +3782,7 @@ TOOLS_DEFINITION = [
             "type": "object",
             "properties": {
                 "tarea_id": {"type": "string"},
-                "cambios": {"type": "object", "description": "Diccionario campo→valor (ej: {'status': 'hecho', 'completed_at': '2026-05-26'})"},
+                "cambios": {"type": "object", "description": "Diccionario campo→valor. Para status usa valores en español: 'pendiente', 'en_progreso', 'completado', 'cancelado' (ej: {'status': 'completado', 'completed_at': '2026-05-26'})"},
             },
             "required": ["tarea_id", "cambios"],
         },
@@ -8224,10 +8227,15 @@ def _kawiil_central_crear_tarea(titulo: str, proyecto_id: str, descripcion: str 
         if polo_uid:
             data["created_by"] = polo_uid
 
-    # Status: usa el valor explícito si se pasó, si no default "pending"
+    # Status: mapea English → Spanish (DB usa enums en español)
     if "status" in cols:
-        _valid_statuses = {"pending", "in_progress", "completed", "done", "hecho", "cancelled"}
-        data["status"] = status if status and status in _valid_statuses else "pending"
+        _STATUS_MAP = {
+            "pending": "pendiente", "pendiente": "pendiente",
+            "in_progress": "en_progreso", "en_progreso": "en_progreso", "en progreso": "en_progreso",
+            "completed": "completado", "completado": "completado", "done": "completado",
+            "hecho": "completado", "cancelled": "cancelado", "cancelado": "cancelado",
+        }
+        data["status"] = _STATUS_MAP.get((status or "").lower().strip(), "pendiente")
 
     if descripcion:
         for c in ("description", "descripcion", "body", "details"):
@@ -8291,6 +8299,14 @@ def _kawiil_central_actualizar_tarea(tarea_id: str, cambios: dict) -> str:
     cur = conn.cursor()
     cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=%s", (tabla,))
     cols = {r[0] for r in cur.fetchall()}
+    # Normaliza status English→Spanish antes de filtrar
+    _STATUS_MAP = {
+        "pending": "pendiente", "in_progress": "en_progreso",
+        "completed": "completado", "done": "completado",
+        "hecho": "completado", "cancelled": "cancelado",
+    }
+    if "status" in cambios:
+        cambios["status"] = _STATUS_MAP.get(str(cambios["status"]).lower().strip(), cambios["status"])
     # Filtra cambios al subset que existe
     valid = {k: v for k, v in cambios.items() if k in cols}
     if not valid:

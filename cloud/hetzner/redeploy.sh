@@ -41,7 +41,29 @@ for svc in "${SERVICES[@]}"; do
 done
 [[ -f "$SRC/m365.py" ]] && install -m 0755 -o "$USER_OWN" -g "$USER_OWN" "$SRC/m365.py" "$DST/m365/m365.py"
 
-# 3) Reiniciar servicios (solo los que existen/están activos)
+# 3) Actualizar archivos .service si cambiaron y recargar systemd
+log "Verificando archivos .service"
+_SERVICE_RELOAD=0
+for svc_tmpl in "$SRC"/*.service; do
+  unit_name="$(basename "$svc_tmpl")"
+  dest="/etc/systemd/system/$unit_name"
+  if [[ -f "$dest" ]]; then
+    # Solo parchear si ya existe el unit — no instalamos units nuevos aquí
+    # Actualizar MemoryMax si el template tiene un valor diferente
+    tmpl_mm=$(grep -oP 'MemoryMax=\K\S+' "$svc_tmpl" 2>/dev/null || true)
+    live_mm=$(grep -oP 'MemoryMax=\K\S+' "$dest" 2>/dev/null || true)
+    if [[ -n "$tmpl_mm" && "$tmpl_mm" != "$live_mm" ]]; then
+      sed -i "s/MemoryMax=${live_mm}/MemoryMax=${tmpl_mm}/" "$dest"
+      ok "$unit_name: MemoryMax actualizado ($live_mm → $tmpl_mm)"
+      _SERVICE_RELOAD=1
+    fi
+  fi
+done
+if [[ $_SERVICE_RELOAD -eq 1 ]]; then
+  systemctl daemon-reload && ok "systemd daemon-reload"
+fi
+
+# 4) Reiniciar servicios (solo los que existen/están activos)
 log "Reiniciando servicios"
 for unit in telegram-bridge slack-bridge scheduler openclaw-gateway cerebro-kawiil; do
   if systemctl list-unit-files "${unit}.service" >/dev/null 2>&1 && \
