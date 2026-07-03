@@ -774,10 +774,19 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "SIEMPRE invoca primero la tool `verificar_conexiones`. Esto te da datos EN VIVO "
         "(hostname, IP, servicios systemd activos, modelos Ollama, M365 Kawiil/Yoltik con prueba real). "
         "NO contestes solo desde memoria — esta puede estar desactualizada. Reporta lo que la tool devuelve."
-        "\n\n# CONTROL DE CORREOS\n"
+        "\n\n# CONTROL DE CORREOS Y CALENDARIO (M365)\n"
         "Tienes control total de M365 Kawiil y Yoltik vía las tools m365_*. Cuando Polo pida operaciones "
         "(leer, marcar leído, archivar, borrar, responder, mandar, calendario), úsalas. Para BORRAR siempre "
-        "confirma primero. Para MANDAR correo nuevo o crear evento: muestra borrador y espera 'confirmo'."
+        "confirma primero. Para MANDAR correo nuevo o crear evento: muestra borrador y espera 'confirmo'.\n"
+        "REGLAS CRÍTICAS DE CALENDARIO:\n"
+        "• Cuando Polo mencione el nombre o la hora de un evento, BUSCA EL EVENTO EN EL CALENDARIO "
+        "antes de preguntar. Usa `m365_calendario(tenant='todos', rango='semana')` — con 'todos' buscas "
+        "en kawiil y yoltik simultáneamente. NUNCA pidas el nombre de un evento que puedes buscar tú mismo.\n"
+        "• Si ya te dieron la info de un evento (nombre, hora, día) en esta misma conversación, NO la "
+        "vuelvas a pedir. Úsala directamente.\n"
+        "• Si no encuentras el evento esta semana, prueba `rango='mes'` antes de decirle a Polo que no lo ves.\n"
+        "• Polo tiene dos tenants — Kawiil (lbassoco@kawiil.mx) y Yoltik (lbassoco@yoltik.mx). "
+        "Los eventos pueden estar en cualquiera; 'todos' los busca en ambos de una sola llamada."
         "\n\n# BIBLIOTECA LEGAL (SJF + DOF) — CONSULTA, NO DESCARGA\n"
         "Tienes acceso de lectura a dos bases de datos SQLite que se sincronizan desde la "
         "Mac de Polo cada 15 min: SJF (tesis y jurisprudencias del Semanario Judicial Federación) "
@@ -4265,11 +4274,12 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "m365_calendario",
-        "description": "Lista eventos del calendario (hoy/manana/semana/mes).",
+        "description": "Lista eventos del calendario Outlook. USA 'todos' como tenant cuando no sabes en cuál tenant está el evento — consulta kawiil y yoltik simultáneamente. Para buscar un evento específico usa rango='semana' con tenant='todos'.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "tenant": {"type": "string", "enum": TENANT_ENUM},
+                "tenant": {"type": "string", "enum": ["kawiil", "yoltik", "todos"],
+                           "description": "Tenant a consultar. Usa 'todos' para buscar en kawiil y yoltik al mismo tiempo."},
                 "rango": {"type": "string", "enum": ["hoy", "manana", "semana", "mes"], "default": "hoy"},
             },
             "required": ["tenant"],
@@ -4595,6 +4605,26 @@ def _run_m365_tool(name: str, args: dict) -> str:
     elif name == "m365_listar_folders":
         cmd = ["listar-folders", tenant]
     elif name == "m365_calendario":
+        if tenant == "todos":
+            # Busca en ambos tenants y combina resultados
+            parts = []
+            rango = args.get("rango", "hoy")
+            for t in ["kawiil", "yoltik"]:
+                try:
+                    r = subprocess.run(
+                        ["python3", str(M365_SCRIPT), "calendario", t, rango],
+                        capture_output=True, text=True, timeout=60,
+                    )
+                    out = (r.stdout or "").strip()
+                    if r.returncode != 0:
+                        out = f"ERROR: {((r.stderr or r.stdout or '').strip())[:300]}"
+                    parts.append(f"[tenant:{t}]\n{out or '(sin eventos)'}")
+                except subprocess.TimeoutExpired:
+                    parts.append(f"[tenant:{t}] ERROR: timeout")
+                except Exception as e:
+                    parts.append(f"[tenant:{t}] ERROR: {e}")
+            result = "\n\n".join(parts)
+            return result[:4000] + "\n…(truncado)" if len(result) > 4000 else result
         cmd = ["calendario", tenant, args.get("rango", "hoy")]
     elif name == "m365_crear_evento":
         cmd = ["crear-evento", tenant, args["subject"], args["inicio"], args["fin"],
