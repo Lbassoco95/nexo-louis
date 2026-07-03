@@ -43,13 +43,13 @@ done
 
 # 3) Actualizar archivos .service si cambiaron y recargar systemd
 log "Verificando archivos .service"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _SERVICE_RELOAD=0
 for svc_tmpl in "$SRC"/*.service; do
   unit_name="$(basename "$svc_tmpl")"
   dest="/etc/systemd/system/$unit_name"
   if [[ -f "$dest" ]]; then
-    # Solo parchear si ya existe el unit — no instalamos units nuevos aquí
-    # Actualizar MemoryMax si el template tiene un valor diferente
+    # Parchear MemoryMax si el template tiene un valor diferente
     tmpl_mm=$(grep -oP 'MemoryMax=\K\S+' "$svc_tmpl" 2>/dev/null || true)
     live_mm=$(grep -oP 'MemoryMax=\K\S+' "$dest" 2>/dev/null || true)
     if [[ -n "$tmpl_mm" && "$tmpl_mm" != "$live_mm" ]]; then
@@ -57,10 +57,39 @@ for svc_tmpl in "$SRC"/*.service; do
       ok "$unit_name: MemoryMax actualizado ($live_mm → $tmpl_mm)"
       _SERVICE_RELOAD=1
     fi
+    # Parchear variables Environment= si cambiaron (ej. SJF_BACKFILL_FLOOR)
+    while IFS= read -r env_line; do
+      env_key="${env_line%%=*}"
+      env_key="${env_key#Environment=}"
+      tmpl_val="${env_line#*=}"
+      live_val=$(grep -oP "Environment=${env_key}=\K\S+" "$dest" 2>/dev/null || true)
+      if [[ -n "$live_val" && "$live_val" != "$tmpl_val" ]]; then
+        sed -i "s|Environment=${env_key}=${live_val}|Environment=${env_key}=${tmpl_val}|" "$dest"
+        ok "$unit_name: ${env_key} actualizado ($live_val → $tmpl_val)"
+        _SERVICE_RELOAD=1
+      fi
+    done < <(grep '^Environment=' "$svc_tmpl" 2>/dev/null || true)
   fi
 done
 if [[ $_SERVICE_RELOAD -eq 1 ]]; then
   systemctl daemon-reload && ok "systemd daemon-reload"
+fi
+
+# 3b) Actualizar scrapers legales si existen en el repo
+SCRAPERS_SRC="$REPO_ROOT/legal-scrapers"
+DOF_DST=/opt/openclaw/legal/dof
+SJF_DST=/opt/openclaw/legal/sjf
+if [[ -d "$SCRAPERS_SRC" ]]; then
+  log "Actualizando scrapers legales"
+  for f in "$SCRAPERS_SRC"/*.py; do
+    fname="$(basename "$f")"
+    python3 -m py_compile "$f" 2>/dev/null || { warn "$fname no compila — omito"; continue; }
+    if [[ "$fname" == dof_* ]]; then
+      [[ -d "$DOF_DST" ]] && install -m 0755 -o "$USER_OWN" -g "$USER_OWN" "$f" "$DOF_DST/$fname" && ok "dof/$fname"
+    elif [[ "$fname" == sjf_* ]]; then
+      [[ -d "$SJF_DST" ]] && install -m 0755 -o "$USER_OWN" -g "$USER_OWN" "$f" "$SJF_DST/$fname" && ok "sjf/$fname"
+    fi
+  done
 fi
 
 # 4) Reiniciar servicios (solo los que existen/están activos)

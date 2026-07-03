@@ -13,7 +13,7 @@ Environment=SJF_DB_PATH=@@OPENCLAW_HOME@@/legal/sjf/biblioteca.db
 Environment=SJF_HARVEST=@@OPENCLAW_HOME@@/legal/sjf/sjf_harvest.py
 Environment=SJF_SCRAPER=@@OPENCLAW_HOME@@/legal/sjf/sjf_biblioteca.py
 Environment=BACKFILL_BATCH=800
-Environment=SJF_BACKFILL_FLOOR=1990000
+Environment=SJF_BACKFILL_FLOOR=0
 ExecStart=/usr/bin/python3 @@OPENCLAW_HOME@@/legal/sjf/sjf_backfill.py
 StandardOutput=append:@@OPENCLAW_HOME@@/logs/sjf-backfill.log
 StandardError=append:@@OPENCLAW_HOME@@/logs/sjf-backfill.log
