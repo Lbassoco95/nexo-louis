@@ -59,9 +59,9 @@ for svc_tmpl in "$SRC"/*.service; do
     fi
     # Parchear variables Environment= si cambiaron (ej. SJF_BACKFILL_FLOOR)
     while IFS= read -r env_line; do
-      env_key="${env_line%%=*}"
-      env_key="${env_key#Environment=}"
-      tmpl_val="${env_line#*=}"
+      kv="${env_line#Environment=}"
+      env_key="${kv%%=*}"
+      tmpl_val="${kv#*=}"
       live_val=$(grep -oP "Environment=${env_key}=\K\S+" "$dest" 2>/dev/null || true)
       if [[ -n "$live_val" && "$live_val" != "$tmpl_val" ]]; then
         sed -i "s|Environment=${env_key}=${live_val}|Environment=${env_key}=${tmpl_val}|" "$dest"
@@ -81,6 +81,26 @@ for t_tmpl in "$SRC"/*.timer; do
       ok "$t_name: timer actualizado"
       _SERVICE_RELOAD=1
     fi
+  fi
+done
+# Instalar units que están en el repo pero no en el servidor (con sustitución de placeholders)
+OPENCLAW_HOME="$(dirname "$DST")"
+for t_tmpl in "$SRC"/*.timer; do
+  t_name="$(basename "$t_tmpl")"
+  t_dest="/etc/systemd/system/$t_name"
+  if [[ ! -f "$t_dest" ]]; then
+    svc_name="${t_name%.timer}.service"
+    svc_src="$SRC/$svc_name"
+    svc_dest="/etc/systemd/system/$svc_name"
+    if [[ -f "$svc_src" && ! -f "$svc_dest" ]]; then
+      sed "s|@@SYSTEM_USER@@|${USER_OWN}|g; s|@@OPENCLAW_HOME@@|${OPENCLAW_HOME}|g" \
+        "$svc_src" > "$svc_dest"
+      chmod 0644 "$svc_dest"
+      ok "$svc_name: instalado (nuevo)"
+    fi
+    install -m 0644 "$t_tmpl" "$t_dest"
+    systemctl enable --now "$t_name" && ok "$t_name: instalado y activado"
+    _SERVICE_RELOAD=1
   fi
 done
 if [[ $_SERVICE_RELOAD -eq 1 ]]; then
