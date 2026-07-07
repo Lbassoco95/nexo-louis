@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
-"""estado_legal.py — reporte SEMANAL del estado de las descargas legales (SJF + DOF).
+"""estado_legal.py — reporte ADAPTATIVO del estado de las descargas legales (SJF + DOF).
 
 Dice, con dato duro de las BDs: si vamos al dia, cuanto bajamos esta semana, y
 como avanza el backfill historico. Se manda a Telegram como mensaje conciso.
+
+Schedule adaptativo (se autogestiona):
+  - Semanas 1-2:   diario (cada 24h)
+  - Días 15-35:    cada 3 días
+  - Día 36+:       semanal
+El timer corre cada 4h pero el script decide si es hora de enviar.
 """
 import datetime as dt, json, os, sqlite3, sys, urllib.request
 from pathlib import Path
@@ -10,7 +16,51 @@ from pathlib import Path
 SJF_DB = os.environ.get("SJF_DB_PATH", "/opt/openclaw/legal/sjf/biblioteca.db")
 DOF_DB = os.environ.get("DOF_DB_PATH", "/opt/openclaw/legal/dof/biblioteca_dof.db")
 CREDS = os.environ.get("TELEGRAM_CREDS", "/opt/openclaw/credentials/telegram.env")
+SCHEDULE_STATE = Path(os.environ.get("LEGAL_ESTADO_STATE",
+                                     "/opt/openclaw/state/legal_estado_schedule.json"))
 SJF_UNIVERSO = 0  # fallback obsoleto; se calcula dinámicamente desde la BD
+
+# ── Schedule adaptativo ───────────────────────────────────────────────────────
+_PHASES = [
+    (14,  24, "diario"),          # días 0-13: cada 24h
+    (35,  72, "cada 3 días"),     # días 14-34: cada 72h
+    (None, 168, "semanal"),       # día 35+: cada 168h (semanal)
+]
+
+def _phase_info(days_running: int):
+    for max_d, hours, label in _PHASES:
+        if max_d is None or days_running < max_d:
+            return hours, label
+    return 168, "semanal"
+
+def _should_send():
+    """Devuelve (bool, estado) según el schedule adaptativo."""
+    now = dt.datetime.now()
+    state = {}
+    if SCHEDULE_STATE.exists():
+        try:
+            state = json.loads(SCHEDULE_STATE.read_text())
+        except Exception:
+            pass
+
+    first_run = state.get("first_run")
+    last_sent = state.get("last_sent")
+
+    if not first_run:
+        return True, state  # primera vez
+
+    days_running = (now - dt.datetime.fromisoformat(first_run)).days
+    interval_h, _ = _phase_info(days_running)
+
+    if not last_sent:
+        return True, state
+
+    hours_since = (now - dt.datetime.fromisoformat(last_sent)).total_seconds() / 3600
+    return hours_since >= interval_h, state
+
+def _save_state(state: dict):
+    SCHEDULE_STATE.parent.mkdir(parents=True, exist_ok=True)
+    SCHEDULE_STATE.write_text(json.dumps(state, ensure_ascii=False, indent=2))
 
 
 def creds():
@@ -69,10 +119,25 @@ def _pct(n, d):
 
 
 def main():
-    cutoff = (dt.datetime.now() - dt.timedelta(days=7)).isoformat()
+    # Verificar si es hora de enviar según schedule adaptativo
+    send, state = _should_send()
+    if not send:
+        now = dt.datetime.now()
+        first_run = state.get("first_run", now.isoformat())
+        days_running = (now - dt.datetime.fromisoformat(first_run)).days
+        _, phase_label = _phase_info(days_running)
+        print(f"[schedule] No es hora ({phase_label}) — omitiendo")
+        return 0
+
+    now = dt.datetime.now()
+    first_run = state.get("first_run") or now.isoformat()
+    days_running = (now - dt.datetime.fromisoformat(first_run)).days
+    _, phase_label = _phase_info(days_running)
+
+    cutoff = (now - dt.timedelta(days=7)).isoformat()
     semana_ini = (dt.date.today() - dt.timedelta(days=7)).isoformat()
     hoy = dt.date.today().strftime("%d/%m/%Y")
-    L = [f"📊 <b>Estado de descargas legales</b> — semana al {hoy}\n"]
+    L = [f"📊 <b>Estado de descargas legales</b> — {hoy} <i>({phase_label})</i>\n"]
     sjf_txt = dof_txt = 0.0  # para el bloque de deep learning
 
     # ── SJF ──────────────────────────────────────────────────────────
@@ -133,9 +198,20 @@ def main():
     L.append("🧠 <b>Indexación / análisis (rumbo a deep learning)</b>")
     L.append(f"• SJF: {'✅ texto e índices casi completos' if sjf_txt >= 90 else f'⚠️ {sjf_txt:.0f}% con texto'}")
     L.append(f"• DOF: {'✅ listo' if dof_txt >= 90 else f'⚠️ solo {dof_txt:.0f}% con texto — falta extraer el histórico'}")
-    L.append("\n<i>Al día con lo nuevo; sigo bajando y almacenando el histórico en automático.</i>")
+
+    # Siguiente reporte
+    next_interval_h, _ = _phase_info(days_running)
+    next_dt = (now + dt.timedelta(hours=next_interval_h)).strftime("%d/%m %H:%M")
+    L.append(f"\n<i>Próximo informe: {next_dt} ({phase_label}). Al día con lo nuevo; histórico en automático.</i>")
+
     ok = send_msg("\n".join(L))
     print("Enviado" if ok else "Falló el envío")
+    if ok:
+        _save_state({
+            "first_run": first_run,
+            "last_sent": now.isoformat(),
+            "phase": phase_label,
+        })
     return 0 if ok else 1
 
 

@@ -71,6 +71,18 @@ for svc_tmpl in "$SRC"/*.service; do
     done < <(grep '^Environment=' "$svc_tmpl" 2>/dev/null || true)
   fi
 done
+# Parchear .timer si cambiaron (no tienen placeholders — copia directa)
+for t_tmpl in "$SRC"/*.timer; do
+  t_name="$(basename "$t_tmpl")"
+  t_dest="/etc/systemd/system/$t_name"
+  if [[ -f "$t_dest" ]]; then
+    if ! diff -q "$t_tmpl" "$t_dest" >/dev/null 2>&1; then
+      install -m 0644 "$t_tmpl" "$t_dest"
+      ok "$t_name: timer actualizado"
+      _SERVICE_RELOAD=1
+    fi
+  fi
+done
 if [[ $_SERVICE_RELOAD -eq 1 ]]; then
   systemctl daemon-reload && ok "systemd daemon-reload"
 fi

@@ -178,11 +178,14 @@ CEREBRO_DIGEST_STATE = HOME_OC / "state" / "cerebro_digest_sent.json"
 # Review semanal coach (Fase 4): lunes 08:00 CDMX, una vez por semana ISO.
 WEEKLY_REVIEW_STATE = HOME_OC / "state" / "weekly_review_sent.json"
 
-# Alerta Mac offline (Fase 6): si la Mac lleva >15 min sin heartbeat, avisa a Polo
-# UNA vez; cooldown de 2h entre repeticiones. Cuando vuelve, notifica de vuelta.
+# Alerta Mac offline (Fase 6): solo alerta cuando hay algo realmente malo —
+# batería crítica (≤15% sin AC) o ausencia muy larga (>4h).
+# Ruido normal (Mac durmiendo 15-240 min) = silencio total.
 MAC_OFFLINE_STATE = HOME_OC / "state" / "mac_offline_alerted.json"
-MAC_OFFLINE_THRESHOLD_S = 15 * 60   # 15 min sin heartbeat = alerta
-MAC_OFFLINE_COOLDOWN_S  = 2 * 3600  # mínimo 2h entre alertas repetidas
+MAC_OFFLINE_THRESHOLD_S = 15 * 60        # empieza a rastrear después de 15 min
+MAC_ALERT_BATT_PCT      = 15             # % de batería para alerta inmediata
+MAC_ALERT_LONG_OFFLINE  = 4 * 3600      # alerta si lleva >4h offline sin batería crítica
+MAC_OFFLINE_COOLDOWN_S  = 4 * 3600      # mínimo 4h entre alertas repetidas
 
 
 def _weekly_ya(wk: str) -> bool:
@@ -410,15 +413,21 @@ def _mac_offline_alert_check():
     mins = delta_s // 60
     batt = data.get("battery_pct")
     on_ac = data.get("on_ac_power", False)
-    if batt is not None and not on_ac and batt <= 15:
-        detalle = f" (batería crítica {batt}%, sin AC — puede haberse apagado sola)"
-    elif batt is not None:
-        detalle = f" (batería {batt}%{'🔌' if on_ac else ''})"
-    else:
-        detalle = ""
+    batt_critica = batt is not None and not on_ac and batt <= MAC_ALERT_BATT_PCT
+    offline_larga = delta_s >= MAC_ALERT_LONG_OFFLINE
 
-    send_telegram(f"⚠️ Tu Mac lleva {mins} min sin reportarse{detalle}. ¿Está dormida o apagada?")
-    log.info(f"mac offline: alerta enviada ({mins} min sin heartbeat, batt={batt}%, ac={on_ac})")
+    # Silencio si la Mac solo está dormida normalmente (sin batería crítica y < 4h)
+    if not batt_critica and not offline_larga:
+        return
+
+    if batt_critica:
+        msg = f"🔋 Batería crítica: {batt}% sin AC y Mac sin reportarse {mins} min — puede apagarse sola."
+    else:
+        horas = mins // 60
+        msg = f"⚠️ Tu Mac lleva {horas}h sin reportarse (batería {batt if batt is not None else '?'}%{'🔌' if on_ac else ''}). ¿Está apagada?"
+
+    send_telegram(msg)
+    log.info(f"mac alerta: {msg[:120]} (batt={batt}%, ac={on_ac}, delta={delta_s}s)")
 
     MAC_OFFLINE_STATE.parent.mkdir(parents=True, exist_ok=True)
     MAC_OFFLINE_STATE.write_text(json.dumps({
