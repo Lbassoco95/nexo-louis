@@ -280,12 +280,28 @@ def build_html(eventos, pend, fecha_obj, rango, err, avances=None):
     urgentes_html = ""
     if urgentes:
         items = "".join(
-            f'<li style="display:flex;align-items:flex-start;gap:8px;margin-bottom:8px">'
+            f'<li style="list-style:none;margin-bottom:10px">'
+            f'<div style="display:flex;align-items:flex-start;gap:8px">'
             f'<button onclick="marcar(this,{json.dumps(u)})" '
             f'style="flex-shrink:0;margin-top:2px;min-width:18px;height:18px;border-radius:3px;'
             f'border:2px solid #e74c3c;background:transparent;cursor:pointer;color:#27ae60;font-size:11px;padding:0">'
-            f'</button><span>{md_inline(u)}</span></li>'
-            for u in urgentes
+            f'</button>'
+            f'<span onclick="toggleNota(\'u{i}\')" style="cursor:pointer;flex:1">{md_inline(u)}</span>'
+            f'</div>'
+            f'<div id="nota_u{i}" style="display:none;margin-top:6px;padding-left:26px">'
+            f'<textarea id="ntxt_u{i}" placeholder="Nota o pregunta sobre esta tarea…" '
+            f'style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;'
+            f'font-size:.84em;background:var(--bg);color:var(--text);resize:none;font-family:inherit" rows="2"></textarea>'
+            f'<div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap">'
+            f'<button onclick="enviarNota(\'u{i}\',{json.dumps(u)})" '
+            f'style="padding:5px 11px;background:{KAWIIL_AZUL};color:#fff;border:0;border-radius:5px;font-size:.8em;cursor:pointer">Enviar nota</button>'
+            f'<button onclick="preguntarOrigen(\'u{i}\',{json.dumps(u)})" '
+            f'style="padding:5px 11px;background:transparent;border:1px solid var(--border);border-radius:5px;font-size:.8em;cursor:pointer;color:var(--text)">❓ ¿De dónde viene?</button>'
+            f'</div>'
+            f'<div id="nresp_u{i}" style="font-size:.82em;color:var(--muted);margin-top:5px;line-height:1.45"></div>'
+            f'</div>'
+            f'</li>'
+            for i, u in enumerate(urgentes)
         )
         urgentes_html = (
             f'<div style="background:rgba(220,50,47,.07);border-left:3px solid #e74c3c;'
@@ -313,12 +329,28 @@ def build_html(eventos, pend, fecha_obj, rango, err, avances=None):
     pend_html = ""
     if no_urgentes:
         items = "".join(
-            f'<li style="display:flex;align-items:flex-start;gap:8px;margin-bottom:8px">'
+            f'<li style="list-style:none;margin-bottom:10px">'
+            f'<div style="display:flex;align-items:flex-start;gap:8px">'
             f'<button onclick="marcar(this,{json.dumps(p)})" '
             f'style="flex-shrink:0;margin-top:2px;min-width:18px;height:18px;border-radius:3px;'
             f'border:2px solid var(--muted);background:transparent;cursor:pointer;color:#27ae60;font-size:11px;padding:0">'
-            f'</button><span>{md_inline(p)}</span></li>'
-            for p in no_urgentes
+            f'</button>'
+            f'<span onclick="toggleNota(\'p{i}\')" style="cursor:pointer;flex:1">{md_inline(p)}</span>'
+            f'</div>'
+            f'<div id="nota_p{i}" style="display:none;margin-top:6px;padding-left:26px">'
+            f'<textarea id="ntxt_p{i}" placeholder="Nota o pregunta sobre esta tarea…" '
+            f'style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;'
+            f'font-size:.84em;background:var(--bg);color:var(--text);resize:none;font-family:inherit" rows="2"></textarea>'
+            f'<div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap">'
+            f'<button onclick="enviarNota(\'p{i}\',{json.dumps(p)})" '
+            f'style="padding:5px 11px;background:{KAWIIL_AZUL};color:#fff;border:0;border-radius:5px;font-size:.8em;cursor:pointer">Enviar nota</button>'
+            f'<button onclick="preguntarOrigen(\'p{i}\',{json.dumps(p)})" '
+            f'style="padding:5px 11px;background:transparent;border:1px solid var(--border);border-radius:5px;font-size:.8em;cursor:pointer;color:var(--text)">❓ ¿De dónde viene?</button>'
+            f'</div>'
+            f'<div id="nresp_p{i}" style="font-size:.82em;color:var(--muted);margin-top:5px;line-height:1.45"></div>'
+            f'</div>'
+            f'</li>'
+            for i, p in enumerate(no_urgentes)
         )
         pend_html = (
             f'<div style="background:var(--card);border-radius:12px;padding:15px;'
@@ -390,6 +422,9 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-ser
 <div class="kpi-row">{kpi_cards}</div>
 </div>
 <div class="main">
+<div id="jsbanner" onclick="this.remove()" style="background:#fffbe6;border:1px solid #f5c518;border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:.84em;color:#7a5c00;cursor:pointer">
+📱 <b>Abre en Safari o Chrome</b> para interactuar — toca cualquier tarea para ver opciones, agregar notas o preguntar a Louis. El visor de Telegram bloquea JS. <span style="opacity:.6">(Toca aquí para cerrar)</span>
+</div>
 {urgentes_html}{avances_html}
 <div class="card">
 <div class="sec-lbl">🗓 Calendario — reuniones y compromisos ({len(eventos)})</div>
@@ -414,6 +449,10 @@ function inl(s){{s=s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&g
 function md(t){{var lines=t.split('\\n'),out=[],i=0;while(i<lines.length){{var l=lines[i];if(/^[ ]*[-*] /.test(l)){{var it=[];while(i<lines.length&&/^[ ]*[-*] /.test(lines[i])){{it.push('<li>'+inl(lines[i].replace(/^[ ]*[-*] /,''))+'</li>');i++;}}out.push('<ul>'+it.join('')+'</ul>');continue;}}if(l.trim()){{out.push('<p>'+inl(l)+'</p>');}}i++;}}return out.join('');}}
 function addMsg(role,html){{var d=document.createElement('div');d.className='cm '+role;d.innerHTML=html;var c=document.getElementById('conv');c.appendChild(d);c.scrollTop=c.scrollHeight;return d;}}
 async function marcar(btn,txt){{btn.textContent='✓';btn.style.cssText+='background:#27ae60;border-color:#27ae60;color:#fff';var sp=btn.nextElementSibling;sp.style.textDecoration='line-through';sp.style.opacity='.45';btn.disabled=true;var msgs=CTX?[{{role:'user',content:'Contexto:\\n'+CTX}},{{role:'assistant',content:'ok'}},{{role:'user',content:'marca como hecho: '+txt}}]:[{{role:'user',content:'marca como hecho: '+txt}}];try{{var h={{'Content-Type':'application/json'}};if(CHAT_TOKEN)h['Authorization']='Bearer '+CHAT_TOKEN;var r=await fetch(CHAT_URL,{{method:'POST',headers:h,body:JSON.stringify({{messages:msgs}})}});var j=await r.json();var ans=(j.choices&&j.choices[0]&&j.choices[0].message&&j.choices[0].message.content)||'';if(ans){{var note=document.createElement('div');note.style.cssText='font-size:.72em;color:#27ae60;margin-top:2px;padding-left:26px';note.textContent='✓ '+ans.slice(0,120);btn.parentElement.appendChild(note);}}}}catch(e){{console.warn(e);}}}}
+function toggleNota(id){{var d=document.getElementById('nota_'+id);d.style.display=d.style.display==='none'?'block':'none';if(d.style.display==='block')document.getElementById('ntxt_'+id).focus();}}
+async function _callLouis(msgs,respId){{var rd=document.getElementById('nresp_'+respId);rd.textContent='pensando…';var h={{'Content-Type':'application/json'}};if(CHAT_TOKEN)h['Authorization']='Bearer '+CHAT_TOKEN;try{{var r=await fetch(CHAT_URL,{{method:'POST',headers:h,body:JSON.stringify({{messages:msgs}})}});var j=await r.json();var ans=(j.choices&&j.choices[0]&&j.choices[0].message&&j.choices[0].message.content)||'(sin respuesta)';rd.innerHTML=md(ans);}}catch(e){{rd.textContent='Error: '+e;}}}}
+async function enviarNota(id,task){{var txt=(document.getElementById('ntxt_'+id).value||'').trim();if(!txt)return;var msgs=CTX?[{{role:'user',content:'Contexto:\\n'+CTX}},{{role:'assistant',content:'ok'}},{{role:'user',content:'agrega nota a la tarea "'+task+'": '+txt}}]:[{{role:'user',content:'agrega nota a la tarea "'+task+'": '+txt}}];await _callLouis(msgs,id);}}
+async function preguntarOrigen(id,task){{document.getElementById('nota_'+id).style.display='block';var msgs=CTX?[{{role:'user',content:'Contexto:\\n'+CTX}},{{role:'assistant',content:'ok'}},{{role:'user',content:'¿De dónde viene esta tarea en SEGUIMIENTOS.md y cuándo se creó: "'+task+'"?'}}]:[{{role:'user',content:'¿De dónde viene esta tarea: "'+task+'"?'}}];await _callLouis(msgs,id);}}
 var _hist=[];
 async function preg(){{var inp=document.getElementById('cq');var q=(inp.value||'').trim();if(!q)return;inp.value='';addMsg('user',inl(q));var bot=addMsg('bot','<em>pensando…</em>');try{{var h={{'Content-Type':'application/json'}};if(CHAT_TOKEN)h['Authorization']='Bearer '+CHAT_TOKEN;var msgs=[];if(CTX){{msgs.push({{role:'user',content:'Contexto:\\n'+CTX}});msgs.push({{role:'assistant',content:'Contexto cargado.'}});}}msgs=msgs.concat(_hist);msgs.push({{role:'user',content:q}});var r=await fetch(CHAT_URL,{{method:'POST',headers:h,body:JSON.stringify({{messages:msgs}})}});var j=await r.json();var ans=(j.choices&&j.choices[0]&&j.choices[0].message&&j.choices[0].message.content)||j.error||'(sin respuesta)';_hist.push({{role:'user',content:q}});_hist.push({{role:'assistant',content:ans}});bot.innerHTML=md(ans);}}catch(e){{bot.innerHTML='<em>Error al conectar ('+e+'). Abre este HTML en un navegador real.</em>';}}}}
 document.getElementById('cq').addEventListener('keydown',function(e){{if(e.key==='Enter'&&!e.shiftKey){{e.preventDefault();preg();}}}});
