@@ -1180,6 +1180,20 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "   (ej. 'tendría que ir nuevamente'), anótalo en SEGUIMIENTOS en ese mismo turno.\n"
         "NO hagas la actualización y luego preguntes qué amparo era o de qué CVs habla Polo —\n"
         "si el contexto de la conversación ya lo establece, úsalo."
+        "\n\n# AUTO-REGISTRO OBLIGATORIO\n"
+        "REGLA NO NEGOCIABLE: en CUALQUIER conversación, si ocurre alguno de estos eventos:\n"
+        "→ Una tarea queda pendiente, se acuerda algo, o se fija una fecha\n"
+        "→ Algo se completó, avanzó, o se recibió un entregable\n"
+        "→ Polo te dice que habló/acordó con alguien sobre algo\n\n"
+        "DEBES hacer lo siguiente SIN QUE POLO LO PIDA:\n"
+        "1. `reemplazar_pendiente` / `append_to_memory(\"SEGUIMIENTOS.md\", ...)` para actualizar el estado\n"
+        "2. Si hay deadline: `agendar_recordatorio` inmediatamente, con holgura (día anterior)\n"
+        "3. Si es un entregable de cliente formal: `entregable_registrar(...)` con el contenido completo\n\n"
+        "AL TERMINAR cualquier conversación con tareas activas:\n"
+        "→ Verifica mentalmente si actualizaste SEGUIMIENTOS. Si no lo hiciste, hazlo en la ÚLTIMA respuesta.\n"
+        "→ Di en 1 línea qué registraste: '✓ Registré en SEGUIMIENTOS: [descripción corta]'\n\n"
+        "EXCEPCIÓN: conversaciones puramente informativas o de consulta (preguntas legales, búsquedas)\n"
+        "no requieren registro.\n"
         "\n\n# CONOCIMIENTO INDEXADO DE AGENTES — CONSÚLTALO ANTES DE RESPONDER\n"
         "Los agentes kawiil-* han analizado y resumido documentos, tesis SJF y publicaciones DOF\n"
         "relevantes a su área. Este conocimiento EXISTE y ya está indexado — no tienes que rebuscar.\n"
@@ -1942,6 +1956,97 @@ def build_intraday_nudge(slot: str = "tarde") -> str | None:
         lines.append(f"\n📨 *{len(briefs)} brief(s)* pendiente(s) de dispatch a agentes.")
     lines.append("\n_Marca lo hecho con /agenda o dime «ya hice X»._")
     return "\n".join(lines)
+
+
+def build_overnight_advances_scan() -> str | None:
+    """Escanea email + Slack en busca de avances ocurridos desde ayer.
+    Guarda el resultado en /opt/openclaw/state/advances_delta.json para que
+    briefing_doc.py lo incluya en la sección 'Lo que avanzó'.
+    Devuelve un texto corto si hay algo urgente, None si no hay nada relevante."""
+    import json as _json
+
+    STATE_DIR = Path(os.environ.get("STATE_DIR", "/opt/openclaw/state"))
+    ADVANCES_PATH = STATE_DIR / "advances_delta.json"
+
+    fuentes: list[str] = []
+
+    # Email: ambos tenants
+    for tenant in ["kawiil", "yoltik"]:
+        try:
+            out = _run_m365_tool("m365_inbox", {"tenant": tenant, "filter": "all", "limit": 30})
+            if out and not out.startswith("ERROR"):
+                fuentes.append(f"[EMAIL:{tenant}]\n{out[:3000]}")
+        except Exception as e:
+            log.warning(f"advances_scan: error leyendo inbox {tenant}: {e}")
+
+    # Slack
+    try:
+        slack_out = _slack_resumen(canales=None, msgs_por_canal=20)
+        if slack_out and not slack_out.startswith("ERROR"):
+            fuentes.append(f"[SLACK]\n{slack_out[:3000]}")
+    except Exception as e:
+        log.warning(f"advances_scan: error leyendo Slack: {e}")
+
+    if not fuentes:
+        log.info("advances_scan: sin datos de email/Slack, no se genera JSON")
+        return None
+
+    raw = "\n\n".join(fuentes)
+
+    api_key = load_anthropic_key()
+    if not api_key:
+        log.warning("advances_scan: sin API key, no se puede analizar")
+        return None
+
+    sys_prompt = (
+        "Eres el asistente ejecutivo de Polo (CEO de Kawiil). "
+        "Revisa estas comunicaciones recientes y extrae en MÁXIMO 5 bullets CONCISOS:\n"
+        "- Tareas que se completaron o avanzaron\n"
+        "- Entregables recibidos o enviados\n"
+        "- Respuestas a temas que estaban pendientes\n"
+        "- Decisiones tomadas\n"
+        "Ignora newsletters, notificaciones de sistema, spam y ruido.\n"
+        "Si no hay nada relevante, devuelve solo: NADA_RELEVANTE\n"
+        "Formato: un bullet por línea, sin encabezados, sin numerar."
+    )
+    headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
+    body = {
+        "model": CLAUDE_HAIKU,
+        "max_tokens": 400,
+        "system": sys_prompt,
+        "messages": [{"role": "user", "content": raw[:8000]}],
+    }
+    try:
+        resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=60)
+        txt = "".join(b.get("text", "") for b in resp.get("content", []) if b.get("type") == "text").strip()
+    except Exception as e:
+        log.warning(f"advances_scan: Haiku falló: {e}")
+        return None
+
+    if not txt or "NADA_RELEVANTE" in txt:
+        bullets: list[str] = []
+    else:
+        bullets = [ln.lstrip("•-– ").strip() for ln in txt.splitlines() if ln.strip()]
+
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    n_emails = sum(1 for f in fuentes if f.startswith("[EMAIL:"))
+    n_slack = 1 if any(f.startswith("[SLACK]") for f in fuentes) else 0
+    ADVANCES_PATH.write_text(
+        _json.dumps({
+            "ts": datetime.now(TZ_CDMX).isoformat(),
+            "bullets": bullets,
+            "n_email_tenants": n_emails,
+            "n_slack": n_slack,
+        }, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    log.info(f"advances_scan: {len(bullets)} bullets guardados en {ADVANCES_PATH}")
+
+    if bullets:
+        lines = ["☀️ *Avances detectados esta mañana:*"]
+        lines += [f"• {b}" for b in bullets]
+        return "\n".join(lines)
+    return None
 
 
 def build_weekly_review() -> str:

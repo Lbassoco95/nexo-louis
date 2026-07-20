@@ -187,6 +187,24 @@ MAC_ALERT_BATT_PCT      = 15             # % de batería para alerta inmediata
 MAC_ALERT_LONG_OFFLINE  = 4 * 3600      # alerta si lleva >4h offline sin batería crítica
 MAC_OFFLINE_COOLDOWN_S  = 4 * 3600      # mínimo 4h entre alertas repetidas
 
+# Scan de avances nocturnos (Módulo 2): 06:30 CDMX, una vez al día.
+ADVANCES_SCAN_STATE = HOME_OC / "state" / "advances_scan_sent.json"
+
+
+def _advances_ya(hoy: str) -> bool:
+    try:
+        return json.loads(ADVANCES_SCAN_STATE.read_text()).get("date") == hoy
+    except Exception:
+        return False
+
+
+def _advances_marca(hoy: str):
+    try:
+        ADVANCES_SCAN_STATE.parent.mkdir(parents=True, exist_ok=True)
+        ADVANCES_SCAN_STATE.write_text(json.dumps({"date": hoy}, ensure_ascii=False))
+    except Exception as e:
+        log.warning(f"no pude guardar advances_scan_sent.json: {e}")
+
 
 def _weekly_ya(wk: str) -> bool:
     try:
@@ -517,6 +535,22 @@ def main():
                     _weekly_marca(_wk)
         except Exception as e:
             log.warning(f"review semanal falló: {e}")
+
+        # Scan de avances nocturnos (Módulo 2): 06:30 CDMX, una vez al día.
+        # Escanea email + Slack para detectar qué avanzó; guarda JSON para el briefing.
+        try:
+            _now = datetime.now(TZ_CDMX)
+            _hoy = _now.strftime("%Y-%m-%d")
+            if _now.hour == 6 and _now.minute >= 30 and not _advances_ya(_hoy):
+                msg = core.build_overnight_advances_scan()
+                if msg:
+                    send_telegram(msg)
+                    log.info("advances scan: enviado resumen a Telegram")
+                else:
+                    log.info("advances scan: sin avances relevantes, JSON guardado")
+                _advances_marca(_hoy)
+        except Exception as e:
+            log.warning(f"advances scan falló: {e}")
 
         # Mac offline (Fase 6): cada 5 ticks (5 min). Alerta cuando lleva >15 min
         # sin heartbeat; re-alerta cada 2h; notifica cuando vuelve.

@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
-"""briefing_doc.py — Briefing/agenda DETERMINÍSTICO como documento HTML a Telegram.
-
-Por qué existe: el briefing del LLM "razonaba" la agenda sobre la memoria y
-revivía juntas viejas (ej. inventaba una junta que ya había pasado). Aquí la
-agenda sale SOLO del calendario M365 EN VIVO + los pendientes abiertos de
-SEGUIMIENTOS.md. Cero interpretación, cero invención. Y como documento HTML, se ve
-en tabla (no la lista fea de Telegram).
-
-Uso:
-  briefing_doc.py [hoy|manana]   (default: hoy)
+"""briefing_doc.py — Briefing matutino HTML interactivo como documento a Telegram.
 
 Fuentes de verdad:
   • Calendario: m365.py calendario <tenant> <hoy|manana>  (kawiil + yoltik)
   • Pendientes: líneas '- [ ]' de SEGUIMIENTOS.md
+  • Avances detectados: /opt/openclaw/state/advances_delta.json (generado a las 06:30)
+
+El HTML usa louis_html.py (render_page + kpi_cards) con chat widget embebido.
+Se guarda en /opt/openclaw/state/briefing_latest.html para servir por URL.
+
+Uso:
+  briefing_doc.py [hoy|manana]   (default: hoy)
 """
 import base64, datetime as dt, html, json, os, re, subprocess, sys, urllib.request, uuid
 from pathlib import Path
@@ -155,61 +153,130 @@ def pendientes_abiertos(max_items=25):
     return items[:max_items]
 
 
-def build_html(eventos, pend, fecha_obj, rango, err):
+def _build_agenda_table(eventos, err) -> str:
+    """Genera la tabla de agenda (solo el HTML interior, sin sección wrapper)."""
+    nota = f'<p style="color:#b35900;font-size:.85em">⚠️ No pude leer parte del calendario: {esc(err)}</p>' if err else ""
+    if not eventos:
+        return nota + '<p style="color:#888;font-style:italic">Sin eventos en el calendario para este día. ✅ Día libre de juntas.</p>'
+    filas = []
+    for e in eventos:
+        tag = '<span style="font-size:.66em;font-weight:bold;background:#1a6ef5;color:#fff;padding:1px 6px;border-radius:4px">En línea</span> ' if e.get("online") else ""
+        extra = " · ".join(x for x in (e.get("lugar", ""), e.get("asistentes", "")) if x)
+        extra_html = f'<div style="font-size:.8em;color:#777;margin-top:2px">{esc(extra)}</div>' if extra else ""
+        ini, fin, asunto, tenant = esc(e["inicio"]), esc(e["fin"]), esc(e["asunto"]), esc(e["tenant"])
+        filas.append(
+            f'<tr><td style="white-space:nowrap;font-weight:bold;color:#1a6ef5;width:96px;font-size:.92em;padding:9px;border-bottom:1px solid #eee">{ini}–{fin}</td>'
+            f'<td style="padding:9px;border-bottom:1px solid #eee;vertical-align:top">{tag}<b>{asunto}</b>{extra_html}</td>'
+            f'<td style="font-size:.72em;color:#999;text-transform:capitalize;width:64px;padding:9px;border-bottom:1px solid #eee">{tenant}</td></tr>')
+    return (nota +
+            '<table style="border-collapse:collapse;width:100%;margin:.5em 0">'
+            '<thead><tr>'
+            '<th style="text-align:left;font-size:.78em;text-transform:uppercase;letter-spacing:.04em;color:#888;border-bottom:2px solid #1a6ef5;padding:6px 9px">Hora</th>'
+            '<th style="text-align:left;font-size:.78em;text-transform:uppercase;letter-spacing:.04em;color:#888;border-bottom:2px solid #1a6ef5;padding:6px 9px">Evento</th>'
+            '<th style="text-align:left;font-size:.78em;text-transform:uppercase;letter-spacing:.04em;color:#888;border-bottom:2px solid #1a6ef5;padding:6px 9px">Cuenta</th>'
+            '</tr></thead>'
+            f'<tbody>{"".join(filas)}</tbody></table>')
+
+
+def _load_advances(max_age_h: int = 3) -> list:
+    """Lee advances_delta.json si tiene menos de max_age_h horas."""
+    p = Path(os.environ.get("STATE_DIR", "/opt/openclaw/state")) / "advances_delta.json"
+    if not p.exists():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        ts = dt.datetime.fromisoformat(data.get("ts", "2000-01-01T00:00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=TZ)
+        age_h = (dt.datetime.now(TZ) - ts).total_seconds() / 3600
+        if age_h > max_age_h:
+            return []
+        return data.get("bullets", [])
+    except Exception:
+        return []
+
+
+def build_html(eventos, pend, fecha_obj, rango, err, avances=None):
+    """Genera el HTML del briefing usando louis_html para el shell y tabla inline para la agenda."""
+    # Importar el engine de HTML desde el mismo directorio
+    import importlib.util, sys as _sys
+    _this_dir = Path(__file__).parent
+    _html_path = _this_dir / "louis_html.py"
+    try:
+        spec = importlib.util.spec_from_file_location("louis_html", str(_html_path))
+        louis_html = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(louis_html)
+    except Exception:
+        louis_html = None
+
+    if avances is None:
+        avances = _load_advances()
+
     fl = f"{DIAS[fecha_obj.weekday()]} {fecha_obj.day} de {MES[fecha_obj.month]} de {fecha_obj.year}"
-    gen = dt.datetime.now(TZ).strftime("%d/%m/%Y %H:%M")
-    # tabla de calendario
-    if eventos:
-        filas = []
-        for e in eventos:
-            tag = '<span class="on">En línea</span> ' if e.get("online") else ""
-            extra = " · ".join(x for x in (e.get("lugar", ""), e.get("asistentes", "")) if x)
-            extra_html = f'<div class="sub">{esc(extra)}</div>' if extra else ""
-            ini, fin, asunto, tenant = esc(e["inicio"]), esc(e["fin"]), esc(e["asunto"]), esc(e["tenant"])
-            filas.append(
-                f'<tr><td class="h">{ini}–{fin}</td>'
-                f'<td>{tag}<b>{asunto}</b>{extra_html}</td>'
-                f'<td class="t">{tenant}</td></tr>')
-        cal = f'<table><thead><tr><th>Hora</th><th>Evento</th><th>Cuenta</th></tr></thead><tbody>{"".join(filas)}</tbody></table>'
+
+    if louis_html:
+        kpi_row = louis_html.kpi_cards([
+            {"value": str(len(eventos)), "label": "juntas hoy"},
+            {"value": str(len(pend)), "label": "pendientes"},
+            {"value": str(len(avances)), "label": "avanzaron ayer"},
+        ])
+
+        avances_html = ""
+        if avances:
+            items = "".join(f"<li style='margin-bottom:4px'>{esc(b)}</li>" for b in avances)
+            avances_html = (f"<details class='sec' open><summary>☀️ Lo que avanzó</summary>"
+                            f"<ul style='font-size:.95em'>{items}</ul></details>")
+
+        agenda_html = (f"<details class='sec' open><summary>⏰ Agenda ({len(eventos)} eventos)</summary>"
+                       f"{_build_agenda_table(eventos, err)}</details>")
+
+        if pend:
+            pend_items = "".join(f"<li style='margin-bottom:5px'>{esc(p)}</li>" for p in pend)
+            pend_section = (f"<details class='sec' open><summary>📌 Pendientes abiertos ({len(pend)})</summary>"
+                            f"<ul style='font-size:.95em'>{pend_items}</ul></details>")
+        else:
+            pend_section = ("<details class='sec'><summary>📌 Pendientes</summary>"
+                            "<p style='color:#888;font-style:italic'>Sin pendientes abiertos en SEGUIMIENTOS.</p></details>")
+
+        ctx_md = "\n".join(f"- {p}" for p in pend)
+        content = louis_html.render_page(
+            titulo=f"Briefing — {fl}",
+            agente="Louis",
+            body_html=kpi_row + avances_html + agenda_html + pend_section,
+            ctx_md=ctx_md,
+            con_chat=True,
+            resumen=f"{len(eventos)} juntas · {len(pend)} pendientes · {len(avances)} avances detectados",
+            fuente=f"M365 en vivo ({', '.join(TENANTS)}) + SEGUIMIENTOS.md",
+        )
     else:
-        cal = '<p class="vacio">Sin eventos en el calendario para este día. ✅ Día libre de juntas.</p>'
-    # pendientes
-    if pend:
-        lis = "".join(f"<li>{esc(p)}</li>" for p in pend)
-        pend_html = f'<h2>📌 Pendientes abiertos ({len(pend)})</h2><ul class="pend">{lis}</ul>'
-    else:
-        pend_html = '<h2>📌 Pendientes</h2><p class="vacio">Sin pendientes abiertos en SEGUIMIENTOS.</p>'
-    nota = f'<p class="warn">⚠️ No pude leer parte del calendario: {esc(err)}</p>' if err else ""
-    logo = logo_data_uri()
-    logo_img = f'<img src="{logo}" alt="Kawiil" class="logo">' if logo else '<strong>KAWIIL MX</strong>'
-    doc = f"""<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Agenda — {esc(fl)}</title><style>
-body{{font-family:'Georgia',serif;max-width:860px;margin:32px auto;padding:0 22px;color:#1a1a1a;line-height:1.55}}
-h1{{font-size:1.5em;border-bottom:3px solid {KAWIIL_AZUL};padding-bottom:8px;color:{KAWIIL_MARINO}}}
-h2{{font-size:1.1em;color:{KAWIIL_MARINO};margin-top:1.5em;border-bottom:1px solid #ddd;padding-bottom:4px}}
-table{{border-collapse:collapse;width:100%;margin:.5em 0}}
-th{{text-align:left;font-size:.78em;text-transform:uppercase;letter-spacing:.04em;color:#888;border-bottom:2px solid {KAWIIL_AZUL};padding:6px 9px}}
-td{{border-bottom:1px solid #eee;padding:9px;vertical-align:top}}
-td.h{{white-space:nowrap;font-weight:bold;color:{KAWIIL_AZUL};width:96px;font-size:.92em}}
-td.t{{font-size:.72em;color:#999;text-transform:capitalize;width:64px}}
-.sub{{font-size:.8em;color:#777;margin-top:2px}}
-.on{{font-size:.66em;font-weight:bold;background:{KAWIIL_AZUL};color:#fff;padding:1px 6px;border-radius:4px}}
-.pend li{{margin-bottom:5px}} .pend{{font-size:.95em}}
-.vacio{{color:#888;font-style:italic}} .warn{{color:#b35900;font-size:.85em}}
-.hd{{display:flex;align-items:center;justify-content:space-between;margin-bottom:1em;padding:12px 16px;background:#eef3fb;border-radius:8px;font-size:.84em;color:#666;border-left:5px solid {KAWIIL_AZUL}}}
-.hd .logo{{height:30px;width:auto}}
-.ft{{margin-top:2.5em;padding-top:1em;border-top:1px solid #ddd;font-size:.78em;color:#999;text-align:center}}
-</style></head><body>
-<div class="hd"><span>{logo_img}</span><span>Agenda del día · Generado: {gen} CDMX</span></div>
-<h1>🗓️ Agenda — {esc(fl)}</h1>
-{nota}
-<h2>⏰ Calendario ({len(eventos)} eventos)</h2>
-{cal}
-{pend_html}
-<div class="ft">Fuente: Calendario M365 en vivo ({", ".join(TENANTS)}) + SEGUIMIENTOS.md · Dato duro, sin interpretación · Louis (Kawiil)</div>
-</body></html>"""
-    return doc.encode("utf-8")
+        # Fallback: HTML estático simple (sin louis_html)
+        gen = dt.datetime.now(TZ).strftime("%d/%m/%Y %H:%M")
+        agenda_tbl = _build_agenda_table(eventos, err)
+        if pend:
+            lis = "".join(f"<li>{esc(p)}</li>" for p in pend)
+            pend_html = f'<h2>📌 Pendientes abiertos ({len(pend)})</h2><ul>{lis}</ul>'
+        else:
+            pend_html = '<h2>📌 Pendientes</h2><p style="color:#888">Sin pendientes abiertos.</p>'
+        avances_fb = ""
+        if avances:
+            items = "".join(f"<li>{esc(b)}</li>" for b in avances)
+            avances_fb = f"<h2>☀️ Lo que avanzó</h2><ul>{items}</ul>"
+        content = (f'<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">'
+                   f'<title>Briefing — {esc(fl)}</title></head><body>'
+                   f'<h1>🗓️ Briefing — {esc(fl)}</h1>'
+                   f'{avances_fb}{agenda_tbl}{pend_html}'
+                   f'<p style="font-size:.78em;color:#999">Generado: {gen} CDMX</p>'
+                   f'</body></html>').encode("utf-8")
+
+    # Guardar copia para /briefing/latest
+    try:
+        latest = Path(os.environ.get("STATE_DIR", "/opt/openclaw/state")) / "briefing_latest.html"
+        latest.parent.mkdir(parents=True, exist_ok=True)
+        latest.write_bytes(content)
+    except Exception:
+        pass
+
+    return content
 
 
 def send_doc(content, fname, caption):
@@ -242,11 +309,14 @@ def main():
     fecha_obj = dt.datetime.now(TZ).date() + (dt.timedelta(days=1) if rango == "manana" else dt.timedelta())
     eventos, err = fetch_eventos(rango)
     pend = pendientes_abiertos()
+    avances = _load_advances()
     dlabel = "mañana" if rango == "manana" else "hoy"
-    caption = (f"🗓️ <b>Agenda de {dlabel}</b> — {DIAS[fecha_obj.weekday()]} {fecha_obj.day}/{fecha_obj.month}\n"
-               f"<b>{len(eventos)}</b> eventos en calendario · <b>{len(pend)}</b> pendientes. Detalle visual en el adjunto.")
-    fname = f"Agenda_{fecha_obj.isoformat().replace('-', '')}.html"
-    ok = send_doc(build_html(eventos, pend, fecha_obj, rango, err), fname, caption)
+    av_txt = f" · {len(avances)} avances detectados" if avances else ""
+    caption = (f"☀️ <b>Briefing de {dlabel}</b> — {DIAS[fecha_obj.weekday()]} {fecha_obj.day}/{fecha_obj.month}\n"
+               f"<b>{len(eventos)}</b> eventos en calendario · <b>{len(pend)}</b> pendientes{av_txt}. "
+               f"Abre el adjunto HTML en tu navegador para el dashboard interactivo.")
+    fname = f"Briefing_{fecha_obj.isoformat().replace('-', '')}.html"
+    ok = send_doc(build_html(eventos, pend, fecha_obj, rango, err, avances), fname, caption)
     print("Enviado" if ok else "Falló el envío")
     return 0 if ok else 1
 

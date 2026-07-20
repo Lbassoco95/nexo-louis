@@ -470,6 +470,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, core.build_tablero_data())
             except Exception as e:
                 self._send_json(500, {"error": str(e)[:200]})
+
+        # Briefing HTML más reciente generado por briefing_doc.py
+        if self.path in ("/briefing", "/briefing/", "/briefing/latest"):
+            p = Path(os.environ.get("STATE_DIR", "/opt/openclaw/state")) / "briefing_latest.html"
+            if p.exists():
+                self._send_html(200, p.read_text(encoding="utf-8"))
+            else:
+                self._send_html(200, "<h1>Sin briefing generado aún</h1><p>El briefing matutino se genera a las 07:00 CDMX.</p>")
+            return
             return
         # Drill-down: detalle de un entregable de Cerebro (?f=<archivo>).
         if self.path.startswith("/v1/entregable"):
