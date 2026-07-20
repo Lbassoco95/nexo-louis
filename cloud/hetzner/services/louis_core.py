@@ -49,6 +49,8 @@ M365_SCRIPT = HOME_OC / "scripts" / "m365" / "m365.py"
 if not M365_SCRIPT.exists():
     M365_SCRIPT = HOME_OC / "scripts" / "m365.py"
 
+_EVENTS_BASE = HOME_OC / "events"
+
 # ===== Modelos =====
 # Routing:
 #   • Default chat → Ollama local (gratis, privado, sin créditos Anthropic)
@@ -2047,6 +2049,310 @@ def build_overnight_advances_scan() -> str | None:
         lines += [f"• {b}" for b in bullets]
         return "\n".join(lines)
     return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MONITOR UNIFICADO — todas las fuentes conectadas → HTML por Telegram
+# Reemplaza build_overnight_advances_scan() para la ejecución en vivo.
+# Genera HTML individuales (usando louis_html) para eventos importantes y
+# los almacena en /opt/openclaw/events/{fecha}/ para acceso por URL.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _telegram_send_html_doc(html_bytes: bytes, fname: str, caption: str) -> bool:
+    """Envía documento HTML por Telegram (sendDocument multipart)."""
+    import urllib.request as _ur
+    import uuid as _uuid
+    creds_path = Path(os.environ.get("TELEGRAM_CREDS",
+                                     str(HOME_OC / "credentials" / "telegram.env")))
+    out: dict = {}
+    if creds_path.exists():
+        for ln in creds_path.read_text().splitlines():
+            ln = ln.strip()
+            if ln and not ln.startswith("#") and "=" in ln:
+                k, _, v = ln.partition("=")
+                out[k.strip()] = v.strip().strip('"').strip("'")
+    token = out.get("TELEGRAM_BOT_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat = out.get("TELEGRAM_CHAT_ID") or os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not token or not chat:
+        log.warning("telegram_send_html_doc: faltan credenciales")
+        return False
+    b = "----L" + _uuid.uuid4().hex
+    parts: list[bytes] = []
+    for n, v in (("chat_id", str(chat)), ("caption", caption[:1024]), ("parse_mode", "HTML")):
+        parts += [f"--{b}".encode(),
+                  f'Content-Disposition: form-data; name="{n}"'.encode(),
+                  b"", v.encode("utf-8")]
+    parts += [f"--{b}".encode(),
+              f'Content-Disposition: form-data; name="document"; filename="{fname}"'.encode(),
+              b"Content-Type: text/html; charset=utf-8",
+              b"", html_bytes, f"--{b}--".encode(), b""]
+    req = _ur.Request(
+        f"https://api.telegram.org/bot{token}/sendDocument",
+        data=b"\r\n".join(parts),
+        headers={"Content-Type": f"multipart/form-data; boundary={b}"},
+    )
+    try:
+        _ur.urlopen(req, timeout=30).read()
+        return True
+    except Exception as e:
+        log.warning(f"telegram_send_html_doc falló: {e}")
+        return False
+
+
+def _load_louis_html():
+    """Importa louis_html.py dinámicamente desde el mismo directorio."""
+    import importlib.util
+    _p = Path(__file__).parent / "louis_html.py"
+    try:
+        spec = importlib.util.spec_from_file_location("louis_html", str(_p))
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)  # type: ignore[union-attr]
+        return m
+    except Exception as e:
+        log.warning(f"_load_louis_html: {e}")
+        return None
+
+
+def _generate_event_html(evento: dict, fecha_str: str) -> bytes | None:
+    """Genera HTML interactivo (louis_html.render_page) para un evento detectado."""
+    import html as _he
+    louis_html = _load_louis_html()
+    if not louis_html:
+        return None
+    tipo = evento.get("tipo", "evento")
+    titulo = evento.get("titulo", "Evento")
+    resumen = evento.get("resumen", "")
+    accion = evento.get("accion", "")
+    fuente = evento.get("fuente", tipo)
+    urgente = evento.get("urgente", False)
+    iconos = {"reunion": "🤝", "email_cliente": "📧", "decision_slack": "💬",
+              "documento": "📄", "entregable": "📦"}
+    icono = iconos.get(tipo, "📌")
+    kpi_row = louis_html.kpi_cards([
+        {"value": icono,                       "label": tipo.replace("_", " ")},
+        {"value": "⚡" if urgente else "🔵",   "label": "urgente" if urgente else "normal"},
+        {"value": fecha_str,                   "label": "detectado"},
+    ])
+    body = (kpi_row
+            + f"<details class='sec' open><summary>📋 Resumen</summary>"
+              f"<p style='font-size:.95em;line-height:1.6'>{_he.escape(resumen)}</p></details>")
+    if accion:
+        body += (f"<details class='sec' open><summary>⚡ Acción recomendada</summary>"
+                 f"<p style='font-size:.95em;line-height:1.6'>{_he.escape(accion)}</p></details>")
+    ctx = f"{titulo}\n\n{resumen}" + (f"\n\nAcción: {accion}" if accion else "")
+    return louis_html.render_page(
+        titulo=f"{icono} {titulo}",
+        agente="Louis Monitor",
+        body_html=body,
+        ctx_md=ctx,
+        con_chat=True,
+        resumen=titulo,
+        fuente=fuente,
+    )
+
+
+def _update_events_index():
+    """Regenera index.json en _EVENTS_BASE con los últimos 7 días de eventos."""
+    import json as _j
+    idx: list[dict] = []
+    try:
+        if not _EVENTS_BASE.exists():
+            return
+        for date_dir in sorted(_EVENTS_BASE.iterdir(), reverse=True)[:7]:
+            if not date_dir.is_dir():
+                continue
+            for f in sorted(date_dir.iterdir(), reverse=True):
+                if f.suffix != ".html":
+                    continue
+                stem_parts = f.stem.split("_", 1)
+                idx.append({
+                    "date": date_dir.name,
+                    "tipo": stem_parts[0] if len(stem_parts) > 1 else "evento",
+                    "slug": (stem_parts[1] if len(stem_parts) > 1 else f.stem).replace("_", " "),
+                    "fname": f.name,
+                })
+        (_EVENTS_BASE / "index.json").write_text(
+            _j.dumps(idx, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception as e:
+        log.warning(f"_update_events_index: {e}")
+
+
+def _scan_source_dropbox(scan_folders: list | None = None) -> str:
+    """Lista archivos recientes en carpetas clave de Dropbox (con fecha de modificación)."""
+    tok, err = _dropbox_token()
+    if err:
+        return ""
+    headers = {"Authorization": f"Bearer {tok}", **_dropbox_member_header()}
+    folders = scan_folders or ["", "/Proyectos", "/Contratos", "/Clientes"]
+    lines: list[str] = []
+    for folder in folders[:4]:
+        try:
+            path = "" if not folder or folder == "/" else folder
+            j = http_post_json("https://api.dropbox.com/2/files/list_folder",
+                               headers, {"path": path, "limit": 20})
+            files = [e for e in j.get("entries", []) if e.get(".tag") == "file"]
+            if files:
+                lines.append(f"[Dropbox {folder or '/'}]")
+                for f in files[:10]:
+                    mod = (f.get("server_modified") or "")[:10]
+                    lines.append(f"  📄 {f.get('name')} — {mod}")
+        except Exception:
+            pass
+    return "\n".join(lines)[:2000] if lines else ""
+
+
+def build_unified_monitor_scan(mode: str = "full") -> dict:
+    """Escanea TODAS las fuentes conectadas y genera HTML interactivos por evento.
+
+    mode='full'  → completo: email, calendario, Slack, Cerebro (06:30 am)
+    mode='light' → rápido: email + Slack (10:00, 14:00)
+
+    Devuelve:
+        {
+          "summary": str | None,    # texto para send_telegram()
+          "events":  [              # docs HTML para _telegram_send_html_doc()
+              {"html": bytes, "fname": str, "caption": str}
+          ],
+          "bullets": list[str],
+        }
+    """
+    import json as _j
+    import html as _he
+
+    STATE_DIR = Path(os.environ.get("STATE_DIR", str(HOME_OC / "state")))
+    ADVANCES_PATH = STATE_DIR / "advances_delta.json"
+    log.info(f"unified_monitor: iniciando scan mode={mode}")
+
+    # ── 1. Recopilar fuentes ──────────────────────────────────────────────────
+    fuentes: dict[str, str] = {}
+    limit = 30 if mode == "full" else 15
+
+    for tenant in ["kawiil", "yoltik"]:
+        try:
+            out = _run_m365_tool("m365_inbox", {"tenant": tenant,
+                                                "filter": "all", "limit": limit})
+            if out and not out.startswith("ERROR"):
+                fuentes[f"email_{tenant}"] = out[:3000]
+        except Exception as e:
+            log.warning(f"unified_monitor: inbox {tenant} falló: {e}")
+
+    try:
+        slack_out = _slack_resumen(canales=None, msgs_por_canal=20)
+        if slack_out and not slack_out.startswith("ERROR"):
+            fuentes["slack"] = slack_out[:3000]
+    except Exception as e:
+        log.warning(f"unified_monitor: Slack falló: {e}")
+
+    if mode == "full":
+        for tenant in ["kawiil", "yoltik"]:
+            try:
+                cal = _run_m365_tool("m365_calendario", {"tenant": tenant, "rango": "hoy"})
+                if cal and not cal.startswith("ERROR"):
+                    fuentes[f"calendario_{tenant}"] = cal[:2000]
+            except Exception as e:
+                log.warning(f"unified_monitor: calendario {tenant} falló: {e}")
+        try:
+            cerebro = _cerebro_entregables_snapshot()
+            if cerebro:
+                fuentes["cerebro_kawiil"] = cerebro[:2000]
+        except Exception as e:
+            log.warning(f"unified_monitor: cerebro falló: {e}")
+        try:
+            dbx = _scan_source_dropbox()
+            if dbx:
+                fuentes["dropbox"] = dbx
+        except Exception as e:
+            log.warning(f"unified_monitor: Dropbox falló: {e}")
+
+    if not fuentes:
+        log.info("unified_monitor: sin datos de ninguna fuente")
+        return {"summary": None, "events": [], "bullets": []}
+
+    # ── 2. Clasificar con Haiku ───────────────────────────────────────────────
+    bullets: list[str] = []
+    eventos: list[dict] = []
+    api_key = load_anthropic_key()
+    if api_key:
+        fuentes_txt = "\n\n".join(f"[{k.upper()}]\n{v}" for k, v in fuentes.items())
+        sys_prompt = (
+            "Eres el asistente ejecutivo de Polo (CEO de Kawiil). "
+            "Analiza estas fuentes y responde SOLO JSON válido:\n"
+            '{"bullets":["máx 5 sobre avances, decisiones, compromisos relevantes"],'
+            '"eventos":[{"tipo":"reunion|email_cliente|decision_slack|documento|entregable",'
+            '"titulo":"título conciso","resumen":"2-3 líneas",'
+            '"accion":"qué debe hacer Polo","fuente":"herramienta de origen",'
+            '"urgente":true}]}\n'
+            "eventos: solo los 3 más importantes que merezcan tarjeta propia. "
+            "Si no hay nada relevante: {\"bullets\":[],\"eventos\":[]}. SOLO JSON."
+        )
+        headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
+        body = {
+            "model": CLAUDE_HAIKU,
+            "max_tokens": 700,
+            "system": sys_prompt,
+            "messages": [{"role": "user", "content": fuentes_txt[:9000]}],
+        }
+        try:
+            resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=60)
+            raw = "".join(b.get("text", "") for b in resp.get("content", [])
+                          if b.get("type") == "text").strip()
+            raw = re.sub(r"^```(?:json)?\s*", "", raw)
+            raw = re.sub(r"\s*```$", "", raw.strip())
+            classified = _j.loads(raw)
+            bullets = [str(b) for b in classified.get("bullets", []) if str(b).strip()]
+            eventos = [e for e in classified.get("eventos", []) if e.get("titulo")]
+        except Exception as e:
+            log.warning(f"unified_monitor: Haiku clasificación falló: {e}")
+
+    # ── 3. Guardar advances_delta.json (para el briefing) ─────────────────────
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    ADVANCES_PATH.write_text(
+        _j.dumps({
+            "ts": datetime.now(TZ_CDMX).isoformat(),
+            "bullets": bullets,
+            "fuentes": list(fuentes.keys()),
+            "n_eventos": len(eventos),
+        }, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    # ── 4. Generar HTML por evento y almacenar ────────────────────────────────
+    fecha_str = datetime.now(TZ_CDMX).strftime("%d/%m %H:%M")
+    date_label = datetime.now(TZ_CDMX).strftime("%Y-%m-%d")
+    result_events: list[dict] = []
+    for ev in eventos[:3]:
+        try:
+            html_bytes = _generate_event_html(ev, fecha_str)
+            if not html_bytes:
+                continue
+            slug = re.sub(r"[^\w]", "_", ev.get("titulo", "evento"))[:30].lower()
+            tipo = ev.get("tipo", "evento")
+            ev_dir = _EVENTS_BASE / date_label
+            ev_dir.mkdir(parents=True, exist_ok=True)
+            fname = f"{tipo}_{slug}.html"
+            (ev_dir / fname).write_bytes(html_bytes)
+            icono_map = {"reunion": "🤝", "email_cliente": "📧",
+                         "decision_slack": "💬", "documento": "📄", "entregable": "📦"}
+            icono = icono_map.get(tipo, "📌")
+            caption = (f"{icono} <b>{_he.escape(ev['titulo'])}</b>\n"
+                       + _he.escape(ev.get("resumen", "")[:200])
+                       + ("\n\n⚡ " + _he.escape(ev["accion"]) if ev.get("accion") else ""))
+            result_events.append({"html": html_bytes, "fname": fname, "caption": caption})
+        except Exception as e:
+            log.warning(f"unified_monitor: error generando HTML evento: {e}")
+
+    _update_events_index()
+    log.info(f"unified_monitor: {len(bullets)} bullets, {len(eventos)} eventos, "
+             f"{len(result_events)} HTMLs · fuentes={list(fuentes.keys())}")
+
+    summary: str | None = None
+    if bullets:
+        fuente_names = " · ".join(fuentes.keys())
+        lines = [f"🔍 *Monitor ({fecha_str}) — {fuente_names}*"]
+        lines += [f"• {b}" for b in bullets]
+        summary = "\n".join(lines)
+    return {"summary": summary, "events": result_events, "bullets": bullets}
 
 
 def build_weekly_review() -> str:

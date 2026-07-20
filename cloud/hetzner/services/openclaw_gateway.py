@@ -479,7 +479,85 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send_html(200, "<h1>Sin briefing generado aún</h1><p>El briefing matutino se genera a las 07:00 CDMX.</p>")
             return
+
+        # Eventos monitoreados: índice de todas las fuentes, eventos individuales por HTML.
+        if self.path.startswith("/events"):
+            _eb = Path("/opt/openclaw/events")
+            _pc = self.path.split("?")[0].rstrip("/")
+            if _pc in ("/events", ""):
+                # Índice visual de eventos de los últimos 7 días
+                idx_path = _eb / "index.json"
+                if idx_path.exists():
+                    import json as _j
+                    try:
+                        evs = _j.loads(idx_path.read_text(encoding="utf-8"))
+                        rows = "".join(
+                            f'<tr><td>{e["date"]}</td>'
+                            f'<td style="text-transform:capitalize">{e["tipo"].replace("_"," ")}</td>'
+                            f'<td><a href="/events/{e["date"]}/{e["fname"]}">'
+                            f'{e["slug"]}</a></td></tr>'
+                            for e in evs[:60])
+                        page = (
+                            '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">'
+                            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+                            '<title>Eventos — Louis</title>'
+                            '<style>body{font-family:system-ui,sans-serif;max-width:860px;margin:32px auto;padding:0 20px}'
+                            'h1{color:#0a1a8c}table{border-collapse:collapse;width:100%}'
+                            'th{background:#eef3fb;padding:8px;text-align:left;font-size:.8em;text-transform:uppercase}'
+                            'td{padding:8px;border-bottom:1px solid #eee}a{color:#1a6ef5}'
+                            'p.empty{color:#888;font-style:italic}</style></head><body>'
+                            '<h1>📋 Eventos monitoreados</h1>'
+                            '<table><thead><tr><th>Fecha</th><th>Tipo</th><th>Evento</th></tr></thead>'
+                            f'<tbody>{rows}</tbody></table>'
+                            '<p style="font-size:.78em;color:#999;margin-top:1.5em">'
+                            'Generado por Louis Monitor · Todas las fuentes conectadas</p>'
+                            '</body></html>'
+                        ) if rows else (
+                            '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">'
+                            '<title>Eventos — Louis</title></head><body>'
+                            '<h1>📋 Eventos monitoreados</h1>'
+                            '<p class="empty">Sin eventos almacenados aún. '
+                            'El monitor corre a las 06:30, 10:00 y 14:00 CDMX.</p>'
+                            '</body></html>'
+                        )
+                        self._send_html(200, page)
+                    except Exception as ex:
+                        self._send_html(500, f"<h1>Error: {ex}</h1>")
+                else:
+                    self._send_html(200,
+                        '<html><body><h1>Sin eventos aún</h1>'
+                        '<p>El monitor unificado corre a las 06:30, 10:00 y 14:00 CDMX.</p>'
+                        '</body></html>')
+                return
+            if _pc == "/events/latest":
+                # Evento más reciente
+                latest_f = None
+                latest_t = 0.0
+                if _eb.exists():
+                    for dd in _eb.iterdir():
+                        if dd.is_dir():
+                            for ff in dd.iterdir():
+                                if ff.suffix == ".html":
+                                    mt = ff.stat().st_mtime
+                                    if mt > latest_t:
+                                        latest_t, latest_f = mt, ff
+                if latest_f:
+                    self._send_html(200, latest_f.read_text(encoding="utf-8"))
+                else:
+                    self._send_html(200, "<html><body><h1>Sin eventos aún</h1></body></html>")
+                return
+            # /events/{date}/{fname}
+            parts = _pc.lstrip("/").split("/")
+            if len(parts) == 3:  # ['events', 'date', 'fname']
+                _, date_seg, fname_seg = parts
+                if ".." not in date_seg and ".." not in fname_seg:
+                    ef = _eb / date_seg / fname_seg
+                    if ef.exists() and ef.suffix == ".html":
+                        self._send_html(200, ef.read_text(encoding="utf-8"))
+                        return
+            self._send_html(404, "<html><body><h1>Evento no encontrado</h1></body></html>")
             return
+
         # Drill-down: detalle de un entregable de Cerebro (?f=<archivo>).
         if self.path.startswith("/v1/entregable"):
             from urllib.parse import urlparse, parse_qs

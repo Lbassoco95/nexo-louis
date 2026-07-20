@@ -506,8 +506,8 @@ def main():
         except Exception as e:
             log.warning(f"intraday check falló: {e}")
 
-        # Digest Cerebro + agentes (Fase 5): 10:00 y 14:00 CDMX. Silencioso si
-        # no hay entregables nuevos ni docs indexados por los agentes.
+        # Digest Cerebro + agentes (Fase 5): 10:00 y 14:00 CDMX.
+        # También dispara el monitor ligero (email + Slack) para detectar novedades intraday.
         try:
             _now = datetime.now(TZ_CDMX)
             _cslot = CEREBRO_SLOTS.get(_now.hour)
@@ -517,6 +517,21 @@ def main():
                 if msg:
                     send_telegram(msg)
                     log.info(f"cerebro digest enviado (hora={_now.hour}h, slot={_cslot})")
+                # Monitor ligero intraday: email + Slack → HTMLs de eventos nuevos
+                try:
+                    light = core.build_unified_monitor_scan(mode="light")
+                    if light.get("summary"):
+                        send_telegram(light["summary"])
+                    for ev in light.get("events", []):
+                        try:
+                            core._telegram_send_html_doc(ev["html"], ev["fname"], ev["caption"])
+                        except Exception as e_ev:
+                            log.warning(f"monitor light: error HTML: {e_ev}")
+                    if light.get("bullets"):
+                        log.info(f"monitor light: {len(light['bullets'])} bullets, "
+                                 f"{len(light.get('events', []))} HTMLs")
+                except Exception as e_light:
+                    log.warning(f"monitor light falló: {e_light}")
                 _cerebro_digest_marca(str(_now.hour), _hoy)
         except Exception as e:
             log.warning(f"cerebro digest falló: {e}")
@@ -536,21 +551,26 @@ def main():
         except Exception as e:
             log.warning(f"review semanal falló: {e}")
 
-        # Scan de avances nocturnos (Módulo 2): 06:30 CDMX, una vez al día.
-        # Escanea email + Slack para detectar qué avanzó; guarda JSON para el briefing.
+        # Monitor unificado 06:30 CDMX (full mode): email, calendario, Slack,
+        # Dropbox, Cerebro — detecta avances, genera HTMLs por evento, guarda JSON.
         try:
             _now = datetime.now(TZ_CDMX)
             _hoy = _now.strftime("%Y-%m-%d")
             if _now.hour == 6 and _now.minute >= 30 and not _advances_ya(_hoy):
-                msg = core.build_overnight_advances_scan()
-                if msg:
-                    send_telegram(msg)
-                    log.info("advances scan: enviado resumen a Telegram")
-                else:
-                    log.info("advances scan: sin avances relevantes, JSON guardado")
+                result = core.build_unified_monitor_scan(mode="full")
+                if result.get("summary"):
+                    send_telegram(result["summary"])
+                for ev in result.get("events", []):
+                    try:
+                        core._telegram_send_html_doc(ev["html"], ev["fname"], ev["caption"])
+                        log.info(f"unified_monitor: HTML enviado → {ev['fname']}")
+                    except Exception as e_ev:
+                        log.warning(f"unified_monitor: error enviando HTML evento: {e_ev}")
+                log.info(f"unified_monitor full: {len(result.get('bullets', []))} bullets, "
+                         f"{len(result.get('events', []))} HTMLs · fuentes={result.get('bullets', [])[:1]}")
                 _advances_marca(_hoy)
         except Exception as e:
-            log.warning(f"advances scan falló: {e}")
+            log.warning(f"unified_monitor full scan falló: {e}")
 
         # Mac offline (Fase 6): cada 5 ticks (5 min). Alerta cuando lleva >15 min
         # sin heartbeat; re-alerta cada 2h; notifica cuando vuelve.
