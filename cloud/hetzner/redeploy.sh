@@ -72,6 +72,21 @@ for svc_tmpl in "$SRC"/*.service; do
         _SERVICE_RELOAD=1
       fi
     done < <(grep '^Environment=' "$svc_tmpl" 2>/dev/null || true)
+    # Agregar variables Environment= nuevas (en template pero ausentes en el live)
+    while IFS= read -r env_line; do
+      kv="${env_line#Environment=}"
+      env_key="${kv%%=*}"
+      tmpl_val="${kv#*=}"
+      [[ "$tmpl_val" == *@@* ]] && continue
+      if ! grep -q "^Environment=${env_key}=" "$dest" 2>/dev/null; then
+        last_env_line=$(grep -n '^Environment=' "$dest" | tail -1 | cut -d: -f1)
+        if [[ -n "$last_env_line" ]]; then
+          sed -i "${last_env_line}a Environment=${env_key}=${tmpl_val}" "$dest"
+          ok "$unit_name: ${env_key}=${tmpl_val} añadido (nuevo)"
+          _SERVICE_RELOAD=1
+        fi
+      fi
+    done < <(grep '^Environment=' "$svc_tmpl" 2>/dev/null || true)
   fi
 done
 # Parchear .timer si cambiaron (no tienen placeholders — copia directa)
@@ -114,6 +129,7 @@ fi
 SCRAPERS_SRC="$REPO_ROOT/legal-scrapers"
 DOF_DST=/opt/openclaw/legal/dof
 SJF_DST=/opt/openclaw/legal/sjf
+LEGAL_DST=/opt/openclaw/legal
 if [[ -d "$SCRAPERS_SRC" ]]; then
   log "Actualizando scrapers legales"
   for f in "$SCRAPERS_SRC"/*.py; do
@@ -123,6 +139,9 @@ if [[ -d "$SCRAPERS_SRC" ]]; then
       [[ -d "$DOF_DST" ]] && install -m 0755 -o "$USER_OWN" -g "$USER_OWN" "$f" "$DOF_DST/$fname" && ok "dof/$fname"
     elif [[ "$fname" == sjf_* ]]; then
       [[ -d "$SJF_DST" ]] && install -m 0755 -o "$USER_OWN" -g "$USER_OWN" "$f" "$SJF_DST/$fname" && ok "sjf/$fname"
+    elif [[ "$fname" == estado_legal.py ]]; then
+      mkdir -p "$LEGAL_DST"
+      install -m 0755 -o "$USER_OWN" -g "$USER_OWN" "$f" "$LEGAL_DST/$fname" && ok "legal/$fname"
     fi
   done
 fi

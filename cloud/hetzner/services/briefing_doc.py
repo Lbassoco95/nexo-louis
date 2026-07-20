@@ -197,76 +197,144 @@ def _load_advances(max_age_h: int = 3) -> list:
 
 
 def build_html(eventos, pend, fecha_obj, rango, err, avances=None):
-    """Genera el HTML del briefing usando louis_html para el shell y tabla inline para la agenda."""
-    # Importar el engine de HTML desde el mismo directorio
-    import importlib.util, sys as _sys
-    _this_dir = Path(__file__).parent
-    _html_path = _this_dir / "louis_html.py"
-    try:
-        spec = importlib.util.spec_from_file_location("louis_html", str(_html_path))
-        louis_html = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(louis_html)
-    except Exception:
-        louis_html = None
-
+    """Genera el HTML del briefing — layout de agenda personal."""
     if avances is None:
         avances = _load_advances()
 
     fl = f"{DIAS[fecha_obj.weekday()]} {fecha_obj.day} de {MES[fecha_obj.month]} de {fecha_obj.year}"
+    dlabel = "mañana" if rango == "manana" else "hoy"
+    hora_gen = dt.datetime.now(TZ).strftime("%H:%M")
+    hora_int = int(hora_gen.split(":")[0])
+    saludo = "Buenos días" if hora_int < 12 else ("Buenas tardes" if hora_int < 19 else "Buenas noches")
 
-    if louis_html:
-        kpi_row = louis_html.kpi_cards([
-            {"value": str(len(eventos)), "label": "juntas hoy"},
-            {"value": str(len(pend)), "label": "pendientes"},
-            {"value": str(len(avances)), "label": "avanzaron ayer"},
-        ])
+    # Separar urgentes de pendientes regulares
+    _URGENTE_RE = re.compile(r'\bHOY\b|VENCE HOY|urgente|URGENTE|\d{4}-\d{2}-\d{2}', re.IGNORECASE)
+    urgentes = [p for p in pend if _URGENTE_RE.search(p)]
+    no_urgentes = [p for p in pend if not _URGENTE_RE.search(p)]
 
-        avances_html = ""
-        if avances:
-            items = "".join(f"<li style='margin-bottom:4px'>{esc(b)}</li>" for b in avances)
-            avances_html = (f"<details class='sec' open><summary>☀️ Lo que avanzó</summary>"
-                            f"<ul style='font-size:.95em'>{items}</ul></details>")
+    # Logo
+    logo_uri = logo_data_uri()
+    logo_html = (f'<img src="{logo_uri}" style="height:26px;margin-bottom:8px;opacity:.9" alt="Kawiil">'
+                 if logo_uri else "")
 
-        agenda_html = (f"<details class='sec' open><summary>⏰ Agenda ({len(eventos)} eventos)</summary>"
-                       f"{_build_agenda_table(eventos, err)}</details>")
+    # KPI strip
+    kpi_defs = [
+        ("🗓", str(len(eventos)), "juntas hoy", ""),
+        ("📌", str(len(pend)), "pendientes", ""),
+        ("🔴", str(len(urgentes)), "urgentes",
+         "background:rgba(220,50,47,.18);color:#ff7070" if urgentes else ""),
+        ("✅", str(len(avances)), "avanzaron", ""),
+    ]
+    kpi_cards = ""
+    for icon, val, lbl, extra_style in kpi_defs:
+        style = f"flex:1;min-width:68px;background:rgba(255,255,255,.13);border-radius:10px;padding:11px 10px;text-align:center;{extra_style}"
+        kpi_cards += (f'<div style="{style}">'
+                      f'<div style="font-size:1.35rem;font-weight:700;color:#fff">{icon} {val}</div>'
+                      f'<div style="font-size:.68rem;color:rgba(255,255,255,.72);text-transform:uppercase;letter-spacing:.06em;margin-top:3px">{lbl}</div>'
+                      f'</div>')
 
-        if pend:
-            pend_items = "".join(f"<li style='margin-bottom:5px'>{esc(p)}</li>" for p in pend)
-            pend_section = (f"<details class='sec' open><summary>📌 Pendientes abiertos ({len(pend)})</summary>"
-                            f"<ul style='font-size:.95em'>{pend_items}</ul></details>")
-        else:
-            pend_section = ("<details class='sec'><summary>📌 Pendientes</summary>"
-                            "<p style='color:#888;font-style:italic'>Sin pendientes abiertos en SEGUIMIENTOS.</p></details>")
-
-        ctx_md = "\n".join(f"- {p}" for p in pend)
-        content = louis_html.render_page(
-            titulo=f"Briefing — {fl}",
-            agente="Louis",
-            body_html=kpi_row + avances_html + agenda_html + pend_section,
-            ctx_md=ctx_md,
-            con_chat=True,
-            resumen=f"{len(eventos)} juntas · {len(pend)} pendientes · {len(avances)} avances detectados",
-            fuente=f"M365 en vivo ({', '.join(TENANTS)}) + SEGUIMIENTOS.md",
-        )
+    # Agenda rows
+    if eventos:
+        rows = ""
+        for e in eventos:
+            tag = (f'<span style="font-size:.63em;background:{KAWIIL_AZUL};color:#fff;padding:1px 5px;'
+                   f'border-radius:3px;font-weight:700;margin-right:4px">Online</span>'
+                   if e.get("online") else "")
+            extra = " · ".join(x for x in (e.get("lugar", ""), e.get("asistentes", "")) if x)
+            extra_html = f'<div style="font-size:.78em;color:var(--muted);margin-top:2px">{esc(extra)}</div>' if extra else ""
+            ini, fin, asunto = esc(e["inicio"]), esc(e["fin"]), esc(e["asunto"])
+            rows += (f'<div style="display:flex;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--border)">'
+                     f'<div style="min-width:92px;font-weight:600;color:{KAWIIL_AZUL};font-size:.87em;padding-top:1px">{ini}–{fin}</div>'
+                     f'<div style="flex:1">{tag}<span style="font-weight:500">{asunto}</span>{extra_html}</div>'
+                     f'</div>')
+        agenda_inner = rows
+        if err:
+            agenda_inner += f'<p style="color:#b35900;font-size:.82em;margin-top:8px">⚠️ {esc(err)}</p>'
     else:
-        # Fallback: HTML estático simple (sin louis_html)
-        gen = dt.datetime.now(TZ).strftime("%d/%m/%Y %H:%M")
-        agenda_tbl = _build_agenda_table(eventos, err)
-        if pend:
-            lis = "".join(f"<li>{esc(p)}</li>" for p in pend)
-            pend_html = f'<h2>📌 Pendientes abiertos ({len(pend)})</h2><ul>{lis}</ul>'
-        else:
-            pend_html = '<h2>📌 Pendientes</h2><p style="color:#888">Sin pendientes abiertos.</p>'
-        avances_fb = ""
-        if avances:
-            items = "".join(f"<li>{esc(b)}</li>" for b in avances)
-            avances_fb = f"<h2>☀️ Lo que avanzó</h2><ul>{items}</ul>"
-        content = (f'<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">'
-                   f'<title>Briefing — {esc(fl)}</title></head><body>'
-                   f'<h1>🗓️ Briefing — {esc(fl)}</h1>'
-                   f'{avances_fb}{agenda_tbl}{pend_html}'
-                   f'<p style="font-size:.78em;color:#999">Generado: {gen} CDMX</p>'
-                   f'</body></html>').encode("utf-8")
+        agenda_inner = '<p style="color:var(--muted);font-style:italic">Sin eventos. ✅ Día libre de juntas.</p>'
+        if err:
+            agenda_inner += f'<p style="color:#b35900;font-size:.82em;margin-top:6px">⚠️ {esc(err)}</p>'
+
+    # Urgentes section
+    urgentes_html = ""
+    if urgentes:
+        items = "".join(f'<li style="margin-bottom:6px">{esc(u)}</li>' for u in urgentes)
+        urgentes_html = (
+            f'<div style="background:rgba(220,50,47,.07);border-left:3px solid #e74c3c;'
+            f'border-radius:0 8px 8px 0;padding:13px 15px;margin-bottom:14px">'
+            f'<div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;'
+            f'color:#e74c3c;margin-bottom:7px">🔴 Urgentes / Vencen hoy</div>'
+            f'<ul style="margin:0;padding-left:17px;font-size:.9em;color:var(--text)">{items}</ul>'
+            f'</div>'
+        )
+
+    # Avances section
+    avances_html = ""
+    if avances:
+        items = "".join(f'<li style="margin-bottom:5px">{esc(a)}</li>' for a in avances)
+        avances_html = (
+            f'<div style="background:rgba(39,174,96,.07);border-left:3px solid #27ae60;'
+            f'border-radius:0 8px 8px 0;padding:13px 15px;margin-bottom:14px">'
+            f'<div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;'
+            f'color:#27ae60;margin-bottom:7px">✅ Avanzaron ayer</div>'
+            f'<ul style="margin:0;padding-left:17px;font-size:.9em;color:var(--text)">{items}</ul>'
+            f'</div>'
+        )
+
+    # Pendientes section
+    pend_html = ""
+    if no_urgentes:
+        items = "".join(f'<li style="margin-bottom:5px">{esc(p)}</li>' for p in no_urgentes)
+        pend_html = (
+            f'<div style="background:var(--card);border-radius:12px;padding:15px;'
+            f'margin-bottom:14px;box-shadow:0 1px 4px rgba(0,0,0,.06)">'
+            f'<div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;'
+            f'color:var(--muted);margin-bottom:9px">📌 Pendientes ({len(no_urgentes)})</div>'
+            f'<ul style="margin:0;padding-left:17px;font-size:.9em;color:var(--text)">{items}</ul>'
+            f'</div>'
+        )
+
+    content = f'''<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Briefing — {esc(fl)}</title>
+<style>
+:root{{--bg:#f4f6fb;--card:#fff;--text:#1a1a2e;--muted:#8892a4;--border:#e6eaf2}}
+@media(prefers-color-scheme:dark){{:root{{--bg:#0e1118;--card:#181d2c;--text:#dde3f0;--muted:#5a6278;--border:#252a3a}}}}
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}}
+.hdr{{background:linear-gradient(135deg,{KAWIIL_MARINO} 0%,{KAWIIL_AZUL} 100%);color:#fff;padding:22px 18px 18px}}
+.hdr-meta{{font-size:.69rem;opacity:.68;text-transform:uppercase;letter-spacing:.08em;margin-bottom:3px}}
+.hdr-title{{font-size:1.28rem;font-weight:700;margin-bottom:3px}}
+.hdr-sub{{font-size:.82rem;opacity:.78;margin-bottom:14px}}
+.kpi-row{{display:flex;gap:7px;flex-wrap:wrap}}
+.main{{padding:15px;max-width:680px;margin:0 auto}}
+.card{{background:var(--card);border-radius:12px;padding:15px;margin-bottom:14px;box-shadow:0 1px 4px rgba(0,0,0,.06)}}
+.sec-lbl{{font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:9px}}
+.foot{{text-align:center;font-size:.7rem;color:var(--muted);padding:18px 16px}}
+</style>
+</head>
+<body>
+<div class="hdr">
+{logo_html}
+<div class="hdr-meta">{saludo} · {hora_gen} CDMX</div>
+<div class="hdr-title">{esc(fl)}</div>
+<div class="hdr-sub">Agenda de {dlabel}</div>
+<div class="kpi-row">{kpi_cards}</div>
+</div>
+<div class="main">
+{urgentes_html}{avances_html}
+<div class="card">
+<div class="sec-lbl">🗓 Agenda del día ({len(eventos)} eventos)</div>
+{agenda_inner}
+</div>
+{pend_html}
+</div>
+<div class="foot">Louis · Nexo Kawiil · {esc(fl)}</div>
+</body>
+</html>'''.encode("utf-8")
 
     # Guardar copia para /briefing/latest
     try:
