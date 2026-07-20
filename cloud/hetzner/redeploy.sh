@@ -62,6 +62,8 @@ for svc_tmpl in "$SRC"/*.service; do
       kv="${env_line#Environment=}"
       env_key="${kv%%=*}"
       tmpl_val="${kv#*=}"
+      # Si el valor del template tiene placeholders (@@...@@), no parchear — son tokens de deploy.
+      [[ "$tmpl_val" == *@@* ]] && continue
       live_val=$(grep -oP "Environment=${env_key}=\K\S+" "$dest" 2>/dev/null || true)
       if [[ -n "$live_val" && "$live_val" != "$tmpl_val" ]]; then
         sed -i "s|Environment=${env_key}=${live_val}|Environment=${env_key}=${tmpl_val}|" "$dest"
