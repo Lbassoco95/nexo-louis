@@ -505,8 +505,9 @@ def main():
     dlabel = "mañana" if rango == "manana" else "hoy"
     av_txt = f" · {len(avances)} avances detectados" if avances else ""
     caption = (f"☀️ <b>Briefing de {dlabel}</b> — {DIAS[fecha_obj.weekday()]} {fecha_obj.day}/{fecha_obj.month}\n"
-               f"<b>{len(eventos)}</b> eventos en calendario · <b>{len(pend)}</b> pendientes{av_txt}. "
-               f"Abre el adjunto HTML en tu navegador para el dashboard interactivo.")
+               f"<b>{len(eventos)}</b> eventos · <b>{len(pend)}</b> pendientes{av_txt}\n\n"
+               f'📱 <a href="https://louis.kawiil.mx/briefing">Abrir dashboard interactivo →</a>\n'
+               f"<i>(o abre el adjunto en Safari/Chrome para interactuar)</i>")
     fname = f"Briefing_{fecha_obj.isoformat().replace('-', '')}.html"
     ok = send_doc(build_html(eventos, pend, fecha_obj, rango, err, avances), fname, caption)
     print("Enviado" if ok else "Falló el envío")
