@@ -788,9 +788,9 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "• Polo tiene dos tenants — Kawiil (lbassoco@kawiil.mx) y Yoltik (lbassoco@yoltik.mx). "
         "Los eventos pueden estar en cualquiera; 'todos' los busca en ambos de una sola llamada."
         "\n\n# BIBLIOTECA LEGAL (SJF + DOF) — CONSULTA, NO DESCARGA\n"
-        "Tienes acceso de lectura a dos bases de datos SQLite que se sincronizan desde la "
-        "Mac de Polo cada 15 min: SJF (tesis y jurisprudencias del Semanario Judicial Federación) "
-        "y DOF (Diario Oficial de la Federación). Los scripts de descarga viven en la Mac, no en ti. "
+        "Tienes acceso de lectura a dos bases de datos SQLite que los scrapers del servidor "
+        "mantienen directamente: SJF (tesis y jurisprudencias del Semanario Judicial Federación) "
+        "y DOF (Diario Oficial de la Federación). Los scrapers corren en Hetzner como servicios systemd. "
         "Tu trabajo es REPORTAR estado, BUSCAR y AVISAR:\n"
         "- `legal_estado(modulo)` — estado de descarga (total, % progreso, última corrida, errores). "
         "Úsalo cuando Polo pregunte 'cómo va la descarga', 'cuántas tesis llevamos', 'qué tan al día estamos del DOF'.\n"
@@ -798,8 +798,8 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "'qué dijo el DOF de reforma fiscal'.\n"
         "- `legal_ultimo(modulo, n)` — últimas N publicaciones recientes.\n"
         "- `legal_briefing()` — combinado SJF + DOF, ideal para el briefing matutino.\n"
-        "Si Polo pregunta por el estado y la BD no se ha sincronizado todavía, dile claramente "
-        "'la BD no ha llegado al VPS aún — revisa que el cron de mac-push-legal.sh esté activo en tu Mac'.\n"
+        "Si Polo pregunta por el estado y la BD no existe, dile: "
+        "'no encuentro la BD local en el servidor — revisa con `systemctl status sjf-backfill` o `dof-harvest`'.\n"
         "## ⛔ REGLA ABSOLUTA — NUNCA INVENTES DATOS LEGALES\n"
         "JAMÁS fabriques resultados del DOF o SJF: ni títulos, ni fechas, ni números de "
         "acuerdo/decreto, ni artículos, ni publicaciones. Si no lo obtuviste de una fuente "
@@ -4772,8 +4772,8 @@ def _verificar_conexiones(incluir_m365: bool = True) -> str:
 
 
 # ===== Biblioteca Legal (SJF + DOF) =====
-# Las BDs llegan vía rsync Mac→Hetzner (mac-push-legal.sh cada 15 min).
-# Las abrimos READ-ONLY para que un rsync a mitad de query no rompa nada.
+# Las BDs las mantienen los scrapers en Hetzner directamente (sjf-backfill, dof-harvest).
+# Las abrimos READ-ONLY para no interferir con escrituras concurrentes del scraper.
 import sqlite3 as _sqlite
 
 LEGAL_BASE = HOME_OC / "legal"
@@ -4793,7 +4793,7 @@ def _legal_open(db_path):
 
 def _legal_estado_sjf() -> str:
     if not SJF_DB.exists():
-        return f"SJF: BD no encontrada en {SJF_DB} (todavía no se sincroniza desde Mac, o el rsync no ha corrido)."
+        return f"SJF: BD no encontrada en {SJF_DB} — verifica 'systemctl status sjf-backfill' en el servidor."
     try:
         conn = _legal_open(SJF_DB)
         total = conn.execute("SELECT COUNT(*) FROM tesis").fetchone()[0]
@@ -4842,7 +4842,7 @@ def _legal_estado_sjf() -> str:
 
 def _legal_estado_dof() -> str:
     if not DOF_DB.exists():
-        return f"DOF: BD no encontrada en {DOF_DB} (todavía no se sincroniza desde Mac)."
+        return f"DOF: BD no encontrada en {DOF_DB} — verifica 'systemctl status dof-harvest' en el servidor."
     try:
         conn = _legal_open(DOF_DB)
         total = conn.execute("SELECT COUNT(*) FROM notas").fetchone()[0]

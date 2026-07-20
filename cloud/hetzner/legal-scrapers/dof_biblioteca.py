@@ -1246,7 +1246,7 @@ def cmd_download_contents(batch: int = 200, workers: int = DEFAULT_WORKERS):
     conn = db_connect()
     rows = conn.execute(
         "SELECT cod_nota FROM notas "
-        "WHERE incluido=1 AND content_downloaded_at IS NULL "
+        "WHERE incluido=1 AND existe_html=1 AND content_downloaded_at IS NULL "
         "ORDER BY fecha DESC "   # más recientes primero → mayor tasa de éxito (HTML disponible)
         "LIMIT ?",
         (batch,)

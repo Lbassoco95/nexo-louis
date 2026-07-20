@@ -182,7 +182,10 @@ def main():
         backfill_n = max(bajadas - nuevas, 0)
         con_texto = _q1(DOF_DB, "SELECT COUNT(*) FROM notas WHERE texto_plano IS NOT NULL AND texto_plano!=''") or 0
         con_pdf = _q1(DOF_DB, "SELECT COUNT(*) FROM notas WHERE pdf_path IS NOT NULL AND pdf_path!=''") or 0
-        dof_txt = _pct(con_texto, validas)
+        # notas_html: notas que SÍ tienen HTML descargable; el resto son PDFs escaneados sin texto
+        notas_html = _q1(DOF_DB, "SELECT COUNT(*) FROM notas WHERE incluido=1 AND existe_html=1") or 0
+        pendientes_html = _q1(DOF_DB, "SELECT COUNT(*) FROM notas WHERE incluido=1 AND existe_html=1 AND content_downloaded_at IS NULL") or 0
+        dof_txt = _pct(con_texto, notas_html) if notas_html else 0.0
         ok = "✅ al día" if (dias is not None and dias <= 4) else (f"⚠️ atrasado {dias}d" if dias is not None else "—")
         L.append("📰 <b>DOF (Diario Oficial)</b>")
         sucio = f" · <i>{invalidas} con fecha inválida (a depurar)</i>" if invalidas else ""
@@ -190,14 +193,17 @@ def main():
         L.append(f"• Cobertura temporal: {early} → {ult}")
         L.append(f"• Al día: última edición <b>{ult}</b> ({n_ult} notas) {ok} · {nuevas} esta semana")
         L.append(f"• Histórico (backfill): <b>{_miles(backfill_n)}</b> esta semana")
-        L.append(f"• Indexación: <b>{dof_txt:.0f}%</b> con texto · <b>{_pct(con_pdf, validas):.0f}%</b> con PDF\n")
+        html_status = "✅ completo" if pendientes_html == 0 else f"⏳ {_miles(pendientes_html)} pendientes"
+        L.append(f"• Indexación HTML: <b>{dof_txt:.0f}%</b> de {_miles(notas_html)} notas con HTML ({html_status}) · {_pct(con_pdf, validas):.0f}% con PDF")
+        L.append(f"  <i>(El {100 - round(notas_html / validas * 100) if validas else 0}% restante del histórico son PDFs escaneados sin texto disponible)</i>\n")
     else:
         L.append("📰 <b>DOF</b>: BD no encontrada\n")
 
     # ── Rumbo al deep learning ───────────────────────────────────────
     L.append("🧠 <b>Indexación / análisis (rumbo a deep learning)</b>")
     L.append(f"• SJF: {'✅ texto e índices casi completos' if sjf_txt >= 90 else f'⚠️ {sjf_txt:.0f}% con texto'}")
-    L.append(f"• DOF: {'✅ listo' if dof_txt >= 90 else f'⚠️ solo {dof_txt:.0f}% con texto — falta extraer el histórico'}")
+    # dof_txt es % sobre notas con HTML; el histórico en PDF escaneado no es extraíble
+    L.append(f"• DOF: {'✅ indexación HTML completa' if dof_txt >= 90 else f'⏳ {dof_txt:.0f}% de notas HTML indexadas'}")
 
     # Siguiente reporte
     next_interval_h, _ = _phase_info(days_running)
