@@ -1196,6 +1196,18 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "→ Di en 1 línea qué registraste: '✓ Registré en SEGUIMIENTOS: [descripción corta]'\n\n"
         "EXCEPCIÓN: conversaciones puramente informativas o de consulta (preguntas legales, búsquedas)\n"
         "no requieren registro.\n"
+        "\n\n# APRENDIZAJE CONTINUO — LEARNINGS.md\n"
+        "Cuando Polo te dé una instrucción permanente sobre cómo trabajar, detecta estas señales:\n"
+        "→ 'hazlo así', 'de ahora en adelante', 'aprende que', 'revisa de esta forma'\n"
+        "→ 'siempre que', 'en lugar de', 'prefiero que', 'quiero que siempre'\n"
+        "→ una corrección explícita sobre algo que acabas de hacer ('no, así no — deberías...')\n\n"
+        "CUANDO DETECTES UNA de esas señales:\n"
+        "1. Llama `append_to_memory('LEARNINGS.md', '[YYYY-MM-DD] [área] Corrección: ...')` inmediatamente\n"
+        "2. Confirma en UNA línea: '✓ Aprendí: [resumen de lo que guardaste]'\n"
+        "3. Aplica la corrección desde ese momento en adelante en esta conversación\n\n"
+        "Las instrucciones en LEARNINGS.md tienen PRIORIDAD sobre tu comportamiento predeterminado.\n"
+        "Revisa LEARNINGS.md al cargar contexto — si contradice tu instinto, prevalece LEARNINGS.\n"
+        "EXCEPCIÓN: instrucciones ilegales, no éticas, o que dañen a terceros — no las guardes.\n"
         "\n\n# CONOCIMIENTO INDEXADO DE AGENTES — CONSÚLTALO ANTES DE RESPONDER\n"
         "Los agentes kawiil-* han analizado y resumido documentos, tesis SJF y publicaciones DOF\n"
         "relevantes a su área. Este conocimiento EXISTE y ya está indexado — no tienes que rebuscar.\n"
@@ -2202,6 +2214,65 @@ def _scan_source_dropbox(scan_folders: list | None = None) -> str:
     return "\n".join(lines)[:2000] if lines else ""
 
 
+def _auto_register_urgent(evento: dict, fecha_str: str) -> str:
+    """Para eventos urgentes: registra en SEGUIMIENTOS.md y construye sugerencia
+    de acción concreta usando el contexto de PEOPLE.md."""
+    titulo = evento.get("titulo", "evento urgente")
+    accion = evento.get("accion", "")
+    fuente = evento.get("fuente", "monitor")
+
+    # 1. Auto-registro en SEGUIMIENTOS.md
+    entry = (f"\n[{fecha_str}] ⚡ URGENTE (auto-monitor): {titulo} "
+             f"[fuente: {fuente}] — PENDIENTE acción\n")
+    try:
+        seg_path = SPACE / "SEGUIMIENTOS.md"
+        if seg_path.exists():
+            recientes = seg_path.read_text().splitlines()[-20:]
+            if any(titulo[:30] in l for l in recientes):
+                return "ya estaba en SEGUIMIENTOS"
+        with seg_path.open("a") as f:
+            f.write(entry)
+        log.info("auto_register_urgent: '%s' → SEGUIMIENTOS.md", titulo[:50])
+    except Exception as e:
+        log.warning("auto_register_urgent: no pude escribir SEGUIMIENTOS: %s", e)
+        return ""
+
+    # 2. Leer contexto de PEOPLE.md para sugerencia personalizada
+    people_ctx = ""
+    try:
+        p = SPACE / "PEOPLE.md"
+        if p.exists():
+            people_ctx = p.read_text()[:2000]
+    except Exception:
+        pass
+
+    if not accion or not people_ctx:
+        return f"✓ En SEGUIMIENTOS. Acción sugerida: {accion}" if accion else "✓ En SEGUIMIENTOS."
+
+    # 3. Haiku personaliza la sugerencia con contexto del equipo
+    try:
+        api_key = load_anthropic_key()
+        headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION,
+                   "content-type": "application/json"}
+        prompt = (
+            f"Evento urgente detectado por el monitor:\n"
+            f"Título: {titulo}\nResumen: {evento.get('resumen', '')}\n"
+            f"Acción sugerida genérica: {accion}\n\n"
+            f"Contexto del equipo (PEOPLE.md):\n{people_ctx}\n\n"
+            f"Dado este contexto, ¿a quién específicamente debería Polo contactar o delegar, "
+            f"y qué mensaje concreto enviar? Responde en 1 línea, máximo 120 chars, "
+            f"comenzando con 'Sugerencia: '. Sin preámbulos."
+        )
+        body = {"model": CLAUDE_HAIKU, "max_tokens": 150,
+                "messages": [{"role": "user", "content": prompt}]}
+        resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=15)
+        sugerencia = resp["content"][0]["text"].strip()
+        return f"✓ En SEGUIMIENTOS. {sugerencia}"
+    except Exception as e:
+        log.warning("auto_register_urgent: Haiku falló: %s", e)
+        return f"✓ En SEGUIMIENTOS. Acción sugerida: {accion}"
+
+
 def build_unified_monitor_scan(mode: str = "full") -> dict:
     """Escanea TODAS las fuentes conectadas y genera HTML interactivos por evento.
 
@@ -2335,9 +2406,16 @@ def build_unified_monitor_scan(mode: str = "full") -> dict:
             icono_map = {"reunion": "🤝", "email_cliente": "📧",
                          "decision_slack": "💬", "documento": "📄", "entregable": "📦"}
             icono = icono_map.get(tipo, "📌")
-            caption = (f"{icono} <b>{_he.escape(ev['titulo'])}</b>\n"
-                       + _he.escape(ev.get("resumen", "")[:200])
-                       + ("\n\n⚡ " + _he.escape(ev["accion"]) if ev.get("accion") else ""))
+            accion_ctx = ""
+            if ev.get("urgente"):
+                accion_ctx = _auto_register_urgent(ev, fecha_str)
+            caption_parts = [f"{icono} <b>{_he.escape(ev.get('titulo', ''))}</b>",
+                             _he.escape(ev.get("resumen", "")[:200])]
+            if ev.get("accion"):
+                caption_parts.append("\n⚡ " + _he.escape(ev["accion"][:200]))
+            if accion_ctx:
+                caption_parts.append("\n" + _he.escape(accion_ctx))
+            caption = "\n".join(caption_parts)[:1024]
             result_events.append({"html": html_bytes, "fname": fname, "caption": caption})
         except Exception as e:
             log.warning(f"unified_monitor: error generando HTML evento: {e}")
