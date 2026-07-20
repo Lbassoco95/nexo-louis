@@ -354,6 +354,17 @@ def tick():
                     core.save_last_briefing(text, core.build_operational_snapshot())
                 except Exception as e:
                     log.warning(f"No guardé last-briefing: {e}")
+                # HTML briefing dashboard — briefing_doc.py como subprocess async
+                try:
+                    import subprocess as _subp
+                    _bdoc = Path(__file__).parent / "briefing_doc.py"
+                    if _bdoc.exists():
+                        _subp.Popen([sys.executable, str(_bdoc), "hoy"])
+                        log.info("briefing_doc HTML lanzado (async)")
+                    else:
+                        log.warning("briefing_doc.py no encontrado en %s", Path(__file__).parent)
+                except Exception as e_bd:
+                    log.warning("briefing_doc HTML no lanzó: %s", e_bd)
             elif mode == "enrich":
                 text = enrich_with_ollama(raw)
             else:

@@ -10,8 +10,10 @@ Schedule adaptativo (se autogestiona):
   - Día 36+:       semanal
 El timer corre cada 4h pero el script decide si es hora de enviar.
 """
-import datetime as dt, json, os, sqlite3, sys, urllib.request
+import datetime as dt, importlib.util, json, os, sqlite3, sys, urllib.request
 from pathlib import Path
+
+HOME_OC = Path(os.environ.get("OPENCLAW_HOME", "/opt/openclaw"))
 
 SJF_DB = os.environ.get("SJF_DB_PATH", "/opt/openclaw/legal/sjf/biblioteca.db")
 DOF_DB = os.environ.get("DOF_DB_PATH", "/opt/openclaw/legal/dof/biblioteca_dof.db")
@@ -93,6 +95,112 @@ def send_msg(text):
         return False
 
 
+def _load_louis_html():
+    p = HOME_OC / "scripts" / "louis_html.py"
+    if not p.exists():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("louis_html", p)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:
+        return None
+
+
+def send_doc(content: bytes, fname: str, caption: str) -> bool:
+    """Envía documento HTML por Telegram (sendDocument multipart)."""
+    import uuid as _uuid
+    token, chat = creds()
+    if not token or not chat:
+        print("ERROR: faltan credenciales Telegram", file=sys.stderr)
+        return False
+    b = "----L" + _uuid.uuid4().hex
+    parts = []
+    for n, v in (("chat_id", str(chat)), ("caption", caption), ("parse_mode", "HTML")):
+        parts += [f"--{b}".encode(),
+                  f'Content-Disposition: form-data; name="{n}"'.encode(),
+                  b"", v.encode("utf-8")]
+    parts += [f"--{b}".encode(),
+              f'Content-Disposition: form-data; name="document"; filename="{fname}"'.encode(),
+              b"Content-Type: text/html; charset=utf-8", b"", content, f"--{b}--".encode(), b""]
+    req = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/sendDocument",
+        data=b"\r\n".join(parts),
+        headers={"Content-Type": f"multipart/form-data; boundary={b}"},
+    )
+    try:
+        urllib.request.urlopen(req, timeout=30).read()
+        return True
+    except Exception as e:
+        print(f"ERROR sendDocument: {e}", file=sys.stderr)
+        return False
+
+
+def build_html_doc(stats: dict, fecha: str) -> bytes:
+    """Genera HTML interactivo con barras de progreso SJF/DOF."""
+    lh = _load_louis_html()
+    sjf_pct = stats.get("sjf_pct", 0.0)
+    dof_html_pct = stats.get("dof_html_pct", 0.0)
+    sjf_total = stats.get("sjf_total", 0)
+    sjf_universo = stats.get("sjf_universo", 0)
+    dof_validas = stats.get("dof_validas", 0)
+    backfill_sjf = stats.get("backfill_sjf", 0)
+    backfill_dof = stats.get("backfill_dof", 0)
+
+    bar = lambda pct, color: (
+        f'<div style="background:#e0e0e0;border-radius:6px;height:12px;margin:8px 0">'
+        f'<div style="background:{color};border-radius:6px;height:12px;'
+        f'width:{min(pct,100):.1f}%"></div></div>'
+    )
+
+    if lh:
+        cards = [
+            {"label": "SJF descargadas", "value": f"{sjf_total:,}", "icon": "⚖️"},
+            {"label": "Cobertura SJF", "value": f"{sjf_pct:.1f}%", "icon": "📊"},
+            {"label": "DOF notas", "value": f"{dof_validas:,}", "icon": "📰"},
+            {"label": "DOF HTML", "value": f"{dof_html_pct:.0f}%", "icon": "🧠"},
+        ]
+        body = (
+            lh.kpi_cards(cards) +
+            f"<h3>⚖️ SJF — Semanario Judicial</h3>"
+            f"{bar(sjf_pct, '#1a73e8')}"
+            f"<p style='font-size:13px;color:#555'>"
+            f"<b>{sjf_total:,}</b> de {sjf_universo:,} tesis ({sjf_pct:.1f}%) — faltan {max(sjf_universo-sjf_total,0):,}<br>"
+            f"Backfill esta semana: <b>{backfill_sjf:,}</b></p>"
+            f"<h3>📰 DOF — Diario Oficial</h3>"
+            f"{bar(dof_html_pct, '#34a853')}"
+            f"<p style='font-size:13px;color:#555'>"
+            f"<b>{dof_validas:,}</b> notas válidas · <b>{dof_html_pct:.0f}%</b> con HTML indexado<br>"
+            f"Backfill esta semana: <b>{backfill_dof:,}</b></p>"
+        )
+        return lh.render_page(
+            f"Estado Legal — {fecha}", "kawiil-data", body,
+            ctx_md="", con_chat=False,
+            resumen=f"SJF {sjf_pct:.1f}% · DOF HTML {dof_html_pct:.0f}%",
+            fuente="estado_legal",
+        )
+
+    # Fallback: HTML simple sin louis_html
+    return (
+        f'<!DOCTYPE html><html><head><meta charset="utf-8">'
+        f'<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f'<title>Estado Legal {fecha}</title>'
+        f'<style>body{{font-family:-apple-system,sans-serif;padding:16px;max-width:600px;margin:0 auto}}'
+        f'.bar{{background:#e0e0e0;border-radius:4px;height:10px;margin:4px 0}}'
+        f'.fb{{background:#1a73e8;border-radius:4px;height:10px}}'
+        f'.fg{{background:#34a853;border-radius:4px;height:10px}}</style></head><body>'
+        f'<h2>📊 Estado Legal — {fecha}</h2>'
+        f'<h3>⚖️ SJF</h3>'
+        f'<div class="bar"><div class="fb" style="width:{min(sjf_pct,100):.1f}%"></div></div>'
+        f'<p>{sjf_total:,} / {sjf_universo:,} ({sjf_pct:.1f}%) · backfill esta semana: {backfill_sjf:,}</p>'
+        f'<h3>📰 DOF</h3>'
+        f'<div class="bar"><div class="fg" style="width:{min(dof_html_pct,100):.0f}%"></div></div>'
+        f'<p>{dof_validas:,} notas · {dof_html_pct:.0f}% con HTML · backfill esta semana: {backfill_dof:,}</p>'
+        f'</body></html>'
+    ).encode("utf-8")
+
+
 def _q1(db, sql, params=()):
     try:
         conn = sqlite3.connect(db)
@@ -139,6 +247,7 @@ def main():
     hoy = dt.date.today().strftime("%d/%m/%Y")
     L = [f"📊 <b>Estado de descargas legales</b> — {hoy} <i>({phase_label})</i>\n"]
     sjf_txt = dof_txt = 0.0  # para el bloque de deep learning
+    stats_data: dict = {}
 
     # ── SJF ──────────────────────────────────────────────────────────
     if Path(SJF_DB).exists():
@@ -165,6 +274,8 @@ def main():
         L.append(f"• Al día: última publicación <b>{ult}</b> {ok} · {nuevas} nuevas esta semana")
         L.append(f"• Histórico (backfill): <b>{_miles(backfill_n)}</b> esta semana · frontera registro {cur or '—'} (época más antigua: {epoca_old})")
         L.append(f"• Indexación: <b>{sjf_txt:.0f}%</b> con texto · <b>{_pct(con_pdf, total):.0f}%</b> con PDF\n")
+        stats_data.update({"sjf_total": total, "sjf_universo": universo,
+                           "sjf_pct": _pct(total, universo), "backfill_sjf": backfill_n})
     else:
         L.append("⚖️ <b>SJF</b>: BD no encontrada\n")
 
@@ -196,6 +307,7 @@ def main():
         html_status = "✅ completo" if pendientes_html == 0 else f"⏳ {_miles(pendientes_html)} pendientes"
         L.append(f"• Indexación HTML: <b>{dof_txt:.0f}%</b> de {_miles(notas_html)} notas con HTML ({html_status}) · {_pct(con_pdf, validas):.0f}% con PDF")
         L.append(f"  <i>(El {100 - round(notas_html / validas * 100) if validas else 0}% restante del histórico son PDFs escaneados sin texto disponible)</i>\n")
+        stats_data.update({"dof_validas": validas, "dof_html_pct": dof_txt, "backfill_dof": backfill_n})
     else:
         L.append("📰 <b>DOF</b>: BD no encontrada\n")
 
@@ -210,7 +322,11 @@ def main():
     next_dt = (now + dt.timedelta(hours=next_interval_h)).strftime("%d/%m %H:%M")
     L.append(f"\n<i>Próximo informe: {next_dt} ({phase_label}). Al día con lo nuevo; histórico en automático.</i>")
 
-    ok = send_msg("\n".join(L))
+    caption = (f"📊 <b>Estado Legal — {hoy}</b> <i>({phase_label})</i>\n"
+               f"SJF {stats_data.get('sjf_pct', 0):.1f}% · "
+               f"DOF HTML {stats_data.get('dof_html_pct', 0):.0f}%")
+    html_bytes = build_html_doc(stats_data, hoy)
+    ok = send_doc(html_bytes, f"EstadoLegal_{dt.date.today().strftime('%Y%m%d')}.html", caption)
     print("Enviado" if ok else "Falló el envío")
     if ok:
         _save_state({

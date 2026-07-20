@@ -23,7 +23,8 @@ fail() { printf "\033[1;31m✗\033[0m %s\n" "$*"; exit 1; }
 mkdir -p "$DST" "$DST/m365"
 
 SERVICES=(louis_core.py telegram-bridge.py slack-bridge.py scheduler.py
-          openclaw_gateway.py self_update.py browser_runner.py cerebro_kawiil_mcp.py)
+          openclaw_gateway.py self_update.py browser_runner.py cerebro_kawiil_mcp.py
+          briefing_doc.py louis_html.py)
 
 # 1) Gate de compilación — si algún .py no compila, abortamos ANTES de copiar nada.
 log "Verificando que los servicios compilan"
