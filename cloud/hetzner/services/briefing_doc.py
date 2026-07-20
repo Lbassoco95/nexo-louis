@@ -279,13 +279,20 @@ def build_html(eventos, pend, fecha_obj, rango, err, avances=None):
     # Urgentes section
     urgentes_html = ""
     if urgentes:
-        items = "".join(f'<li style="margin-bottom:6px">{md_inline(u)}</li>' for u in urgentes)
+        items = "".join(
+            f'<li style="display:flex;align-items:flex-start;gap:8px;margin-bottom:8px">'
+            f'<button onclick="marcar(this,{json.dumps(u)})" '
+            f'style="flex-shrink:0;margin-top:2px;min-width:18px;height:18px;border-radius:3px;'
+            f'border:2px solid #e74c3c;background:transparent;cursor:pointer;color:#27ae60;font-size:11px;padding:0">'
+            f'</button><span>{md_inline(u)}</span></li>'
+            for u in urgentes
+        )
         urgentes_html = (
             f'<div style="background:rgba(220,50,47,.07);border-left:3px solid #e74c3c;'
             f'border-radius:0 8px 8px 0;padding:13px 15px;margin-bottom:14px">'
             f'<div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;'
             f'color:#e74c3c;margin-bottom:7px">🔴 Tareas urgentes — solo hoy</div>'
-            f'<ul style="margin:0;padding-left:17px;font-size:.9em;color:var(--text)">{items}</ul>'
+            f'<ul style="margin:0;padding:0;list-style:none;font-size:.9em;color:var(--text)">{items}</ul>'
             f'</div>'
         )
 
@@ -305,13 +312,20 @@ def build_html(eventos, pend, fecha_obj, rango, err, avances=None):
     # Pendientes section
     pend_html = ""
     if no_urgentes:
-        items = "".join(f'<li style="margin-bottom:5px">{md_inline(p)}</li>' for p in no_urgentes)
+        items = "".join(
+            f'<li style="display:flex;align-items:flex-start;gap:8px;margin-bottom:8px">'
+            f'<button onclick="marcar(this,{json.dumps(p)})" '
+            f'style="flex-shrink:0;margin-top:2px;min-width:18px;height:18px;border-radius:3px;'
+            f'border:2px solid var(--muted);background:transparent;cursor:pointer;color:#27ae60;font-size:11px;padding:0">'
+            f'</button><span>{md_inline(p)}</span></li>'
+            for p in no_urgentes
+        )
         pend_html = (
             f'<div style="background:var(--card);border-radius:12px;padding:15px;'
             f'margin-bottom:14px;box-shadow:0 1px 4px rgba(0,0,0,.06)">'
             f'<div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;'
             f'color:var(--muted);margin-bottom:9px">📌 Pendientes en proceso ({len(no_urgentes)})</div>'
-            f'<ul style="margin:0;padding-left:17px;font-size:.9em;color:var(--text)">{items}</ul>'
+            f'<ul style="margin:0;padding:0;list-style:none;font-size:.9em;color:var(--text)">{items}</ul>'
             f'</div>'
         )
 
@@ -399,6 +413,7 @@ const CHAT_URL={chat_url_js},CHAT_TOKEN={chat_token_js},CTX={ctx_js};
 function inl(s){{s=s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');s=s.replace(/[*][*](.+?)[*][*]/g,'<strong>$1</strong>');s=s.replace(/[*](.+?)[*]/g,'<em>$1</em>');s=s.replace(/`(.+?)`/g,'<code>$1</code>');return s;}}
 function md(t){{var lines=t.split('\\n'),out=[],i=0;while(i<lines.length){{var l=lines[i];if(/^[ ]*[-*] /.test(l)){{var it=[];while(i<lines.length&&/^[ ]*[-*] /.test(lines[i])){{it.push('<li>'+inl(lines[i].replace(/^[ ]*[-*] /,''))+'</li>');i++;}}out.push('<ul>'+it.join('')+'</ul>');continue;}}if(l.trim()){{out.push('<p>'+inl(l)+'</p>');}}i++;}}return out.join('');}}
 function addMsg(role,html){{var d=document.createElement('div');d.className='cm '+role;d.innerHTML=html;var c=document.getElementById('conv');c.appendChild(d);c.scrollTop=c.scrollHeight;return d;}}
+async function marcar(btn,txt){{btn.textContent='✓';btn.style.cssText+='background:#27ae60;border-color:#27ae60;color:#fff';var sp=btn.nextElementSibling;sp.style.textDecoration='line-through';sp.style.opacity='.45';btn.disabled=true;var msgs=CTX?[{{role:'user',content:'Contexto:\\n'+CTX}},{{role:'assistant',content:'ok'}},{{role:'user',content:'marca como hecho: '+txt}}]:[{{role:'user',content:'marca como hecho: '+txt}}];try{{var h={{'Content-Type':'application/json'}};if(CHAT_TOKEN)h['Authorization']='Bearer '+CHAT_TOKEN;var r=await fetch(CHAT_URL,{{method:'POST',headers:h,body:JSON.stringify({{messages:msgs}})}});var j=await r.json();var ans=(j.choices&&j.choices[0]&&j.choices[0].message&&j.choices[0].message.content)||'';if(ans){{var note=document.createElement('div');note.style.cssText='font-size:.72em;color:#27ae60;margin-top:2px;padding-left:26px';note.textContent='✓ '+ans.slice(0,120);btn.parentElement.appendChild(note);}}}}catch(e){{console.warn(e);}}}}
 var _hist=[];
 async function preg(){{var inp=document.getElementById('cq');var q=(inp.value||'').trim();if(!q)return;inp.value='';addMsg('user',inl(q));var bot=addMsg('bot','<em>pensando…</em>');try{{var h={{'Content-Type':'application/json'}};if(CHAT_TOKEN)h['Authorization']='Bearer '+CHAT_TOKEN;var msgs=[];if(CTX){{msgs.push({{role:'user',content:'Contexto:\\n'+CTX}});msgs.push({{role:'assistant',content:'Contexto cargado.'}});}}msgs=msgs.concat(_hist);msgs.push({{role:'user',content:q}});var r=await fetch(CHAT_URL,{{method:'POST',headers:h,body:JSON.stringify({{messages:msgs}})}});var j=await r.json();var ans=(j.choices&&j.choices[0]&&j.choices[0].message&&j.choices[0].message.content)||j.error||'(sin respuesta)';_hist.push({{role:'user',content:q}});_hist.push({{role:'assistant',content:ans}});bot.innerHTML=md(ans);}}catch(e){{bot.innerHTML='<em>Error al conectar ('+e+'). Abre este HTML en un navegador real.</em>';}}}}
 document.getElementById('cq').addEventListener('keydown',function(e){{if(e.key==='Enter'&&!e.shiftKey){{e.preventDefault();preg();}}}});
