@@ -47,9 +47,9 @@ SCRAPER_PATH = os.environ.get("SJF_SCRAPER") or next(
 DB_PATH = os.environ.get("SJF_DB_PATH", "/opt/openclaw/legal/sjf/biblioteca.db")
 BATCH = int(os.environ.get("BACKFILL_BATCH", "800"))
 FLOOR = int(os.environ.get("SJF_BACKFILL_FLOOR", "0"))
-THROTTLE_MS = int(os.environ.get("BACKFILL_THROTTLE_MS", "400"))
-CONSECUTIVE_404_THRESHOLD = int(os.environ.get("BACKFILL_404_THRESHOLD", "100"))
-CONSECUTIVE_404_JUMP = int(os.environ.get("BACKFILL_404_JUMP", "2000"))
+THROTTLE_MS = int(os.environ.get("BACKFILL_THROTTLE_MS", "150"))
+CONSECUTIVE_404_THRESHOLD = int(os.environ.get("BACKFILL_404_THRESHOLD", "50"))
+CONSECUTIVE_404_JUMP = int(os.environ.get("BACKFILL_404_JUMP", "50000"))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("sjf_backfill")

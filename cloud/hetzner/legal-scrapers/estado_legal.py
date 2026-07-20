@@ -138,8 +138,12 @@ def send_doc(content: bytes, fname: str, caption: str) -> bool:
 
 
 def build_html_doc(stats: dict, fecha: str) -> bytes:
-    """Genera HTML interactivo con barras de progreso SJF/DOF."""
-    lh = _load_louis_html()
+    """Genera HTML interactivo con barras de progreso SJF/DOF y chat widget."""
+    import json as _json
+    AZUL, MARINO = "#1a6ef5", "#0a1a8c"
+    chat_url = os.environ.get("CHAT_ENDPOINT", "https://louis.kawiil.mx/v1/chat/completions")
+    chat_token = os.environ.get("OPENCLAW_GATEWAY_TOKEN", "")
+
     sjf_pct = stats.get("sjf_pct", 0.0)
     dof_html_pct = stats.get("dof_html_pct", 0.0)
     sjf_total = stats.get("sjf_total", 0)
@@ -148,57 +152,115 @@ def build_html_doc(stats: dict, fecha: str) -> bytes:
     backfill_sjf = stats.get("backfill_sjf", 0)
     backfill_dof = stats.get("backfill_dof", 0)
 
-    bar = lambda pct, color: (
-        f'<div style="background:#e0e0e0;border-radius:6px;height:12px;margin:8px 0">'
-        f'<div style="background:{color};border-radius:6px;height:12px;'
-        f'width:{min(pct,100):.1f}%"></div></div>'
+    def bar(pct, color):
+        w = min(pct, 100)
+        return (f'<div style="background:#e0e0e0;border-radius:6px;height:14px;margin:8px 0 4px">'
+                f'<div style="background:{color};border-radius:6px;height:14px;width:{w:.1f}%;'
+                f'transition:width .6s ease"></div></div>')
+
+    kpis = [
+        ("⚖️", f"{sjf_total:,}", "SJF tesis"),
+        ("📊", f"{sjf_pct:.1f}%", "cobertura SJF"),
+        ("📰", f"{dof_validas:,}", "DOF notas"),
+        ("🧠", f"{dof_html_pct:.0f}%", "DOF HTML"),
+    ]
+    kpi_html = "".join(
+        f'<div style="flex:1;min-width:80px;background:rgba(255,255,255,.14);border-radius:10px;padding:11px 10px;text-align:center">'
+        f'<div style="font-size:1.25rem;font-weight:700;color:#fff">{icon} {val}</div>'
+        f'<div style="font-size:.68rem;color:rgba(255,255,255,.72);text-transform:uppercase;letter-spacing:.06em;margin-top:3px">{lbl}</div>'
+        f'</div>'
+        for icon, val, lbl in kpis
     )
 
-    if lh:
-        cards = [
-            {"label": "SJF descargadas", "value": f"{sjf_total:,}", "icon": "⚖️"},
-            {"label": "Cobertura SJF", "value": f"{sjf_pct:.1f}%", "icon": "📊"},
-            {"label": "DOF notas", "value": f"{dof_validas:,}", "icon": "📰"},
-            {"label": "DOF HTML", "value": f"{dof_html_pct:.0f}%", "icon": "🧠"},
-        ]
-        body = (
-            lh.kpi_cards(cards) +
-            f"<h3>⚖️ SJF — Semanario Judicial</h3>"
-            f"{bar(sjf_pct, '#1a73e8')}"
-            f"<p style='font-size:13px;color:#555'>"
-            f"<b>{sjf_total:,}</b> de {sjf_universo:,} tesis ({sjf_pct:.1f}%) — faltan {max(sjf_universo-sjf_total,0):,}<br>"
-            f"Backfill esta semana: <b>{backfill_sjf:,}</b></p>"
-            f"<h3>📰 DOF — Diario Oficial</h3>"
-            f"{bar(dof_html_pct, '#34a853')}"
-            f"<p style='font-size:13px;color:#555'>"
-            f"<b>{dof_validas:,}</b> notas válidas · <b>{dof_html_pct:.0f}%</b> con HTML indexado<br>"
-            f"Backfill esta semana: <b>{backfill_dof:,}</b></p>"
-        )
-        return lh.render_page(
-            f"Estado Legal — {fecha}", "kawiil-data", body,
-            ctx_md="", con_chat=False,
-            resumen=f"SJF {sjf_pct:.1f}% · DOF HTML {dof_html_pct:.0f}%",
-            fuente="estado_legal",
-        )
+    ctx_js = _json.dumps(
+        f"Estado Legal — {fecha}\n"
+        f"SJF: {sjf_total:,} / {sjf_universo:,} tesis ({sjf_pct:.1f}%), "
+        f"backfill esta semana: {backfill_sjf:,}\n"
+        f"DOF: {dof_validas:,} notas válidas, {dof_html_pct:.0f}% con HTML, "
+        f"backfill esta semana: {backfill_dof:,}"
+    )
+    chat_url_js = _json.dumps(chat_url)
+    chat_token_js = _json.dumps(chat_token)
 
-    # Fallback: HTML simple sin louis_html
-    return (
-        f'<!DOCTYPE html><html><head><meta charset="utf-8">'
-        f'<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f'<title>Estado Legal {fecha}</title>'
-        f'<style>body{{font-family:-apple-system,sans-serif;padding:16px;max-width:600px;margin:0 auto}}'
-        f'.bar{{background:#e0e0e0;border-radius:4px;height:10px;margin:4px 0}}'
-        f'.fb{{background:#1a73e8;border-radius:4px;height:10px}}'
-        f'.fg{{background:#34a853;border-radius:4px;height:10px}}</style></head><body>'
-        f'<h2>📊 Estado Legal — {fecha}</h2>'
-        f'<h3>⚖️ SJF</h3>'
-        f'<div class="bar"><div class="fb" style="width:{min(sjf_pct,100):.1f}%"></div></div>'
-        f'<p>{sjf_total:,} / {sjf_universo:,} ({sjf_pct:.1f}%) · backfill esta semana: {backfill_sjf:,}</p>'
-        f'<h3>📰 DOF</h3>'
-        f'<div class="bar"><div class="fg" style="width:{min(dof_html_pct,100):.0f}%"></div></div>'
-        f'<p>{dof_validas:,} notas · {dof_html_pct:.0f}% con HTML · backfill esta semana: {backfill_dof:,}</p>'
-        f'</body></html>'
-    ).encode("utf-8")
+    return f'''<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Estado Legal — {fecha}</title>
+<style>
+:root{{--bg:#f4f6fb;--card:#fff;--text:#1a1a2e;--muted:#8892a4;--border:#e6eaf2}}
+@media(prefers-color-scheme:dark){{:root{{--bg:#0e1118;--card:#181d2c;--text:#dde3f0;--muted:#5a6278;--border:#252a3a}}}}
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;background:var(--bg);color:var(--text);padding-bottom:220px}}
+.hdr{{background:linear-gradient(135deg,{MARINO} 0%,{AZUL} 100%);color:#fff;padding:20px 18px 18px}}
+.hdr-title{{font-size:1.2rem;font-weight:700;margin-bottom:3px}}
+.hdr-sub{{font-size:.8rem;opacity:.75;margin-bottom:14px}}
+.kpi-row{{display:flex;gap:7px;flex-wrap:wrap}}
+.main{{padding:14px;max-width:680px;margin:0 auto}}
+.card{{background:var(--card);border-radius:12px;padding:15px;margin-bottom:14px;box-shadow:0 1px 4px rgba(0,0,0,.06)}}
+.sec-lbl{{font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:8px}}
+.stat-note{{font-size:.84em;color:var(--muted);margin-top:4px;line-height:1.5}}
+.foot{{text-align:center;font-size:.7rem;color:var(--muted);padding:16px}}
+.chat-bar{{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:1px solid var(--border);padding:10px 14px;box-shadow:0 -2px 12px rgba(0,0,0,.1);z-index:100}}
+.chat-bar .inner{{max-width:680px;margin:0 auto}}
+#conv{{max-height:180px;overflow-y:auto;margin-bottom:8px}}
+.cm{{padding:8px 12px;border-radius:10px;margin:4px 0;font-size:.87em;line-height:1.5}}
+.cm.user{{background:{AZUL};color:#fff;margin-left:18%}}
+.cm.bot{{background:var(--border);color:var(--text);margin-right:18%}}
+.cm.bot p{{margin:.3em 0}}
+.cin{{display:flex;gap:8px;align-items:flex-end}}
+.cin textarea{{flex:1;padding:9px;border:1px solid var(--border);border-radius:8px;font-size:.9em;resize:none;background:var(--bg);color:var(--text);font-family:inherit}}
+.cin button{{padding:9px 14px;border:0;border-radius:8px;background:{AZUL};color:#fff;cursor:pointer;font-size:.88em}}
+.chat-note{{font-size:.66rem;color:var(--muted);margin-top:4px;text-align:center}}
+</style>
+</head>
+<body>
+<div class="hdr">
+<div style="font-size:.68rem;opacity:.65;text-transform:uppercase;letter-spacing:.08em;margin-bottom:3px">📊 Kawiil · Descargas legales</div>
+<div class="hdr-title">Estado Legal — {fecha}</div>
+<div class="hdr-sub">SJF {sjf_pct:.1f}% · DOF HTML {dof_html_pct:.0f}%</div>
+<div class="kpi-row">{kpi_html}</div>
+</div>
+<div class="main">
+<div class="card">
+<div class="sec-lbl">⚖️ SJF — Semanario Judicial de la Federación</div>
+{bar(sjf_pct, AZUL)}
+<div class="stat-note">
+<b>{sjf_total:,}</b> de {sjf_universo:,} tesis ({sjf_pct:.1f}%) — faltan {max(sjf_universo-sjf_total,0):,}<br>
+Backfill esta semana: <b>{backfill_sjf:,}</b>
+</div>
+</div>
+<div class="card">
+<div class="sec-lbl">📰 DOF — Diario Oficial de la Federación</div>
+{bar(dof_html_pct, "#34a853")}
+<div class="stat-note">
+<b>{dof_validas:,}</b> notas válidas · <b>{dof_html_pct:.0f}%</b> con HTML indexado<br>
+Backfill esta semana: <b>{backfill_dof:,}</b>
+</div>
+</div>
+</div>
+<div class="foot">Louis · Kawiil Legal · {fecha}</div>
+<div class="chat-bar">
+<div class="inner">
+<div id="conv"></div>
+<div class="cin">
+<textarea id="cq" rows="2" placeholder="Pregúntale a Louis sobre estas descargas…"></textarea>
+<button onclick="preg()">Enviar</button>
+</div>
+<p class="chat-note">Abre en Safari/Chrome — el visor de Telegram bloquea JS.</p>
+</div>
+</div>
+<script>
+const CHAT_URL={chat_url_js},CHAT_TOKEN={chat_token_js},CTX={ctx_js};
+function inl(s){{s=s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');s=s.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>');s=s.replace(/\*(.+?)\*/g,'<em>$1</em>');return s;}}
+function md(t){{return t.split('\\n').map(function(l){{return l.trim()?'<p>'+inl(l)+'</p>':'';}}).join('');}}
+function addMsg(role,html){{var d=document.createElement('div');d.className='cm '+role;d.innerHTML=html;var c=document.getElementById('conv');c.appendChild(d);c.scrollTop=c.scrollHeight;return d;}}
+async function preg(){{var inp=document.getElementById('cq');var q=(inp.value||'').trim();if(!q)return;inp.value='';addMsg('user',inl(q));var bot=addMsg('bot','<em>pensando…</em>');try{{var h={{'Content-Type':'application/json'}};if(CHAT_TOKEN)h['Authorization']='Bearer '+CHAT_TOKEN;var r=await fetch(CHAT_URL,{{method:'POST',headers:h,body:JSON.stringify({{messages:[{{role:'user',content:CTX+'\\n\\nPregunta: '+q}}]}})}});var j=await r.json();bot.innerHTML=md((j.choices&&j.choices[0]&&j.choices[0].message&&j.choices[0].message.content)||j.error||'(sin respuesta)');}}catch(e){{bot.innerHTML='<em>Error al conectar ('+e+'). Abre este HTML en un navegador real.</em>';}}}}
+document.getElementById('cq').addEventListener('keydown',function(e){{if(e.key==='Enter'&&!e.shiftKey){{e.preventDefault();preg();}}}});
+</script>
+</body>
+</html>'''.encode("utf-8")
 
 
 def _q1(db, sql, params=()):

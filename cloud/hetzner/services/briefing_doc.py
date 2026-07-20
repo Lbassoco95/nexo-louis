@@ -29,6 +29,9 @@ MES = ["", "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
        "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 TZ = dt.timezone(dt.timedelta(hours=-6))  # CDMX
 
+CHAT_URL = os.environ.get("CHAT_ENDPOINT", "https://louis.kawiil.mx/v1/chat/completions")
+CHAT_TOKEN = os.environ.get("OPENCLAW_GATEWAY_TOKEN", "")
+
 # ── Marca Kawiil ──────────────────────────────────────────────────────────
 BRAND_DIR = Path(os.environ.get("BRAND_DIR", str(HOME_OC / "assets" / "brand")))
 KAWIIL_AZUL = "#1a6ef5"   # azul brillante (wordmark)
@@ -294,6 +297,25 @@ def build_html(eventos, pend, fecha_obj, rango, err, avances=None):
             f'</div>'
         )
 
+    # Context for chat (plain text summary)
+    import json as _json
+    ctx_lines = [f"Briefing de {dlabel} — {fl}", f"Generado: {hora_gen} CDMX"]
+    if urgentes:
+        ctx_lines.append(f"\nURGENTES ({len(urgentes)}):")
+        ctx_lines += [f"- {u}" for u in urgentes]
+    if no_urgentes:
+        ctx_lines.append(f"\nPENDIENTES ({len(no_urgentes)}):")
+        ctx_lines += [f"- {p}" for p in no_urgentes[:15]]
+    if eventos:
+        ctx_lines.append(f"\nAGENDA ({len(eventos)} eventos):")
+        ctx_lines += [f"- {e['inicio']}: {e['asunto']}" for e in eventos]
+    if avances:
+        ctx_lines.append(f"\nAVANCES RECIENTES ({len(avances)}):")
+        ctx_lines += [f"- {a}" for a in avances[:8]]
+    ctx_js = _json.dumps("\n".join(ctx_lines))
+    chat_token_js = _json.dumps(CHAT_TOKEN)
+    chat_url_js = _json.dumps(CHAT_URL)
+
     content = f'''<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -301,10 +323,10 @@ def build_html(eventos, pend, fecha_obj, rango, err, avances=None):
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Briefing — {esc(fl)}</title>
 <style>
-:root{{--bg:#f4f6fb;--card:#fff;--text:#1a1a2e;--muted:#8892a4;--border:#e6eaf2}}
+:root{{--bg:#f4f6fb;--card:#fff;--text:#1a1a2e;--muted:#8892a4;--border:#e6eaf2;--acc:{KAWIIL_AZUL}}}
 @media(prefers-color-scheme:dark){{:root{{--bg:#0e1118;--card:#181d2c;--text:#dde3f0;--muted:#5a6278;--border:#252a3a}}}}
 *{{box-sizing:border-box;margin:0;padding:0}}
-body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}}
+body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding-bottom:220px}}
 .hdr{{background:linear-gradient(135deg,{KAWIIL_MARINO} 0%,{KAWIIL_AZUL} 100%);color:#fff;padding:22px 18px 18px}}
 .hdr-meta{{font-size:.69rem;opacity:.68;text-transform:uppercase;letter-spacing:.08em;margin-bottom:3px}}
 .hdr-title{{font-size:1.28rem;font-weight:700;margin-bottom:3px}}
@@ -314,6 +336,17 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-ser
 .card{{background:var(--card);border-radius:12px;padding:15px;margin-bottom:14px;box-shadow:0 1px 4px rgba(0,0,0,.06)}}
 .sec-lbl{{font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:9px}}
 .foot{{text-align:center;font-size:.7rem;color:var(--muted);padding:18px 16px}}
+.chat-bar{{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:1px solid var(--border);padding:10px 14px;box-shadow:0 -2px 12px rgba(0,0,0,.1);z-index:100}}
+.chat-bar .inner{{max-width:680px;margin:0 auto}}
+#conv{{max-height:200px;overflow-y:auto;margin-bottom:8px}}
+.cm{{padding:8px 12px;border-radius:10px;margin:4px 0;font-size:.87em;line-height:1.5}}
+.cm.user{{background:var(--acc);color:#fff;margin-left:18%}}
+.cm.bot{{background:var(--border);color:var(--text);margin-right:18%}}
+.cm.bot p{{margin:.3em 0}}.cm.bot ul,.cm.bot ol{{margin:.3em 0 .3em 16px}}
+.cin{{display:flex;gap:8px;align-items:flex-end}}
+.cin textarea{{flex:1;padding:9px;border:1px solid var(--border);border-radius:8px;font-size:.9em;resize:none;background:var(--bg);color:var(--text);font-family:inherit}}
+.cin button{{padding:9px 14px;border:0;border-radius:8px;background:var(--acc);color:#fff;cursor:pointer;font-size:.88em;white-space:nowrap}}
+.chat-note{{font-size:.66rem;color:var(--muted);margin-top:4px;text-align:center}}
 </style>
 </head>
 <body>
@@ -333,6 +366,24 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-ser
 {pend_html}
 </div>
 <div class="foot">Louis · Nexo Kawiil · {esc(fl)}</div>
+<div class="chat-bar">
+<div class="inner">
+<div id="conv"></div>
+<div class="cin">
+<textarea id="cq" rows="2" placeholder="Pregúntale a Louis… (marca algo como urgente, agrega un pendiente, etc.)"></textarea>
+<button onclick="preg()">Enviar</button>
+</div>
+<p class="chat-note">Abre en Safari/Chrome para que el chat funcione — el visor de Telegram bloquea JS.</p>
+</div>
+</div>
+<script>
+const CHAT_URL={chat_url_js},CHAT_TOKEN={chat_token_js},CTX={ctx_js};
+function inl(s){{s=s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');s=s.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>');s=s.replace(/\*(.+?)\*/g,'<em>$1</em>');s=s.replace(/`(.+?)`/g,'<code>$1</code>');return s;}}
+function md(t){{var lines=t.split('\\n'),out=[],i=0,m;while(i<lines.length){{var l=lines[i];if(/^\s*[-*]\s/.test(l)){{var it=[];while(i<lines.length&&/^\s*[-*]\s/.test(lines[i])){{it.push('<li>'+inl(lines[i].replace(/^\s*[-*]\s/,''))+'</li>');i++;}}out.push('<ul>'+it.join('')+'</ul>');continue;}}if(l.trim()){{out.push('<p>'+inl(l)+'</p>');}}i++;}}return out.join('');}}
+function addMsg(role,html){{var d=document.createElement('div');d.className='cm '+role;d.innerHTML=html;var c=document.getElementById('conv');c.appendChild(d);c.scrollTop=c.scrollHeight;return d;}}
+async function preg(){{var inp=document.getElementById('cq');var q=(inp.value||'').trim();if(!q)return;inp.value='';addMsg('user',inl(q));var bot=addMsg('bot','<em>pensando…</em>');try{{var h={{'Content-Type':'application/json'}};if(CHAT_TOKEN)h['Authorization']='Bearer '+CHAT_TOKEN;var r=await fetch(CHAT_URL,{{method:'POST',headers:h,body:JSON.stringify({{messages:[{{role:'user',content:CTX+'\\n\\nPregunta: '+q}}]}})}});var j=await r.json();bot.innerHTML=md((j.choices&&j.choices[0]&&j.choices[0].message&&j.choices[0].message.content)||j.error||'(sin respuesta)');}}catch(e){{bot.innerHTML='<em>Error al conectar ('+e+'). Abre este HTML en un navegador real.</em>';}}}}
+document.getElementById('cq').addEventListener('keydown',function(e){{if(e.key==='Enter'&&!e.shiftKey){{e.preventDefault();preg();}}}});
+</script>
 </body>
 </html>'''.encode("utf-8")
 

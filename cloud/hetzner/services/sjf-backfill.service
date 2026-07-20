@@ -15,7 +15,7 @@ Environment=SJF_SCRAPER=@@OPENCLAW_HOME@@/legal/sjf/sjf_biblioteca.py
 Environment=BACKFILL_BATCH=3000
 Environment=BACKFILL_THROTTLE_MS=150
 Environment=BACKFILL_404_THRESHOLD=50
-Environment=BACKFILL_404_JUMP=3000
+Environment=BACKFILL_404_JUMP=50000
 Environment=SJF_BACKFILL_FLOOR=0
 ExecStart=/usr/bin/python3 @@OPENCLAW_HOME@@/legal/sjf/sjf_backfill.py
 StandardOutput=append:@@OPENCLAW_HOME@@/logs/sjf-backfill.log
