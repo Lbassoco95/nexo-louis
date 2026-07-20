@@ -54,6 +54,14 @@ def esc(s):
     return html.escape((s or "").strip())
 
 
+def md_inline(s: str) -> str:
+    """Convierte **bold** y *italic* a HTML, escapando el resto."""
+    s = html.escape((s or "").strip())
+    s = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', s)
+    s = re.sub(r'\*(.+?)\*', r'<em>\1</em>', s)
+    return s
+
+
 def creds():
     out = {}
     p = Path(CREDS)
@@ -210,8 +218,12 @@ def build_html(eventos, pend, fecha_obj, rango, err, avances=None):
     hora_int = int(hora_gen.split(":")[0])
     saludo = "Buenos días" if hora_int < 12 else ("Buenas tardes" if hora_int < 19 else "Buenas noches")
 
-    # Separar urgentes de pendientes regulares
-    _URGENTE_RE = re.compile(r'\bHOY\b|VENCE HOY|urgente|URGENTE|\d{4}-\d{2}-\d{2}', re.IGNORECASE)
+    # Separar urgentes de pendientes regulares (solo hoy, no cualquier fecha)
+    hoy_iso = fecha_obj.strftime("%Y-%m-%d")
+    _URGENTE_RE = re.compile(
+        rf'\bHOY\b|VENCE HOY|urgente|URGENTE|{re.escape(hoy_iso)}',
+        re.IGNORECASE
+    )
     urgentes = [p for p in pend if _URGENTE_RE.search(p)]
     no_urgentes = [p for p in pend if not _URGENTE_RE.search(p)]
 
@@ -245,9 +257,15 @@ def build_html(eventos, pend, fecha_obj, rango, err, avances=None):
                    if e.get("online") else "")
             extra = " · ".join(x for x in (e.get("lugar", ""), e.get("asistentes", "")) if x)
             extra_html = f'<div style="font-size:.78em;color:var(--muted);margin-top:2px">{esc(extra)}</div>' if extra else ""
-            ini, fin, asunto = esc(e["inicio"]), esc(e["fin"]), esc(e["asunto"])
+            ini_raw, fin_raw = e["inicio"], e["fin"]
+            all_day = ini_raw in ("00:00", "") and fin_raw in ("00:00", "")
+            hora_lbl = "Todo el día" if all_day else f"{esc(ini_raw)}–{esc(fin_raw)}"
+            hora_style = ("min-width:92px;font-size:.82em;color:var(--muted);font-style:italic;padding-top:1px"
+                          if all_day else
+                          f"min-width:92px;font-weight:600;color:{KAWIIL_AZUL};font-size:.87em;padding-top:1px")
+            asunto = esc(e["asunto"])
             rows += (f'<div style="display:flex;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--border)">'
-                     f'<div style="min-width:92px;font-weight:600;color:{KAWIIL_AZUL};font-size:.87em;padding-top:1px">{ini}–{fin}</div>'
+                     f'<div style="{hora_style}">{hora_lbl}</div>'
                      f'<div style="flex:1">{tag}<span style="font-weight:500">{asunto}</span>{extra_html}</div>'
                      f'</div>')
         agenda_inner = rows
@@ -261,12 +279,12 @@ def build_html(eventos, pend, fecha_obj, rango, err, avances=None):
     # Urgentes section
     urgentes_html = ""
     if urgentes:
-        items = "".join(f'<li style="margin-bottom:6px">{esc(u)}</li>' for u in urgentes)
+        items = "".join(f'<li style="margin-bottom:6px">{md_inline(u)}</li>' for u in urgentes)
         urgentes_html = (
             f'<div style="background:rgba(220,50,47,.07);border-left:3px solid #e74c3c;'
             f'border-radius:0 8px 8px 0;padding:13px 15px;margin-bottom:14px">'
             f'<div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;'
-            f'color:#e74c3c;margin-bottom:7px">🔴 Urgentes / Vencen hoy</div>'
+            f'color:#e74c3c;margin-bottom:7px">🔴 Tareas urgentes — solo hoy</div>'
             f'<ul style="margin:0;padding-left:17px;font-size:.9em;color:var(--text)">{items}</ul>'
             f'</div>'
         )
@@ -274,7 +292,7 @@ def build_html(eventos, pend, fecha_obj, rango, err, avances=None):
     # Avances section
     avances_html = ""
     if avances:
-        items = "".join(f'<li style="margin-bottom:5px">{esc(a)}</li>' for a in avances)
+        items = "".join(f'<li style="margin-bottom:5px">{md_inline(a)}</li>' for a in avances)
         avances_html = (
             f'<div style="background:rgba(39,174,96,.07);border-left:3px solid #27ae60;'
             f'border-radius:0 8px 8px 0;padding:13px 15px;margin-bottom:14px">'
@@ -287,12 +305,12 @@ def build_html(eventos, pend, fecha_obj, rango, err, avances=None):
     # Pendientes section
     pend_html = ""
     if no_urgentes:
-        items = "".join(f'<li style="margin-bottom:5px">{esc(p)}</li>' for p in no_urgentes)
+        items = "".join(f'<li style="margin-bottom:5px">{md_inline(p)}</li>' for p in no_urgentes)
         pend_html = (
             f'<div style="background:var(--card);border-radius:12px;padding:15px;'
             f'margin-bottom:14px;box-shadow:0 1px 4px rgba(0,0,0,.06)">'
             f'<div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;'
-            f'color:var(--muted);margin-bottom:9px">📌 Pendientes ({len(no_urgentes)})</div>'
+            f'color:var(--muted);margin-bottom:9px">📌 Pendientes en proceso ({len(no_urgentes)})</div>'
             f'<ul style="margin:0;padding-left:17px;font-size:.9em;color:var(--text)">{items}</ul>'
             f'</div>'
         )
@@ -360,7 +378,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-ser
 <div class="main">
 {urgentes_html}{avances_html}
 <div class="card">
-<div class="sec-lbl">🗓 Agenda del día ({len(eventos)} eventos)</div>
+<div class="sec-lbl">🗓 Calendario — reuniones y compromisos ({len(eventos)})</div>
 {agenda_inner}
 </div>
 {pend_html}
