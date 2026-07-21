@@ -369,14 +369,18 @@ def tick():
                 text = enrich_with_ollama(raw)
             else:
                 text = raw
-            # Prefijo discreto para distinguir mensaje proactivo
-            prefix = "☀️ " if mode == "briefing" or raw == MORNING_BRIEFING_MARKER else "⏰ "
-            text = f"{prefix}{text}"
-            if channel == "slack":
-                ok = send_slack(text)
+            # Modo briefing: HTML ya enviado por briefing_doc.py; no duplicar con texto plano
+            if mode == "briefing" or raw == MORNING_BRIEFING_MARKER:
+                ok = True
+                log.info(f"Disparado {entry.get('id')} (briefing HTML, sin texto) → ok=True")
             else:
-                ok = send_telegram(text)
-            log.info(f"Disparado {entry.get('id')} ({channel}, mode={mode}) → ok={ok}")
+                prefix = "⏰ "
+                text = f"{prefix}{text}"
+                if channel == "slack":
+                    ok = send_slack(text)
+                else:
+                    ok = send_telegram(text)
+                log.info(f"Disparado {entry.get('id')} ({channel}, mode={mode}) → ok={ok}")
             append_sent({**entry, "delivered": ok})
             fired += 1
 
@@ -569,16 +573,9 @@ def main():
             _hoy = _now.strftime("%Y-%m-%d")
             if _now.hour == 6 and _now.minute >= 30 and not _advances_ya(_hoy):
                 result = core.build_unified_monitor_scan(mode="full")
-                if result.get("summary"):
-                    send_telegram(result["summary"])
-                for ev in result.get("events", []):
-                    try:
-                        core._telegram_send_html_doc(ev["html"], ev["fname"], ev["caption"])
-                        log.info(f"unified_monitor: HTML enviado → {ev['fname']}")
-                    except Exception as e_ev:
-                        log.warning(f"unified_monitor: error enviando HTML evento: {e_ev}")
+                # No enviamos texto/HTMLs — briefing_doc.py los consolida a las 07:00
                 log.info(f"unified_monitor full: {len(result.get('bullets', []))} bullets, "
-                         f"{len(result.get('events', []))} HTMLs · fuentes={result.get('bullets', [])[:1]}")
+                         f"{len(result.get('events', []))} eventos · datos guardados para briefing_doc")
                 _advances_marca(_hoy)
         except Exception as e:
             log.warning(f"unified_monitor full scan falló: {e}")
