@@ -551,7 +551,7 @@ def _finish_user_input(telegram_token, chat_id, api_key, system_prompt, user_inp
 
     with _history_lock:
         core.append_history(HISTORY_FILE, "user", user_input)
-        history = core.load_history(HISTORY_FILE, max_turns=28)[:-1]
+        history = core.load_history(HISTORY_FILE, max_turns=60)[:-1]
 
     if core.needs_doc_sonnet(user_input):
         log.info("→ Documento directo (Sonnet escribe contenido → PDF/PPTX/XLSX)")
