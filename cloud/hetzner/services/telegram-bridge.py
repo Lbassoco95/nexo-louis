@@ -757,7 +757,9 @@ def process_update(update, telegram_token, chat_id, api_key, system_prompt):
             log.info(f"Vision call (caption: {(caption or '')[:80]})")
             response = core.call_claude_with_image(api_key, sys_prompt, img_b64, media_type, caption or "")
             core.append_history(HISTORY_FILE, "user", f"[foto] {caption or '(sin caption)'}")
-            core.append_history(HISTORY_FILE, "assistant", response)
+            # Guardar resumen corto para no re-disparar análisis en el siguiente mensaje de texto
+            resumen = response[:300] + "…" if len(response) > 300 else response
+            core.append_history(HISTORY_FILE, "assistant", f"[análisis de imagen] {resumen}")
             telegram_send_message(telegram_token, chat_id, response, parse_mode="Markdown")
         except Exception as e:
             log.exception("Error procesando foto")

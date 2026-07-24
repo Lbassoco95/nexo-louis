@@ -587,7 +587,9 @@ def load_system_prompt(channel: str = "telegram") -> str:
     if channel == "telegram":
         canal_text = (
             "\n\n# CANAL ACTUAL: Telegram\n"
-            "Estás respondiendo por Telegram. Polo prefiere respuestas largas y formales por default. "
+            "Estás respondiendo por Telegram. Responde como asistente ejecutivo humano: "
+            "directo, breve, máx 2-3 oraciones para respuestas simples. "
+            "Sin headers (#). Si necesitas info, haz UNA pregunta a la vez, no listas. "
             "**FORMATO TELEGRAM:** usa Markdown legacy de Telegram:\n"
             "- Negrita: `*una sola*` (NO `**dos**`, eso aparece literal)\n"
             "- Cursiva: `_texto_`\n"
