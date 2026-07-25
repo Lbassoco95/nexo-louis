@@ -10795,11 +10795,18 @@ def call_llm(
         try:
             _ak = load_anthropic_key()
             _text = call_haiku(_ak, system_prompt, history or [], user_message)
-            if _text and not _text.startswith("(error") and not _text.startswith("(sin respuesta"):
+            if _text and not any(_text.startswith(p) for p in ("(error", "(sin respuesta", "(Haiku")):
                 return _text, "haiku-fallback"
+            if _text and _is_billing_error(_text):
+                return _billing_error_msg(), "haiku-billing-error"
             log.warning(f"Haiku fallback retornó error: {_text[:200] if _text else 'None'}")
         except Exception as _e:
             log.warning(f"Haiku fallback también falló: {_e}")
+        # Ambos fallaron → Ollama local como último recurso (no depende de internet)
+        log.warning(f"DeepSeek+Haiku fallaron — fallback Ollama local ({tag})")
+        oll = call_ollama(system_prompt, history or [], user_message, history_file=history_file)
+        if oll and oll.strip():
+            return oll, "ollama-final-fallback"
         return "No pude conectarme ahora, intenta de nuevo en un momento.", "deepseek-fallback"
 
     if msg.startswith(OLLAMA_QUALITY_PREFIXES):
