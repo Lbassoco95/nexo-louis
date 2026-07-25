@@ -10757,9 +10757,8 @@ def call_llm(
             log.warning(f"Ollama timeout — fallback charla ({tag})")
             return _ollama_chat_timeout_fallback(user_message, snapshot), "ollama-chat-fallback"
         if snapshot and "sin pendientes abiertos" not in snapshot.lower():
-            log.warning(f"Ollama timeout — briefing único ({tag})")
-            fb, _ = deterministic_operational_response(snapshot)
-            return fb, "deterministic-briefing"
+            log.warning(f"Ollama timeout — error corto ({tag})")
+            return "Sin conexión por el momento, intenta de nuevo.", "ollama-timeout"
         log.warning(f"Ollama no respondió ({tag})")
         return _ollama_unavailable_msg(), "ollama-error"
 
@@ -10791,10 +10790,9 @@ def call_llm(
                 except Exception:
                     log.warning("No pude guardar last-briefing.json", exc_info=True)
             return response, "deepseek"
-        # DeepSeek falló → briefing determinístico (NO caemos en Ollama lento de CPU).
-        log.warning(f"DeepSeek no respondió ({tag}) — fallback determinístico")
-        fb, _ = deterministic_operational_response(snapshot)
-        return fb, "deepseek-fallback"
+        # DeepSeek falló → mensaje corto de error (no retornar briefing completo para cualquier query)
+        log.warning(f"DeepSeek no respondió ({tag}) — fallback error corto")
+        return "No pude conectarme ahora, intenta de nuevo en un momento.", "deepseek-fallback"
 
     if msg.startswith(OLLAMA_QUALITY_PREFIXES):
         return _ollama_route("override /oss")

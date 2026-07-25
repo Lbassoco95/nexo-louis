@@ -471,14 +471,17 @@ document.getElementById('cq').addEventListener('keydown',function(e){{if(e.key==
     return content
 
 
-def send_doc(content, fname, caption):
+def send_doc(content, fname, caption, reply_markup=None):
     token, chat = creds()
     if not token or not chat:
         print("ERROR: faltan credenciales Telegram", file=sys.stderr)
         return False
     b = "----L" + uuid.uuid4().hex
     parts = []
-    for n, v in (("chat_id", str(chat)), ("caption", caption), ("parse_mode", "HTML")):
+    fields = [("chat_id", str(chat)), ("caption", caption), ("parse_mode", "HTML")]
+    if reply_markup:
+        fields.append(("reply_markup", reply_markup))
+    for n, v in fields:
         parts += [f"--{b}".encode(), f'Content-Disposition: form-data; name="{n}"'.encode(),
                   b"", v.encode("utf-8")]
     parts += [f"--{b}".encode(),
@@ -505,11 +508,13 @@ def main():
     dlabel = "mañana" if rango == "manana" else "hoy"
     av_txt = f" · {len(avances)} avances detectados" if avances else ""
     caption = (f"☀️ <b>Briefing de {dlabel}</b> — {DIAS[fecha_obj.weekday()]} {fecha_obj.day}/{fecha_obj.month}\n"
-               f"<b>{len(eventos)}</b> eventos · <b>{len(pend)}</b> pendientes{av_txt}\n\n"
-               f'📱 <a href="https://louis.kawiil.mx/briefing">Abrir dashboard interactivo →</a>\n'
-               f"<i>(o abre el adjunto en Safari/Chrome para interactuar)</i>")
+               f"<b>{len(eventos)}</b> eventos · <b>{len(pend)}</b> pendientes{av_txt}")
+    import json as _json
+    safari_btn = _json.dumps({"inline_keyboard": [[
+        {"text": "📱 Abrir dashboard interactivo →", "url": "https://louis.kawiil.mx/briefing"}
+    ]]})
     fname = f"Briefing_{fecha_obj.isoformat().replace('-', '')}.html"
-    ok = send_doc(build_html(eventos, pend, fecha_obj, rango, err, avances), fname, caption)
+    ok = send_doc(build_html(eventos, pend, fecha_obj, rango, err, avances), fname, caption, reply_markup=safari_btn)
     print("Enviado" if ok else "Falló el envío")
     return 0 if ok else 1
 
