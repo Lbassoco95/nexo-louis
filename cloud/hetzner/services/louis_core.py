@@ -10794,17 +10794,10 @@ def call_llm(
         log.warning(f"DeepSeek no respondió ({tag}) — fallback Haiku")
         try:
             _ak = load_anthropic_key()
-            _headers = {"x-api-key": _ak, "anthropic-version": ANTHROPIC_VERSION}
-            _msgs = [{"role": m["role"], "content": m["content"]}
-                     for m in (history or []) if m.get("role") in ("user", "assistant")][-20:]
-            _msgs.append({"role": "user", "content": user_message})
-            _body = {"model": CLAUDE_HAIKU, "max_tokens": 1024,
-                     "system": system_prompt, "messages": _msgs}
-            _resp = http_post_json(ANTHROPIC_API_BASE, _headers, _body, timeout=25)
-            _text = "".join(b.get("text", "") for b in _resp.get("content", [])
-                            if b.get("type") == "text").strip()
-            if _text:
+            _text = call_haiku(_ak, system_prompt, history or [], user_message)
+            if _text and not _text.startswith("(error") and not _text.startswith("(sin respuesta"):
                 return _text, "haiku-fallback"
+            log.warning(f"Haiku fallback retornó error: {_text[:200] if _text else 'None'}")
         except Exception as _e:
             log.warning(f"Haiku fallback también falló: {_e}")
         return "No pude conectarme ahora, intenta de nuevo en un momento.", "deepseek-fallback"
