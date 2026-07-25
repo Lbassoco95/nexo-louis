@@ -10790,8 +10790,23 @@ def call_llm(
                 except Exception:
                     log.warning("No pude guardar last-briefing.json", exc_info=True)
             return response, "deepseek"
-        # DeepSeek falló → mensaje corto de error (no retornar briefing completo para cualquier query)
-        log.warning(f"DeepSeek no respondió ({tag}) — fallback error corto")
+        # DeepSeek falló → fallback a Claude Haiku (rápido, sin tools)
+        log.warning(f"DeepSeek no respondió ({tag}) — fallback Haiku")
+        try:
+            _ak = load_anthropic_key()
+            _headers = {"x-api-key": _ak, "anthropic-version": ANTHROPIC_VERSION}
+            _msgs = [{"role": m["role"], "content": m["content"]}
+                     for m in (history or []) if m.get("role") in ("user", "assistant")][-20:]
+            _msgs.append({"role": "user", "content": user_message})
+            _body = {"model": CLAUDE_HAIKU, "max_tokens": 1024,
+                     "system": system_prompt, "messages": _msgs}
+            _resp = http_post_json(ANTHROPIC_API_BASE, _headers, _body, timeout=25)
+            _text = "".join(b.get("text", "") for b in _resp.get("content", [])
+                            if b.get("type") == "text").strip()
+            if _text:
+                return _text, "haiku-fallback"
+        except Exception as _e:
+            log.warning(f"Haiku fallback también falló: {_e}")
         return "No pude conectarme ahora, intenta de nuevo en un momento.", "deepseek-fallback"
 
     if msg.startswith(OLLAMA_QUALITY_PREFIXES):
