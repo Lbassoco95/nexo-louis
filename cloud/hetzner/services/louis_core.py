@@ -11193,9 +11193,9 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
     try:
         _now_live = datetime.now(get_active_tz())
         _tzlbl = "CDMX" if get_active_tz_name() == TZ_DEFAULT_NAME else get_active_tz_name()
-        _hora_block = (f"# ⏰ HORA EXACTA EN ESTE INSTANTE: {_fmt_dt_es(_now_live)} ({_tzlbl}).\n"
-                       "Esta es la hora REAL de AHORA. Úsala SIEMPRE para deadlines, 'cuánto falta', "
-                       "'hoy/mañana/esta mañana/esta tarde'. IGNORA cualquier otra hora del contexto.")
+        _hora_block = (f"# 📅 HOY ES {_fmt_dt_es(_now_live)} ({_tzlbl}) — FECHA Y HORA REALES de AHORA.\n"
+                       "Úsala SIEMPRE (para el saludo, 'hoy/ayer/mañana/esta mañana/esta tarde', deadlines y 'cuánto falta'). "
+                       "IGNORA cualquier otra FECHA U HORA que aparezca en el historial de la conversación o en la memoria: pueden estar viejas.")
     except Exception:
         _hora_block = ""
     _system_cached = [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
