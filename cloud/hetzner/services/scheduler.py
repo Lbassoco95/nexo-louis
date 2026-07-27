@@ -567,6 +567,15 @@ def main():
                 if msg:
                     send_telegram(msg)
                     log.info(f"intraday nudge enviado ({_slot})")
+                if _slot == "cierre":
+                    try:
+                        cierre = core.build_cierre_html_data()
+                        if cierre and cierre[0]:
+                            core._telegram_send_html_doc(cierre[0], cierre[1], cierre[2],
+                                                         reply_markup=cierre[3] if len(cierre) > 3 else None)
+                            log.info("cierre HTML enviado")
+                    except Exception as _e_cierre:
+                        log.warning(f"cierre HTML falló: {_e_cierre}")
                 _intraday_marca(_slot, _hoy)  # marca aunque no haya nada (no recalcular cada tick)
         except Exception as e:
             log.warning(f"intraday check falló: {e}")
@@ -617,14 +626,9 @@ def main():
                     light = core.build_unified_monitor_scan(mode="light")
                     if light.get("summary"):
                         send_telegram(light["summary"])
-                    for ev in light.get("events", []):
-                        try:
-                            core._telegram_send_html_doc(ev["html"], ev["fname"], ev["caption"])
-                        except Exception as e_ev:
-                            log.warning(f"monitor light: error HTML: {e_ev}")
-                    if light.get("bullets"):
-                        log.info(f"monitor light: {len(light['bullets'])} bullets, "
-                                 f"{len(light.get('events', []))} HTMLs")
+                    # HTMLs individuales suprimidos — se consolidan en Cierre 18:00
+                    log.info(f"monitor light: {len(light.get('bullets', []))} bullets, "
+                             f"{len(light.get('events', []))} eventos detectados (sin envío HTML)")
                 except Exception as e_light:
                     log.warning(f"monitor light falló: {e_light}")
                 _cerebro_digest_marca(str(_now.hour), _hoy)

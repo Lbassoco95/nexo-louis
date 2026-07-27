@@ -151,6 +151,8 @@ def build_html_doc(stats: dict, fecha: str) -> bytes:
     dof_validas = stats.get("dof_validas", 0)
     backfill_sjf = stats.get("backfill_sjf", 0)
     backfill_dof = stats.get("backfill_dof", 0)
+    sjf_rate_day = stats.get("sjf_rate_day", 0.0)
+    sjf_eta_str = stats.get("sjf_eta_str", "indeterminado")
 
     def bar(pct, color):
         w = min(pct, 100)
@@ -163,6 +165,8 @@ def build_html_doc(stats: dict, fecha: str) -> bytes:
         ("📊", f"{sjf_pct:.1f}%", "cobertura SJF"),
         ("📰", f"{dof_validas:,}", "DOF notas"),
         ("🧠", f"{dof_html_pct:.0f}%", "DOF HTML"),
+        ("⚡", f"{sjf_rate_day:.0f}/día", "ritmo SJF"),
+        ("🎯", sjf_eta_str, "ETA completar SJF"),
     ]
     kpi_html = "".join(
         f'<div style="flex:1;min-width:80px;background:rgba(255,255,255,.14);border-radius:10px;padding:11px 10px;text-align:center">'
@@ -175,7 +179,8 @@ def build_html_doc(stats: dict, fecha: str) -> bytes:
     ctx_js = _json.dumps(
         f"Estado Legal — {fecha}\n"
         f"SJF: {sjf_total:,} / {sjf_universo:,} tesis ({sjf_pct:.1f}%), "
-        f"backfill esta semana: {backfill_sjf:,}\n"
+        f"backfill esta semana: {backfill_sjf:,}, ritmo: {sjf_rate_day:.0f} tesis/día, "
+        f"ETA completar: {sjf_eta_str}\n"
         f"DOF: {dof_validas:,} notas válidas, {dof_html_pct:.0f}% con HTML, "
         f"backfill esta semana: {backfill_dof:,}"
     )
@@ -228,7 +233,8 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-ser
 {bar(sjf_pct, AZUL)}
 <div class="stat-note">
 <b>{sjf_total:,}</b> de {sjf_universo:,} tesis ({sjf_pct:.1f}%) — faltan {max(sjf_universo-sjf_total,0):,}<br>
-Backfill esta semana: <b>{backfill_sjf:,}</b>
+Backfill esta semana: <b>{backfill_sjf:,}</b> · ritmo: <b>{sjf_rate_day:.0f} tesis/día</b><br>
+🎯 Pronóstico: <b>{sjf_eta_str}</b> para completar el acervo al ritmo actual
 </div>
 </div>
 <div class="card">
@@ -332,13 +338,22 @@ def main():
         con_pdf = _q1(SJF_DB, "SELECT COUNT(*) FROM tesis WHERE pdf_generated IN (1,'1')") or 0
         sjf_txt = _pct(con_texto, total)
         ok = "✅ al día" if (dias is not None and dias <= 10) else (f"⚠️ atrasado {dias}d" if dias is not None else "—")
+        # Pronóstico de velocidad SJF
+        sjf_rate_day = backfill_n / 7 if backfill_n > 0 else 0
+        sjf_eta_dias = int(faltan / sjf_rate_day) if sjf_rate_day > 0 else None
+        sjf_eta_str = (
+            f"~{sjf_eta_dias // 7} semanas" if sjf_eta_dias and sjf_eta_dias > 14
+            else (f"~{sjf_eta_dias} días" if sjf_eta_dias else "indeterminado")
+        )
         L.append("⚖️ <b>SJF (Semanario Judicial)</b>")
         L.append(f"• Acervo: <b>{_miles(total)}</b> / {_miles(universo)} ({_pct(total, universo):.1f}%) — faltan <b>{_miles(faltan)}</b> hacia atrás")
         L.append(f"• Al día: última publicación <b>{ult}</b> {ok} · {nuevas} nuevas esta semana")
         L.append(f"• Histórico (backfill): <b>{_miles(backfill_n)}</b> esta semana · frontera registro {cur or '—'} (época más antigua: {epoca_old})")
+        L.append(f"• Pronóstico: <b>{sjf_eta_str}</b> al ritmo actual ({sjf_rate_day:.0f} tesis/día)")
         L.append(f"• Indexación: <b>{sjf_txt:.0f}%</b> con texto · <b>{_pct(con_pdf, total):.0f}%</b> con PDF\n")
         stats_data.update({"sjf_total": total, "sjf_universo": universo,
-                           "sjf_pct": _pct(total, universo), "backfill_sjf": backfill_n})
+                           "sjf_pct": _pct(total, universo), "backfill_sjf": backfill_n,
+                           "sjf_rate_day": sjf_rate_day, "sjf_eta_str": sjf_eta_str})
     else:
         L.append("⚖️ <b>SJF</b>: BD no encontrada\n")
 

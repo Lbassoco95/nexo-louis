@@ -2119,6 +2119,82 @@ def build_task_gap_analysis() -> str | None:
     )
 
 
+def build_cierre_html_data():
+    """Compila datos del cierre del día y genera el HTML.
+    Devuelve (html_bytes, fname, caption, safari_btn_json) o None si falla."""
+    import importlib.util as _ilu
+    import json as _json
+    import datetime as _dt
+
+    # Pendientes abiertos de SEGUIMIENTOS.md
+    agenda = _read_space_file("SEGUIMIENTOS.md")
+    pendientes = _open_checkbox_lines(agenda, 20)
+
+    # Tareas kawiil.central sin avance reciente
+    kc_stalled = []
+    try:
+        kc_raw = execute_tool("kawiil_central_query", {
+            "sql": (
+                "SELECT COALESCE(t.titulo,'?') || ' (' || COALESCE(p.name,'sin proyecto') || ')'"
+                " || CASE WHEN t.deadline < NOW() THEN ' — VENCIDA' "
+                "        ELSE ' — vence ' || to_char(t.deadline,'DD Mon') END AS linea "
+                "FROM tasks t LEFT JOIN projects p ON t.project_id = p.id "
+                "WHERE t.status IN ('pending','in_progress') "
+                "AND (t.deadline < NOW() OR t.deadline <= NOW() + INTERVAL '7 days') "
+                "AND NOT EXISTS ("
+                "  SELECT 1 FROM task_updates u WHERE u.task_id = t.id "
+                "  AND u.created_at > NOW() - INTERVAL '2 days') "
+                "ORDER BY t.deadline NULLS LAST LIMIT 8"
+            ),
+            "razon": "cierre del día — tareas kawiil.central sin avance reciente",
+        })
+        if kc_raw and not kc_raw.startswith("(error") and not kc_raw.startswith("(sin"):
+            kc_stalled = [l.strip() for l in kc_raw.splitlines()
+                          if l.strip() and not l.strip().startswith(("linea", "---", "("))]
+    except Exception as _ke:
+        log.warning(f"build_cierre_html_data: kawiil.central falló: {_ke}")
+
+    # Avances detectados hoy (de advances_delta.json)
+    avances_bullets: list[str] = []
+    try:
+        _ap = Path(os.environ.get("STATE_DIR", "/opt/openclaw/state")) / "advances_delta.json"
+        if _ap.exists():
+            _ad = _json.loads(_ap.read_text())
+            _ts_raw = _ad.get("timestamp") or _ad.get("ts", "")
+            _bullets = _ad.get("bullets", [])
+            if _ts_raw:
+                _ts = _dt.datetime.fromisoformat(_ts_raw)
+                if _ts.tzinfo is None:
+                    _ts = _ts.replace(tzinfo=TZ_CDMX)
+                _age_h = (_dt.datetime.now(TZ_CDMX) - _ts).total_seconds() / 3600
+                if _age_h <= 18:
+                    avances_bullets = _bullets
+            else:
+                avances_bullets = _bullets
+    except Exception as _ae:
+        log.warning(f"build_cierre_html_data: advances_delta falló: {_ae}")
+
+    # Importar briefing_doc desde el mismo directorio
+    fecha_obj = _dt.datetime.now(TZ_CDMX).date()
+    try:
+        _bdoc_path = Path(__file__).parent / "briefing_doc.py"
+        _spec = _ilu.spec_from_file_location("briefing_doc", str(_bdoc_path))
+        _bdoc = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_bdoc)
+        html_bytes = _bdoc.build_cierre_html(fecha_obj, pendientes, kc_stalled, avances_bullets)
+    except Exception as _ie:
+        log.warning(f"build_cierre_html_data: briefing_doc falló: {_ie}")
+        return None
+
+    fname = f"Cierre_{fecha_obj.strftime('%Y%m%d')}.html"
+    caption = (f"🌆 <b>Cierre del día</b> — {fecha_obj.strftime('%d/%m/%Y')}\n"
+               f"<b>{len(pendientes)}</b> pendientes · <b>{len(kc_stalled)}</b> sin avance en kawiil")
+    safari_btn = _json.dumps({"inline_keyboard": [[
+        {"text": "📱 Abrir resumen interactivo →", "url": "https://louis.kawiil.mx/cierre"}
+    ]]})
+    return html_bytes, fname, caption, safari_btn
+
+
 def build_overnight_advances_scan() -> str | None:
     """Escanea email + Slack en busca de avances ocurridos desde ayer.
     Guarda el resultado en /opt/openclaw/state/advances_delta.json para que
@@ -2217,7 +2293,8 @@ def build_overnight_advances_scan() -> str | None:
 # los almacena en /opt/openclaw/events/{fecha}/ para acceso por URL.
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _telegram_send_html_doc(html_bytes: bytes, fname: str, caption: str) -> bool:
+def _telegram_send_html_doc(html_bytes: bytes, fname: str, caption: str,
+                            reply_markup: "str | None" = None) -> bool:
     """Envía documento HTML por Telegram (sendDocument multipart)."""
     import urllib.request as _ur
     import uuid as _uuid
@@ -2237,7 +2314,10 @@ def _telegram_send_html_doc(html_bytes: bytes, fname: str, caption: str) -> bool
         return False
     b = "----L" + _uuid.uuid4().hex
     parts: list[bytes] = []
-    for n, v in (("chat_id", str(chat)), ("caption", caption[:1024]), ("parse_mode", "HTML")):
+    _fields = [("chat_id", str(chat)), ("caption", caption[:1024]), ("parse_mode", "HTML")]
+    if reply_markup:
+        _fields.append(("reply_markup", reply_markup))
+    for n, v in _fields:
         parts += [f"--{b}".encode(),
                   f'Content-Disposition: form-data; name="{n}"'.encode(),
                   b"", v.encode("utf-8")]
