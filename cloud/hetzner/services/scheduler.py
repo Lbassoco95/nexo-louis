@@ -190,6 +190,17 @@ MAC_OFFLINE_COOLDOWN_S  = 4 * 3600      # mínimo 4h entre alertas repetidas
 # Scan de avances nocturnos (Módulo 2): 06:30 CDMX, una vez al día.
 ADVANCES_SCAN_STATE = HOME_OC / "state" / "advances_scan_sent.json"
 
+# Seguimiento post-reunión (Pilar 1): 11h, 15h, 19h CDMX — horas que no colisionan
+# con los slots existentes (10, 13, 14, 18, 23). Revisa reuniones terminadas ≤2h.
+POST_MEETING_SLOTS = {11, 15, 19}
+POST_MEETING_STATE = HOME_OC / "state" / "post_meeting_sent.json"
+
+# Gap seguimientos vs kawiil.central (Pilar 3): 09:30 CDMX, una vez al día.
+# Después de que la distilación nocturna (23:00) ya asentó los compromisos del día previo.
+TASK_GAP_HOUR = 9
+TASK_GAP_MIN = 30
+TASK_GAP_STATE = HOME_OC / "state" / "task_gap_sent.json"
+
 
 def _advances_ya(hoy: str) -> bool:
     try:
@@ -243,6 +254,45 @@ def _intraday_marca(slot: str, hoy: str):
         INTRADAY_STATE.write_text(json.dumps(d, ensure_ascii=False))
     except Exception as e:
         log.warning(f"no pude guardar intraday_sent.json: {e}")
+
+
+def _post_meeting_ya(hora: int, hoy: str) -> bool:
+    try:
+        d = json.loads(POST_MEETING_STATE.read_text())
+        return d.get("date") == hoy and str(hora) in d.get("horas", [])
+    except Exception:
+        return False
+
+
+def _post_meeting_marca(hora: int, hoy: str):
+    d = {"date": hoy, "horas": []}
+    try:
+        old = json.loads(POST_MEETING_STATE.read_text())
+        if old.get("date") == hoy:
+            d = old
+    except Exception:
+        pass
+    d["horas"] = sorted(set(d.get("horas", []) + [str(hora)]))
+    try:
+        POST_MEETING_STATE.parent.mkdir(parents=True, exist_ok=True)
+        POST_MEETING_STATE.write_text(json.dumps(d, ensure_ascii=False))
+    except Exception as e:
+        log.warning(f"no pude guardar post_meeting_sent.json: {e}")
+
+
+def _task_gap_ya(hoy: str) -> bool:
+    try:
+        return json.loads(TASK_GAP_STATE.read_text()).get("date") == hoy
+    except Exception:
+        return False
+
+
+def _task_gap_marca(hoy: str):
+    try:
+        TASK_GAP_STATE.parent.mkdir(parents=True, exist_ok=True)
+        TASK_GAP_STATE.write_text(json.dumps({"date": hoy}, ensure_ascii=False))
+    except Exception as e:
+        log.warning(f"no pude guardar task_gap_sent.json: {e}")
 
 
 def _cerebro_digest_ya(slot: str, hoy: str) -> bool:
@@ -520,6 +570,36 @@ def main():
                 _intraday_marca(_slot, _hoy)  # marca aunque no haya nada (no recalcular cada tick)
         except Exception as e:
             log.warning(f"intraday check falló: {e}")
+
+        # Gap seguimientos vs kawiil.central (Pilar 3): 09:30 CDMX, una vez al día.
+        # Cruza SEGUIMIENTOS.md con kawiil.central y propone formalizar compromisos sueltos.
+        try:
+            _now = datetime.now(TZ_CDMX)
+            _hoy = _now.strftime("%Y-%m-%d")
+            if (_now.hour == TASK_GAP_HOUR and _now.minute >= TASK_GAP_MIN
+                    and not _task_gap_ya(_hoy)):
+                msg = core.build_task_gap_analysis()
+                if msg:
+                    send_telegram(msg)
+                    log.info("task gap analysis enviado (09:30h)")
+                _task_gap_marca(_hoy)
+        except Exception as e:
+            log.warning(f"task gap check falló: {e}")
+
+        # Post-reunión (Pilar 1): 11h, 15h, 19h CDMX.
+        # Detecta reuniones que terminaron en las últimas 2h y propone capturar tareas.
+        try:
+            _now = datetime.now(TZ_CDMX)
+            _hoy = _now.strftime("%Y-%m-%d")
+            if (_now.hour in POST_MEETING_SLOTS
+                    and not _post_meeting_ya(_now.hour, _hoy)):
+                msg = core.build_post_meeting_followup()
+                if msg:
+                    send_telegram(msg)
+                    log.info(f"post-meeting followup enviado ({_now.hour}h)")
+                _post_meeting_marca(_now.hour, _hoy)
+        except Exception as e:
+            log.warning(f"post-meeting check falló: {e}")
 
         # Digest Cerebro + agentes (Fase 5): 10:00 y 14:00 CDMX.
         # También dispara el monitor ligero (email + Slack) para detectar novedades intraday.

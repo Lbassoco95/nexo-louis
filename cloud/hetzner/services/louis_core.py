@@ -575,6 +575,15 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "máx. 4 bullets Para HOY fieles al contexto + ¿Por dónde empezamos?\n"
         "**Mismo día después:** saludo breve; recuerda urgente si aplica; si no, ¿en qué te ayudo?\n"
         "**'Los de la mañana':** retoma el último briefing guardado + contexto actual.\n"
+        "\n# SEGUIMIENTO PROACTIVO Y APRENDIZAJE\n"
+        "Cuando crees tareas en kawiil.central derivadas de una reunión o de compromisos pendientes:\n"
+        "1. Crea todas las tareas aprobadas por Polo (usa `kawiil_central_proyectos` para encontrar "
+        "el proyecto correcto antes de crear).\n"
+        "2. Llama `save_learning`: topic='seguimiento_[tipo]', "
+        "rule='[contexto] genera [tipo_tareas] con plazo [X días]', context='[detalles]'\n"
+        "3. Borra el archivo de tareas pendientes si existe: "
+        "/opt/openclaw/state/pending_meeting_tasks.json\n"
+        "4. Confirma con una línea: qué se creó, en qué proyecto, con qué fechas.\n"
     )
 
     canal_text = ""
@@ -1967,7 +1976,7 @@ def build_tablero_data() -> dict:
 def build_intraday_nudge(slot: str = "tarde") -> str | None:
     """Fase 3 — Chequeo intradía. Devuelve un mensaje CORTO de seguimiento SOLO si hay
     algo accionable hoy (vencimientos abiertos, entregables LISTO esperando Vo.Bo.,
-    briefs pendientes). None si no hay nada → el scheduler no manda nada (silencioso)."""
+    briefs pendientes, o tareas kawiil.central estancadas). None si nada → silencioso."""
     agenda = _read_space_file("SEGUIMIENTOS.md")
     ds = _extract_deadlines(agenda, 15)
     urgentes = [d for d in ds if ("vence hoy" in d.lower() or "urgente" in d.lower()
@@ -1975,7 +1984,30 @@ def build_intraday_nudge(slot: str = "tarde") -> str | None:
     ents = _entregables_lista_tablero()
     listos = [e for e in ents if e.get("estado") == "listo"]
     briefs = [e for e in ents if e.get("estado") == "brief"]
-    if not urgentes and not listos and not briefs:
+    # Tareas kawiil.central: vencidas o vencen en ≤3 días sin avance reciente
+    kc_stalled = []
+    try:
+        kc_raw = execute_tool("kawiil_central_query", {
+            "sql": (
+                "SELECT COALESCE(t.titulo,'?') || ' (' || COALESCE(p.name,'sin proyecto') || ')'"
+                " || CASE WHEN t.deadline < NOW() THEN ' — VENCIDA' "
+                "        ELSE ' — vence ' || to_char(t.deadline,'DD Mon') END AS linea "
+                "FROM tasks t LEFT JOIN projects p ON t.project_id = p.id "
+                "WHERE t.status IN ('pending','in_progress') "
+                "AND (t.deadline < NOW() OR t.deadline <= NOW() + INTERVAL '3 days') "
+                "AND NOT EXISTS ("
+                "  SELECT 1 FROM task_updates u WHERE u.task_id = t.id "
+                "  AND u.created_at > NOW() - INTERVAL '2 days') "
+                "ORDER BY t.deadline NULLS LAST LIMIT 6"
+            ),
+            "razon": "intraday nudge — tareas kawiil.central sin avance reciente",
+        })
+        if kc_raw and not kc_raw.startswith("(error") and not kc_raw.startswith("(sin"):
+            kc_stalled = [l.strip() for l in kc_raw.splitlines()
+                          if l.strip() and not l.strip().startswith(("linea", "---", "("))]
+    except Exception as _ke:
+        log.warning(f"intraday_nudge: kawiil.central falló: {_ke}")
+    if not urgentes and not listos and not briefs and not kc_stalled:
         return None
     titulo = {"tarde": "🔔 Seguimiento de mediodía",
               "cierre": "🌆 Cierre del día"}.get(slot, "🔔 Seguimiento")
@@ -1983,6 +2015,10 @@ def build_intraday_nudge(slot: str = "tarde") -> str | None:
     if urgentes:
         lines.append("\n⏰ *Pendientes de hoy:*")
         lines += [f"• {d}" for d in urgentes[:8]]
+    if kc_stalled:
+        lines.append(f"\n🔴 *{len(kc_stalled)} tarea(s) kawiil.central sin avance:*")
+        lines += [f"• {t}" for t in kc_stalled[:5]]
+        lines.append("_Di 'actualizar [tarea]' o 'ya terminé [tarea]' para registrar._")
     if listos:
         lines.append(f"\n✅ *{len(listos)} entregable(s) LISTO* esperando tu Vo.Bo.:")
         lines += [f"• {e['titulo']}" + (f" ({e['cliente']})" if e.get("cliente") else "")
@@ -1991,6 +2027,96 @@ def build_intraday_nudge(slot: str = "tarde") -> str | None:
         lines.append(f"\n📨 *{len(briefs)} brief(s)* pendiente(s) de dispatch a agentes.")
     lines.append("\n_Marca lo hecho con /agenda o dime «ya hice X»._")
     return "\n".join(lines)
+
+
+def _save_pending_tasks(analysis: str, tipo: str, ts: "datetime") -> None:
+    """Persiste propuesta de tareas pendientes para el approval flow en call_llm()."""
+    import json as _json
+    _p = Path(os.environ.get("STATE_DIR", "/opt/openclaw/state")) / "pending_meeting_tasks.json"
+    _p.parent.mkdir(parents=True, exist_ok=True)
+    _p.write_text(_json.dumps({"analysis": analysis, "tipo": tipo, "ts": ts.isoformat()},
+                              ensure_ascii=False))
+
+
+def build_post_meeting_followup() -> str | None:
+    """Pilar 1 — Revisa reuniones que terminaron en las últimas 2h y propone tareas.
+    Devuelve mensaje Telegram con propuesta, o None si no hay nada que seguir."""
+    import json as _json
+    now = datetime.now(TZ_CDMX)
+    if not (9 <= now.hour <= 21):
+        return None
+    cal_raw = _run_m365_tool("m365_calendario", {"tenant": "todos", "rango": "hoy"})
+    if not cal_raw or cal_raw.startswith("ERROR") or "(sin eventos)" in cal_raw:
+        return None
+    seguimientos = _read_space_file("SEGUIMIENTOS.md")[:1500]
+    api_key = load_anthropic_key()
+    if not api_key:
+        return None
+    hora_str = now.strftime("%H:%M")
+    fecha_str = now.strftime("%Y-%m-%d")
+    prompt = (
+        f"Hora actual (CDMX): {hora_str} del {fecha_str}.\n\n"
+        "CALENDARIO HOY:\n" + cal_raw + "\n\n"
+        "CARGA ACTUAL (SEGUIMIENTOS.md extracto):\n" + seguimientos + "\n\n"
+        "INSTRUCCIONES:\n"
+        "1. Identifica reuniones con hora específica (NO todo-el-día) que terminaron hace "
+        "entre 15 minutos y 2 horas. Si no hay ninguna → responde solo: NADA\n"
+        "2. Para cada reunión, propone 2-3 tareas concretas de seguimiento con fecha de "
+        "vencimiento razonable según la carga actual.\n"
+        "3. Formato exacto:\n"
+        "REUNION: [título] ([hora inicio]-[hora fin])\n"
+        "TAREAS:\n"
+        "• [título tarea] | vence: [YYYY-MM-DD] | prioridad: [alta/media/baja]\n"
+        "Solo reuniones de trabajo reales. Ignora bloqueos de tiempo y recordatorios."
+    )
+    analysis = call_haiku(api_key, "", [], prompt)
+    if not analysis or analysis.strip().upper().startswith("NADA"):
+        return None
+    _save_pending_tasks(analysis, "post_reunion", now)
+    return (
+        "📋 *Seguimiento de reunión*\n\n" + analysis
+        + "\n\n_¿Las cargo en Kawiil Central? Responde *'sí'* o ajusta._"
+    )
+
+
+def build_task_gap_analysis() -> str | None:
+    """Pilar 3 — Cruza SEGUIMIENTOS.md con kawiil.central y detecta compromisos sin tarea formal.
+    Devuelve propuesta Telegram, o None si no hay gaps reales."""
+    import json as _json
+    seguimientos = _read_space_file("SEGUIMIENTOS.md")
+    open_items = _open_checkbox_lines(seguimientos, 20)
+    if not open_items:
+        return None
+    # Tareas activas en kawiil.central para cross-reference
+    kc_context = ""
+    try:
+        kc_pending = execute_tool("kawiil_central_tareas", {"estado": "pending", "limit": 30})
+        kc_inprog = execute_tool("kawiil_central_tareas", {"estado": "in_progress", "limit": 20})
+        kc_context = ((kc_pending or "") + "\n" + (kc_inprog or ""))[:2000]
+    except Exception as _e:
+        log.warning(f"task_gap_analysis: kawiil.central falló: {_e}")
+        kc_context = "(no disponible)"
+    api_key = load_anthropic_key()
+    if not api_key:
+        return None
+    prompt = (
+        "SEGUIMIENTOS.md — ítems abiertos:\n" + "\n".join(open_items[:20]) + "\n\n"
+        "KAWIIL.CENTRAL — tareas activas:\n" + kc_context + "\n\n"
+        "INSTRUCCIONES: Identifica ítems de SEGUIMIENTOS.md que son compromisos o tareas "
+        "concretas de Polo pero NO tienen una tarea equivalente en kawiil.central. "
+        "Ignora ítems vagos, informativos o ya cubiertos. Para cada gap real:\n"
+        "• [descripción breve] → propuesta de tarea (proyecto probable, deadline sugerido)\n"
+        "Si no hay gaps reales → responde solo: NADA\n"
+        "Máx 4 ítems. Sé específico con nombres de proyectos/clientes."
+    )
+    analysis = call_haiku(api_key, "", [], prompt)
+    if not analysis or analysis.strip().upper().startswith("NADA"):
+        return None
+    _save_pending_tasks(analysis, "gap_seguimientos", datetime.now(TZ_CDMX))
+    return (
+        "🔗 *Compromisos sin tarea formal en kawiil.central*\n\n" + analysis
+        + "\n\n_¿Los formalizo? Responde *'sí'* o ajusta._"
+    )
 
 
 def build_overnight_advances_scan() -> str | None:
@@ -10739,6 +10865,48 @@ def call_llm(
     if det_coach is not None:
         _mark_last_route("coach-directo")
         return det_coach, "coach-directo"
+
+    # Aprobación de tareas pendientes (post-reunión o gaps de seguimiento).
+    # Si hay un archivo pending_meeting_tasks.json vigente y el usuario aprueba,
+    # forzamos el tools path para que pueda llamar kawiil_central_crear_tarea.
+    _PENDING_PATH = Path(os.environ.get("STATE_DIR", "/opt/openclaw/state")) / "pending_meeting_tasks.json"
+    _pending_ctx = ""
+    if _PENDING_PATH.exists():
+        try:
+            import json as _pj
+            _pd = _pj.loads(_PENDING_PATH.read_text())
+            _age_min = (datetime.now(TZ_CDMX) - datetime.fromisoformat(_pd["ts"])).total_seconds() / 60
+            if _age_min < 180:
+                _tipo = _pd.get("tipo", "tareas")
+                _pending_ctx = (
+                    f"\n\n# PROPUESTA PENDIENTE DE APROBACIÓN ({_tipo})\n"
+                    + _pd["analysis"]
+                    + "\nSi Polo aprueba: usa `kawiil_central_proyectos` para encontrar el "
+                    "proyecto correcto, luego `kawiil_central_crear_tarea` para cada tarea. "
+                    "Después llama `save_learning` con el patrón aprendido "
+                    f"y borra el archivo {_PENDING_PATH}."
+                )
+            else:
+                _PENDING_PATH.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    _AFFIRM_RE = re.compile(
+        r"^\s*(sí|si|s[ií]\s+(carga|crea|agrega|formaliza)|ok|dale|adelante|"
+        r"agr[eé]gal[ae]s?|c[aá]rgal[ae]s?|formal[ií]zalas?|s[uú]belas?|"
+        r"va\b|apruebo|confirmo|crea(r)?\s+(las\s+)?tareas?)\b",
+        re.IGNORECASE,
+    )
+    if _pending_ctx:
+        system_prompt = system_prompt + _pending_ctx
+        if _AFFIRM_RE.search(msg):
+            log.info("→ Haiku con tools — aprobación tareas pendientes")
+            _cleaned = strip_override_prefix(user_message)
+            _resp = call_claude(api_key, system_prompt, history, _cleaned, model=CLAUDE_HAIKU) or ""
+            if _is_billing_error(_resp):
+                return _billing_error_msg(), "haiku-billing-error"
+            _mark_last_route("pending-tasks-approval")
+            return _resp or "(sin respuesta de Haiku)", "pending-tasks-approval"
 
     def _ollama_route(tag: str) -> tuple:
         if _needs_sonnet_hint(user_message) and not _sonnet_hint_already_shown():
