@@ -561,12 +561,6 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "absoluta del evento contra la fecha real de hoy (de `reloj`). Si no tienes el timestamp, "
         "di que la fecha es relativa al mensaje y no la afirmes como hoy.\n"
     )
-    parts.append("\n\n# CONTEXTO DE MEMORIA (archivos vivos)\n")
-    for fname in MEMORY_FILES:
-        path = SPACE / fname
-        if path.exists():
-            parts.append(f"\n## {fname}\n```\n{path.read_text()}\n```\n")
-
     parts.append(
         "\n\n# IDENTIDAD Y TONO (Ollama / chat normal)\n"
         "Eres Louis (Nexo), asistente ejecutivo DE Polo Bassoco (CEO Kawiil/Yoltik). "
@@ -599,7 +593,11 @@ def load_system_prompt(channel: str = "telegram") -> str:
             "- Emojis sí, son nativos\n"
             "- Para 'títulos' de secciones usa `*Título:*` en negrita.\n"
             "Si recibes un audio transcrito, considera que puede tener errores de transcripción "
-            "(palabras técnicas como 'FIATCOIN', 'LFPIORPI', 'Kawiil', 'Yoltik' pueden venir mal escritas)."
+            "(palabras técnicas como 'FIATCOIN', 'LFPIORPI', 'Kawiil', 'Yoltik' pueden venir mal escritas).\n"
+            "LÍMITE DURO: máx 4-5 líneas de texto en TOTAL por respuesta. "
+            "NUNCA listas numeradas (1. 2. 3.) ni separadores --- ni ===. "
+            "Si necesitas enumerar opciones, escríbelas en prosa o con bullets simples (•). "
+            "Si la respuesta necesita más espacio, di en 1 línea qué encontraste y ofrece enviarlo como HTML."
         )
     elif channel == "slack":
         canal_text = (
@@ -1226,6 +1224,23 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "el conocimiento indexado disponible — puedes tener datos desactualizados de tu entrenamiento.\n"
         "Usa `consejo_experto_legal(area, pregunta)` para el flujo completo legal (internacional + MX)."
     )
+    _MEM_CAPS = {
+        "USER.md": 2000, "SEGUIMIENTOS.md": 3000, "LEARNINGS.md": 2000,
+        "IMPORTANT.md": 2000, "JOURNAL.md": 1500, "PROJECTS.md": 1000,
+        "PEOPLE.md": 1000, "CLIENTES.md": 1000, "PROSPECTOS.md": 800,
+        "PERSONAL.md": 800, "FAMILIA.md": 800, "SALUD.md": 800,
+        "ALIMENTACION.md": 600, "VIAJES.md": 800, "FINANZAS.md": 800,
+        "COACH.md": 1200,
+    }
+    parts.append("\n\n# CONTEXTO DE MEMORIA (archivos vivos)\n")
+    for fname in MEMORY_FILES:
+        path = SPACE / fname
+        if path.exists():
+            content = path.read_text()
+            cap = _MEM_CAPS.get(fname, 800)
+            if len(content) > cap:
+                content = content[:cap] + "\n…[truncado]"
+            parts.append(f"\n## {fname}\n```\n{content}\n```\n")
     return "\n".join(parts)
 
 
@@ -10323,7 +10338,7 @@ def call_haiku(api_key: str, system_prompt: str, history: list, user_message: st
     body = {
         "model": CLAUDE_HAIKU,
         "max_tokens": 2048,
-        "system": sys_p,
+        "system": [{"type": "text", "text": sys_p, "cache_control": {"type": "ephemeral"}}],
         "messages": cleaned,
     }
     try:
@@ -10777,8 +10792,9 @@ def call_llm(
         # el snapshot operativo para que tenga contexto real de SEGUIMIENTOS/IMPORTANT.
         log.info(f"→ DeepSeek (chat) — {tag}")
         ds_system = f"[CONTEXTO OPERATIVO ACTUAL]\n{snapshot}\n\n{system_prompt}"
+        hist_chat = (history or [])[-20:]
         try:
-            response = call_deepseek(ds_system, history, user_message)
+            response = call_deepseek(ds_system, hist_chat, user_message)
         except Exception as e:
             log.warning(f"DeepSeek excepción ({e})")
             response = None
@@ -10794,7 +10810,7 @@ def call_llm(
         log.warning(f"DeepSeek no respondió ({tag}) — fallback Haiku")
         try:
             _ak = load_anthropic_key()
-            _text = call_haiku(_ak, system_prompt, history or [], user_message)
+            _text = call_haiku(_ak, system_prompt, hist_chat, user_message)
             if _text and not any(_text.startswith(p) for p in ("(error", "(sin respuesta", "(Haiku")):
                 return _text, "haiku-fallback"
             if _text and _is_billing_error(_text):
