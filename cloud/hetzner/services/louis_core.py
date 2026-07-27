@@ -4254,6 +4254,18 @@ TENANT_ENUM = ["kawiil", "yoltik"]
 
 TOOLS_DEFINITION = [
     {
+        "name": "buscar_conocimiento",
+        "description": "Busca en la base de conocimiento de Nexo (KB-Negocio, Supabase pgvector) por SIGNIFICADO, no por palabras exactas. Úsalo cuando necesites contexto histórico de proyectos, decisiones, personas, clientes o documentos que probablemente NO esté en los archivos de memoria ya cargados en tu prompt. Devuelve los fragmentos más relevantes con su origen y score de similitud.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Pregunta o tema a buscar, en lenguaje natural."},
+                "top_k": {"type": "integer", "description": "Cuántos fragmentos devolver (default 6)."},
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "read_memory",
         "description": "Lee un archivo de memoria de Louis (SEGUIMIENTOS.md, USER.md, LEARNINGS.md, JOURNAL.md, IMPORTANT.md, PROJECTS.md, PEOPLE.md).",
         "input_schema": {
@@ -10392,9 +10404,54 @@ MEXICANIZE_DOCTRINE = (
 )
 
 
+# === Nexo · Capa 1 · Bloque 2b — recuperación RAG como herramienta ===
+def _buscar_conocimiento(query, top_k=6, space_id="general"):
+    """Recupera fragmentos relevantes de la KB-Negocio (Supabase pgvector) por significado.
+    Aditivo y a prueba de fallos: si falta la libreria o la config, devuelve un aviso
+    claro en vez de romper el gateway."""
+    import os as _os
+    for cand in filter(None, [
+        _os.environ.get("NEXO_LIB_DIR"),
+        str(Path(__file__).resolve().parent),
+        str(Path.home()),
+    ]):
+        if cand not in sys.path:
+            sys.path.insert(0, cand)
+    try:
+        import nexo_retrieve
+    except Exception as e:
+        return f"(recuperacion no disponible: no pude importar nexo_retrieve - {e})"
+
+    org_id = (_os.environ.get("NEXO_DEFAULT_ORG_ID")
+              or _os.environ.get("KAWIIL_KAWIIL_ORG_ID")
+              or _os.environ.get("KAWIIL_ORG_ID"))
+    if not org_id:
+        return "(recuperacion no disponible: falta NEXO_DEFAULT_ORG_ID / KAWIIL_KAWIIL_ORG_ID en el entorno)"
+
+    try:
+        rows = nexo_retrieve.retrieve(query, org_id, space_id, int(top_k or 6))
+    except Exception as e:
+        return f"(error en recuperacion: {e})"
+
+    if not rows:
+        return "(sin resultados relevantes en la base de conocimiento)"
+
+    out = [f"{len(rows)} fragmento(s) relevante(s) por significado:"]
+    for r in rows:
+        sim = r.get("similarity")
+        sim_s = f"{sim:.3f}" if isinstance(sim, (int, float)) else str(sim)
+        src = r.get("source_ref") or "?"
+        title = r.get("title") or ""
+        content = (r.get("content") or "").strip()
+        out.append(f"\n[{sim_s}] {title} ({src})\n{content}")
+    return "\n".join(out)
+
+
 def execute_tool(name: str, args: dict) -> str:
     """Ejecuta un tool y devuelve resultado como string."""
     try:
+        if name == "buscar_conocimiento":
+            return _buscar_conocimiento(args["query"], args.get("top_k", 6))
         if name == "read_memory":
             path = SPACE / args["filename"]
             if not path.exists():
