@@ -2709,6 +2709,58 @@ def build_weekly_review() -> str:
     return "\n".join(lines)
 
 
+def build_weekly_review_html_data():
+    """Versión HTML de build_weekly_review(). Devuelve (html_bytes, fname, caption, safari_btn_json) o None."""
+    import json as _json
+    import importlib.util as _ilu
+    from datetime import date
+    agenda = _read_space_file("SEGUIMIENTOS.md")
+    hoy = datetime.now(TZ_CDMX).date()
+    abiertos, cerrados, estancados = 0, 0, []
+    for line in agenda.splitlines():
+        if re.match(r"^\s*-\s*\[[xX]\]", line):
+            cerrados += 1
+            continue
+        if not re.match(r"^\s*-\s*\[\s*\]\s+", line):
+            continue
+        abiertos += 1
+        txt = re.sub(r"^\s*-\s*\[\s*\]\s*", "", line.strip()).replace("**", "").strip()
+        mcap = re.search(r"\[(?:auto|capturado)\s+(\d{4}-\d{2}-\d{2})\]", line)
+        if mcap:
+            try:
+                edad = (hoy - date.fromisoformat(mcap.group(1))).days
+                if edad >= 7:
+                    estancados.append((edad, re.sub(r"\s*·?\s*\[(?:auto|capturado)[^\]]*\]", "", txt).strip()))
+            except Exception:
+                pass
+    estancados.sort(reverse=True)
+    deadlines = _extract_deadlines(agenda, 10)
+    snap = _cerebro_entregables_snapshot()
+    dup_raw = limpiar_agenda_duplicados(dry_run=True)
+    n_dup = 0
+    m = re.search(r"quitar[íi]a (\d+)", dup_raw)
+    if m:
+        n_dup = int(m.group(1))
+    fecha_str = hoy.strftime("%d %b %Y")
+    try:
+        _bpath = Path(__file__).parent / "briefing_doc.py"
+        _spec = _ilu.spec_from_file_location("briefing_doc", _bpath)
+        _bd = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_bd)
+        html_bytes = _bd.build_weekly_review_html(fecha_str, cerrados, abiertos, deadlines, estancados, n_dup, snap)
+    except Exception as _e:
+        log.warning(f"build_weekly_review_html_data: briefing_doc falló: {_e}")
+        return None
+    fname = f"Review_{hoy.strftime('%Y%m%d')}.html"
+    caption = (f"📊 <b>Review semanal</b> — {fecha_str}\n"
+               f"<b>{cerrados}</b> cerrados · <b>{abiertos}</b> abiertos · "
+               f"<b>{len(estancados)}</b> estancados")
+    safari_btn = _json.dumps({"inline_keyboard": [[
+        {"text": "📱 Abrir review interactiva →", "url": "https://louis.kawiil.mx/review"}
+    ]]})
+    return html_bytes, fname, caption, safari_btn
+
+
 def build_weekly_coach_review() -> str | None:
     """Revisión semanal de coaching y nutrición (viernes 09h CDMX).
     Lee avances de COACH.md y entradas de ALIMENTACION.md de los últimos 7 días.

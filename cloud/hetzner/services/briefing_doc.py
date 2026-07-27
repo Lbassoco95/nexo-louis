@@ -901,5 +901,157 @@ def main():
     return 0 if ok else 1
 
 
+def build_weekly_review_html(fecha_str, cerrados, abiertos, deadlines, estancados,
+                             n_dup, entregables_snap):
+    """Genera HTML de la review semanal (lunes 08:00 CDMX).
+    deadlines: list of str
+    estancados: list of (edad_dias: int, texto: str), ya ordenados descendente
+    """
+    import json as _json
+    logo_uri = logo_data_uri()
+    logo_html = (f'<img src="{logo_uri}" style="height:26px;margin-bottom:8px;opacity:.9" alt="Kawiil">'
+                 if logo_uri else "")
+    hora_gen = dt.datetime.now(TZ).strftime("%H:%M")
+
+    n_estancados = len(estancados)
+    n_deadlines = len(deadlines)
+
+    kpi_defs = [
+        ("✅", str(cerrados), "cerrados", "background:rgba(39,174,96,.2);color:#2ecc71"),
+        ("🟢", str(abiertos), "abiertos",
+         "background:rgba(220,50,47,.18);color:#ff7070" if abiertos > 50 else ""),
+        ("🐌", str(n_estancados), "estancados",
+         "background:rgba(230,126,34,.18);color:#e67e22" if n_estancados > 0 else ""),
+    ]
+    kpi_cards = ""
+    for icon, val, lbl, extra in kpi_defs:
+        style = (f"flex:1;min-width:68px;background:rgba(255,255,255,.13);border-radius:10px;"
+                 f"padding:11px 10px;text-align:center;{extra}")
+        kpi_cards += (f'<div style="{style}">'
+                      f'<div style="font-size:1.3rem;font-weight:700;color:#fff">{icon} {val}</div>'
+                      f'<div style="font-size:.68rem;color:rgba(255,255,255,.72);text-transform:uppercase;'
+                      f'letter-spacing:.06em;margin-top:3px">{lbl}</div></div>')
+
+    def _row(txt, color="var(--text)"):
+        return (f'<div style="padding:7px 0;border-bottom:1px solid var(--border);'
+                f'font-size:.88em;color:{color}">{esc(txt)}</div>')
+
+    deadline_rows = "".join(_row(d) for d in deadlines[:10]) if deadlines else (
+        '<p style="color:var(--muted);font-size:.88em;font-style:italic">Sin vencimientos próximos</p>')
+
+    estancado_rows = "".join(
+        _row(f"({e}d) {t}", "#e67e22" if e >= 14 else "var(--text)")
+        for e, t in estancados[:10]
+    ) if estancados else (
+        '<p style="color:var(--muted);font-size:.88em;font-style:italic">Todo en movimiento ✓</p>')
+
+    ent_html = ""
+    if entregables_snap:
+        ent_html = (f'<div class="card"><div class="sec-lbl">📦 Entregables</div>'
+                    f'<div style="font-size:.88em">{esc(entregables_snap.splitlines()[0])}</div></div>')
+
+    dup_html = ""
+    if n_dup:
+        dup_html = (f'<div class="card" style="background:rgba(155,89,182,.08);border:1px solid rgba(155,89,182,.2)">'
+                    f'<div class="sec-lbl">🧹 Duplicados detectados</div>'
+                    f'<div style="font-size:.88em">{n_dup} ítem(s) duplicado(s) en AGENDA — '
+                    f'di <em>«limpia la agenda»</em> para quitarlos.</div></div>')
+
+    cta_html = (f'<div class="card" style="background:rgba(26,110,245,.06);border:1px solid rgba(26,110,245,.18)">'
+                f'<div class="sec-lbl">🎯 Enfoque de la semana</div>'
+                f'<p style="font-size:.87em;line-height:1.6">'
+                f'Cierra primero lo que vence. Los estancados de 14+ días, '
+                f'¿siguen vivos?<br><em>Di «ya hice X», «quita X» o «sigue pendiente X».</em></p></div>')
+
+    ctx_js = _json.dumps(f"Review semanal — {fecha_str} ({hora_gen} CDMX)\n"
+                         f"Cerrados: {cerrados} · Abiertos: {abiertos} · Estancados: {n_estancados}")
+    chat_url_js = _json.dumps(CHAT_URL)
+    chat_token_js = _json.dumps(CHAT_TOKEN)
+
+    content = f'''<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Review semanal — {esc(fecha_str)}</title>
+<style>
+:root{{--bg:#f4f6fb;--card:#fff;--text:#1a1a2e;--muted:#8892a4;--border:#e6eaf2;--acc:{KAWIIL_AZUL}}}
+@media(prefers-color-scheme:dark){{:root{{--bg:#0e1118;--card:#181d2c;--text:#dde3f0;--muted:#5a6278;--border:#252a3a}}}}
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding-bottom:220px}}
+.hdr{{background:linear-gradient(135deg,#0f4c35 0%,#1a6e45 60%,#0e3060 100%);color:#fff;padding:22px 18px 18px}}
+.hdr-meta{{font-size:.69rem;opacity:.68;text-transform:uppercase;letter-spacing:.08em;margin-bottom:3px}}
+.hdr-title{{font-size:1.28rem;font-weight:700;margin-bottom:3px}}
+.hdr-sub{{font-size:.82rem;opacity:.78;margin-bottom:14px}}
+.kpi-row{{display:flex;gap:7px;flex-wrap:wrap}}
+.main{{padding:15px;max-width:680px;margin:0 auto}}
+.card{{background:var(--card);border-radius:12px;padding:15px;margin-bottom:14px;box-shadow:0 1px 4px rgba(0,0,0,.06)}}
+.sec-lbl{{font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:9px}}
+.foot{{text-align:center;font-size:.7rem;color:var(--muted);padding:18px 16px}}
+.chat-bar{{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:1px solid var(--border);padding:10px 14px;box-shadow:0 -2px 12px rgba(0,0,0,.1);z-index:100}}
+.chat-bar .inner{{max-width:680px;margin:0 auto}}
+#conv{{max-height:200px;overflow-y:auto;margin-bottom:8px}}
+.cm{{padding:8px 12px;border-radius:10px;margin:4px 0;font-size:.87em;line-height:1.5}}
+.cm.user{{background:var(--acc);color:#fff;margin-left:18%}}
+.cm.bot{{background:var(--border);color:var(--text);margin-right:18%}}
+.cm.bot p{{margin:.3em 0}}
+.cin{{display:flex;gap:8px;align-items:flex-end}}
+.cin textarea{{flex:1;padding:9px;border:1px solid var(--border);border-radius:8px;font-size:.9em;resize:none;background:var(--bg);color:var(--text);font-family:inherit}}
+.cin button{{padding:9px 14px;border:0;border-radius:8px;background:var(--acc);color:#fff;cursor:pointer;font-size:.88em;white-space:nowrap}}
+.chat-note{{font-size:.66rem;color:var(--muted);margin-top:4px;text-align:center}}
+</style>
+</head>
+<body>
+<div class="hdr">
+{logo_html}
+<div class="hdr-meta">📊 Review semanal · {hora_gen} CDMX</div>
+<div class="hdr-title">{esc(fecha_str)}</div>
+<div class="hdr-sub">{n_deadlines} con vencimiento · {n_estancados} estancados</div>
+<div class="kpi-row">{kpi_cards}</div>
+</div>
+<div class="main">
+<div class="card">
+  <div class="sec-lbl">⏰ A cerrar esta semana ({n_deadlines})</div>
+  {deadline_rows}
+</div>
+<div class="card">
+  <div class="sec-lbl">🐌 Estancados 7+ días ({n_estancados})</div>
+  {estancado_rows}
+</div>
+{ent_html}{dup_html}{cta_html}
+</div>
+<div class="foot">Louis · Nexo Kawiil · Review {esc(fecha_str)}</div>
+<div class="chat-bar">
+<div class="inner">
+<div id="conv"></div>
+<div class="cin">
+<textarea id="cq" rows="2" placeholder="'cierra tarea X', 'quita Y', '¿qué vence hoy?'"></textarea>
+<button onclick="preg()">Enviar</button>
+</div>
+<p class="chat-note">Abre en Safari/Chrome para que el chat funcione.</p>
+</div>
+</div>
+<script>
+const CHAT_URL={chat_url_js},CHAT_TOKEN={chat_token_js},CTX={ctx_js};
+function inl(s){{s=s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');s=s.replace(/[*][*](.+?)[*][*]/g,'<strong>$1</strong>');s=s.replace(/[*](.+?)[*]/g,'<em>$1</em>');return s;}}
+function md(t){{var lines=t.split('\\n'),out=[],i=0;while(i<lines.length){{var l=lines[i];if(/^[ ]*[-*] /.test(l)){{var it=[];while(i<lines.length&&/^[ ]*[-*] /.test(lines[i])){{it.push('<li>'+inl(lines[i].replace(/^[ ]*[-*] /,''))+'</li>');i++;}}out.push('<ul>'+it.join('')+'</ul>');continue;}}if(l.trim()){{out.push('<p>'+inl(l)+'</p>');}}i++;}}return out.join('');}}
+function addMsg(role,html){{var d=document.createElement('div');d.className='cm '+role;d.innerHTML=html;var c=document.getElementById('conv');c.appendChild(d);c.scrollTop=c.scrollHeight;return d;}}
+var _hist=[];
+async function preg(){{var inp=document.getElementById('cq');var q=(inp.value||'').trim();if(!q)return;inp.value='';addMsg('user',inl(q));var bot=addMsg('bot','<em>pensando…</em>');try{{var h={{'Content-Type':'application/json'}};if(CHAT_TOKEN)h['Authorization']='Bearer '+CHAT_TOKEN;var msgs=[];if(CTX){{msgs.push({{role:'user',content:'Contexto:\\n'+CTX}});msgs.push({{role:'assistant',content:'Contexto cargado.'}});}}msgs=msgs.concat(_hist);msgs.push({{role:'user',content:q}});var r=await fetch(CHAT_URL,{{method:'POST',headers:h,body:JSON.stringify({{messages:msgs}})}});var j=await r.json();var ans=(j.choices&&j.choices[0]&&j.choices[0].message&&j.choices[0].message.content)||j.error||'(sin respuesta)';_hist.push({{role:'user',content:q}});_hist.push({{role:'assistant',content:ans}});bot.innerHTML=md(ans);}}catch(e){{bot.innerHTML='<em>Error: '+e+'</em>';}}}}
+document.getElementById('cq').addEventListener('keydown',function(e){{if(e.key==='Enter'&&!e.shiftKey){{e.preventDefault();preg();}}}});
+</script>
+</body>
+</html>'''.encode("utf-8")
+
+    try:
+        latest = Path(os.environ.get("STATE_DIR", "/opt/openclaw/state")) / "review_semanal_latest.html"
+        latest.parent.mkdir(parents=True, exist_ok=True)
+        latest.write_bytes(content)
+    except Exception:
+        pass
+
+    return content
+
+
 if __name__ == "__main__":
     sys.exit(main())

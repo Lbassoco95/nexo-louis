@@ -690,10 +690,16 @@ def main():
                 _ic = _n.isocalendar()
                 _wk = f"{_ic[0]}-W{_ic[1]:02d}"
                 if not _weekly_ya(_wk):
-                    rev = core.build_weekly_review()
-                    if rev:
-                        send_telegram(rev)
-                        log.info(f"review semanal enviado ({_wk})")
+                    rev_html = core.build_weekly_review_html_data()
+                    if rev_html and rev_html[0]:
+                        core._telegram_send_html_doc(rev_html[0], rev_html[1], rev_html[2],
+                                                     reply_markup=rev_html[3] if len(rev_html) > 3 else None)
+                        log.info(f"review semanal HTML enviada ({_wk})")
+                    else:
+                        rev = core.build_weekly_review()
+                        if rev:
+                            send_telegram(rev)
+                            log.info(f"review semanal texto enviada ({_wk})")
                     _weekly_marca(_wk)
         except Exception as e:
             log.warning(f"review semanal falló: {e}")

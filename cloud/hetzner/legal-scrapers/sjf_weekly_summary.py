@@ -174,17 +174,24 @@ def main():
         "FROM tesis WHERE substr(fecha_publicacion,1,10) >= ? AND substr(fecha_publicacion,1,10) <= ? "
         "ORDER BY fecha_publicacion DESC, registro_digital ASC",
         (desde.isoformat(), hasta.isoformat())).fetchall()
-    conn.close()
     # Etiqueta de rango legible: "1 al 5 de junio de 2026"
     if desde.month == hasta.month:
         etiqueta = f"{desde.day} al {hasta.day} de {MES[hasta.month]} de {hasta.year}"
     else:
         etiqueta = f"{desde.day} de {MES[desde.month]} al {hasta.day} de {MES[hasta.month]} de {hasta.year}"
     if not rows:
-        send_msg(f"⚖️ <b>Semanario Judicial</b> — sin publicaciones nuevas la semana del {esc(etiqueta)}. "
-                 f"(El Semanario publica los jueves; si no hubo edición, no hay tesis nuevas.)")
+        # Diagnóstico: última tesis registrada en la BD (para saber si el harvester corrió)
+        ultima = conn.execute(
+            "SELECT fecha_publicacion FROM tesis ORDER BY fecha_publicacion DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        ultima_str = (f" · última en BD: <b>{ultima['fecha_publicacion'][:10]}</b>"
+                      if ultima else " · BD sin registros")
+        send_msg(f"⚖️ <b>Semanario Judicial</b> — sin nuevas tesis registradas "
+                 f"del {esc(etiqueta)}{ultima_str}.")
         print("Sin publicaciones esta semana")
         return 0
+    conn.close()
     n_jur = sum(1 for r in rows if es_juris(r))
     caption = (f"⚖️ <b>Semanario Judicial</b> — semana del {esc(etiqueta)}\n"
                f"{len(rows)} publicaciones ({n_jur} jurisprudencias · {len(rows) - n_jur} tesis), por materia. Detalle en el adjunto.")
