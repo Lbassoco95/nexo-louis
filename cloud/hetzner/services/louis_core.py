@@ -2858,58 +2858,130 @@ def build_system_health_report_data():
         cierre_estado = "error"
     modulos.append(("🌆", "cierre del día", cierre_estado, cierre_ok))
 
-    # --- Análisis Haiku ---
-    api_key = load_anthropic_key()
-    analisis: dict[str, list[str]] = {"bien": [], "gaps": [], "mejoras": []}
+    # --- Preparar contextos para los agentes ---
+    import re as _re
+    import subprocess as _sp
 
-    if api_key:
-        mod_resumen = "\n".join(
-            f"{'✅' if ok else '❌'} {icon} {nombre}: {estado}"
-            for icon, nombre, estado, ok in modulos
+    mod_resumen = "\n".join(
+        f"{'✅' if ok else '❌'} {icon} {nombre}: {estado}"
+        for icon, nombre, estado, ok in modulos
+    )
+    seg_ctx = "\n".join(seg_lines[:10]) if seg_ok else "(sin seguimientos)"
+    coach_ctx = coach_md[:1200] if coach_ok else "(vacío)"
+    alim_ctx = alim_md[:800] if alim_ok else "(vacío)"
+
+    # Git log para revisor-evolucion
+    try:
+        _git_raw = _sp.check_output(
+            ["git", "log", "--oneline", "--since=14 days ago"],
+            cwd=Path(__file__).parent.parent.parent,
+            stderr=_sp.DEVNULL,
+            timeout=5,
+        ).decode(errors="ignore")
+    except Exception:
+        _git_raw = "(git log no disponible en este entorno)"
+
+    # LEARNINGS.md y JOURNAL.md para revisor-ia y revisor-aprendizaje
+    try:
+        learnings_md = _read_space_file("LEARNINGS.md")[:2000]
+    except Exception:
+        learnings_md = "(no disponible)"
+    try:
+        journal_md = _read_space_file("JOURNAL.md")[:800]
+    except Exception:
+        journal_md = "(no disponible)"
+
+    def _parse_agent_json(raw: "str | None") -> dict:
+        if not raw:
+            return {}
+        try:
+            m = _re.search(r'\{[\s\S]+\}', raw)
+            if m:
+                return _json.loads(m.group())
+        except Exception:
+            pass
+        return {}
+
+    # --- Llamar a los 4 agentes de revisión ---
+    analisis_agentes: dict[str, dict] = {}
+
+    # 1. revisor-sistema
+    try:
+        _ctx_sis = (f"Fecha: {fecha_str} {hora_str} CDMX\n\n"
+                    f"ESTADO DE MÓDULOS:\n{mod_resumen}")
+        _raw_sis = _invocar_agente(
+            "revisor-sistema",
+            f"Genera el informe de salud del sistema para {fecha_str}.",
+            contexto=_ctx_sis,
         )
-        seg_ctx = "\n".join(seg_lines[:10]) if seg_ok else "(sin seguimientos)"
-        coach_ctx = coach_md[:800] if coach_ok else "(vacío)"
-        alim_ctx = alim_md[:600] if alim_ok else "(vacío)"
+        analisis_agentes["sistema"] = _parse_agent_json(_raw_sis)
+        log.info("revisor-sistema: OK")
+    except Exception as _e:
+        log.warning(f"revisor-sistema falló: {_e}")
 
-        prompt = (
-            f"Revisión de sistema Louis — {fecha_str} {hora_str} CDMX.\n\n"
-            f"ESTADO DE MÓDULOS:\n{mod_resumen}\n\n"
-            f"SEGUIMIENTOS.md (primeros 10 pendientes):\n{seg_ctx}\n\n"
-            f"COACH.md:\n{coach_ctx}\n\n"
-            f"ALIMENTACION.md:\n{alim_ctx}\n\n"
-            "Responde en JSON con exactamente 3 keys:\n"
-            '{"bien": ["item1","item2"], "gaps": ["gap1","gap2"], "mejoras": ["mejora1","mejora2","mejora3"]}\n'
-            "- 'bien': 2-3 cosas que el sistema está haciendo bien.\n"
-            "- 'gaps': 2-3 gaps o problemas detectados (módulos rojos, datos faltantes, "
-            "seguimientos viejos sin avance).\n"
-            "- 'mejoras': 3 mejoras concretas y prioritarias para implementar en la próxima sesión. "
-            "Sé específico: menciona función, archivo, comportamiento.\n"
-            "Solo JSON, sin texto adicional."
+    # 2. revisor-ia
+    try:
+        _ctx_ia = (f"Fecha: {fecha_str}\n\n"
+                   f"LEARNINGS.md:\n{learnings_md}\n\n"
+                   f"JOURNAL.md (última entrada):\n{journal_md}")
+        _raw_ia = _invocar_agente(
+            "revisor-ia",
+            f"Evalúa la calidad de las respuestas y el comportamiento de Louis para {fecha_str}.",
+            contexto=_ctx_ia,
         )
-        raw = call_haiku(api_key, "", [], prompt)
-        if raw:
-            try:
-                import re as _re
-                _m = _re.search(r'\{[\s\S]+\}', raw)
-                if _m:
-                    analisis = _json.loads(_m.group())
-            except Exception:
-                pass
+        analisis_agentes["ia"] = _parse_agent_json(_raw_ia)
+        log.info("revisor-ia: OK")
+    except Exception as _e:
+        log.warning(f"revisor-ia falló: {_e}")
 
-    # Fallback si Haiku no respondió
-    if not analisis["bien"]:
-        n_ok = sum(1 for _, _, _, ok in modulos if ok)
-        analisis["bien"] = [f"{n_ok}/{len(modulos)} módulos operativos"]
-    if not analisis["gaps"]:
-        analisis["gaps"] = [
-            m[1] for m in modulos if not m[3]
-        ] or ["Sin gaps detectados"]
-    if not analisis["mejoras"]:
-        analisis["mejoras"] = [
-            "Registrar sesión de coaching en COACH.md",
-            "Registrar comidas en ALIMENTACION.md",
-            "Revisar pendientes viejos en SEGUIMIENTOS.md",
-        ]
+    # 3. revisor-aprendizaje
+    try:
+        _ctx_apr = (f"Fecha: {fecha_str}\n\n"
+                    f"LEARNINGS.md:\n{learnings_md}\n\n"
+                    f"COACH.md:\n{coach_ctx}\n\n"
+                    f"ALIMENTACION.md:\n{alim_ctx}")
+        _raw_apr = _invocar_agente(
+            "revisor-aprendizaje",
+            f"Analiza el estado del aprendizaje de Louis para {fecha_str}.",
+            contexto=_ctx_apr,
+        )
+        analisis_agentes["aprendizaje"] = _parse_agent_json(_raw_apr)
+        log.info("revisor-aprendizaje: OK")
+    except Exception as _e:
+        log.warning(f"revisor-aprendizaje falló: {_e}")
+
+    # 4. revisor-evolucion
+    try:
+        _ctx_evo = (f"Fecha: {fecha_str}\n\n"
+                    f"GIT LOG (últimos 14 días):\n{_git_raw[:2000]}\n\n"
+                    f"SEGUIMIENTOS.md (pendientes abiertos):\n{seg_ctx}")
+        _raw_evo = _invocar_agente(
+            "revisor-evolucion",
+            f"Analiza la evolución del desarrollo de Louis para {fecha_str}.",
+            contexto=_ctx_evo,
+        )
+        analisis_agentes["evolucion"] = _parse_agent_json(_raw_evo)
+        log.info("revisor-evolucion: OK")
+    except Exception as _e:
+        log.warning(f"revisor-evolucion falló: {_e}")
+
+    # Fallback si todos los agentes fallaron: usar Haiku genérico
+    if not any(analisis_agentes.values()):
+        log.warning("Todos los agentes de revisión fallaron — usando Haiku genérico")
+        api_key = load_anthropic_key()
+        if api_key:
+            _prompt_fb = (
+                f"Revisión de sistema Louis — {fecha_str}.\n\n"
+                f"MÓDULOS:\n{mod_resumen}\n\nCOACH:\n{coach_ctx[:400]}\n\n"
+                'Responde JSON: {"bien":[],"gaps":[],"mejoras":[]}'
+            )
+            _raw_fb = call_haiku(api_key, "", [], _prompt_fb)
+            _fb = _parse_agent_json(_raw_fb)
+            analisis_agentes["sistema"] = {
+                "resumen": "Análisis de fallback (agentes no disponibles)",
+                "recomendaciones": _fb.get("mejoras", []),
+                "errores": _fb.get("gaps", []),
+            }
 
     # --- Generar HTML via briefing_doc ---
     try:
@@ -2917,16 +2989,20 @@ def build_system_health_report_data():
         _spec = _ilu.spec_from_file_location("briefing_doc", _bpath2)
         _bd = _ilu.module_from_spec(_spec)
         _spec.loader.exec_module(_bd)
-        html_bytes = _bd.build_system_health_html(fecha_str, modulos, analisis)
+        html_bytes = _bd.build_system_health_html(fecha_str, modulos, analisis_agentes)
     except Exception as _ie:
         log.warning(f"build_system_health_report_data: briefing_doc falló: {_ie}")
         return None
 
     fname = f"SistemaLouis_{fecha_str.replace('-', '')}.html"
     n_ok = sum(1 for _, _, _, ok in modulos if ok)
+    n_mejoras = len(analisis_agentes.get("evolucion", {}).get("features_deployadas", []))
+    n_issues = (len(analisis_agentes.get("sistema", {}).get("errores", [])) +
+                len(analisis_agentes.get("ia", {}).get("problemas", [])))
     caption = (f"🔧 <b>Informe de sistema</b> — {fecha_str}\n"
                f"<b>{n_ok}/{len(modulos)}</b> módulos ok · "
-               f"<b>{len(analisis.get('mejoras', []))}</b> mejoras sugeridas")
+               f"<b>{n_issues}</b> issues · "
+               f"<b>4</b> agentes de revisión")
     safari_btn = _json.dumps({"inline_keyboard": [[
         {"text": "📱 Ver informe completo →", "url": "https://louis.kawiil.mx/sistema"}
     ]]})

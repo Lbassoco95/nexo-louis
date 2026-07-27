@@ -623,10 +623,11 @@ document.getElementById('cq').addEventListener('keydown',function(e){{if(e.key==
     return content
 
 
-def build_system_health_html(fecha_str, modulos, analisis_haiku):
+def build_system_health_html(fecha_str, modulos, analisis_agentes):
     """Genera HTML del informe de salud del sistema cada 2 días.
     modulos: list of (icon, nombre, estado_str, ok: bool)
-    analisis_haiku: dict con keys 'bien', 'gaps', 'mejoras' (lists of str)
+    analisis_agentes: dict con keys 'sistema', 'ia', 'aprendizaje', 'evolucion'
+                      (cada uno es el JSON devuelto por el agente revisor-*)
     """
     import json as _json
     logo_uri = logo_data_uri()
@@ -637,20 +638,32 @@ def build_system_health_html(fecha_str, modulos, analisis_haiku):
     n_ok = sum(1 for _, _, _, ok in modulos if ok)
     n_total = len(modulos)
 
-    # KPI strip
+    # Extraer datos clave de agentes para KPIs
+    ag_sis = analisis_agentes.get("sistema", {})
+    ag_ia = analisis_agentes.get("ia", {})
+    ag_apr = analisis_agentes.get("aprendizaje", {})
+    ag_evo = analisis_agentes.get("evolucion", {})
+
+    ia_calidad = ag_ia.get("calidad", "sin datos")
+    evo_progreso = ag_evo.get("progreso", "media")
+    n_issues = len(ag_sis.get("errores", [])) + len(ag_ia.get("problemas", []))
+
+    kpi_color_ok = "" if n_ok == n_total else "background:rgba(220,50,47,.18);color:#ff7070"
+    kpi_color_ia = ("background:rgba(220,50,47,.18);color:#ff7070"
+                    if ia_calidad == "baja" else "")
+    kpi_color_evo = ("background:rgba(39,174,96,.18);color:#2ecc71"
+                     if evo_progreso == "alta" else "")
+
     kpi_defs = [
-        ("✅", f"{n_ok}/{n_total}", "módulos ok", "" if n_ok == n_total
-         else "background:rgba(220,50,47,.18);color:#ff7070"),
-        ("🧘", "coach", "activo" if any(m[1] == "coaching" and m[3] for m in modulos) else "sin datos",
-         ""),
-        ("🍽️", "nutrición", "activo" if any("nutri" in m[1].lower() and m[3] for m in modulos) else "sin datos",
-         ""),
+        ("✅", f"{n_ok}/{n_total}", "módulos ok", kpi_color_ok),
+        ("🤖", ia_calidad, "calidad IA", kpi_color_ia),
+        ("🚀", evo_progreso, "progreso", kpi_color_evo),
     ]
     kpi_cards = ""
     for icon, val, lbl, extra in kpi_defs:
         style = f"flex:1;min-width:68px;background:rgba(255,255,255,.13);border-radius:10px;padding:11px 10px;text-align:center;{extra}"
         kpi_cards += (f'<div style="{style}">'
-                      f'<div style="font-size:1.25rem;font-weight:700;color:#fff">{icon} {val}</div>'
+                      f'<div style="font-size:1.1rem;font-weight:700;color:#fff">{icon} {val}</div>'
                       f'<div style="font-size:.68rem;color:rgba(255,255,255,.72);text-transform:uppercase;'
                       f'letter-spacing:.06em;margin-top:3px">{lbl}</div></div>')
 
@@ -664,19 +677,83 @@ def build_system_health_html(fecha_str, modulos, analisis_haiku):
         for icon, nombre, estado, ok in modulos
     )
 
-    # Análisis sections
     def _bullets(items, color="#27ae60"):
         if not items:
             return '<p style="color:var(--muted);font-size:.88em;font-style:italic">Sin datos</p>'
         return "".join(
             f'<div style="padding:5px 0;border-bottom:1px solid var(--border);font-size:.88em">'
-            f'<span style="color:{color};margin-right:6px">•</span>{esc(i)}</div>'
+            f'<span style="color:{color};margin-right:6px">•</span>{esc(str(i))}</div>'
             for i in items
         )
 
-    bien_html = _bullets(analisis_haiku.get("bien", []), "#27ae60")
-    gaps_html = _bullets(analisis_haiku.get("gaps", []), "#e74c3c")
-    mejoras_html = _bullets(analisis_haiku.get("mejoras", []), KAWIIL_AZUL)
+    def _agent_resumen(ag_data):
+        r = ag_data.get("resumen", "")
+        if not r:
+            return ""
+        return (f'<p style="font-size:.82em;color:var(--muted);margin-bottom:8px;'
+                f'font-style:italic">{esc(r)}</p>')
+
+    # Sección revisor-sistema
+    sis_html = (
+        _agent_resumen(ag_sis)
+        + "<b style='font-size:.8em;color:var(--muted)'>ERRORES DETECTADOS</b>"
+        + _bullets(ag_sis.get("errores", []), "#e74c3c")
+        + "<b style='font-size:.8em;color:var(--muted);display:block;margin-top:8px'>RECOMENDACIONES TÉCNICAS</b>"
+        + _bullets(ag_sis.get("recomendaciones", []), KAWIIL_AZUL)
+    )
+
+    # Sección revisor-ia
+    ia_probs = ag_ia.get("problemas", [])
+    ia_sugs = ag_ia.get("sugerencias", [])
+    ia_pats = ag_ia.get("patrones_positivos", [])
+    ia_html = (
+        _agent_resumen(ag_ia)
+        + ("<b style='font-size:.8em;color:var(--muted)'>PATRONES POSITIVOS</b>"
+           + _bullets(ia_pats, "#27ae60") if ia_pats else "")
+        + "<b style='font-size:.8em;color:var(--muted);display:block;margin-top:8px'>PROBLEMAS DE COMPORTAMIENTO</b>"
+        + _bullets(ia_probs, "#e74c3c")
+        + "<b style='font-size:.8em;color:var(--muted);display:block;margin-top:8px'>AJUSTES SUGERIDOS</b>"
+        + _bullets(ia_sugs, KAWIIL_AZUL)
+    )
+
+    # Sección revisor-aprendizaje
+    apr_n_new = ag_apr.get("learnings_nuevos_recientes", 0)
+    apr_patron = ag_apr.get("patron_principal", "")
+    apr_areas_ok = ag_apr.get("areas_con_datos", [])
+    apr_areas_no = ag_apr.get("areas_sin_datos", [])
+    apr_sugs = ag_apr.get("sugerencias", [])
+    apr_html = (
+        _agent_resumen(ag_apr)
+        + (f'<div style="font-size:.88em;padding:6px 0;border-bottom:1px solid var(--border)">'
+           f'<b>{apr_n_new}</b> learnings nuevos esta semana</div>' if isinstance(apr_n_new, int) else "")
+        + (f'<div style="font-size:.88em;padding:6px 0;border-bottom:1px solid var(--border);color:var(--muted)">'
+           f'<em>{esc(apr_patron)}</em></div>' if apr_patron else "")
+        + (f'<div style="font-size:.78em;color:#27ae60;padding:4px 0">✓ Con datos: {esc(", ".join(apr_areas_ok))}</div>'
+           if apr_areas_ok else "")
+        + (f'<div style="font-size:.78em;color:#e74c3c;padding:4px 0">✗ Sin datos: {esc(", ".join(apr_areas_no))}</div>'
+           if apr_areas_no else "")
+        + "<b style='font-size:.8em;color:var(--muted);display:block;margin-top:8px'>SUGERENCIAS PARA POLO</b>"
+        + _bullets(apr_sugs, KAWIIL_AZUL)
+    )
+
+    # Sección revisor-evolucion
+    evo_features = ag_evo.get("features_deployadas", [])
+    evo_pending = ag_evo.get("pendientes_detectados", [])
+    evo_next = ag_evo.get("siguiente_prioridad", "")
+    evo_commits = ag_evo.get("commits_recientes", "?")
+    evo_html = (
+        _agent_resumen(ag_evo)
+        + (f'<div style="font-size:.88em;padding:6px 0;border-bottom:1px solid var(--border)">'
+           f'<b>{evo_commits}</b> commits en los últimos 14 días</div>' if evo_commits != "?" else "")
+        + "<b style='font-size:.8em;color:var(--muted)'>FEATURES DEPLOYADAS</b>"
+        + _bullets(evo_features, "#27ae60")
+        + "<b style='font-size:.8em;color:var(--muted);display:block;margin-top:8px'>PENDIENTES DETECTADOS</b>"
+        + _bullets(evo_pending, "#e74c3c")
+        + (f'<div style="margin-top:10px;padding:10px;background:rgba(26,110,245,.08);border-radius:8px;'
+           f'border-left:3px solid {KAWIIL_AZUL};font-size:.88em">'
+           f'<b style="color:{KAWIIL_AZUL}">🎯 Siguiente prioridad:</b> {esc(evo_next)}</div>'
+           if evo_next else "")
+    )
 
     # CTA para Claude Code
     code_url = "https://claude.ai/code"
@@ -737,9 +814,10 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-ser
 </div>
 <div class="main">
 <div class="card"><div class="sec-lbl">🗂 Estado de módulos</div>{mod_rows}</div>
-<div class="card"><div class="sec-lbl">✅ Funcionando bien</div>{bien_html}</div>
-<div class="card"><div class="sec-lbl" style="color:#e74c3c">⚠️ Gaps / no operó</div>{gaps_html}</div>
-<div class="card"><div class="sec-lbl" style="color:{KAWIIL_AZUL}">🎯 Mejoras prioritarias</div>{mejoras_html}</div>
+<div class="card"><div class="sec-lbl">⚙️ Revisor de sistema</div>{sis_html}</div>
+<div class="card"><div class="sec-lbl">🤖 Revisor de IA</div>{ia_html}</div>
+<div class="card"><div class="sec-lbl">📚 Revisor de aprendizaje</div>{apr_html}</div>
+<div class="card"><div class="sec-lbl">🚀 Revisor de evolución</div>{evo_html}</div>
 {cta_html}
 </div>
 <div class="foot">Louis · Nexo Kawiil · Informe {esc(fecha_str)}</div>

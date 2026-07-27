@@ -125,7 +125,21 @@ if [[ $_SERVICE_RELOAD -eq 1 ]]; then
   systemctl daemon-reload && ok "systemd daemon-reload"
 fi
 
-# 3b) Actualizar scrapers legales si existen en el repo
+# 3b) Sincronizar agentes de revisión del repo al servidor
+#     Solo copia archivos que YA existen en el repo (no toca agentes editados manualmente).
+AGENTS_REPO="$REPO_ROOT/spaces/general/agents"
+AGENTS_DST=/opt/openclaw/spaces/general/agents
+if [[ -d "$AGENTS_REPO" ]]; then
+  log "Sincronizando agentes de revisión (spaces/general/agents/)"
+  mkdir -p "$AGENTS_DST"
+  for agent_file in "$AGENTS_REPO"/*.md; do
+    [[ -f "$agent_file" ]] || continue
+    aname="$(basename "$agent_file")"
+    install -m 0644 -o "$USER_OWN" -g "$USER_OWN" "$agent_file" "$AGENTS_DST/$aname" && ok "agent: $aname"
+  done
+fi
+
+# 3d) Actualizar scrapers legales si existen en el repo
 SCRAPERS_SRC="$REPO_ROOT/legal-scrapers"
 DOF_DST=/opt/openclaw/legal/dof
 SJF_DST=/opt/openclaw/legal/sjf
