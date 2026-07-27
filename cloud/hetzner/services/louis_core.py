@@ -10908,7 +10908,8 @@ def call_haiku(api_key: str, system_prompt: str, history: list, user_message: st
     body = {
         "model": CLAUDE_HAIKU,
         "max_tokens": 2048,
-        "system": [{"type": "text", "text": sys_p, "cache_control": {"type": "ephemeral"}}],
+        "system": ([{"type": "text", "text": sys_p, "cache_control": {"type": "ephemeral"}}]
+                   if sys_p else []),
         "messages": cleaned,
     }
     try:
