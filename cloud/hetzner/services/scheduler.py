@@ -206,6 +206,12 @@ COACH_REVIEW_WEEKDAY = 4   # viernes (0=lunes)
 COACH_REVIEW_HOUR = 9
 COACH_REVIEW_STATE = HOME_OC / "state" / "coach_review_sent.json"
 
+# Informe de salud del sistema cada 2 días a las 09:13 CDMX.
+SYSTEM_REVIEW_INTERVAL_DAYS = 2
+SYSTEM_REVIEW_HOUR = 9
+SYSTEM_REVIEW_MIN = 13
+SYSTEM_REVIEW_STATE = HOME_OC / "state" / "system_review_sent.json"
+
 
 def _advances_ya(hoy: str) -> bool:
     try:
@@ -313,6 +319,28 @@ def _coach_review_marca(semana: str):
         COACH_REVIEW_STATE.write_text(json.dumps({"week": semana}, ensure_ascii=False))
     except Exception as e:
         log.warning(f"no pude guardar coach_review_sent.json: {e}")
+
+
+def _system_review_ya(hoy: str) -> bool:
+    """True si ya se envió el informe de sistema en los últimos SYSTEM_REVIEW_INTERVAL_DAYS."""
+    try:
+        data = json.loads(SYSTEM_REVIEW_STATE.read_text())
+        last = data.get("date", "")
+        if not last:
+            return False
+        from datetime import date as _date, timedelta as _td
+        delta = _date.fromisoformat(hoy) - _date.fromisoformat(last)
+        return delta.days < SYSTEM_REVIEW_INTERVAL_DAYS
+    except Exception:
+        return False
+
+
+def _system_review_marca(hoy: str):
+    try:
+        SYSTEM_REVIEW_STATE.parent.mkdir(parents=True, exist_ok=True)
+        SYSTEM_REVIEW_STATE.write_text(json.dumps({"date": hoy}, ensure_ascii=False))
+    except Exception as e:
+        log.warning(f"no pude guardar system_review_sent.json: {e}")
 
 
 def _cerebro_digest_ya(slot: str, hoy: str) -> bool:
@@ -684,6 +712,23 @@ def main():
                     _coach_review_marca(_wk)
         except Exception as e:
             log.warning(f"coach review falló: {e}")
+
+        # Informe de salud del sistema: cada 2 días a las 09:13 CDMX.
+        try:
+            _n = datetime.now(TZ_CDMX)
+            _hoy = _n.strftime("%Y-%m-%d")
+            if _n.hour == SYSTEM_REVIEW_HOUR and _n.minute >= SYSTEM_REVIEW_MIN and not _system_review_ya(_hoy):
+                log.info("generando informe de salud del sistema…")
+                sysrep = core.build_system_health_report_data()
+                if sysrep and sysrep[0]:
+                    core._telegram_send_html_doc(
+                        sysrep[0], sysrep[1], sysrep[2],
+                        reply_markup=sysrep[3] if len(sysrep) > 3 else None,
+                    )
+                    log.info(f"informe sistema enviado ({_hoy})")
+                _system_review_marca(_hoy)
+        except Exception as e:
+            log.warning(f"informe sistema falló: {e}")
 
         # Monitor unificado 06:30 CDMX (full mode): email, calendario, Slack,
         # Dropbox, Cerebro — detecta avances, genera HTMLs por evento, guarda JSON.

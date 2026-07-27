@@ -2766,6 +2766,173 @@ def build_weekly_coach_review() -> str | None:
     return "🧘 *Revisión semanal — coaching y nutrición*\n\n" + result.strip()
 
 
+def build_system_health_report_data():
+    """Genera informe de salud del sistema cada 2 días.
+    Compila estado de módulos, llama Haiku para análisis bien/gaps/mejoras,
+    invoca briefing_doc.build_system_health_html() y devuelve
+    (html_bytes, fname, caption, safari_btn_json) o None."""
+    import json as _json
+    import importlib.util as _ilu
+
+    fecha_str = datetime.now(TZ_CDMX).strftime("%Y-%m-%d")
+    hora_str = datetime.now(TZ_CDMX).strftime("%H:%M")
+
+    # --- Recolección de estado de módulos ---
+    modulos: list[tuple[str, str, str, bool]] = []
+
+    # Coaching
+    try:
+        coach_md = _read_space_file("COACH.md")
+        coach_ok = bool(coach_md.strip() and len(coach_md.strip()) > 50)
+        coach_estado = "con datos" if coach_ok else "sin registros"
+    except Exception:
+        coach_ok = False
+        coach_estado = "error al leer"
+    modulos.append(("🧘", "coaching", coach_estado, coach_ok))
+
+    # Nutrición
+    try:
+        alim_md = _read_space_file("ALIMENTACION.md")
+        alim_ok = bool(alim_md.strip() and len(alim_md.strip()) > 50)
+        alim_estado = "con datos" if alim_ok else "sin registros"
+    except Exception:
+        alim_ok = False
+        alim_estado = "error al leer"
+    modulos.append(("🍽️", "nutrición", alim_estado, alim_ok))
+
+    # Salud
+    try:
+        salud_md = _read_space_file("SALUD.md")
+        salud_ok = bool(salud_md.strip() and len(salud_md.strip()) > 50)
+        salud_estado = "con datos" if salud_ok else "sin registros"
+    except Exception:
+        salud_ok = False
+        salud_estado = "error al leer"
+    modulos.append(("💊", "salud", salud_estado, salud_ok))
+
+    # Seguimientos
+    try:
+        seg_md = _read_space_file("SEGUIMIENTOS.md")
+        seg_lines = [l for l in seg_md.splitlines() if "- [ ]" in l]
+        seg_ok = True
+        seg_estado = f"{len(seg_lines)} pendientes abiertos"
+    except Exception:
+        seg_ok = False
+        seg_estado = "error al leer"
+    modulos.append(("📋", "seguimientos", seg_estado, seg_ok))
+
+    # Briefing matutino (verifica que se generó hoy)
+    try:
+        _bpath = STATE_DIR / "advances_delta.json"
+        if _bpath.exists():
+            _bdata = _json.loads(_bpath.read_text())
+            _bts = _bdata.get("timestamp", "")
+            _bday = _bts[:10] if _bts else ""
+            briefing_ok = (_bday == fecha_str)
+            briefing_estado = f"generado {_bday}" if _bday else "sin datos hoy"
+        else:
+            briefing_ok = False
+            briefing_estado = "advances_delta.json no existe"
+    except Exception:
+        briefing_ok = False
+        briefing_estado = "error al verificar"
+    modulos.append(("☀️", "briefing matutino", briefing_estado, briefing_ok))
+
+    # Kawiil.central (test rápido)
+    try:
+        _kc = execute_tool("kawiil_central_tareas", {"estado": "pending", "limit": 1})
+        kc_ok = bool(_kc and not _kc.startswith("(error"))
+        kc_estado = "conectado" if kc_ok else "sin conexión"
+    except Exception:
+        kc_ok = False
+        kc_estado = "error"
+    modulos.append(("🗂", "kawiil.central", kc_estado, kc_ok))
+
+    # Cierre del día (verifica que existe el HTML de hoy)
+    try:
+        _cpath = STATE_DIR / "cierre_latest.html"
+        cierre_ok = _cpath.exists()
+        cierre_estado = "generado hoy" if cierre_ok else "aún no generado (18h)"
+    except Exception:
+        cierre_ok = False
+        cierre_estado = "error"
+    modulos.append(("🌆", "cierre del día", cierre_estado, cierre_ok))
+
+    # --- Análisis Haiku ---
+    api_key = load_anthropic_key()
+    analisis: dict[str, list[str]] = {"bien": [], "gaps": [], "mejoras": []}
+
+    if api_key:
+        mod_resumen = "\n".join(
+            f"{'✅' if ok else '❌'} {icon} {nombre}: {estado}"
+            for icon, nombre, estado, ok in modulos
+        )
+        seg_ctx = "\n".join(seg_lines[:10]) if seg_ok else "(sin seguimientos)"
+        coach_ctx = coach_md[:800] if coach_ok else "(vacío)"
+        alim_ctx = alim_md[:600] if alim_ok else "(vacío)"
+
+        prompt = (
+            f"Revisión de sistema Louis — {fecha_str} {hora_str} CDMX.\n\n"
+            f"ESTADO DE MÓDULOS:\n{mod_resumen}\n\n"
+            f"SEGUIMIENTOS.md (primeros 10 pendientes):\n{seg_ctx}\n\n"
+            f"COACH.md:\n{coach_ctx}\n\n"
+            f"ALIMENTACION.md:\n{alim_ctx}\n\n"
+            "Responde en JSON con exactamente 3 keys:\n"
+            '{"bien": ["item1","item2"], "gaps": ["gap1","gap2"], "mejoras": ["mejora1","mejora2","mejora3"]}\n'
+            "- 'bien': 2-3 cosas que el sistema está haciendo bien.\n"
+            "- 'gaps': 2-3 gaps o problemas detectados (módulos rojos, datos faltantes, "
+            "seguimientos viejos sin avance).\n"
+            "- 'mejoras': 3 mejoras concretas y prioritarias para implementar en la próxima sesión. "
+            "Sé específico: menciona función, archivo, comportamiento.\n"
+            "Solo JSON, sin texto adicional."
+        )
+        raw = call_haiku(api_key, "", [], prompt)
+        if raw:
+            try:
+                import re as _re
+                _m = _re.search(r'\{[\s\S]+\}', raw)
+                if _m:
+                    analisis = _json.loads(_m.group())
+            except Exception:
+                pass
+
+    # Fallback si Haiku no respondió
+    if not analisis["bien"]:
+        n_ok = sum(1 for _, _, _, ok in modulos if ok)
+        analisis["bien"] = [f"{n_ok}/{len(modulos)} módulos operativos"]
+    if not analisis["gaps"]:
+        analisis["gaps"] = [
+            m[1] for m in modulos if not m[3]
+        ] or ["Sin gaps detectados"]
+    if not analisis["mejoras"]:
+        analisis["mejoras"] = [
+            "Registrar sesión de coaching en COACH.md",
+            "Registrar comidas en ALIMENTACION.md",
+            "Revisar pendientes viejos en SEGUIMIENTOS.md",
+        ]
+
+    # --- Generar HTML via briefing_doc ---
+    try:
+        _bpath2 = Path(__file__).parent / "briefing_doc.py"
+        _spec = _ilu.spec_from_file_location("briefing_doc", _bpath2)
+        _bd = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_bd)
+        html_bytes = _bd.build_system_health_html(fecha_str, modulos, analisis)
+    except Exception as _ie:
+        log.warning(f"build_system_health_report_data: briefing_doc falló: {_ie}")
+        return None
+
+    fname = f"SistemaLouis_{fecha_str.replace('-', '')}.html"
+    n_ok = sum(1 for _, _, _, ok in modulos if ok)
+    caption = (f"🔧 <b>Informe de sistema</b> — {fecha_str}\n"
+               f"<b>{n_ok}/{len(modulos)}</b> módulos ok · "
+               f"<b>{len(analisis.get('mejoras', []))}</b> mejoras sugeridas")
+    safari_btn = _json.dumps({"inline_keyboard": [[
+        {"text": "📱 Ver informe completo →", "url": "https://louis.kawiil.mx/sistema"}
+    ]]})
+    return html_bytes, fname, caption, safari_btn
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # SEGUIMIENTO PROACTIVO — Cerebro + Agentes
 # Louis rastrea qué hay nuevo en Cerebro y qué indexaron los agentes sin

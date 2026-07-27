@@ -623,6 +623,158 @@ document.getElementById('cq').addEventListener('keydown',function(e){{if(e.key==
     return content
 
 
+def build_system_health_html(fecha_str, modulos, analisis_haiku):
+    """Genera HTML del informe de salud del sistema cada 2 días.
+    modulos: list of (icon, nombre, estado_str, ok: bool)
+    analisis_haiku: dict con keys 'bien', 'gaps', 'mejoras' (lists of str)
+    """
+    import json as _json
+    logo_uri = logo_data_uri()
+    logo_html = (f'<img src="{logo_uri}" style="height:26px;margin-bottom:8px;opacity:.9" alt="Kawiil">'
+                 if logo_uri else "")
+    hora_gen = dt.datetime.now(TZ).strftime("%H:%M")
+
+    n_ok = sum(1 for _, _, _, ok in modulos if ok)
+    n_total = len(modulos)
+
+    # KPI strip
+    kpi_defs = [
+        ("✅", f"{n_ok}/{n_total}", "módulos ok", "" if n_ok == n_total
+         else "background:rgba(220,50,47,.18);color:#ff7070"),
+        ("🧘", "coach", "activo" if any(m[1] == "coaching" and m[3] for m in modulos) else "sin datos",
+         ""),
+        ("🍽️", "nutrición", "activo" if any("nutri" in m[1].lower() and m[3] for m in modulos) else "sin datos",
+         ""),
+    ]
+    kpi_cards = ""
+    for icon, val, lbl, extra in kpi_defs:
+        style = f"flex:1;min-width:68px;background:rgba(255,255,255,.13);border-radius:10px;padding:11px 10px;text-align:center;{extra}"
+        kpi_cards += (f'<div style="{style}">'
+                      f'<div style="font-size:1.25rem;font-weight:700;color:#fff">{icon} {val}</div>'
+                      f'<div style="font-size:.68rem;color:rgba(255,255,255,.72);text-transform:uppercase;'
+                      f'letter-spacing:.06em;margin-top:3px">{lbl}</div></div>')
+
+    # Módulos table
+    mod_rows = "".join(
+        f'<div style="display:flex;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">'
+        f'<span style="font-size:1.1rem;margin-right:10px">{icon}</span>'
+        f'<div style="flex:1"><div style="font-size:.9em;font-weight:500">{esc(nombre)}</div>'
+        f'<div style="font-size:.78em;color:var(--muted)">{esc(estado)}</div></div>'
+        f'<span style="font-size:.85rem">{"🟢" if ok else "🔴"}</span></div>'
+        for icon, nombre, estado, ok in modulos
+    )
+
+    # Análisis sections
+    def _bullets(items, color="#27ae60"):
+        if not items:
+            return '<p style="color:var(--muted);font-size:.88em;font-style:italic">Sin datos</p>'
+        return "".join(
+            f'<div style="padding:5px 0;border-bottom:1px solid var(--border);font-size:.88em">'
+            f'<span style="color:{color};margin-right:6px">•</span>{esc(i)}</div>'
+            for i in items
+        )
+
+    bien_html = _bullets(analisis_haiku.get("bien", []), "#27ae60")
+    gaps_html = _bullets(analisis_haiku.get("gaps", []), "#e74c3c")
+    mejoras_html = _bullets(analisis_haiku.get("mejoras", []), KAWIIL_AZUL)
+
+    # CTA para Claude Code
+    code_url = "https://claude.ai/code"
+    cta_html = (
+        f'<div class="card" style="background:rgba(26,110,245,.08);border:1px solid rgba(26,110,245,.25)">'
+        f'<div class="sec-lbl">🔧 Implementar mejoras en Claude Code</div>'
+        f'<p style="font-size:.87em;line-height:1.6">'
+        f'1. Abre <a href="{code_url}" style="color:{KAWIIL_AZUL}">{code_url}</a><br>'
+        f'2. Conecta el repo <b>lbassoco95/nexo-louis</b><br>'
+        f'3. Di: <em>"implementa las mejoras del último informe de sistema"</em></p></div>'
+    )
+
+    ctx_js = _json.dumps(f"Informe de sistema — {fecha_str} ({hora_gen} CDMX)\n"
+                         f"Módulos OK: {n_ok}/{n_total}")
+    chat_url_js = _json.dumps(CHAT_URL)
+    chat_token_js = _json.dumps(CHAT_TOKEN)
+
+    content = f'''<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Informe de sistema — {esc(fecha_str)}</title>
+<style>
+:root{{--bg:#f4f6fb;--card:#fff;--text:#1a1a2e;--muted:#8892a4;--border:#e6eaf2;--acc:{KAWIIL_AZUL}}}
+@media(prefers-color-scheme:dark){{:root{{--bg:#0e1118;--card:#181d2c;--text:#dde3f0;--muted:#5a6278;--border:#252a3a}}}}
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding-bottom:220px}}
+.hdr{{background:linear-gradient(135deg,#1a2a3e 0%,#2a1a6e 100%);color:#fff;padding:22px 18px 18px}}
+.hdr-meta{{font-size:.69rem;opacity:.68;text-transform:uppercase;letter-spacing:.08em;margin-bottom:3px}}
+.hdr-title{{font-size:1.28rem;font-weight:700;margin-bottom:3px}}
+.hdr-sub{{font-size:.82rem;opacity:.78;margin-bottom:14px}}
+.kpi-row{{display:flex;gap:7px;flex-wrap:wrap}}
+.main{{padding:15px;max-width:680px;margin:0 auto}}
+.card{{background:var(--card);border-radius:12px;padding:15px;margin-bottom:14px;box-shadow:0 1px 4px rgba(0,0,0,.06)}}
+.sec-lbl{{font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:9px}}
+.foot{{text-align:center;font-size:.7rem;color:var(--muted);padding:18px 16px}}
+.chat-bar{{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:1px solid var(--border);padding:10px 14px;box-shadow:0 -2px 12px rgba(0,0,0,.1);z-index:100}}
+.chat-bar .inner{{max-width:680px;margin:0 auto}}
+#conv{{max-height:200px;overflow-y:auto;margin-bottom:8px}}
+.cm{{padding:8px 12px;border-radius:10px;margin:4px 0;font-size:.87em;line-height:1.5}}
+.cm.user{{background:var(--acc);color:#fff;margin-left:18%}}
+.cm.bot{{background:var(--border);color:var(--text);margin-right:18%}}
+.cm.bot p{{margin:.3em 0}}
+.cin{{display:flex;gap:8px;align-items:flex-end}}
+.cin textarea{{flex:1;padding:9px;border:1px solid var(--border);border-radius:8px;font-size:.9em;resize:none;background:var(--bg);color:var(--text);font-family:inherit}}
+.cin button{{padding:9px 14px;border:0;border-radius:8px;background:var(--acc);color:#fff;cursor:pointer;font-size:.88em;white-space:nowrap}}
+.chat-note{{font-size:.66rem;color:var(--muted);margin-top:4px;text-align:center}}
+</style>
+</head>
+<body>
+<div class="hdr">
+{logo_html}
+<div class="hdr-meta">🔧 Informe de sistema · {hora_gen} CDMX</div>
+<div class="hdr-title">Revisión — {esc(fecha_str)}</div>
+<div class="hdr-sub">Cada 2 días · Louis Kawiil</div>
+<div class="kpi-row">{kpi_cards}</div>
+</div>
+<div class="main">
+<div class="card"><div class="sec-lbl">🗂 Estado de módulos</div>{mod_rows}</div>
+<div class="card"><div class="sec-lbl">✅ Funcionando bien</div>{bien_html}</div>
+<div class="card"><div class="sec-lbl" style="color:#e74c3c">⚠️ Gaps / no operó</div>{gaps_html}</div>
+<div class="card"><div class="sec-lbl" style="color:{KAWIIL_AZUL}">🎯 Mejoras prioritarias</div>{mejoras_html}</div>
+{cta_html}
+</div>
+<div class="foot">Louis · Nexo Kawiil · Informe {esc(fecha_str)}</div>
+<div class="chat-bar">
+<div class="inner">
+<div id="conv"></div>
+<div class="cin">
+<textarea id="cq" rows="2" placeholder="Pregunta sobre el sistema… (ej: '¿por qué no llega el cierre?', 'explica el módulo de coaching')"></textarea>
+<button onclick="preg()">Enviar</button>
+</div>
+<p class="chat-note">Abre en Safari/Chrome para que el chat funcione.</p>
+</div>
+</div>
+<script>
+const CHAT_URL={chat_url_js},CHAT_TOKEN={chat_token_js},CTX={ctx_js};
+function inl(s){{s=s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');s=s.replace(/[*][*](.+?)[*][*]/g,'<strong>$1</strong>');s=s.replace(/[*](.+?)[*]/g,'<em>$1</em>');return s;}}
+function md(t){{var lines=t.split('\\n'),out=[],i=0;while(i<lines.length){{var l=lines[i];if(/^[ ]*[-*] /.test(l)){{var it=[];while(i<lines.length&&/^[ ]*[-*] /.test(lines[i])){{it.push('<li>'+inl(lines[i].replace(/^[ ]*[-*] /,''))+'</li>');i++;}}out.push('<ul>'+it.join('')+'</ul>');continue;}}if(l.trim()){{out.push('<p>'+inl(l)+'</p>');}}i++;}}return out.join('');}}
+function addMsg(role,html){{var d=document.createElement('div');d.className='cm '+role;d.innerHTML=html;var c=document.getElementById('conv');c.appendChild(d);c.scrollTop=c.scrollHeight;return d;}}
+var _hist=[];
+async function preg(){{var inp=document.getElementById('cq');var q=(inp.value||'').trim();if(!q)return;inp.value='';addMsg('user',inl(q));var bot=addMsg('bot','<em>pensando…</em>');try{{var h={{'Content-Type':'application/json'}};if(CHAT_TOKEN)h['Authorization']='Bearer '+CHAT_TOKEN;var msgs=[];if(CTX){{msgs.push({{role:'user',content:'Contexto:\\n'+CTX}});msgs.push({{role:'assistant',content:'Contexto cargado.'}});}}msgs=msgs.concat(_hist);msgs.push({{role:'user',content:q}});var r=await fetch(CHAT_URL,{{method:'POST',headers:h,body:JSON.stringify({{messages:msgs}})}});var j=await r.json();var ans=(j.choices&&j.choices[0]&&j.choices[0].message&&j.choices[0].message.content)||j.error||'(sin respuesta)';_hist.push({{role:'user',content:q}});_hist.push({{role:'assistant',content:ans}});bot.innerHTML=md(ans);}}catch(e){{bot.innerHTML='<em>Error: '+e+'</em>';}}}}
+document.getElementById('cq').addEventListener('keydown',function(e){{if(e.key==='Enter'&&!e.shiftKey){{e.preventDefault();preg();}}}});
+</script>
+</body>
+</html>'''.encode("utf-8")
+
+    try:
+        latest = Path(os.environ.get("STATE_DIR", "/opt/openclaw/state")) / "system_review_latest.html"
+        latest.parent.mkdir(parents=True, exist_ok=True)
+        latest.write_bytes(content)
+    except Exception:
+        pass
+
+    return content
+
+
 def send_doc(content, fname, caption, reply_markup=None):
     token, chat = creds()
     if not token or not chat:
