@@ -201,6 +201,11 @@ TASK_GAP_HOUR = 9
 TASK_GAP_MIN = 30
 TASK_GAP_STATE = HOME_OC / "state" / "task_gap_sent.json"
 
+# Revisión semanal coaching + nutrición (Pilar coach): viernes 09:00 CDMX.
+COACH_REVIEW_WEEKDAY = 4   # viernes (0=lunes)
+COACH_REVIEW_HOUR = 9
+COACH_REVIEW_STATE = HOME_OC / "state" / "coach_review_sent.json"
+
 
 def _advances_ya(hoy: str) -> bool:
     try:
@@ -293,6 +298,21 @@ def _task_gap_marca(hoy: str):
         TASK_GAP_STATE.write_text(json.dumps({"date": hoy}, ensure_ascii=False))
     except Exception as e:
         log.warning(f"no pude guardar task_gap_sent.json: {e}")
+
+
+def _coach_review_ya(semana: str) -> bool:
+    try:
+        return json.loads(COACH_REVIEW_STATE.read_text()).get("week") == semana
+    except Exception:
+        return False
+
+
+def _coach_review_marca(semana: str):
+    try:
+        COACH_REVIEW_STATE.parent.mkdir(parents=True, exist_ok=True)
+        COACH_REVIEW_STATE.write_text(json.dumps({"week": semana}, ensure_ascii=False))
+    except Exception as e:
+        log.warning(f"no pude guardar coach_review_sent.json: {e}")
 
 
 def _cerebro_digest_ya(slot: str, hoy: str) -> bool:
@@ -649,6 +669,21 @@ def main():
                     _weekly_marca(_wk)
         except Exception as e:
             log.warning(f"review semanal falló: {e}")
+
+        # Revisión semanal coaching + nutrición: viernes 09:00 CDMX, una vez por semana.
+        try:
+            _n = datetime.now(TZ_CDMX)
+            if _n.weekday() == COACH_REVIEW_WEEKDAY and _n.hour == COACH_REVIEW_HOUR:
+                _ic = _n.isocalendar()
+                _wk = f"{_ic[0]}-W{_ic[1]:02d}"
+                if not _coach_review_ya(_wk):
+                    rev = core.build_weekly_coach_review()
+                    if rev:
+                        send_telegram(rev)
+                        log.info(f"coach review enviado ({_wk})")
+                    _coach_review_marca(_wk)
+        except Exception as e:
+            log.warning(f"coach review falló: {e}")
 
         # Monitor unificado 06:30 CDMX (full mode): email, calendario, Slack,
         # Dropbox, Cerebro — detecta avances, genera HTMLs por evento, guarda JSON.

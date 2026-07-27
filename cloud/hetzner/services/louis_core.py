@@ -2709,6 +2709,63 @@ def build_weekly_review() -> str:
     return "\n".join(lines)
 
 
+def build_weekly_coach_review() -> str | None:
+    """Revisión semanal de coaching y nutrición (viernes 09h CDMX).
+    Lee avances de COACH.md y entradas de ALIMENTACION.md de los últimos 7 días.
+    Genera preguntas de accountability y tendencias nutricionales vía Haiku.
+    Devuelve mensaje Telegram o None si no hay datos suficientes."""
+    from datetime import timedelta
+    coach_md = _read_space_file("COACH.md")
+    alim_md = _read_space_file("ALIMENTACION.md")
+
+    hoy = datetime.now(TZ_CDMX).date()
+    semana_ini = (hoy - timedelta(days=7)).isoformat()
+
+    # Entradas de alimentación esta semana (líneas con fecha reciente)
+    alim_entries = [
+        l.strip() for l in alim_md.splitlines()
+        if l.strip().startswith("-") and semana_ini[:7] in l  # mismo mes aprox
+    ]
+
+    # Si no hay ningún contenido real, al menos preguntar
+    tiene_coach = bool(coach_md.strip() and len(coach_md.strip()) > 50)
+    tiene_alim = bool(alim_entries or len(alim_md.strip()) > 50)
+
+    if not tiene_coach and not tiene_alim:
+        # Sin datos → pregunta directa mínima
+        return (
+            "🧘 *Revisión semanal — coaching y nutrición*\n\n"
+            "No tengo registros de esta semana. Dos preguntas rápidas:\n"
+            "• ¿Tuviste sesión de coaching esta semana?\n"
+            "• ¿Qué comiste ayer (desayuno, comida, cena)?\n\n"
+            "_Responde lo que quieras y lo registro._"
+        )
+
+    api_key = load_anthropic_key()
+    if not api_key:
+        return None
+
+    alim_ctx = ("\n".join(alim_entries[:20]) if alim_entries
+                else "(sin registros de comidas esta semana)")
+    prompt = (
+        f"Hoy es viernes {hoy.isoformat()} — revisión semanal de coaching y nutrición.\n\n"
+        "COACH.md — perfil y avances:\n" + coach_md[:2500] + "\n\n"
+        "ALIMENTACION.md — entradas esta semana:\n" + alim_ctx + "\n\n"
+        "INSTRUCCIONES:\n"
+        "1. Si COACH.md tiene compromisos o avances, genera 2 preguntas concretas de "
+        "accountability sobre lo que se comprometió en la última sesión.\n"
+        "2. Si hay entradas de alimentación, da UNA línea de tendencia (ej: 'proteína baja "
+        "3 días', 'saltaste desayuno 2 veces', 'bien balanceado').\n"
+        "3. Propone UN foco específico para esta semana (lo más importante).\n"
+        "4. Si no hay datos suficientes en alguna área, pregunta directamente.\n"
+        "Máx 5-6 líneas. Directo, sin listas numeradas, sin headers."
+    )
+    result = call_haiku(api_key, "", [], prompt)
+    if not result:
+        return None
+    return "🧘 *Revisión semanal — coaching y nutrición*\n\n" + result.strip()
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # SEGUIMIENTO PROACTIVO — Cerebro + Agentes
 # Louis rastrea qué hay nuevo en Cerebro y qué indexaron los agentes sin
@@ -3344,6 +3401,18 @@ _MEMORY_FILE_KEYWORDS = (
     ("equipo", "PEOPLE.md"),
     ("gente", "PEOPLE.md"),
     ("people", "PEOPLE.md"),
+    ("coach", "COACH.md"),
+    ("coaching", "COACH.md"),
+    ("alimentacion", "ALIMENTACION.md"),
+    ("alimentación", "ALIMENTACION.md"),
+    ("comida", "ALIMENTACION.md"),
+    ("nutricion", "ALIMENTACION.md"),
+    ("nutrición", "ALIMENTACION.md"),
+    ("medico", "SALUD.md"),
+    ("médico", "SALUD.md"),
+    ("cita medica", "SALUD.md"),
+    ("sintoma", "SALUD.md"),
+    ("síntoma", "SALUD.md"),
 )
 
 _MEMORY_TRIGGER_RE = re.compile(
