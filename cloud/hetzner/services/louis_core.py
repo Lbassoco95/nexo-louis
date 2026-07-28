@@ -11317,6 +11317,36 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
     return "(no obtuve respuesta de Claude — vuelve a intentar o usa /llama para forzar Ollama)"
 
 
+_DATETIME_Q_RE = re.compile(
+    r"^\s*¿?\s*("
+    r"qu[eé]\s+hora\s+es|"
+    r"qu[eé]\s+horas?\s+son|"
+    r"hora\s+actual|"
+    r"qu[eé]\s+d[ií]a\s+es(\s+hoy)?|"
+    r"qu[eé]\s+fecha\s+es(\s+hoy)?|"
+    r"fecha\s+(de\s+hoy|actual)|"
+    r"en\s+qu[eé]\s+d[ií]a\s+estamos|"
+    r"a\s+qu[eé]\s+estamos(\s+hoy)?"
+    r")\s*\??\s*$",
+    re.IGNORECASE,
+)
+
+_MESES_FULL_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
+                  "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+
+
+def try_deterministic_datetime(user_message):
+    """Responde '¿qué hora es?' / '¿qué día es hoy?' DIRECTO desde el reloj real del
+    servidor, sin pasar por ningún modelo. Evita ecos del historial y desfases.
+    Devuelve el texto, o None si el mensaje no es una pregunta de fecha/hora."""
+    if not user_message or not _DATETIME_Q_RE.match(user_message.strip()):
+        return None
+    now = datetime.now(get_active_tz())
+    tzlbl = "CDMX" if get_active_tz_name() == TZ_DEFAULT_NAME else get_active_tz_name()
+    fecha = f"{_DIAS_ES[now.weekday()]} {now.day} de {_MESES_FULL_ES[now.month - 1]} de {now.year}"
+    return f"Hoy es {fecha}, y son las {now.strftime('%H:%M')} ({tzlbl})."
+
+
 def call_llm(
     api_key: str,
     system_prompt: str,
@@ -11337,6 +11367,11 @@ def call_llm(
 
     # Recordatorio relativo a prueba de fallos: "recuérdame en N min/horas …" se crea
     # DIRECTO en el servidor (reloj real), sin depender del modelo ni de Ollama.
+    det_dt = try_deterministic_datetime(user_message)
+    if det_dt is not None:
+        _mark_last_route("fecha-hora-directa")
+        return det_dt, "fecha-hora-directa"
+
     det_rem = try_deterministic_reminder(user_message)
     if det_rem is not None:
         _mark_last_route("recordatorio-directo")
