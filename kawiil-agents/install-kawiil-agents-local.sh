@@ -35,13 +35,31 @@ if [[ -z "${KAWIIL_DISPATCH_TOKEN:-}" ]]; then
   KAWIIL_DISPATCH_TOKEN="$(openssl rand -hex 32)"
 fi
 
+# === Supabase service_role key: reusar la existente o pedirla (NUNCA hardcodear) ===
+# La key vive solo en local con perms 600 y NO se commitea. Si rotaste la key en
+# Supabase, borra ~/.openclaw/credentials/kawiil-agents.env y vuelve a correr esto.
+# (El source de arriba ya la trae como $SUPABASE_SERVICE_KEY si el creds file existe.)
+if [[ -z "${SUPABASE_SERVICE_KEY:-}" ]] && [[ -f "$HOME/.openclaw/.env" ]]; then
+  SUPABASE_SERVICE_KEY="$(grep -E '^SUPABASE_SERVICE_KEY' "$HOME/.openclaw/.env" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" | tr -d ' ')"
+fi
+if [[ -z "${SUPABASE_SERVICE_KEY:-}" ]]; then
+  echo "Necesito la service_role key de Supabase (proyecto qppfampapbxdgednkofc)."
+  echo "En Supabase Studio → Project Settings → API → service_role secret."
+  read -rsp "Supabase service_role key (sb_secret_... o eyJ...): " SUPABASE_SERVICE_KEY
+  echo ""
+fi
+if [[ -z "$SUPABASE_SERVICE_KEY" ]]; then
+  echo "ERROR: sin SUPABASE_SERVICE_KEY no puedo configurar kawiil-agents." >&2
+  exit 1
+fi
+
 echo "==> 1. Guardando credenciales en $CREDS_DIR/kawiil-agents.env"
 mkdir -p "$CREDS_DIR"
 cat > "$CREDS_DIR/kawiil-agents.env" <<EOF
 # Kawiil HQ Agents server — credenciales
 # Service role key de Supabase qppfampapbxdgednkofc (servidor local, NO compartir)
 SUPABASE_URL="https://qppfampapbxdgednkofc.supabase.co"
-SUPABASE_SERVICE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFwcGZhbXBhcGJ4ZGdlZG5rb2ZjIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1NTM3MTM4MSwiZXhwIjoyMDcwOTQ3MzgxfQ.4PwMn5uj5rXAHFvCaO-7K_zTzjHUpLCgLCb6hI28Ep4"
+SUPABASE_SERVICE_KEY="$SUPABASE_SERVICE_KEY"
 ANTHROPIC_API_KEY="$ANTHROPIC_KEY"
 AGENT_ORG_ID="00000000-0000-0000-0000-000000000001"
 DATA_ORG_ID="a0000000-0000-0000-0000-000000000001"
@@ -55,7 +73,7 @@ echo ""
 echo "==> 2. Creando .env del server"
 cat > "$SERVER/.env" <<EOF
 SUPABASE_URL=https://qppfampapbxdgednkofc.supabase.co
-SUPABASE_SERVICE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFwcGZhbXBhcGJ4ZGdlZG5rb2ZjIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1NTM3MTM4MSwiZXhwIjoyMDcwOTQ3MzgxfQ.4PwMn5uj5rXAHFvCaO-7K_zTzjHUpLCgLCb6hI28Ep4
+SUPABASE_SERVICE_KEY=$SUPABASE_SERVICE_KEY
 ANTHROPIC_API_KEY=$ANTHROPIC_KEY
 AGENT_ORG_ID=00000000-0000-0000-0000-000000000001
 DATA_ORG_ID=a0000000-0000-0000-0000-000000000001
