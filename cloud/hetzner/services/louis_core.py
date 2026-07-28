@@ -765,6 +765,17 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "estratégica, contexto de proyecto nuevo), llama `save_learning` o `append_to_memory` "
         "para preservar los hallazgos clave — el historial de chat tiene ventana limitada y "
         "ese contexto se perderá si no lo anclas en memoria."
+        "\n\n# 🧠 BASE DE CONOCIMIENTO — GUARDAR (Capa 1, KB-Negocio)\n"
+        "Además de los archivos de memoria, tienes una base de conocimiento semántica: `buscar_conocimiento` "
+        "para LEER y `guardar_conocimiento(hecho, source_type, source_ref, titulo)` para ESCRIBIR.\n"
+        "- Llama `guardar_conocimiento` SIN que Polo lo pida cuando en el turno surja un hecho DURABLE de "
+        "negocio: una DECISIÓN, un AVANCE de proyecto, o un DATO de una persona/cliente. Un hecho por llamada, "
+        "como afirmación autocontenida (nombres y fechas explícitos, sin 'esto/eso').\n"
+        "- NO la uses para reglas/preferencias de Polo (eso es `save_learning`) ni para pendientes con fecha "
+        "(eso es `agendar_recordatorio`).\n"
+        "- INVARIANTE DE PRIVACIDAD: contenido sensible (PLD, Ikán, KYC, expedientes, legal, contratos, nómina, "
+        "salud, datos personales) NO va a la KB-Negocio. La herramienta lo bloquea y lo guarda solo en local; "
+        "aun así, no lo mandes a propósito."
         "\n\n# 🧭 MODO COACH EJECUTIVO\n"
         "Tienes un rol de COACH EJECUTIVO de Polo, basado en COACH.md (su perfil psicométrico y "
         "prioridades de desarrollo, arriba en tu contexto). ACTÍVALO cuando Polo lo pida ('hagamos "
@@ -4263,6 +4274,20 @@ TOOLS_DEFINITION = [
                 "top_k": {"type": "integer", "description": "Cuántos fragmentos devolver (default 6)."},
             },
             "required": ["query"],
+        },
+    },
+    {
+        "name": "guardar_conocimiento",
+        "description": "Guarda UN hecho durable en la base de conocimiento de Nexo (KB-Negocio, Supabase pgvector) para recordarlo en futuras conversaciones. Llámalo SIN que Polo lo pida cuando en el turno surja algo que valga la pena recordar a largo plazo: una DECISIÓN, un AVANCE de proyecto, o un DATO de una persona/cliente. Un hecho por llamada, redactado como afirmación autocontenida (con nombres y fechas explícitos, sin 'esto/eso'). NO lo uses para preferencias/reglas de Polo (eso es save_learning) ni para pendientes con fecha (eso es agendar_recordatorio). IMPORTANTE: contenido sensible (PLD, Ikán, KYC, expedientes, legal, contratos, nómina, salud, datos personales) NO va aquí; si lo intentas, la herramienta lo guarda solo en local automáticamente.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "hecho": {"type": "string", "description": "El hecho durable, como afirmación autocontenida."},
+                "source_type": {"type": "string", "enum": ["journal", "project", "person", "doc", "agent_learning"], "description": "journal (nota/decisión), project (avance de proyecto), person (dato de persona/cliente), doc, agent_learning."},
+                "source_ref": {"type": "string", "description": "Origen opcional, ej. 'reunión 2026-07-28' o 'proyecto Kailash'."},
+                "titulo": {"type": "string", "description": "Título corto opcional del hecho."},
+            },
+            "required": ["hecho"],
         },
     },
     {
@@ -10447,11 +10472,142 @@ def _buscar_conocimiento(query, top_k=6, space_id="general"):
     return "\n".join(out)
 
 
+# === Nexo · Capa 1 · Bloque 3 — captura automática de conocimiento ===
+# Escribe a la KB lo que Nexo aprende, embebido, tras un turno con contenido durable.
+# Reusa el pipeline del Bloque 2 (nexo_retrieve.insert_chunks -> nexo_embeddings.embed).
+#
+# INVARIANTE DE PRIVACIDAD (enforced en CÓDIGO, no solo en el prompt):
+#   Contenido sensible (PLD/Ikán/legal/salud/datos personales) NUNCA sale a la nube.
+#   Se queda en local (KB-Sensible, Bloque 5 — por ahora en spaces/general/KB_SENSIBLE.md).
+_KB_SOURCE_TYPES = ("journal", "project", "person", "doc", "agent_learning")
+
+_KB_SENSIBLE_RE = re.compile(
+    r"(?i)\b("
+    r"pld|lfpiorpi|lavado\s+de\s+dinero|prevenci[oó]n\s+de\s+lavado|"
+    r"ik[aá]n|kyc|expediente|beneficiario\s+controlador|actividad(?:es)?\s+vulnerable|"
+    r"aviso\s+(?:de\s+)?operaci[oó]n|umbral(?:es)?\s+lfpiorpi|"
+    r"contrato|nda|convenio|cl[aá]usula|redline|"
+    r"n[oó]mina|sueldo|salario|estado\s+de\s+cuenta|"
+    r"salud|m[eé]dic[oa]|diagn[oó]stico|s[ií]ntoma|medicamento|ex[aá]men\s+m[eé]dico|"
+    r"curp|ine|pasaporte|datos?\s+personales?"
+    r")\b"
+)
+
+
+def _es_conocimiento_sensible(texto: str) -> bool:
+    """True si el texto toca PLD/Ikán/legal/salud/datos personales → NO va a la nube."""
+    return bool(_KB_SENSIBLE_RE.search(texto or ""))
+
+
+def _guardar_conocimiento(hecho, source_type="journal", source_ref=None, titulo=None):
+    """Persiste UN hecho durable en la base de conocimiento de Nexo (Capa 1, Bloque 3).
+
+    - Sensible → SOLO local (KB_SENSIBLE.md); nunca a Supabase (invariante en código).
+    - No sensible → KB-Negocio (Supabase pgvector) vía nexo_retrieve.insert_chunks,
+      que embebe el contenido con nexo_embeddings (Ollama nomic-embed-text).
+
+    Aditivo y a prueba de fallos: cualquier error devuelve aviso claro, no rompe el gateway."""
+    import os as _os
+    hecho = (hecho or "").strip()
+    if not hecho:
+        return "(no guardé: hecho vacío)"
+
+    st = (source_type or "journal").strip().lower()
+    if st not in _KB_SOURCE_TYPES:
+        st = "journal"
+
+    # --- Invariante de privacidad: lo sensible se queda local ---
+    if _es_conocimiento_sensible(f"{titulo or ''} {hecho}"):
+        fecha = datetime.now(TZ_CDMX).strftime("%Y-%m-%d %H:%M")
+        linea = f"- [{fecha}] [{st}] {hecho}" + (f" (ref: {source_ref})" if source_ref else "")
+        r = execute_tool("append_to_memory", {"filename": "KB_SENSIBLE.md", "content": linea})
+        if r.startswith("OK") or "ya estaba" in r:
+            return ("🔒 Guardado SOLO local (contenido sensible PLD/legal/salud): no salió a la nube. "
+                    "Lo recuperaré cuando esté lista la KB-Sensible local (Bloque 5).")
+        return f"⚠️ No pude guardar el hecho sensible en local: {r}"
+
+    # --- KB-Negocio (Supabase pgvector) ---
+    for cand in filter(None, [
+        _os.environ.get("NEXO_LIB_DIR"),
+        str(Path(__file__).resolve().parent),
+        str(Path.home()),
+    ]):
+        if cand not in sys.path:
+            sys.path.insert(0, cand)
+    try:
+        import nexo_retrieve
+    except Exception as e:
+        return f"(no guardé en KB: no pude importar nexo_retrieve - {e})"
+
+    org_id = (_os.environ.get("NEXO_DEFAULT_ORG_ID")
+              or _os.environ.get("KAWIIL_KAWIIL_ORG_ID")
+              or _os.environ.get("KAWIIL_ORG_ID"))
+    if not org_id:
+        return "(no guardé en KB: falta NEXO_DEFAULT_ORG_ID / KAWIIL_KAWIIL_ORG_ID en el entorno)"
+
+    row = {
+        "org_id": org_id,
+        "space_id": "general",
+        "source_type": st,
+        "source_ref": source_ref or "nexo/captura",
+        "title": ((titulo or "").strip()[:200] or None),
+        "content": hecho,
+        "metadata": {"captured_at": datetime.now(TZ_CDMX).isoformat(), "via": "guardar_conocimiento"},
+    }
+    try:
+        inserted = nexo_retrieve.insert_chunks([row])
+    except Exception as e:
+        return f"(error guardando en KB-Negocio: {e})"
+    if not inserted:
+        return "(la KB no confirmó la inserción; revisa Supabase/embeddings)"
+    corte = hecho[:80] + ("…" if len(hecho) > 80 else "")
+    return f"✅ Guardado en KB-Negocio ({st}): {corte}"
+
+
+# Captura determinística a la KB (sin modelo, sin créditos): 'aprende que X',
+# 'guarda en conocimiento: X', 'a la base de conocimiento: X', 'conocimiento: X'.
+# Va ANTES de try_deterministic_memory_write en call_llm para no colisionar con
+# el gatillo 'guarda…' de memoria.
+_KB_CAPTURE_RE = re.compile(
+    r"^\s*(?:"
+    r"apr[eé]nde(?:te)?\s+que|apr[eé]nde(?:te)?\s*:|"
+    r"gu[aá]rda(?:lo)?\s+en\s+(?:la\s+)?(?:base\s+de\s+)?conocimiento|"
+    r"a\s+la\s+base\s+de\s+conocimiento|"
+    r"conocimiento\s*:"
+    r")\s*(?:que\s+)?(.+)$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def try_deterministic_knowledge_capture(user_message: str) -> str | None:
+    """Bloque 3 — captura directa a la KB sin modelo. Reusa la invariante de
+    sensibilidad de _guardar_conocimiento. Devuelve confirmación (str) o None."""
+    if not user_message:
+        return None
+    msg = strip_override_prefix(user_message.strip())
+    if msg.endswith(("?", "？")):
+        return None
+    m = _KB_CAPTURE_RE.match(msg)
+    if not m:
+        return None
+    hecho = (m.group(1) or "").strip(":,.· ").strip()
+    if len(hecho) < 6:
+        return None
+    return _guardar_conocimiento(hecho, source_type="journal", source_ref="captura-directa")
+
+
 def execute_tool(name: str, args: dict) -> str:
     """Ejecuta un tool y devuelve resultado como string."""
     try:
         if name == "buscar_conocimiento":
             return _buscar_conocimiento(args["query"], args.get("top_k", 6))
+        if name == "guardar_conocimiento":
+            return _guardar_conocimiento(
+                args["hecho"],
+                args.get("source_type", "journal"),
+                args.get("source_ref"),
+                args.get("titulo"),
+            )
         if name == "read_memory":
             path = SPACE / args["filename"]
             if not path.exists():
@@ -11376,6 +11532,13 @@ def call_llm(
     if det_rem is not None:
         _mark_last_route("recordatorio-directo")
         return det_rem, "recordatorio-directo"
+
+    # Captura directa a la base de conocimiento (Bloque 3): "aprende que …",
+    # "guarda en conocimiento: …". Va ANTES de memoria para no chocar con "guarda…".
+    det_kb = try_deterministic_knowledge_capture(user_message)
+    if det_kb is not None:
+        _mark_last_route("conocimiento-directo")
+        return det_kb, "conocimiento-directo"
 
     # Aprendizaje a prueba de fallos: "anota en SEGUIMIENTOS: …" se guarda directo,
     # sin gastar créditos y aunque Anthropic esté sin saldo.
