@@ -416,6 +416,7 @@ TOOL_KEYWORDS = [
     r"\b(prendida|prendido|apagada|apagado|encendida|encendido|dormida|dormido|hibernando|sleep|batería|bateria|enchufada|cargando)\b",
     r"\b(heartbeat|sync|sincroniz\w+|sincronización|sincronizacion)\b",
     # Kawiil Central (producción Vercel + Supabase)
+    r"\b(entregable|entregables|vo\.?\s*bo\.?|visto\s+bueno|archiva\s+entregable|lista\s+entregables)\b",
     r"\b(kawiil[\s-]?central|kawiil[\s-]?os|mati|matiox)\b",
     r"\b(tarea|tareas|proyecto|proyectos|avance|avances|backlog|pendiente)\b",
     r"\b(supabase|vercel|postgres|base\s+de\s+datos|database)\b",
@@ -1839,7 +1840,13 @@ def _cerebro_entregables_snapshot() -> str:
     briefs_str = f" | briefs_dispatch:{n_briefs}" if n_briefs else ""
     nudge = ""
     if conteo.get("listo"):
-        nudge = f"\n→ {conteo['listo']} entregable(s) LISTO esperando tu Vo.Bo."
+        por_cliente: dict[str, int] = {}
+        for _f, _m in all_items:
+            if _m.get("estado") == "listo":
+                _c = _m.get("cliente") or _m.get("proyecto") or "General"
+                por_cliente[_c] = por_cliente.get(_c, 0) + 1
+        clientes_str = ", ".join(f"{c}({n})" for c, n in sorted(por_cliente.items(), key=lambda x: -x[1]))
+        nudge = f"\n→ {conteo['listo']} listo(s) Vo.Bo.: {clientes_str}"
     if n_briefs:
         nudge += f"\n→ {n_briefs} brief(s) pendiente(s) de dispatch a agentes."
     # Últimos 5 entregables (por fecha de modificación): para que Louis sepa QUÉ se trabajó.
@@ -1862,6 +1869,46 @@ def _cerebro_entregables_snapshot() -> str:
     if recientes:
         recientes_str = "\nCowork reciente (últimos trabajados):\n" + "\n".join(recientes)
     return " | ".join(partes) + briefs_str + nudge + recientes_str
+
+
+def auto_archivar_entregables_stale(dias: int = 21) -> list[str]:
+    """Auto-archiva entregables en estado 'listo' con más de `dias` días sin actualización.
+    Evita acumulación indefinida de documentos esperando Vo.Bo.
+    Devuelve lista de títulos archivados."""
+    if not ENTREGABLES_PATH.exists():
+        return []
+    archivados = []
+    hoy = datetime.now(TZ_CDMX).date()
+    for f in ENTREGABLES_PATH.glob("*.md"):
+        if f.name.startswith("_"):
+            continue
+        try:
+            meta = _cerebro_parsear_fm(f)
+            if meta.get("estado") != "listo":
+                continue
+            fecha_str = meta.get("fecha_actualizacion", "")[:10]
+            if fecha_str:
+                try:
+                    from datetime import date as _date
+                    edad = (hoy - _date.fromisoformat(fecha_str)).days
+                except Exception:
+                    edad = (hoy - datetime.fromtimestamp(f.stat().st_mtime, tz=TZ_CDMX).date()).days
+            else:
+                edad = (hoy - datetime.fromtimestamp(f.stat().st_mtime, tz=TZ_CDMX).date()).days
+            if edad < dias:
+                continue
+            content = f.read_text(encoding="utf-8")
+            content = re.sub(r"(?m)^estado:.*$", "estado: archivado", content)
+            fecha_hoy = hoy.isoformat()
+            content = re.sub(r"(?m)^fecha_actualizacion:.*$", f"fecha_actualizacion: {fecha_hoy}", content)
+            nota = f"\n- {fecha_hoy} — `archivado`: auto-archivado sin Vo.Bo. en {edad}d\n"
+            f.write_text(content.rstrip() + nota, encoding="utf-8")
+            titulo = meta.get("titulo", f.stem)
+            archivados.append(titulo)
+            log.info(f"auto_archivar: '{titulo}' archivado ({edad}d sin Vo.Bo.)")
+        except Exception as _e:
+            log.warning(f"auto_archivar_entregables_stale: error en {f.name}: {_e}")
+    return archivados
 
 
 _SJF_DB_TABLERO = Path(os.environ.get("SJF_DB_PATH", str(HOME_OC / "legal" / "sjf" / "biblioteca.db")))
@@ -2920,6 +2967,16 @@ def build_system_health_report_data():
         cierre_ok = False
         cierre_estado = "error"
     modulos.append(("🌆", "cierre del día", cierre_estado, cierre_ok))
+
+    # --- Auto-archivar entregables stale antes de preparar el informe ---
+    try:
+        _archivados = auto_archivar_entregables_stale(dias=21)
+        if _archivados:
+            log.info(f"build_system_health: auto-archivados {len(_archivados)} entregables stale")
+            modulos.append(("📦", "entregables auto-archivados",
+                            f"{len(_archivados)} archivado(s): {', '.join(_archivados[:4])}", True))
+    except Exception as _e_arch:
+        log.warning(f"build_system_health: auto_archivar falló: {_e_arch}")
 
     # --- Preparar contextos para los agentes ---
     import re as _re

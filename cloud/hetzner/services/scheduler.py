@@ -611,10 +611,12 @@ def main():
             _slot = INTRADAY_SLOTS.get(_now.hour)
             _hoy = _now.strftime("%Y-%m-%d")
             if _slot and not _intraday_ya(_slot, _hoy):
-                msg = core.build_intraday_nudge(_slot)
-                if msg:
-                    send_telegram(msg)
-                    log.info(f"intraday nudge enviado ({_slot})")
+                # "tarde" (13h) → texto; "cierre" (18h) → solo HTML, igual que briefing matutino
+                if _slot != "cierre":
+                    msg = core.build_intraday_nudge(_slot)
+                    if msg:
+                        send_telegram(msg)
+                        log.info(f"intraday nudge enviado ({_slot})")
                 if _slot == "cierre":
                     try:
                         cierre = core.build_cierre_html_data()
