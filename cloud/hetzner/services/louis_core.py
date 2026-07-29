@@ -10544,6 +10544,11 @@ _KB_SENSIBLE_RE = re.compile(
     r"ik[aá]n|kyc|expediente|beneficiario\s+controlador|actividad(?:es)?\s+vulnerable|"
     r"aviso\s+(?:de\s+)?operaci[oó]n|umbral(?:es)?\s+lfpiorpi|"
     r"contrato|nda|convenio|cl[aá]usula|redline|"
+    # Materia legal / litigio (asuntos de cliente del despacho — NUNCA a la nube):
+    r"legal|jur[ií]dic[oa]|juicio|juzgado|demanda(?:d[oa])?|litigio|amparo|laudo|sentencia|"
+    r"notari[ao]|escritura\s+p[uú]blica|poder\s+notarial|gestor[ií]a|representaci[oó]n\s+legal|"
+    # Contable / fiscal (expedientes contables de cliente):
+    r"contabilidad|contable|fiscal|declaraci[oó]n\s+(?:anual|fiscal)|auditor[ií]a|"
     r"n[oó]mina|sueldo|salario|estado\s+de\s+cuenta|"
     r"salud|m[eé]dic[oa]|diagn[oó]stico|s[ií]ntoma|medicamento|ex[aá]men\s+m[eé]dico|"
     r"curp|ine|pasaporte|datos?\s+personales?"

@@ -99,6 +99,14 @@ ORG = (os.environ.get("NEXO_DEFAULT_ORG_ID")
 SPACE = "general"
 BATCH = 25  # chunks por llamada a insert_chunks (para progreso y requests manejables)
 
+# ── POLÍTICA (decisión de Polo, 2026-07) ────────────────────────────────
+# Kawiil Central son expedientes de clientes (legal/contable/juicios) con datos
+# personales. NO van a la KB-nube (Supabase). Se reservan para la KB-Sensible LOCAL
+# (Bloque 5, aún por construir). Louis ya consulta proyectos/tareas en vivo con sus
+# tools, así que no pierde capacidad. Mientras no exista el destino local, este script
+# queda como ANÁLISIS (--dry-run) + limpieza (--purge-cloud); la subida está bloqueada.
+CLOUD_UPLOAD_DISABLED = True
+
 
 # ===== Helpers de schema (defensivos, sin asumir columnas) =====
 
@@ -273,7 +281,19 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="Cuenta y muestra previews, no escribe.")
     ap.add_argument("--reset", action="store_true", help="Borra los chunks kc:* del org antes de cargar.")
     ap.add_argument("--limit", type=int, default=None, help="Máximo de filas por fuente (para pruebas).")
+    ap.add_argument("--purge-cloud", action="store_true",
+                    help="Limpieza: borra TODOS los chunks kc:* del org en la KB-nube y sale.")
     args = ap.parse_args()
+
+    # Limpieza de la nube (por si algún run anterior subió KC). No requiere construir nada.
+    if args.purge_cloud:
+        if not ORG:
+            print("ERROR: falta NEXO_DEFAULT_ORG_ID para purgar.", file=sys.stderr)
+            sys.exit(1)
+        print(f"Purga: borrando chunks kc:* del org {ORG} en la KB-nube…")
+        _reset_kc()
+        print("✅ Purga completa (source_ref like 'kc:%').")
+        sys.exit(0)
 
     if not ORG:
         print("ERROR: falta NEXO_DEFAULT_ORG_ID (org real de Kawiil). Debería vivir en "
@@ -314,6 +334,14 @@ def main():
             print(f"[{r['source_ref']}] {r['title']}")
             print(f"   {r['content'][:180]}{'…' if len(r['content']) > 180 else ''}")
         sys.exit(0)
+
+    # ── Bloqueo por política: KC no sube a la nube (ver CLOUD_UPLOAD_DISABLED) ──
+    if CLOUD_UPLOAD_DISABLED:
+        print("\n🔒 Subida BLOQUEADA por política: Kawiil Central son datos de cliente "
+              "(legal/contable/personal) y NO van a la KB-nube. Destino correcto = KB-Sensible "
+              "LOCAL (Bloque 5, aún por construir). Usa --dry-run para analizar o --purge-cloud "
+              "para limpiar. Louis ya consulta KC en vivo con sus tools.", file=sys.stderr)
+        sys.exit(2)
 
     if args.reset:
         print("Reset: borrando chunks kc:* del org…")
