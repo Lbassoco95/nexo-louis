@@ -221,24 +221,31 @@ def cmd_check(args):
     inserted = insert_chunks(rows)
     print(f"       -> {len(inserted)} chunks insertados")
 
-    q = "¿Qué producto usamos para prevención de lavado de dinero?"
-    print(f"[3/4] Consulta NL: {q!r}")
-    res = retrieve(q, TEST_ORG, "general", 4)
-    for r in res:
-        print(f"       {r.get('similarity'):.4f}  {r.get('source_ref')}  — {r.get('title')}")
-
-    print("[4/4] Limpiando…")
-    delete_org(TEST_ORG)
+    res = []
+    try:
+        q = "¿Qué producto usamos para prevención de lavado de dinero?"
+        print(f"[3/4] Consulta NL: {q!r}")
+        res = retrieve(q, TEST_ORG, "general", 4)
+        for r in res:
+            # Las filas solo-keyword no traen 'similarity' (no hay score de coseno).
+            sim = r.get("similarity")
+            sim_s = f"{sim:.4f}" if isinstance(sim, (int, float)) else "  kw  "
+            print(f"       {sim_s}  {r.get('source_ref')}  — {r.get('title')}  [{r.get('match', '?')}]")
+    finally:
+        print("[4/4] Limpiando…")
+        delete_org(TEST_ORG)
 
     top = res[0] if res else {}
-    ok_hit = (top.get("source_ref") == "demo/ikan")   # el chunk PLD debe rankear #1
-    ok_order = len(res) >= 2 and res[0].get("similarity", 0) >= res[1].get("similarity", 0)
+    ok_hit = (top.get("source_ref") == "demo/ikan")   # el chunk PLD debe rankear #1 (vector o keyword)
+    # El orden por similitud aplica al carril VECTORIAL; keyword no trae score.
+    sims = [r["similarity"] for r in res if isinstance(r.get("similarity"), (int, float))]
+    ok_order = sims == sorted(sims, reverse=True)
 
     print()
-    print(f"[{'OK' if ok_hit else 'XX'}] top-1 semántico = {top.get('source_ref')} (esperado demo/ikan)")
-    print(f"[{'OK' if ok_order else 'XX'}] similitud ordenada descendente")
+    print(f"[{'OK' if ok_hit else 'XX'}] top-1 = {top.get('source_ref')} (esperado demo/ikan)")
+    print(f"[{'OK' if ok_order else 'XX'}] carril vectorial ordenado descendente ({len(sims)} con score)")
     if ok_hit and ok_order:
-        print("\nBLOQUE 2a VERDE [OK] — recuperación semántica end-to-end funciona.")
+        print("\nBLOQUE 2a VERDE [OK] — recuperación híbrida end-to-end funciona.")
         sys.exit(0)
     print("\nBLOQUE 2a EN ROJO [XX] — revisa embeddings, RPC o datos sembrados.", file=sys.stderr)
     sys.exit(1)
