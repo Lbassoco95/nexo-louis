@@ -22,6 +22,8 @@ Config (env u ~/.openclaw/credentials/kawiil-agents.env):
 import os
 import sys
 import json
+import re
+import urllib.parse
 import urllib.request
 import urllib.error
 
@@ -63,7 +65,7 @@ def _sb_request(method: str, path: str, body=None, extra_headers=None, timeout: 
 
 # === Recuperación ===
 
-def retrieve(query_text: str, org_id: str, space_id: str = "general", k: int = 8) -> list:
+def _vector_search(query_text: str, org_id: str, space_id: str = "general", k: int = 8) -> list:
     """Embebe la consulta y devuelve los top-k chunks vía match_kb_chunks."""
     vec = embed(query_text)
     # PostgREST + pgvector: la forma array (list[float]) funciona como en los
@@ -84,6 +86,51 @@ def retrieve(query_text: str, org_id: str, space_id: str = "general", k: int = 8
                 continue
             raise
     return []
+
+
+# === Recuperación híbrida (vector + keyword) ===
+# El vector recupera por significado; el keyword rescata match exacto de nombres
+# propios (Kailash, Ixim, personas/clientes) que el embedding a veces no rankea alto.
+
+_STOP = {"que","qué","de","en","el","la","los","las","un","una","es","son","del","al",
+         "por","para","con","sobre","quien","quién","cual","cuál","como","cómo","y","o",
+         "mi","tu","su","lo","le","se","va","hay","tiene","dime","busca","conocimiento",
+         "base","proyecto","cliente","persona"}
+
+def _extract_terms(query, max_terms=5):
+    toks = re.findall(r"[A-Za-zÁÉÍÓÚÑáéíóúñ][\wÁÉÍÓÚÑáéíóúñ]{2,}", query or "")
+    out, seen = [], set()
+    for t in toks:
+        if t.lower() in _STOP:
+            continue
+        if (t[0].isupper() or len(t) >= 5) and t.lower() not in seen:
+            seen.add(t.lower()); out.append(t)
+    return out[:max_terms]
+
+def _keyword_search(terms, org_id, space_id, limit=6):
+    if not terms:
+        return []
+    ors = ",".join(f"content.ilike.*{urllib.parse.quote(t)}*" for t in terms)
+    path = (f"/rest/v1/kb_chunks?org_id=eq.{org_id}&space_id=eq.{space_id}"
+            f"&or=({ors})&limit={limit}"
+            f"&select=id,source_type,source_ref,title,content,metadata")
+    rows = _sb_request("GET", path) or []
+    for r in rows:
+        r["match"] = "keyword"
+    return rows
+
+def retrieve(query_text, org_id, space_id="general", k=8):
+    vec = _vector_search(query_text, org_id, space_id, k)
+    for r in vec:
+        r.setdefault("match", "vector")
+    kw = _keyword_search(_extract_terms(query_text), org_id, space_id, limit=6)
+    seen, merged = set(), []
+    for r in kw + vec:                 # keyword primero: match exacto de nombre gana
+        rid = r.get("id")
+        if rid in seen:
+            continue
+        seen.add(rid); merged.append(r)
+    return merged[: max(k, len(kw))]
 
 
 # === Inserción (para seed/checkpoint) ===
