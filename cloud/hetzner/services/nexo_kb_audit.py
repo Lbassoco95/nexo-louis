@@ -100,6 +100,8 @@ def main():
     ap.add_argument("--org", default=None)
     ap.add_argument("--show-refs", action="store_true",
                     help="Lista los source_ref marcados (opt-in; puede incluir nombres en el slug).")
+    ap.add_argument("--purge", action="store_true",
+                    help="ACCIÓN: borra de la nube los chunks marcados sensibles (por su source_ref real).")
     args = ap.parse_args()
 
     org = args.org or ORG
@@ -151,8 +153,28 @@ def main():
         for ref in flagged_refs:
             print(f"  {ref}")
 
+    if args.purge and flagged_refs:
+        import urllib.parse
+        print(f"\n⚠️  PURGA: borrando {len(flagged_refs)} chunks sensibles de la KB-nube "
+              f"(org {org})…")
+        borrados = 0
+        for i, ref in enumerate(flagged_refs, 1):
+            q = urllib.parse.quote(ref, safe="")
+            try:
+                nexo_retrieve._sb_request(
+                    "DELETE", f"/rest/v1/kb_chunks?org_id=eq.{org}&source_ref=eq.{q}")
+                borrados += 1
+            except Exception as e:
+                print(f"  ⚠️ no pude borrar {ref}: {e}", file=sys.stderr)
+            if i % 25 == 0 or i == len(flagged_refs):
+                print(f"  … {i}/{len(flagged_refs)}", flush=True)
+        print(f"✅ Purga completa: {borrados}/{len(flagged_refs)} chunks sensibles borrados de la nube. "
+              "Los de negocio (no sensibles) permanecen.")
+        return
+
     print(f"\nResumen: {sens}/{tot} chunks '{args.prefix}*' se marcarían sensibles hoy. "
-          "Read-only: no se cambió nada. Decide si purgar/re-cargar.")
+          + ("Corre de nuevo con --purge para borrarlos de la nube. " if not args.purge else "")
+          + "Read-only salvo --purge.")
 
 
 if __name__ == "__main__":
