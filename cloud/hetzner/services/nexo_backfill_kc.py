@@ -66,6 +66,32 @@ except Exception as e:  # pragma: no cover
     sys.exit(1)
 
 
+def _load_env_files():
+    """Puebla os.environ desde los .env del runtime cuando faltan claves. Necesario en
+    corrida MANUAL: systemd inyecta el entorno al servicio, pero un `python3 ...` directo
+    no. Usa setdefault → NUNCA pisa un valor ya presente (contexto systemd intacto)."""
+    for path in ("/opt/openclaw/openclaw.env",   # NEXO_DEFAULT_ORG_ID vive aquí
+                 "/opt/openclaw/.env",            # KAWIIL_CENTRAL_DATABASE_URL, etc.
+                 os.path.expanduser("~/.openclaw/.env"),
+                 os.path.expanduser("~/.openclaw/credentials/kawiil-agents.env")):
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    if line.startswith("export "):
+                        line = line[len("export "):]
+                    k, v = line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+        except Exception:
+            pass
+
+
+_load_env_files()
+
 ORG = (os.environ.get("NEXO_DEFAULT_ORG_ID")
        or os.environ.get("KAWIIL_KAWIIL_ORG_ID")
        or os.environ.get("KAWIIL_ORG_ID"))
@@ -250,7 +276,10 @@ def main():
     args = ap.parse_args()
 
     if not ORG:
-        print("ERROR: falta NEXO_DEFAULT_ORG_ID en el entorno (org real de Kawiil).", file=sys.stderr)
+        print("ERROR: falta NEXO_DEFAULT_ORG_ID (org real de Kawiil). Debería vivir en "
+              "/opt/openclaw/openclaw.env; verifica esa línea o expórtala antes de correr: "
+              "`export NEXO_DEFAULT_ORG_ID=$(grep -E '^NEXO_DEFAULT_ORG_ID' /opt/openclaw/openclaw.env | cut -d= -f2-)`",
+              file=sys.stderr)
         sys.exit(1)
 
     print("== Nexo · Bloque 4 (2ª pasada) · backfill Kawiil Central ==")
