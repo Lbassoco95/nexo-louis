@@ -10488,10 +10488,14 @@ MEXICANIZE_DOCTRINE = (
 
 # === Nexo · Capa 1 · Bloque 2b — recuperación RAG como herramienta ===
 def _buscar_conocimiento(query, top_k=6, space_id="general"):
-    """Recupera fragmentos relevantes de la KB-Negocio (Supabase pgvector) por significado.
-    Aditivo y a prueba de fallos: si falta la libreria o la config, devuelve un aviso
-    claro en vez de romper el gateway."""
+    """Recupera fragmentos relevantes por significado de AMBAS KBs: la KB-Negocio
+    (Supabase pgvector, nube) y la KB-Sensible LOCAL (SQLite en el VPS, Bloque 5).
+
+    La invariante es de ALMACENAMIENTO, no de recuperación: Louis SÍ puede recuperar lo
+    sensible para responderle a Polo por su canal privado; los locales se marcan con 🔒.
+    Aditivo y a prueba de fallos: cada fuente falla a vacío sin romper el gateway."""
     import os as _os
+    k = int(top_k or 6)
     for cand in filter(None, [
         _os.environ.get("NEXO_LIB_DIR"),
         str(Path(__file__).resolve().parent),
@@ -10499,33 +10503,55 @@ def _buscar_conocimiento(query, top_k=6, space_id="general"):
     ]):
         if cand not in sys.path:
             sys.path.insert(0, cand)
-    try:
-        import nexo_retrieve
-    except Exception as e:
-        return f"(recuperacion no disponible: no pude importar nexo_retrieve - {e})"
 
+    # --- KB-Negocio (nube) ---
+    cloud_rows = []
     org_id = (_os.environ.get("NEXO_DEFAULT_ORG_ID")
               or _os.environ.get("KAWIIL_KAWIIL_ORG_ID")
               or _os.environ.get("KAWIIL_ORG_ID"))
-    if not org_id:
-        return "(recuperacion no disponible: falta NEXO_DEFAULT_ORG_ID / KAWIIL_KAWIIL_ORG_ID en el entorno)"
+    if org_id:
+        try:
+            import nexo_retrieve
+            cloud_rows = nexo_retrieve.retrieve(query, org_id, space_id, k) or []
+        except Exception:
+            cloud_rows = []
 
+    # --- KB-Sensible (local, Bloque 5) ---
+    local_rows = []
     try:
-        rows = nexo_retrieve.retrieve(query, org_id, space_id, int(top_k or 6))
-    except Exception as e:
-        return f"(error en recuperacion: {e})"
+        import nexo_kb_local
+        local_rows = nexo_kb_local.retrieve(query, k) or []
+    except Exception:
+        local_rows = []
 
-    if not rows:
+    # --- Merge + dedup por source_ref (fallback a id) ---
+    seen, merged = set(), []
+    for r in list(cloud_rows) + list(local_rows):
+        key = r.get("source_ref") or r.get("id")
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(r)
+
+    if not merged:
         return "(sin resultados relevantes en la base de conocimiento)"
 
-    out = [f"{len(rows)} fragmento(s) relevante(s) por significado:"]
-    for r in rows:
+    # Orden por similitud desc; keyword exacto (cloud, sin score) se trata como alta confianza.
+    def _simkey(r):
+        s = r.get("similarity")
+        return s if isinstance(s, (int, float)) else 1.0
+    merged.sort(key=_simkey, reverse=True)
+    merged = merged[:k]
+
+    out = [f"{len(merged)} fragmento(s) relevante(s) por significado:"]
+    for r in merged:
         sim = r.get("similarity")
         sim_s = f"{sim:.3f}" if isinstance(sim, (int, float)) else str(sim)
         src = r.get("source_ref") or "?"
         title = r.get("title") or ""
         content = (r.get("content") or "").strip()
-        out.append(f"\n[{sim_s}] {title} ({src})\n{content}")
+        lock = "🔒 " if r.get("match") == "local" else ""
+        out.append(f"\n{lock}[{sim_s}] {title} ({src})\n{content}")
     return "\n".join(out)
 
 
@@ -10570,6 +10596,10 @@ def _guardar_conocimiento(hecho, source_type="journal", source_ref=None, titulo=
 
     Aditivo y a prueba de fallos: cualquier error devuelve aviso claro, no rompe el gateway."""
     import os as _os
+    for cand in filter(None, [_os.environ.get("NEXO_LIB_DIR"),
+                              str(Path(__file__).resolve().parent), str(Path.home())]):
+        if cand not in sys.path:
+            sys.path.insert(0, cand)
     hecho = (hecho or "").strip()
     if not hecho:
         return "(no guardé: hecho vacío)"
@@ -10583,9 +10613,21 @@ def _guardar_conocimiento(hecho, source_type="journal", source_ref=None, titulo=
         fecha = datetime.now(TZ_CDMX).strftime("%Y-%m-%d %H:%M")
         linea = f"- [{fecha}] [{st}] {hecho}" + (f" (ref: {source_ref})" if source_ref else "")
         r = execute_tool("append_to_memory", {"filename": "KB_SENSIBLE.md", "content": linea})
+        # Además: insertar embebido en la KB-Sensible LOCAL (Bloque 5) para que sea
+        # recuperable por significado. Nunca sale del VPS. Fail-safe: no rompe el gateway.
+        try:
+            import nexo_kb_local
+            nexo_kb_local.insert_chunks([{
+                "source_type": st,
+                "source_ref": source_ref or f"captura-sensible/{datetime.now(TZ_CDMX).strftime('%Y%m%d-%H%M%S')}",
+                "title": titulo,
+                "content": hecho,
+                "metadata": {"captura": True, "sensible": True},
+            }])
+        except Exception:
+            pass
         if r.startswith("OK") or "ya estaba" in r:
-            return ("🔒 Guardado SOLO local (contenido sensible PLD/legal/salud): no salió a la nube. "
-                    "Lo recuperaré cuando esté lista la KB-Sensible local (Bloque 5).")
+            return "🔒 Guardado SOLO local (sensible), recuperable en la KB local. No salió a la nube."
         return f"⚠️ No pude guardar el hecho sensible en local: {r}"
 
     # --- KB-Negocio (Supabase pgvector) ---
