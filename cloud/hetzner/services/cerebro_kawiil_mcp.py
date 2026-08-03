@@ -50,8 +50,8 @@ BEARER_TOKEN     = os.environ.get("CEREBRO_KAWIIL_TOKEN", "")
 PORT             = int(os.environ.get("CEREBRO_PORT", "4040"))
 SPACES_PATH      = Path(os.environ.get("OPENCLAW_SPACES", "/opt/openclaw/spaces/general"))
 ENTREGABLES_PATH = Path(os.environ.get("ENTREGABLES_PATH", "/opt/openclaw/entregables"))
-SJF_DB_PATH      = Path(os.environ.get("SJF_DB_PATH", "/opt/openclaw/legal/sjf.db"))
-DOF_DB_PATH      = Path(os.environ.get("DOF_DB_PATH", "/opt/openclaw/legal/dof.db"))
+SJF_DB_PATH      = Path(os.environ.get("SJF_DB_PATH", "/opt/openclaw/legal/sjf/biblioteca.db"))
+DOF_DB_PATH      = Path(os.environ.get("DOF_DB_PATH", "/opt/openclaw/legal/dof/biblioteca_dof.db"))
 CACHE_TTL        = int(os.environ.get("CEREBRO_CACHE_TTL", "60"))
 
 # Cola de recordatorios que lee el scheduler de Louis (misma que usa el bridge de
@@ -512,12 +512,12 @@ def legal_buscar(termino: str, fuente: str = "ambas", limite: int = 5,
         if "tesis" in tablas:
             filas = _query_db(
                 SJF_DB_PATH,
-                "SELECT rubro, texto, fecha FROM tesis WHERE texto LIKE ? OR rubro LIKE ? LIMIT ?",
+                "SELECT rubro, texto, fecha_publicacion FROM tesis WHERE texto LIKE ? OR rubro LIKE ? LIMIT ?",
                 (f"%{termino}%", f"%{termino}%", limite),
             )
             for f in filas:
                 resultados.append(
-                    f"[SJF/{f.get('fecha','')}] {f.get('rubro','')}\n"
+                    f"[SJF/{f.get('fecha_publicacion','')}] {f.get('rubro','')}\n"
                     f"{(f.get('texto') or '')[:excerpt_chars]}…"
                 )
         elif tablas:
@@ -526,17 +526,17 @@ def legal_buscar(termino: str, fuente: str = "ambas", limite: int = 5,
 
     if fuente in ("dof", "ambas") and DOF_DB_PATH.exists():
         tablas = _tablas_db(DOF_DB_PATH)
-        if "publicaciones" in tablas:
+        if "notas" in tablas:
             filas = _query_db(
                 DOF_DB_PATH,
-                "SELECT titulo, contenido, fecha_publicacion FROM publicaciones "
-                "WHERE contenido LIKE ? OR titulo LIKE ? LIMIT ?",
+                "SELECT titulo, texto_plano, fecha FROM notas "
+                "WHERE (texto_plano LIKE ? OR titulo LIKE ?) AND incluido=1 LIMIT ?",
                 (f"%{termino}%", f"%{termino}%", limite),
             )
             for f in filas:
                 resultados.append(
-                    f"[DOF/{f.get('fecha_publicacion','')}] {f.get('titulo','')}\n"
-                    f"{(f.get('contenido') or '')[:excerpt_chars]}…"
+                    f"[DOF/{f.get('fecha','')}] {f.get('titulo','')}\n"
+                    f"{(f.get('texto_plano') or '')[:excerpt_chars]}…"
                 )
         elif tablas:
             cols = [c["name"] for c in _query_db(DOF_DB_PATH, f"PRAGMA table_info({tablas[0]})")]
