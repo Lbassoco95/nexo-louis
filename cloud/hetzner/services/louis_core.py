@@ -2499,6 +2499,27 @@ def _scan_source_dropbox(scan_folders: list | None = None) -> str:
     return "\n".join(lines)[:2000] if lines else ""
 
 
+def _auto_register_actionable(evento: dict, fecha_str: str) -> None:
+    """Registra en SEGUIMIENTOS.md cualquier evento con acción definida (no urgente).
+    Escribe como checkbox abierto para que los pilares de seguimiento lo detecten."""
+    titulo = evento.get("titulo", "")
+    accion = evento.get("accion", "")
+    fuente = evento.get("fuente", "monitor")
+    if not titulo or not accion:
+        return
+    entry = f"\n- [ ] {titulo} — {accion} [auto {fecha_str}, fuente: {fuente}]\n"
+    try:
+        seg_path = SPACE / "SEGUIMIENTOS.md"
+        recientes = seg_path.read_text(encoding="utf-8").splitlines()[-30:] if seg_path.exists() else []
+        if any(titulo[:35] in l for l in recientes):
+            return
+        with seg_path.open("a", encoding="utf-8") as f:
+            f.write(entry)
+        log.info("auto_register_actionable: '%s' → SEGUIMIENTOS.md", titulo[:50])
+    except Exception as e:
+        log.warning("auto_register_actionable: no pude escribir SEGUIMIENTOS: %s", e)
+
+
 def _auto_register_urgent(evento: dict, fecha_str: str) -> str:
     """Para eventos urgentes: registra en SEGUIMIENTOS.md y construye sugerencia
     de acción concreta usando el contexto de PEOPLE.md."""
@@ -2694,6 +2715,9 @@ def build_unified_monitor_scan(mode: str = "full") -> dict:
             accion_ctx = ""
             if ev.get("urgente"):
                 accion_ctx = _auto_register_urgent(ev, fecha_str)
+            elif ev.get("accion"):
+                # Registro silencioso como checkbox abierto para seguimiento
+                _auto_register_actionable(ev, fecha_str)
             caption_parts = [f"{icono} <b>{_he.escape(ev.get('titulo', ''))}</b>",
                              _he.escape(ev.get("resumen", "")[:200])]
             if ev.get("accion"):
