@@ -6330,8 +6330,15 @@ def _summarize_for_knowledge(agente: str, titulo: str, fecha: str, fuente: str,
         resumen_raw = call_deepseek(system, [], prompt)
         if resumen_raw and "|||OLLAMA|||" in resumen_raw:
             partes = resumen_raw.split("|||OLLAMA|||", 1)
-            resumen = partes[0].strip()
-            aprendizaje = partes[1].strip()[:300]
+            _hdr1 = r'^(?:PARTE\s+1\s*[-—]\s*)?RESUMEN\s+COMPLETO[^:\n]*:?\s*\n+'
+            resumen = re.sub(_hdr1, '', partes[0].strip(), flags=re.IGNORECASE).strip()
+            _raw_apr = partes[1].strip()
+            # DeepSeek a veces repite el encabezado "PARTE 2 — APRENDIZAJE CLAVE" antes
+            # del contenido real. Strippearlo para que la memoria Ollama tenga la síntesis.
+            _hdr2 = r'^(?:PARTE\s+2\s*[-—]\s*)?APRENDIZAJE\s+CLAVE[^:\n]*:?\s*\n+'
+            aprendizaje = re.sub(_hdr2, '', _raw_apr, flags=re.IGNORECASE).strip()[:300]
+            if not aprendizaje:
+                aprendizaje = resumen[:200].rstrip(".") + "."
         elif resumen_raw:
             # DeepSeek no siguió el formato — tomar todo como resumen, extractar inicio
             resumen = resumen_raw.strip()
