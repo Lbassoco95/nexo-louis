@@ -467,10 +467,10 @@ def tick():
                 text = enrich_with_ollama(raw)
             else:
                 text = raw
-            # Modo briefing: HTML ya enviado por briefing_doc.py; no duplicar con texto plano
+            # Briefing: enviar texto Haiku sintetizado + HTML lanzado por briefing_doc.py
             if mode == "briefing" or raw == MORNING_BRIEFING_MARKER:
-                ok = True
-                log.info(f"Disparado {entry.get('id')} (briefing HTML, sin texto) → ok=True")
+                ok = send_telegram(text) if text else True
+                log.info(f"Disparado {entry.get('id')} (briefing texto+HTML) → ok={ok}")
             else:
                 prefix = "⏰ "
                 text = f"{prefix}{text}"
