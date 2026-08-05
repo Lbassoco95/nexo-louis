@@ -480,6 +480,33 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_html(200, "<h1>Sin briefing generado aún</h1><p>El briefing matutino se genera a las 07:00 CDMX.</p>")
             return
 
+        # Cierre del día HTML
+        if self.path in ("/cierre", "/cierre/", "/cierre/latest"):
+            p = Path(os.environ.get("STATE_DIR", "/opt/openclaw/state")) / "cierre_latest.html"
+            if p.exists():
+                self._send_html(200, p.read_text(encoding="utf-8"))
+            else:
+                self._send_html(200, "<h1>Sin cierre generado aún</h1><p>El cierre del día se genera a las 18:00 CDMX.</p>")
+            return
+
+        # Revisión semanal HTML
+        if self.path in ("/review", "/review/", "/review/latest"):
+            p = Path(os.environ.get("STATE_DIR", "/opt/openclaw/state")) / "review_semanal_latest.html"
+            if p.exists():
+                self._send_html(200, p.read_text(encoding="utf-8"))
+            else:
+                self._send_html(200, "<h1>Sin revisión semanal generada aún</h1><p>La revisión semanal se genera los lunes a las 08:00 CDMX.</p>")
+            return
+
+        # Revisión de sistema HTML
+        if self.path in ("/sistema", "/sistema/", "/sistema/latest"):
+            p = Path(os.environ.get("STATE_DIR", "/opt/openclaw/state")) / "system_review_latest.html"
+            if p.exists():
+                self._send_html(200, p.read_text(encoding="utf-8"))
+            else:
+                self._send_html(200, "<h1>Sin revisión de sistema generada aún</h1><p>La revisión de sistema se genera bajo demanda.</p>")
+            return
+
         # Eventos monitoreados: índice de todas las fuentes, eventos individuales por HTML.
         if self.path.startswith("/events"):
             _eb = Path("/opt/openclaw/events")
