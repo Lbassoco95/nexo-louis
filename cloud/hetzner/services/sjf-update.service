@@ -20,4 +20,4 @@ PrivateTmp=true
 ReadWritePaths=@@OPENCLAW_HOME@@
 MemoryMax=512M
 TasksMax=64
-TimeoutStartSec=1800
+TimeoutStartSec=3600
