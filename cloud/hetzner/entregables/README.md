@@ -1,6 +1,6 @@
 # Almacén de Entregables — Kawiil
 
-Directorio compartido entre Cowork y Louis. En producción vive en:
+Directorio compartido entre Cowork y Donna. En producción vive en:
 `/opt/openclaw/entregables/` (Hetzner).
 
 ## Convención de archivos
@@ -37,8 +37,8 @@ vobo: pendiente
 
 ## Subdirectorios
 
-- `_briefs/` — Briefs de dispatch preparados por Louis para Cowork.
-  Formato: `YYYY-MM-DD-brief-slug.md`. Louis los genera con `dispatch_preparar_brief`.
+- `_briefs/` — Briefs de dispatch preparados por Donna para Cowork.
+  Formato: `YYYY-MM-DD-brief-slug.md`. Donna los genera con `dispatch_preparar_brief`.
 
 ## Reglas
 

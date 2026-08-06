@@ -1,30 +1,30 @@
-# Reporte de avance — Louis / Cerebro Kawiil
+# Reporte de avance — Donna / Cerebro Kawiil
 **Fecha:** 7 de junio de 2026 · **Sesión de trabajo intensiva**
 
 ---
 
-## 1. Recuperación crítica: Louis revivido
+## 1. Recuperación crítica: Donna revivido
 
-Louis estaba **caído** (errores `is_status_command`, `call_llm history_file`, `_is_billing_error`). Causa: otra sesión intentó meter el Cerebro a producción con un script que **parchaba el archivo vivo** (`patch_louis_core.py`), y lo corrompió.
+Donna estaba **caído** (errores `is_status_command`, `call_llm history_file`, `_is_billing_error`). Causa: otra sesión intentó meter el Cerebro a producción con un script que **parchaba el archivo vivo** (`patch_donna_core.py`), y lo corrompió.
 
-- ✅ **Revivido**: se restauró el `louis_core.py` bueno (8120 líneas) y se le **injertó el Cerebro Kawiil de forma limpia** (sin parches).
+- ✅ **Revivido**: se restauró el `donna_core.py` bueno (8120 líneas) y se le **injertó el Cerebro Kawiil de forma limpia** (sin parches).
 - ✅ **Regla establecida**: nunca parchear el archivo vivo; siempre desplegar archivo completo.
 
 ## 2. Cerebro Kawiil — MCP en producción
 
-El cerebro compartido Louis ↔ Cowork, en línea:
+El cerebro compartido Donna ↔ Cowork, en línea:
 
 - ✅ Servicio `cerebro-kawiil` en Hetzner, expuesto con **HTTPS** (`https://cerebro.kawiil-central.mx`) vía Caddy.
 - ✅ **OAuth** implementado (los connectors de Claude lo exigen): discovery + registro dinámico + PKCE.
 - ✅ **DNS-rebinding protection** desactivada (estaba bloqueando el SSE detrás de Caddy).
-- ✅ Louis **lee el cerebro** desde Telegram (`cerebro_estado`, `cerebro_listar`, `cerebro_proyecto_estado`, `cerebro_crear_brief`, `cerebro_sync_agenda`).
+- ✅ Donna **lee el cerebro** desde Telegram (`cerebro_estado`, `cerebro_listar`, `cerebro_proyecto_estado`, `cerebro_crear_brief`, `cerebro_sync_agenda`).
 - 🔜 Falta: conectar el connector en la app (Cowork) — quedó a un paso.
 
 ## 3. Memoria confiable
 
 - ✅ **`reemplazar_pendiente`**: ya no duplica el checkbox (`- [ ] - [x]`).
 - ✅ AGENDA depurada (perfiles Joshui correctos, sin duplicados).
-- ✅ Louis reporta estado real y honesto (deja de inventar/confirmar en falso).
+- ✅ Donna reporta estado real y honesto (deja de inventar/confirmar en falso).
 
 ## 4. Briefing matutino — reconstruido
 
@@ -95,4 +95,4 @@ Antes: "razonaba" la agenda sobre la memoria y **revivía juntas viejas** (inven
 
 ---
 
-*Generado por Louis (Kawiil) — sesión del 7-jun-2026.*
+*Generado por Donna (Kawiil) — sesión del 7-jun-2026.*

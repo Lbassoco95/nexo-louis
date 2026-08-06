@@ -1,5 +1,5 @@
 [Unit]
-Description=Louis SJF — resumen semanal de tesis del Semanario Judicial (Telegram)
+Description=Donna SJF — resumen semanal de tesis del Semanario Judicial (Telegram)
 After=network-online.target
 Wants=network-online.target
 

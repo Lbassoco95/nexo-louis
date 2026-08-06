@@ -1,5 +1,5 @@
 [Unit]
-Description=Louis scheduler — proactive reminders + briefings
+Description=Donna scheduler — proactive reminders + briefings
 Documentation=https://github.com/Lbassoco95/kawiil-agents
 After=network-online.target telegram-bridge.service
 Wants=network-online.target

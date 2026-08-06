@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# setup-kawiil-central-creds.sh — Configura las credenciales que Louis usa
+# setup-kawiil-central-creds.sh — Configura las credenciales que Donna usa
 # para operar contra Kawiil Central EN PRODUCCIÓN (Vercel + Supabase).
 #
 # NO clona el repo. NO baja código. Solo guarda credenciales en /opt/openclaw/
-# y se las inyecta en openclaw.env para que los tools de Louis las vean.
+# y se las inyecta en openclaw.env para que los tools de Donna las vean.
 #
 # kawiil-central vive en:
 #   - Frontend: https://www.kawiil-central.mx  (Vercel)
 #   - DB:       Supabase (proyecto privado de Polo)
 #
-# Louis se conecta directo a Supabase para:
+# Donna se conecta directo a Supabase para:
 #   - Listar y filtrar proyectos
 #   - Crear, actualizar, mover tareas
 #   - Registrar avances/comentarios en tareas
@@ -68,7 +68,7 @@ fi
 
 if [[ -z "${KAWIIL_CENTRAL_SUPABASE_KEY:-}" ]]; then
   if [[ -t 0 ]]; then
-    echo "  Necesito la service_role key (no anon) para que Louis pueda INSERT/UPDATE tareas."
+    echo "  Necesito la service_role key (no anon) para que Donna pueda INSERT/UPDATE tareas."
     echo "  En Supabase Studio → Project Settings → API → service_role secret."
     read -rsp "Supabase service_role key (sb_secret_... o eyJ...): " KAWIIL_CENTRAL_SUPABASE_KEY
     echo ""
@@ -93,7 +93,7 @@ fi
 # ─── Guarda env ──────────────────────────────────────────
 cat > "$KC_ENV" <<EOF
 # Generado por setup-kawiil-central-creds.sh — $(date -Iseconds)
-# Operación de Louis contra kawiil-central EN PRODUCCIÓN (no es clon local)
+# Operación de Donna contra kawiil-central EN PRODUCCIÓN (no es clon local)
 KAWIIL_CENTRAL_VERCEL_URL="$KAWIIL_CENTRAL_VERCEL_URL"
 KAWIIL_CENTRAL_SUPABASE_URL="$KAWIIL_CENTRAL_SUPABASE_URL"
 KAWIIL_CENTRAL_SUPABASE_KEY="$KAWIIL_CENTRAL_SUPABASE_KEY"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# mac-deploy-all.sh — UN solo comando para deployar Louis en Hetzner desde la Mac.
+# mac-deploy-all.sh — UN solo comando para deployar Donna en Hetzner desde la Mac.
 #
 # Hace todo en orden:
 #   1) Genera /tmp/louis.env desde ~/.openclaw/credentials/
@@ -126,7 +126,7 @@ ok "Temporales borrados"
 cat <<EOF
 
 ══════════════════════════════════════════════════════════
-  Louis está vivo en https://louis.kawiil.mx
+  Donna está vivo en https://louis.kawiil.mx
 ══════════════════════════════════════════════════════════
 
 Pruébalo:

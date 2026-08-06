@@ -1,5 +1,5 @@
 [Unit]
-Description=OpenClaw Gateway (Louis core HTTP)
+Description=OpenClaw Gateway (Donna core HTTP)
 After=network-online.target
 Wants=network-online.target
 

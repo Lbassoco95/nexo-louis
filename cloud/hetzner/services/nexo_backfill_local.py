@@ -7,7 +7,7 @@ Puebla la KB local (nexo_kb_local, SQLite en el VPS) con lo que NO debe vivir en
   (B) TODO el contenido de los .md SENSIBLES (SALUD, FAMILIA, FINANZAS, personal, legal…)
 
 Reusa el chunking real de nexo_backfill (chunk_file / _slug / listas de archivos) y el
-clasificador canónico de louis_core (_es_conocimiento_sensible). source_ref con prefijo
+clasificador canónico de donna_core (_es_conocimiento_sensible). source_ref con prefijo
 'memory-sensible/'. Cero dependencias nuevas. Nada sale del VPS.
 
 Uso (en /opt/openclaw/scripts/):
@@ -26,9 +26,9 @@ import nexo_kb_local
 from nexo_backfill import chunk_file, _slug, BUSINESS_FILES, SKIP_SENSIBLE, DEFAULT_DIR
 
 try:
-    from louis_core import _es_conocimiento_sensible
+    from donna_core import _es_conocimiento_sensible
 except Exception as e:  # pragma: no cover
-    print(f"ERROR: no pude importar _es_conocimiento_sensible de louis_core: {e}", file=sys.stderr)
+    print(f"ERROR: no pude importar _es_conocimiento_sensible de donna_core: {e}", file=sys.stderr)
     sys.exit(1)
 
 PREFIX = "memory-sensible/"

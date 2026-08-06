@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-sjf_harvest.py — actualización diaria del Semanario Judicial (SJF) para Louis.
+sjf_harvest.py — actualización diaria del Semanario Judicial (SJF) para Donna.
 
 Por qué existe (03-jun-2026): el scraper grande (`sjf_biblioteca.py`) se quedó
 estancado en abril porque (a) no había timer que lo corriera, y (b) le pegaba al
@@ -12,7 +12,7 @@ param, 200 con isSemanal=true).
 Este harvester es ligero y autosuficiente para el FETCH (cookie de sesión +
 isSemanal=true), pero reutiliza la persistencia del scraper instalado
 (`db_connect`, `normalize_tesis`, `upsert_tesis`) para escribir EXACTAMENTE en el
-mismo esquema que Louis ya lee. Camina desde MAX(registro)+1 hacia adelante hasta
+mismo esquema que Donna ya lee. Camina desde MAX(registro)+1 hacia adelante hasta
 GAP_TOLERANCE 404 consecutivos.
 
 Uso:
@@ -47,7 +47,7 @@ SCRAPER_PATH = os.environ.get("SJF_SCRAPER") or next(
     ) if Path(p).exists()),
     "/opt/openclaw/legal/sjf/sjf_biblioteca.py",
 )
-# BD que Louis LEE. El harvester escribe AQUÍ directamente (no vía el scraper, cuyo
+# BD que Donna LEE. El harvester escribe AQUÍ directamente (no vía el scraper, cuyo
 # DB_PATH lo revierte el sync de la Mac).
 DB_PATH = os.environ.get("SJF_DB_PATH", "/opt/openclaw/legal/sjf/biblioteca.db")
 API_BASE = "https://sjf2.scjn.gob.mx/services/sjftesismicroservice/api/public/tesis"
@@ -182,7 +182,7 @@ def _probe_for_anchor(max_reg: int) -> int:
 def main() -> int:
     sjf = _load_scraper()
     _prime()
-    # IMPORTANTE: abrimos NUESTRA conexión a la BD que Louis lee (DB_PATH), en vez de
+    # IMPORTANTE: abrimos NUESTRA conexión a la BD que Donna lee (DB_PATH), en vez de
     # usar sjf.db_connect(). El scraper sincronizado desde la Mac tiene su DB_PATH
     # apuntando a ~/sjf_biblioteca/biblioteca.db (y el sync revierte cualquier parche),
     # así que escribir vía su db_connect mandaba los datos al archivo equivocado.

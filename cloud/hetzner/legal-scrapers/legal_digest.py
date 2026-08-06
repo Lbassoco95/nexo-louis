@@ -128,7 +128,7 @@ def _sintesis_natural(data, dias):
         return ""
     muestra = "\n".join(titulos[:90])
     system = (
-        "Eres Louis, asistente del despacho legal Kawiil (México). Te paso una lista de "
+        "Eres Donna, asistente del despacho legal Kawiil (México). Te paso una lista de "
         "títulos de documentos oficiales (DOF/SJF) que el despacho indexó esta semana. "
         "Escribe un resumen EJECUTIVO en español claro y natural para el equipo interno "
         "(no jerga): 1 párrafo corto (2-3 frases) de qué dominó la semana, y luego 4-6 "
@@ -136,12 +136,12 @@ def _sintesis_natural(data, dias):
         "'- ' para viñetas y **negritas** para los temas. NO inventes; básate solo en los títulos.")
     try:
         sys.path.insert(0, SCRIPTS)
-        import louis_core as L
+        import donna_core as L
         out = L.call_deepseek(system, [], f"Periodo: últimos {dias} días.\n\n{muestra}")
         if not out or len(out.strip()) < 40:
             return ""
         sys.path.insert(0, SCRIPTS)
-        import louis_html as LH
+        import donna_html as LH
         return f'<div class="destacados"><h3>📌 En claro — lo de la semana</h3>{LH._md_body(out.strip())}</div>'
     except Exception as e:
         print(f"WARN: síntesis natural falló: {e}", file=sys.stderr)
@@ -150,7 +150,7 @@ def _sintesis_natural(data, dias):
 
 def build_html(data, dias, etiqueta):
     sys.path.insert(0, SCRIPTS)
-    import louis_html as LH
+    import donna_html as LH
     total_nuevos = sum(len(v["nuevos"]) for v in data.values())
     total_kb = sum(v["total"] for v in data.values())
     agentes_activos = sum(1 for v in data.values() if v["nuevos"])
@@ -209,14 +209,14 @@ def build_html(data, dias, etiqueta):
     return LH.render_page(
         f"🧠 Aprendizajes de los agentes — {etiqueta}",
         "Conocimiento legal destilado (DOF/SJF)", body, ctx_md=ctx, con_chat=True,
-        resumen=resumen, chat_titulo="💬 Pregúntale a Louis sobre lo aprendido",
+        resumen=resumen, chat_titulo="💬 Pregúntale a Donna sobre lo aprendido",
         fuente="Fuente: corpus DOF/SJF indexado por los agentes kawiil-*"), total_nuevos, total_kb
 
 
 def notificar(titulo, cuerpo):
     try:
         sys.path.insert(0, SCRIPTS)
-        import louis_core as L
+        import donna_core as L
         print("Kawiil Central:", L._kawiil_central_notificar(
             titulo=titulo, cuerpo=cuerpo, para="", tipo="aprendizajes_legales"))
     except Exception as e:
@@ -247,7 +247,7 @@ def main():
         notificar(
             titulo=f"Aprendizajes legales — semana del {etiqueta}",
             cuerpo=(f"{total_nuevos} aprendizajes nuevos destilados del DOF/SJF "
-                    f"({total_kb} en la base de conocimiento). El detalle llegó al Telegram de Louis."))
+                    f"({total_kb} en la base de conocimiento). El detalle llegó al Telegram de Donna."))
     print("Enviado" if ok else "Falló el envío")
     return 0 if ok else 1
 

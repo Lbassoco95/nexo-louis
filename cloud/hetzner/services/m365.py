@@ -357,7 +357,7 @@ def cmd_attachment_descargar(args):
         except FileNotFoundError:
             print("(pdftotext no instalado — apt-get install poppler-utils para preview de PDFs)")
     elif "officedocument" in ctype or "wordprocessing" in ctype:
-        print("(Es Word/Excel — Louis puede invocar python-docx/openpyxl para preview, pendiente)")
+        print("(Es Word/Excel — Donna puede invocar python-docx/openpyxl para preview, pendiente)")
 
 
 def cmd_sharepoint_descargar(args):
@@ -542,7 +542,7 @@ def cmd_calendario(args):
         if loc:
             print(f"   📍 {loc}")
         print(f"   👤 {org}")
-        # Texto explícito del estatus para que Louis lo lea fácil
+        # Texto explícito del estatus para que Donna lo lea fácil
         print(f"   📨 Mi respuesta: {_response_status_text(rs, ev.get('isOrganizer'))}")
         attendees = ev.get("attendees", [])
         if attendees:

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-openclaw_gateway.py — Gateway HTTP nativo para Louis.
+openclaw_gateway.py — Gateway HTTP nativo para Donna.
 
 NO depende de un "binario OpenClaw" externo (openclaw.ai 403). Es una capa
-delgada que envuelve `louis_core` y expone tres rutas:
+delgada que envuelve `donna_core` y expone tres rutas:
 
   GET  /healthz                    → liveness probe
   GET  /v1/status                  → estado del gateway + routing
-  POST /v1/chat/completions        → endpoint compatible con OpenAI (usa louis_core)
+  POST /v1/chat/completions        → endpoint compatible con OpenAI (usa donna_core)
   POST /v1/tools/{name}            → ejecutar tool directamente (debug)
 
 Diseñado para correr en 127.0.0.1:3000 detrás de Caddy en louis.kawiil.mx.
@@ -31,12 +31,12 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-# louis_core vive en /opt/openclaw/scripts/
+# donna_core vive en /opt/openclaw/scripts/
 SCRIPTS_DIR = Path("/opt/openclaw/scripts")
 if SCRIPTS_DIR.exists():
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-import louis_core as core  # noqa: E402
+import donna_core as core  # noqa: E402
 
 LOG_FILE = Path("/opt/openclaw/logs/openclaw-gateway.log")
 LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -74,7 +74,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Louis · Agentes en vivo</title>
+<title>Donna · Agentes en vivo</title>
 <style>
   :root { --bg:#0b0f1a; --panel:#131a2b; --txt:#e6ecf5; --dim:#8a96ad;
           --idle:#2b3650; --active:#27e0a0; --line:#1f2a44; }
@@ -111,7 +111,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
 </head>
 <body>
 <header>
-  <h1>🧠 Louis — Agentes en vivo</h1>
+  <h1>🧠 Donna — Agentes en vivo</h1>
   <span class="badge"><span class="dot" style="background:var(--active)"></span><b id="nActive">0</b> trabajando</span>
   <span class="badge"><span class="dot" style="background:var(--idle)"></span><b id="nTotal">0</b> agentes</span>
   <span class="badge" id="clock" style="margin-left:auto"></span>
@@ -120,7 +120,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
   <div id="stage">
     <svg id="svg" viewBox="0 0 1000 800" preserveAspectRatio="xMidYMid meet"></svg>
     <div class="empty" id="empty">Esperando actividad de agentes…<br>
-      <span style="font-size:12px">Cuando Louis invoque un agente desde Telegram, su círculo se encenderá aquí.</span>
+      <span style="font-size:12px">Cuando Donna invoque un agente desde Telegram, su círculo se encenderá aquí.</span>
     </div>
   </div>
   <aside>
@@ -139,7 +139,7 @@ function el(tag, attrs){ const e=document.createElementNS(NS,tag);
   for(const k in attrs) e.setAttribute(k, attrs[k]); return e; }
 
 function layout(agents){
-  // Louis al centro; agentes en anillo. Si un agente tiene parent agente,
+  // Donna al centro; agentes en anillo. Si un agente tiene parent agente,
   // se ubica cerca de su parent.
   const cx=500, cy=400, R=280;
   const pos={ __louis__:{x:cx,y:cy} };
@@ -162,7 +162,7 @@ function render(data){
   SVG.innerHTML='';
   const pos = layout(agents);
 
-  // Conexiones: agente→parent (o →Louis centro).
+  // Conexiones: agente→parent (o →Donna centro).
   agents.forEach(a=>{
     const p = a.parent && pos[a.parent] ? pos[a.parent] : pos.__louis__;
     const me = pos[a.nombre];
@@ -173,7 +173,7 @@ function render(data){
     SVG.appendChild(line);
   });
 
-  // Nodo central Louis
+  // Nodo central Donna
   SVG.appendChild(el('circle',{cx:pos.__louis__.x,cy:pos.__louis__.y,r:34,
     fill:'#1b2438',stroke:'#3d7bff','stroke-width':2}));
   const lt=el('text',{x:pos.__louis__.x,y:pos.__louis__.y+5,
@@ -527,7 +527,7 @@ class Handler(BaseHTTPRequestHandler):
                         page = (
                             '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">'
                             '<meta name="viewport" content="width=device-width,initial-scale=1">'
-                            '<title>Eventos — Louis</title>'
+                            '<title>Eventos — Donna</title>'
                             '<style>body{font-family:system-ui,sans-serif;max-width:860px;margin:32px auto;padding:0 20px}'
                             'h1{color:#0a1a8c}table{border-collapse:collapse;width:100%}'
                             'th{background:#eef3fb;padding:8px;text-align:left;font-size:.8em;text-transform:uppercase}'
@@ -537,11 +537,11 @@ class Handler(BaseHTTPRequestHandler):
                             '<table><thead><tr><th>Fecha</th><th>Tipo</th><th>Evento</th></tr></thead>'
                             f'<tbody>{rows}</tbody></table>'
                             '<p style="font-size:.78em;color:#999;margin-top:1.5em">'
-                            'Generado por Louis Monitor · Todas las fuentes conectadas</p>'
+                            'Generado por Donna Monitor · Todas las fuentes conectadas</p>'
                             '</body></html>'
                         ) if rows else (
                             '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">'
-                            '<title>Eventos — Louis</title></head><body>'
+                            '<title>Eventos — Donna</title></head><body>'
                             '<h1>📋 Eventos monitoreados</h1>'
                             '<p class="empty">Sin eventos almacenados aún. '
                             'El monitor corre a las 06:30, 10:00 y 14:00 CDMX.</p>'
@@ -608,7 +608,7 @@ class Handler(BaseHTTPRequestHandler):
             agents_count = len(list(agents_dir.glob("*.md"))) if agents_dir.exists() else 0
             self._send_json(200, {
                 "service": "openclaw-gateway",
-                "louis_core_loaded": True,
+                "donna_core_loaded": True,
                 "memory_files": core.MEMORY_FILES,
                 "agents_count": agents_count,
                 "agents_dir": str(agents_dir),
@@ -749,7 +749,7 @@ class Handler(BaseHTTPRequestHandler):
                 role = m.get("role")
                 content = m.get("content", "")
                 if role == "system":
-                    continue  # Louis usa su propio system prompt
+                    continue  # Donna usa su propio system prompt
                 if role == "user":
                     if user_msg:
                         history.append({"role": "user", "content": user_msg})

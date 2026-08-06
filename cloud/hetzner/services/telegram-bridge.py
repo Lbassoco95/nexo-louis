@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Telegram bridge para Louis (Nexo) — versión Hetzner.
+Telegram bridge para Donna (Nexo) — versión Hetzner.
 
-Long polling de Telegram → louis_core (routing Ollama/Claude + tools) →
+Long polling de Telegram → donna_core (routing Ollama/Claude + tools) →
 respuesta formateada para Telegram Markdown legacy.
 
 Vive como systemd unit (telegram-bridge.service).
 Logs en /opt/openclaw/logs/telegram-bridge.log.
 
-Toda la lógica de routing, tools y M365 vive en louis_core.py
+Toda la lógica de routing, tools y M365 vive en donna_core.py
 (compartido con slack-bridge.py).
 """
 
@@ -32,9 +32,9 @@ import urllib.error
 
 # Importa la lógica común
 sys.path.insert(0, str(Path(__file__).parent))
-import louis_core as core
+import donna_core as core
 
-# Frases con las que Louis "promete" producir/entregar un documento. Si aparecen en
+# Frases con las que Donna "promete" producir/entregar un documento. Si aparecen en
 # su respuesta pero NO encoló ningún archivo, la red de seguridad lo genera de verdad
 # (vía el flujo directo) para que nunca quede en "voy a generar" sin entregar.
 _PROMESA_DOC_RE = re.compile(
@@ -48,7 +48,7 @@ _PROMESA_DOC_RE = re.compile(
 
 
 def _promete_documento(text: str) -> bool:
-    """True si la respuesta de Louis promete producir/entregar un documento pero
+    """True si la respuesta de Donna promete producir/entregar un documento pero
     (probablemente) no lo adjuntó. Conservador: exige verbo de acción + sustantivo
     documental cercano, para no disparar generaciones (costosas) por falsos positivos."""
     if not text:
@@ -57,7 +57,7 @@ def _promete_documento(text: str) -> bool:
 
 
 # ===== Configuración local del bridge =====
-# Mismo patrón que louis_core: /opt/openclaw en Hetzner, ~/.openclaw en dev.
+# Mismo patrón que donna_core: /opt/openclaw en Hetzner, ~/.openclaw en dev.
 HOME = Path.home()
 if Path("/opt/openclaw").exists():
     HOME_OC = Path("/opt/openclaw")
@@ -580,7 +580,7 @@ def _finish_user_input(telegram_token, chat_id, api_key, system_prompt, user_inp
     if not pending_files and core.needs_doc_sonnet(user_input) and len(response) > 1200:
         try:
             titulo = (user_input or "documento")[:70].strip().rstrip(".?!")
-            pdf = core._generar_pdf(titulo, response, "Louis")
+            pdf = core._generar_pdf(titulo, response, "Donna")
             if pdf:
                 fname = f"{titulo[:40].replace(' ', '_')}_{_dt_mod.datetime.now().strftime('%H%M%S')}.pdf"
                 pending_files = [(pdf, fname, f"📄 {titulo[:60]}")]
@@ -589,7 +589,7 @@ def _finish_user_input(telegram_token, chat_id, api_key, system_prompt, user_inp
             log.warning(f"Red de seguridad PDF falló: {e}")
     elif not pending_files and _promete_documento(response):
         try:
-            log.info("→ Louis prometió documento sin entregarlo; generando vía flujo directo")
+            log.info("→ Donna prometió documento sin entregarlo; generando vía flujo directo")
             doc_resp, _m = core.generar_documento_directo(api_key, system_prompt, history, user_input)
             telegram_send_message(telegram_token, chat_id, doc_resp, parse_mode="Markdown")
             with _history_lock:
@@ -839,7 +839,7 @@ def _cleanup_stranded_audio(telegram_token, chat_id):
 
 
 def main():
-    log.info("=== Telegram bridge v3 arrancando (louis_core + Markdown fix) ===")
+    log.info("=== Telegram bridge v3 arrancando (donna_core + Markdown fix) ===")
     telegram_token, chat_id = load_credentials()
     api_key = core.load_anthropic_key()
     log.info(f"Ollama: {core.OLLAMA_BASE} ({core.OLLAMA_MODEL})  |  Claude: {core.CLAUDE_MODEL}")

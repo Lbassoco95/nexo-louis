@@ -1,5 +1,5 @@
 [Unit]
-Description=Slack bridge for Louis (Nexo) — Socket Mode + Claude/Ollama
+Description=Slack bridge for Donna (Nexo) — Socket Mode + Claude/Ollama
 Documentation=https://github.com/Lbassoco95/kawiil-agents
 After=network-online.target openclaw.service
 Wants=network-online.target

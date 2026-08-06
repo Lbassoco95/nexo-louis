@@ -147,7 +147,7 @@ def indexar_normativas_dof(relevantes, fecha):
     try:
         if "/opt/openclaw/scripts" not in sys.path:
             sys.path.insert(0, "/opt/openclaw/scripts")
-        import louis_core as L
+        import donna_core as L
         km = getattr(L, "KAWIIL_KNOWLEDGE_MAP", {})
         encolados = 0
         for r in relevantes:
@@ -174,7 +174,7 @@ def notificar_kawiil_central(titulo, cuerpo, tipo):
     try:
         if "/opt/openclaw/scripts" not in sys.path:
             sys.path.insert(0, "/opt/openclaw/scripts")
-        import louis_core as L
+        import donna_core as L
         r = L._kawiil_central_notificar(titulo=titulo, cuerpo=cuerpo, para="", tipo=tipo)
         print(f"Kawiil Central: {r}")
     except Exception as e:
@@ -185,7 +185,7 @@ def build_html(relevantes, resto_counts, total, fecha, rows=None, ed_label="", r
     # Motor HTML interactivo ÚNICO (mismo look que el análisis legal y el SJF).
     if "/opt/openclaw/scripts" not in sys.path:
         sys.path.insert(0, "/opt/openclaw/scripts")
-    import louis_html as LH
+    import donna_html as LH
     fl = fecha_larga(fecha)
     ddmm = fecha_ddmmyyyy(fecha)
     grupos = {}
@@ -279,7 +279,7 @@ def build_html(relevantes, resto_counts, total, fecha, rows=None, ed_label="", r
     return LH.render_page(
         f"📰 Diario Oficial — {titulo_ed}", "Diario Oficial de la Federación",
         body, ctx_md=ctx, con_chat=True, resumen=resumen,
-        chat_titulo="💬 Pregúntale a Louis sobre el DOF de hoy",
+        chat_titulo="💬 Pregúntale a Donna sobre el DOF de hoy",
         fuente="Fuente: Diario Oficial de la Federación (SEGOB)")
 
 
@@ -368,7 +368,7 @@ def main():
             titulo=f"DOF {ed_label} — {fl}",
             cuerpo=(f"{len(relevantes)} documentos normativos relevantes "
                     f"(leyes/decretos/acuerdos/circulares…) de {len(rows)} publicaciones. "
-                    f"El detalle por dependencia llegó al Telegram de Louis."),
+                    f"El detalle por dependencia llegó al Telegram de Donna."),
             tipo="dof_resumen")
         indexar_normativas_dof(relevantes, fecha)
     print("Enviado" if ok else "Falló el envío")

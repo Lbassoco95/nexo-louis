@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # mac-push-projects.sh — Sincroniza ~/Documents/Claude/Projects/ de la Mac → Hetzner.
-# Así Louis ve los documentos de tus proyectos (Dazon, Vizum, Kawiil*, Yoltik*, …)
+# Así Donna ve los documentos de tus proyectos (Dazon, Vizum, Kawiil*, Yoltik*, …)
 # y puede usarlos para mantener PROJECTS.md al día.
 # Nota: se evaluó ampliar la raíz a ~/Documents/Claude, pero ahí solo vive Projects/
 # (no hay docs sueltos), y subir el padre anidaría todo bajo "Projects/" en Hetzner,
-# rompiendo la estructura de proyectos que lee Louis. Se mantiene la raíz en Projects/.
+# rompiendo la estructura de proyectos que lee Donna. Se mantiene la raíz en Projects/.
 #
 # Se corre vía launchd cada 30 min (los docs no cambian más rápido).
 #
@@ -45,14 +45,14 @@ fi
 ssh $SSH_OPTS "$REMOTE" "sudo mkdir -p $DEST && sudo chown -R ${LOUIS_REMOTE_USER}:${LOUIS_REMOTE_USER} $DEST" 2>/dev/null || \
   ssh $SSH_OPTS "$REMOTE" "mkdir -p $DEST" 2>/dev/null || true
 
-# Sincroniza SOLO documentos de texto/ofimática (lo que Louis puede leer).
+# Sincroniza SOLO documentos de texto/ofimática (lo que Donna puede leer).
 # ORDEN DE FILTROS (importante): primero excluir carpetas de código/VCS para que
 # rsync NI DESCIENDA en ellas (evita el ruido 'cannot delete non-empty directory'
 # de .git/node_modules). Luego incluir dirs restantes + los tipos de archivo.
 # --exclude='/_Louis-Generados/' EXCLUYE por completo la carpeta de generados de
-# Louis del push: rsync ni la sube ni la borra. Es crítico — un 'P dir/' solo
+# Donna del push: rsync ni la sube ni la borra. Es crítico — un 'P dir/' solo
 # protege la carpeta pero NO su contenido, así que el --delete borraba los PDFs
-# que Louis genera (existen solo en Hetzner). El exclude anclado lo evita: los
+# que Donna genera (existen solo en Hetzner). El exclude anclado lo evita: los
 # archivos excluidos no se transfieren ni se eliminan (sin --delete-excluded).
 rsync -rz --delete --prune-empty-dirs --partial \
   --exclude='/_Louis-Generados/' \
@@ -71,7 +71,7 @@ rsync -rz --delete --prune-empty-dirs --partial \
   && echo "[$(stamp)] projects push OK" \
   || echo "[$(stamp)] projects push terminó con avisos (normal si hay repos de código adentro)"
 
-# === PULL: baja lo que Louis generó (Hetzner → Mac) ===
+# === PULL: baja lo que Donna generó (Hetzner → Mac) ===
 # Bidireccional seguro: solo bajamos _Louis-Generados/ (namespace separado de tus
 # docs), así nunca hay conflicto con lo que tú editas en la Mac.
 GEN_LOCAL="$PROJECTS_SRC/_Louis-Generados"
@@ -84,7 +84,7 @@ rsync -r --partial --stats \
   && echo "[$(stamp)] generados pull OK (Hetzner→Mac)" \
   || echo "[$(stamp)] generados pull: nada que bajar todavía"
 
-# Escribe un índice simple para que Louis sepa qué proyectos y archivos hay.
+# Escribe un índice simple para que Donna sepa qué proyectos y archivos hay.
 ssh $SSH_OPTS "$REMOTE" "cd $DEST 2>/dev/null && \
   { echo '# Índice de proyectos (sync Mac→Hetzner)'; echo \"actualizado: \$(date -Iseconds)\"; echo; \
     for d in */; do n=\$(find \"\$d\" -type f | wc -l | tr -d ' '); echo \"- \${d%/} (\$n archivos)\"; done; } \

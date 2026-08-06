@@ -88,7 +88,7 @@ def notificar_kawiil_central(titulo, cuerpo, tipo):
     try:
         if "/opt/openclaw/scripts" not in sys.path:
             sys.path.insert(0, "/opt/openclaw/scripts")
-        import louis_core as L
+        import donna_core as L
         r = L._kawiil_central_notificar(titulo=titulo, cuerpo=cuerpo, para="", tipo=tipo)
         print(f"Kawiil Central: {r}")
     except Exception as e:
@@ -107,7 +107,7 @@ def build_html(rows, etiqueta):
     # Motor HTML interactivo ÚNICO (mismo look que el análisis legal y el DOF).
     if "/opt/openclaw/scripts" not in sys.path:
         sys.path.insert(0, "/opt/openclaw/scripts")
-    import louis_html as LH
+    import donna_html as LH
     fx = fecha_es(etiqueta)
     n_jur = sum(1 for r in rows if es_juris(r))
     n_tes = len(rows) - n_jur
@@ -154,7 +154,7 @@ def build_html(rows, etiqueta):
     return LH.render_page(
         f"⚖️ Semanario Judicial — {fx}", "Semanario Judicial de la Federación",
         body, ctx_md=ctx, con_chat=True, resumen=resumen,
-        chat_titulo="💬 Pregúntale a Louis sobre estas tesis",
+        chat_titulo="💬 Pregúntale a Donna sobre estas tesis",
         fuente="Fuente: SCJN — Semanario Judicial de la Federación")
 
 
@@ -202,7 +202,7 @@ def main():
             titulo=f"Semanario Judicial — semana del {etiqueta}",
             cuerpo=(f"{len(rows)} publicaciones ({n_jur} jurisprudencias · "
                     f"{len(rows) - n_jur} tesis), organizadas por materia. "
-                    f"El detalle llegó al Telegram de Louis."),
+                    f"El detalle llegó al Telegram de Donna."),
             tipo="sjf_semanal")
     print("Enviado" if ok else "Falló el envío")
     return 0 if ok else 1

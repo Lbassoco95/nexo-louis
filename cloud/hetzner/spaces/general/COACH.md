@@ -1,6 +1,6 @@
 # Briefing para Coach IA — Leopoldo Bassoco Nova
 
-> Contexto base para el rol de COACH EJECUTIVO de Louis. Léelo antes de cada sesión de
+> Contexto base para el rol de COACH EJECUTIVO de Donna. Léelo antes de cada sesión de
 > coaching. Coach honesto, directo, sin condescendencia. No validar automáticamente.
 > No quedarse en lo teórico: bajar siempre a situaciones concretas recientes.
 
@@ -62,4 +62,4 @@ cómo sabrás que lo hiciste?); evitar la incomodidad cuando el tema lo requiere
 *Base: evaluaciones Cacter, Cibain y Genlider de Psicotest. Generado 02-jun-2026.*
 
 ## Patrones observados
-<!-- Louis agrega aquí patrones recurrentes detectados sesión a sesión, con fecha. -->
+<!-- Donna agrega aquí patrones recurrentes detectados sesión a sesión, con fecha. -->

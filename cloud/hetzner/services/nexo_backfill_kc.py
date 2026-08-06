@@ -8,7 +8,7 @@ Con la recuperación híbrida (vector + keyword), buscar proyectos/tareas por no
 funciona muy bien.
 
 Reglas (para NO inventar):
-  - Conexión: reusa louis_core._kawiil_central_pg() (psycopg2 contra
+  - Conexión: reusa donna_core._kawiil_central_pg() (psycopg2 contra
     KAWIIL_CENTRAL_DATABASE_URL). NO hardcodea credenciales.
   - Schema: descubre tabla real con _kawiil_central_find_table y columnas vía
     information_schema — NO asume nombres de columna (igual que _kawiil_central_*).
@@ -56,13 +56,13 @@ except Exception as e:  # pragma: no cover
     sys.exit(1)
 
 try:
-    from louis_core import (
+    from donna_core import (
         _kawiil_central_pg,
         _kawiil_central_find_table,
         _es_conocimiento_sensible,
     )
 except Exception as e:  # pragma: no cover
-    print(f"ERROR: no pude importar helpers de louis_core: {e}", file=sys.stderr)
+    print(f"ERROR: no pude importar helpers de donna_core: {e}", file=sys.stderr)
     sys.exit(1)
 
 
@@ -102,7 +102,7 @@ BATCH = 25  # chunks por llamada a insert_chunks (para progreso y requests manej
 # ── POLÍTICA (decisión de Polo, 2026-07) ────────────────────────────────
 # Kawiil Central son expedientes de clientes (legal/contable/juicios) con datos
 # personales. NO van a la KB-nube (Supabase). Se reservan para la KB-Sensible LOCAL
-# (Bloque 5, aún por construir). Louis ya consulta proyectos/tareas en vivo con sus
+# (Bloque 5, aún por construir). Donna ya consulta proyectos/tareas en vivo con sus
 # tools, así que no pierde capacidad. Mientras no exista el destino local, este script
 # queda como ANÁLISIS (--dry-run) + limpieza (--purge-cloud); la subida está bloqueada.
 CLOUD_UPLOAD_DISABLED = True
@@ -340,7 +340,7 @@ def main():
         print("\n🔒 Subida BLOQUEADA por política: Kawiil Central son datos de cliente "
               "(legal/contable/personal) y NO van a la KB-nube. Destino correcto = KB-Sensible "
               "LOCAL (Bloque 5, aún por construir). Usa --dry-run para analizar o --purge-cloud "
-              "para limpiar. Louis ya consulta KC en vivo con sus tools.", file=sys.stderr)
+              "para limpiar. Donna ya consulta KC en vivo con sus tools.", file=sys.stderr)
         sys.exit(2)
 
     if args.reset:

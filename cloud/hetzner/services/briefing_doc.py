@@ -6,7 +6,7 @@ Fuentes de verdad:
   • Pendientes: líneas '- [ ]' de SEGUIMIENTOS.md
   • Avances detectados: /opt/openclaw/state/advances_delta.json (generado a las 06:30)
 
-El HTML usa louis_html.py (render_page + kpi_cards) con chat widget embebido.
+El HTML usa donna_html.py (render_page + kpi_cards) con chat widget embebido.
 Se guarda en /opt/openclaw/state/briefing_latest.html para servir por URL.
 
 Uso:
@@ -423,7 +423,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-ser
 </div>
 <div class="main">
 <div id="jsbanner" onclick="this.remove()" style="background:#fffbe6;border:1px solid #f5c518;border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:.84em;color:#7a5c00;cursor:pointer">
-📱 <b>Abre en Safari o Chrome</b> para interactuar — toca cualquier tarea para ver opciones, agregar notas o preguntar a Louis. El visor de Telegram bloquea JS. <span style="opacity:.6">(Toca aquí para cerrar)</span>
+📱 <b>Abre en Safari o Chrome</b> para interactuar — toca cualquier tarea para ver opciones, agregar notas o preguntar a Donna. El visor de Telegram bloquea JS. <span style="opacity:.6">(Toca aquí para cerrar)</span>
 </div>
 {urgentes_html}{avances_html}
 <div class="card">
@@ -432,7 +432,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-ser
 </div>
 {pend_html}
 </div>
-<div class="foot">Louis · Nexo Kawiil · {esc(fl)}</div>
+<div class="foot">Donna · Nexo Kawiil · {esc(fl)}</div>
 <div class="chat-bar">
 <div class="inner">
 <div id="conv"></div>
@@ -590,7 +590,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-ser
 <div class="main">
 {stalled_section}{avances_section}{pend_section}
 </div>
-<div class="foot">Louis · Nexo Kawiil · Cierre {esc(fl)}</div>
+<div class="foot">Donna · Nexo Kawiil · Cierre {esc(fl)}</div>
 <div class="chat-bar">
 <div class="inner">
 <div id="conv"></div>
@@ -809,7 +809,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-ser
 {logo_html}
 <div class="hdr-meta">🔧 Informe de sistema · {hora_gen} CDMX</div>
 <div class="hdr-title">Revisión — {esc(fecha_str)}</div>
-<div class="hdr-sub">Cada 2 días · Louis Kawiil</div>
+<div class="hdr-sub">Cada 2 días · Donna Kawiil</div>
 <div class="kpi-row">{kpi_cards}</div>
 </div>
 <div class="main">
@@ -820,7 +820,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-ser
 <div class="card"><div class="sec-lbl">🚀 Revisor de evolución</div>{evo_html}</div>
 {cta_html}
 </div>
-<div class="foot">Louis · Nexo Kawiil · Informe {esc(fecha_str)}</div>
+<div class="foot">Donna · Nexo Kawiil · Informe {esc(fecha_str)}</div>
 <div class="chat-bar">
 <div class="inner">
 <div id="conv"></div>
@@ -1020,7 +1020,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-ser
 </div>
 {ent_html}{dup_html}{cta_html}
 </div>
-<div class="foot">Louis · Nexo Kawiil · Review {esc(fecha_str)}</div>
+<div class="foot">Donna · Nexo Kawiil · Review {esc(fecha_str)}</div>
 <div class="chat-bar">
 <div class="inner">
 <div id="conv"></div>

@@ -1,4 +1,4 @@
-# Runbook — Louis en Hetzner
+# Runbook — Donna en Hetzner
 
 Comandos del día 2: logs, reinicios, backups, restore, debug.
 
@@ -10,7 +10,7 @@ Comandos del día 2: logs, reinicios, backups, restore, debug.
 | Caddy | `docker compose -f /opt/louis/docker-compose.yml logs -f caddy` |
 | kawiil-agents | `docker compose -f /opt/louis/docker-compose.yml logs -f kawiil-agents` |
 | Sync apply (cron) | `tail -f /var/log/louis-sync.log` |
-| Acceso Caddy Louis | `tail -f /opt/louis-data/caddy/data/logs/louis.log` |
+| Acceso Caddy Donna | `tail -f /opt/louis-data/caddy/data/logs/louis.log` |
 | Acceso Caddy Agents | `tail -f /opt/louis-data/caddy/data/logs/agents.log` |
 | Auth SSH (fail2ban) | `tail -f /var/log/auth.log` |
 | Sync push (Mac) | `tail -f ~/Library/Logs/louissync.log` |
@@ -182,7 +182,7 @@ Síntoma: `docker ps` muestra `louis-caddy ... Restarting`, y los dominios
 públicos no responden (`curl https://cerebro.kawiil-central.mx/health` da
 `Couldn't connect`), aunque el servicio interno sí responde
 (`curl http://127.0.0.1:4040/health` → OK). Como Caddy carga toda la config de
-golpe, **un solo bloque roto tira todos los sitios** (Louis, Cerebro, agents).
+golpe, **un solo bloque roto tira todos los sitios** (Donna, Cerebro, agents).
 
 Diagnóstico:
 ```bash
@@ -223,6 +223,6 @@ base64 y truena. Ver también el comentario en `docker-compose.yml` y `.env.exam
 5. Estado de disco: `df -h /opt`
 6. Estado de memoria: `free -m` (si <100 MB libre, considera CPX21 más grande)
 
-Si todo falla y necesitas Louis YA, **enciende la Mac** y la versión local
+Si todo falla y necesitas Donna YA, **enciende la Mac** y la versión local
 sigue funcionando — Hetzner no es destructivo de la Mac, son entornos
 paralelos con la Mac como fuente de verdad del contenido.

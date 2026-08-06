@@ -95,12 +95,12 @@ def send_msg(text):
         return False
 
 
-def _load_louis_html():
-    p = HOME_OC / "scripts" / "louis_html.py"
+def _load_donna_html():
+    p = HOME_OC / "scripts" / "donna_html.py"
     if not p.exists():
         return None
     try:
-        spec = importlib.util.spec_from_file_location("louis_html", p)
+        spec = importlib.util.spec_from_file_location("donna_html", p)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         return mod
@@ -246,7 +246,7 @@ Backfill esta semana: <b>{backfill_dof:,}</b>
 </div>
 </div>
 </div>
-<div class="foot">Louis · Kawiil Legal · {fecha}</div>
+<div class="foot">Donna · Kawiil Legal · {fecha}</div>
 <div class="chat-bar">
 <div class="inner">
 <div id="conv"></div>

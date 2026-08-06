@@ -42,12 +42,12 @@ def get_sensitivity_checker():
         if cand not in sys.path:
             sys.path.insert(0, cand)
     try:
-        import louis_core
-        fn = louis_core._es_conocimiento_sensible
+        import donna_core as donna_core
+        fn = donna_core._es_conocimiento_sensible
         assert fn("expediente KYC del cliente con CURP") is True
         return fn
     except Exception as e:
-        print(f"ABORTADO: no pude cargar el guard de sensibilidad de louis_core - {e}. "
+        print(f"ABORTADO: no pude cargar el guard de sensibilidad de donna_core - {e}. "
               "NO backfilleo sin filtro (riesgo de subir PLD).")
         sys.exit(1)
 

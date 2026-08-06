@@ -4,7 +4,7 @@
 #   • RÁPIDO   (default chat): llama3.1:8b  (~4.7 GB) — respuestas ágiles (~2-5s).
 #   • CALIDAD  (/oss, legal):  gpt-oss:20b  (~13 GB)  — razonamiento profundo, lento en CPU.
 #
-# Arquitectura de modelos en Louis:
+# Arquitectura de modelos en Donna:
 #   - Chat día a día / saludos / clasificación → Ollama RÁPIDO (local, gratis, snappy)
 #   - Contenido privado profundo (/oss, legal, ikan) → Ollama CALIDAD gpt-oss:20b
 #   - Razonamiento ejecutivo + tools → Claude Sonnet 4.6 (Anthropic API)
@@ -13,7 +13,7 @@
 #
 # Degradación por RAM:
 #   - El modelo RÁPIDO se descarga SIEMPRE (cabe hasta en 8 GB).
-#   - El modelo CALIDAD (gpt-oss:20b) solo si hay >= 14 GB. Si no, Louis sigue
+#   - El modelo CALIDAD (gpt-oss:20b) solo si hay >= 14 GB. Si no, Donna sigue
 #     funcional con el rápido y /oss cae al rápido con aviso.
 #   - OLLAMA_MAX_LOADED_MODELS=1 → Ollama nunca tiene los dos modelos en RAM a la
 #     vez (descarga uno antes de cargar el otro). Esto evita OOM en CPX42 (16 GB):
@@ -83,7 +83,7 @@ if (( TOTAL_MB >= QUALITY_MIN_MB )); then
   pull_model "$OLLAMA_QUALITY_MODEL"
 else
   warn "RAM ${TOTAL_MB} MB < ${QUALITY_MIN_MB} MB — NO descargo $OLLAMA_QUALITY_MODEL."
-  warn "Louis queda funcional con $OLLAMA_FAST_MODEL. Para el modelo de calidad (/oss),"
+  warn "Donna queda funcional con $OLLAMA_FAST_MODEL. Para el modelo de calidad (/oss),"
   warn "sube el VPS a CPX42 (16 GB)+ y vuelve a correr ./deploy.sh."
 fi
 

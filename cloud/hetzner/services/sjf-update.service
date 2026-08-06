@@ -1,5 +1,5 @@
 [Unit]
-Description=Louis SJF harvester — actualiza tesis del Semanario Judicial
+Description=Donna SJF harvester — actualiza tesis del Semanario Judicial
 Documentation=https://github.com/Lbassoco95/kawiil-agents
 After=network-online.target
 Wants=network-online.target

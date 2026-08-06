@@ -71,7 +71,7 @@ require_env
 OS_ID=$(. /etc/os-release; echo "$ID")
 [[ "$OS_ID" == "ubuntu" ]] || warn "OS detectado: $OS_ID (se probó en ubuntu, puede funcionar)"
 
-log "Empezando deploy de Louis en $(hostname) ($(hostname -I | awk '{print $1}'))"
+log "Empezando deploy de Donna en $(hostname) ($(hostname -I | awk '{print $1}'))"
 
 # ── 1) Bootstrap ──────────────────────────────────────────────
 if ! $SKIP_BOOTSTRAP; then
@@ -158,7 +158,7 @@ log "[6b] Copiando servicios (core + bridges + scheduler + gateway + self-update
 mkdir -p /opt/openclaw/scripts /opt/openclaw/scripts/m365 /opt/openclaw/logs
 # TODOS los .py que el runtime importa o ejecuta. Si falta alguno, las tools que
 # dependen de él fallan en silencio (self_update → ImportError; browser_* → error).
-for svc in louis_core.py telegram-bridge.py slack-bridge.py scheduler.py \
+for svc in donna_core.py telegram-bridge.py slack-bridge.py scheduler.py \
            openclaw_gateway.py self_update.py browser_runner.py cerebro_kawiil_mcp.py; do
   if [[ -f "services/${svc}" ]]; then
     install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" "services/${svc}" "/opt/openclaw/scripts/${svc}"
@@ -189,7 +189,7 @@ for unit in telegram-bridge slack-bridge scheduler openclaw-gateway cerebro-kawi
   fi
 done
 
-# Cerebro Kawiil: almacén compartido de entregables (Cowork ↔ Louis)
+# Cerebro Kawiil: almacén compartido de entregables (Cowork ↔ Donna)
 if [[ ! -d /opt/openclaw/entregables ]]; then
   mkdir -p /opt/openclaw/entregables/_briefs
   [[ -f "entregables/README.md" ]] && \
@@ -229,7 +229,7 @@ else
   warn "slack-bridge.py aún no copiado al seed — sin arrancar"
 fi
 
-# Gateway HTTP de Louis — la cara de louis.kawiil.mx (Caddy → 127.0.0.1:3000).
+# Gateway HTTP de Donna — la cara de louis.kawiil.mx (Caddy → 127.0.0.1:3000).
 # Reemplaza al binario oficial de OpenClaw (openclaw.ai responde 403).
 if [[ -f /opt/openclaw/scripts/openclaw_gateway.py ]]; then
   systemctl enable --now openclaw-gateway

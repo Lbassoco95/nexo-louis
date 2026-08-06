@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Motor HTML interactivo ÚNICO de Louis / Kawiil.
+"""Motor HTML interactivo ÚNICO de Donna / Kawiil.
 
-Un solo lugar para el "look" de todos los documentos que genera Louis:
+Un solo lugar para el "look" de todos los documentos que genera Donna:
 dashboard con secciones colapsables, buscador sticky, tablas con celdas de
 color, tarjetas (callouts), marca Kawiil y un chat embebido para profundizar
-sobre el contenido (apunta al gateway de Louis).
+sobre el contenido (apunta al gateway de Donna).
 
 Lo usan:
-  - louis_core.py        → análisis legal, documentos de agentes (vía md_to_html)
+  - donna_core.py        → análisis legal, documentos de agentes (vía md_to_html)
   - dof_daily_summary.py → boletín diario del DOF (vía render_page)
   - sjf_weekly_summary.py→ resumen semanal del SJF (vía render_page)
 
@@ -216,7 +216,7 @@ def render_page(titulo: str, agente: str, body_html: str, *,
 
     body_html : el cuerpo ya renderizado (secciones <details class="sec">, tablas, etc.)
     ctx_md    : texto que se le pasa al chat como contexto (se trunca a 4000 chars).
-    con_chat  : incluir el chat embebido "Pregúntale a Louis".
+    con_chat  : incluir el chat embebido "Pregúntale a Donna".
     """
     accent = accent or BRAND["primary"]
     accent_dark = accent_dark or BRAND["dark"]
@@ -233,7 +233,7 @@ def render_page(titulo: str, agente: str, body_html: str, *,
     resumen_html = f'<div class="resumen">{resumen}</div>' if resumen else ""
     chat_html = ""
     if con_chat:
-        ct = chat_titulo or "💬 Pregúntale a Louis sobre este documento"
+        ct = chat_titulo or "💬 Pregúntale a Donna sobre este documento"
         chat_html = f"""
 <div class="chat">
   <h2>{esc(ct)}</h2>
@@ -260,7 +260,7 @@ def render_page(titulo: str, agente: str, body_html: str, *,
 <body>
 <div class="header">
   <span class="brand">{brand_html}</span>
-  <span>Elaborado por <strong>Louis</strong> — {esc(agente)} · {fecha}</span>
+  <span>Elaborado por <strong>Donna</strong> — {esc(agente)} · {fecha}</span>
 </div>
 <div class="toolbar">
   <input id="q" placeholder="🔎 Buscar en el documento…" oninput="filtra()">
@@ -270,7 +270,7 @@ def render_page(titulo: str, agente: str, body_html: str, *,
 {resumen_html}
 {body_html}
 {chat_html}
-<div class="footer">Documento generado por Louis (Kawiil) · {fecha}{fuente_ft} · Confidencial</div>
+<div class="footer">Documento generado por Donna (Kawiil) · {fecha}{fuente_ft} · Confidencial</div>
 <script>{script_js}</script>
 </body>
 </html>""".encode("utf-8")
@@ -414,7 +414,7 @@ def _md_body(md: str) -> str:
 
 def md_to_html(titulo: str, agente: str, md: str, *, con_chat: bool = True,
                accent: str | None = None, accent_dark: str | None = None) -> bytes:
-    """Markdown → HTML interactivo completo (el camino de los documentos de Louis)."""
+    """Markdown → HTML interactivo completo (el camino de los documentos de Donna)."""
     body = _md_body(md)
     return render_page(titulo, agente, body, ctx_md=md, con_chat=con_chat,
                        accent=accent, accent_dark=accent_dark)

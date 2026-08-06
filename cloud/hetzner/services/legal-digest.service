@@ -1,5 +1,5 @@
 [Unit]
-Description=Louis — digest semanal de aprendizajes de los agentes kawiil-* (DOF/SJF → Telegram + Kawiil Central)
+Description=Donna — digest semanal de aprendizajes de los agentes kawiil-* (DOF/SJF → Telegram + Kawiil Central)
 After=network-online.target
 Wants=network-online.target
 

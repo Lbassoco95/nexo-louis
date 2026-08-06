@@ -1,4 +1,4 @@
-# Diseño: Multi-bot de agentes en Telegram (Louis + agente-bots)
+# Diseño: Multi-bot de agentes en Telegram (Donna + agente-bots)
 
 > Estado: **PROPUESTA — pendiente de aprobación**. No hay código aún.
 > Decisiones tomadas por Polo:
@@ -10,10 +10,10 @@
 ## 1. Objetivo
 
 Reproducir el modelo "Autonomous Agents — bots talking to bots" de Telegram, pero
-controlado: que en un **grupo** de Telegram convivan **Louis** y uno o varios
+controlado: que en un **grupo** de Telegram convivan **Donna** y uno o varios
 **agente-bots** especializados (Legal, Finanzas, etc.), de forma que Polo **vea**
 la conversación entre ellos en lugar de que la orquestación ocurra invisible dentro
-de Louis.
+de Donna.
 
 ## 2. Base técnica confirmada (Telegram Bot-to-Bot Mode, 7-may-2026)
 
@@ -37,25 +37,25 @@ Fuentes: telegram.org/blog/ai-bot-revolution-11-new-features, core.telegram.org/
 - Historial de conversación en un único `HISTORY_FILE` (single-chat).
 - Los agentes hoy son **prompts** en `spaces/general/agents/{nombre}.md`, invocados
   internamente por `invocar_agente` / `_invocar_agente` (corren dentro del proceso de
-  Louis y devuelven texto). Agentes kawiil existentes: calli, citlali, ehecatl,
+  Donna y devuelven texto). Agentes kawiil existentes: calli, citlali, ehecatl,
   metzli, nelli, patli, tepantli, my, central, …
 
-**Implicación:** el multi-bot NO modifica el flujo actual de tu DM con Louis. Se
-añade (a) soporte para que Louis también opere en un **grupo** nuevo, y (b) un
+**Implicación:** el multi-bot NO modifica el flujo actual de tu DM con Donna. Se
+añade (a) soporte para que Donna también opere en un **grupo** nuevo, y (b) un
 **servicio nuevo** que corre los agente-bots. El DM 1-a-1 sigue igual.
 
 ## 4. Topología propuesta
 
 ```
 ┌────────────────────── Grupo Telegram "Kawiil — Agentes" ───────────────────────┐
-│  👤 Polo            🤖 Louis (@LouisKawiilBot)                                   │
+│  👤 Polo            🤖 Donna (@LouisKawiilBot)                                   │
 │                     ⚖️  @KawiilLegalBot     💰 @KawiilFinanzasBot   … (futuros)  │
 └─────────────────────────────────────────────────────────────────────────────────┘
         │                        │                          │
         │ getUpdates             │ getUpdates               │ getUpdates
         ▼                        ▼                          ▼
    telegram-bridge          agentbots-service (NUEVO, 1 proceso, N tokens)
-   (Louis, ya existe;       · poll por token
+   (Donna, ya existe;       · poll por token
     + se le habilita        · cada bot responde SOLO si lo @-mencionan
     leer el grupo y el      · reutiliza el prompt del agente kawiil-* correspondiente
     modo bot-to-bot)        · 1 mención = 1 respuesta (sin auto-continuar)
@@ -81,19 +81,19 @@ Polo:           @KawiilLegalBot ¿qué riesgo legal tiene la cláusula X?
 KawiilLegalBot: ⚖️ [análisis legal]        ← responde 1 vez, se detiene
 ```
 
-**B) Polo pide a Louis que coordine** (orquestación visible, fase 2):
+**B) Polo pide a Donna que coordine** (orquestación visible, fase 2):
 ```
-Polo:   Louis, arma la opinión de la cláusula X con apoyo legal y fiscal
-Louis:  Va. @KawiilLegalBot ¿riesgo legal de la cláusula X?
+Polo:   Donna, arma la opinión de la cláusula X con apoyo legal y fiscal
+Donna:  Va. @KawiilLegalBot ¿riesgo legal de la cláusula X?
                                 @KawiilFinanzasBot ¿impacto fiscal?
 KawiilLegalBot:  ⚖️ [respuesta]            ← cada uno responde 1 vez
 KawiilFinanzasBot: 💰 [respuesta]
-Louis:  (lee ambas vía bot-to-bot mode) → 📋 Síntesis final para Polo
+Donna:  (lee ambas vía bot-to-bot mode) → 📋 Síntesis final para Polo
 ```
-En el flujo B, **Louis** sí necesita leer las respuestas de los bots (requiere
-bot-to-bot mode activo en Louis) y esperar a que lleguen para sintetizar. Eso añade
+En el flujo B, **Donna** sí necesita leer las respuestas de los bots (requiere
+bot-to-bot mode activo en Donna) y esperar a que lleguen para sintetizar. Eso añade
 coordinación asíncrona (ver §7, fase 2). En el **piloto** empezamos con el flujo A,
-que no requiere que Louis consuma nada programáticamente.
+que no requiere que Donna consuma nada programáticamente.
 
 ## 6. Componentes a construir
 
@@ -112,7 +112,7 @@ que no requiere que Louis consuma nada programáticamente.
      grupo con un prefijo/emoji del agente.
    - Si el mensaje **no** lo menciona → lo ignora (incluido si viene de otro bot).
    - Offsets independientes por token (archivo por bot).
-2. **Cambios mínimos en Louis (`telegram-bridge.py`)**:
+2. **Cambios mínimos en Donna (`telegram-bridge.py`)**:
    - Permitir operar en **dos** chats: tu DM (como hoy) **y** el grupo nuevo
      (`GROUP_CHAT_ID`). Hoy `process_update` corta si el chat no es el único
      configurado; se cambia por una **lista blanca** de chats permitidos.
@@ -125,11 +125,11 @@ que no requiere que Louis consuma nada programáticamente.
 
 ## 7. Fases
 
-- **Fase 1 — Piloto (flujo A):** 1 agente-bot (ej. Legal = `kawiil-tepantli`) + Louis
-  en el grupo. Polo @-menciona al bot y recibe respuesta. Louis solo está presente
+- **Fase 1 — Piloto (flujo A):** 1 agente-bot (ej. Legal = `kawiil-tepantli`) + Donna
+  en el grupo. Polo @-menciona al bot y recibe respuesta. Donna solo está presente
   (lee el grupo). Objetivo: validar tokens, permisos del grupo, bot-to-bot mode,
   formato de respuestas y costo por mensaje. **Sin coordinación asíncrona.**
-- **Fase 2 — Orquestación visible (flujo B):** Louis @-menciona agente-bots, lee sus
+- **Fase 2 — Orquestación visible (flujo B):** Donna @-menciona agente-bots, lee sus
   respuestas (bot-to-bot mode) y sintetiza. Requiere: correlación de respuestas
   (¿qué bot contestó a qué?), timeout de espera, y manejo de "un bot no respondió".
 - **Fase 3 — Escalar:** añadir el resto de agente-bots (Finanzas, RRHH, …), un token
@@ -150,7 +150,7 @@ que no requiere que Louis consuma nada programáticamente.
 ## 9. Seguridad
 
 - Los agente-bots **solo** atienden el `GROUP_CHAT_ID` autorizado; cualquier otro
-  chat se ignora (igual que Louis hoy).
+  chat se ignora (igual que Donna hoy).
 - Tokens en `credentials/agentbots.env` (perm 600, fuera de git).
 - El grupo es privado (solo Polo + bots). Si Telegram entrega mensajes de otros
   miembros, se puede restringir además por `from.id` (lista blanca de usuarios).
@@ -166,14 +166,14 @@ Por **cada** agente-bot (en el piloto, solo 1):
    ser respondido por reply; lo necesitamos para detectar la @-mención de forma
    fiable). *(A confirmar en pruebas: con bot-to-bot mode quizá no haga falta.)*
 4. Añadir el bot al **grupo** y hacerlo (idealmente) admin para que vea todo.
-5. Activar **Bot to Bot Communication Mode** también en **Louis** (para fase 2).
+5. Activar **Bot to Bot Communication Mode** también en **Donna** (para fase 2).
 6. Pasarme: el/los **token(s)** y el **chat_id del grupo** (lo obtengo o te digo cómo).
 
 ## 11. Riesgos / preguntas abiertas
 
 - **Privacy mode vs bot-to-bot mode:** confirmar en pruebas si con bot-to-bot mode el
   bot recibe la @-mención sin desactivar privacy. (Se valida en el piloto.)
-- **Correlación en fase 2:** cómo sabe Louis que una respuesta del grupo corresponde
+- **Correlación en fase 2:** cómo sabe Donna que una respuesta del grupo corresponde
   a su pregunta (propuesta: usar `reply_to_message` o un marcador/ID en la mención).
 - **Costo agregado:** si en el futuro hubiera muchas menciones, vigilar el gasto
   (métrica en log + alerta).
@@ -185,4 +185,4 @@ Por **cada** agente-bot (en el piloto, solo 1):
 - `agentbots-service.py` + unit systemd + `agentbots.env.example`.
 - Parche mínimo a `telegram-bridge.py`: lista blanca de chats + historial por chat.
 - Guía de pruebas paso a paso en el grupo.
-- Sin tocar el flujo actual del DM con Louis.
+- Sin tocar el flujo actual del DM con Donna.

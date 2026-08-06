@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh — Prepara data dir + env file + spaces + config para Louis, e intenta
+# install.sh — Prepara data dir + env file + spaces + config para Donna, e intenta
 # instalar OpenClaw nativo. Si OpenClaw no instala, el resto del stack
 # (telegram-bridge, kawiil-agents, Ollama) sigue funcionando.
 #

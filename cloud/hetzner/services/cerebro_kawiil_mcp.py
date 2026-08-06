@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Cerebro Kawiil — MCP Server  (token-efficient edition)
-Cerebro compartido Louis ↔ Cowork. Corre en Hetzner, se conecta como
+Cerebro compartido Donna ↔ Cowork. Corre en Hetzner, se conecta como
 connector en la app de Claude (SSE).
 
 Principio de costo: resumen primero, detalle solo si se pide.
@@ -13,7 +13,7 @@ Principio de costo: resumen primero, detalle solo si se pide.
 Variables de entorno:
   CEREBRO_KAWIIL_TOKEN   Bearer token para autenticar el connector
   CEREBRO_PORT           Puerto interno (default: 4040)
-  OPENCLAW_SPACES        Ruta a la memoria de Louis (default: /opt/openclaw/spaces/general)
+  OPENCLAW_SPACES        Ruta a la memoria de Donna (default: /opt/openclaw/spaces/general)
   ENTREGABLES_PATH       Almacén compartido  (default: /opt/openclaw/entregables)
   SJF_DB_PATH            SQLite SJF          (default: /opt/openclaw/legal/sjf.db)
   DOF_DB_PATH            SQLite DOF          (default: /opt/openclaw/legal/dof.db)
@@ -54,8 +54,8 @@ SJF_DB_PATH      = Path(os.environ.get("SJF_DB_PATH", "/opt/openclaw/legal/sjf/b
 DOF_DB_PATH      = Path(os.environ.get("DOF_DB_PATH", "/opt/openclaw/legal/dof/biblioteca_dof.db"))
 CACHE_TTL        = int(os.environ.get("CEREBRO_CACHE_TTL", "60"))
 
-# Cola de recordatorios que lee el scheduler de Louis (misma que usa el bridge de
-# Telegram). Lo que Cowork agende aquí, Louis lo dispara. CDMX no usa DST → -06:00 fijo.
+# Cola de recordatorios que lee el scheduler de Donna (misma que usa el bridge de
+# Telegram). Lo que Cowork agende aquí, Donna lo dispara. CDMX no usa DST → -06:00 fijo.
 OPENCLAW_HOME    = Path(os.environ.get("OPENCLAW_HOME", "/opt/openclaw"))
 REMINDERS_QUEUE  = OPENCLAW_HOME / "reminders" / "queue.jsonl"
 TZ_CDMX          = timezone(timedelta(hours=-6))
@@ -91,7 +91,7 @@ def _invalidate(path: Path) -> None:
 mcp = FastMCP(
     "Cerebro Kawiil",
     instructions=(
-        "Cerebro compartido Louis ↔ Cowork.\n"
+        "Cerebro compartido Donna ↔ Cowork.\n"
         "REGLA DE COSTO: empezar siempre por las herramientas compactas:\n"
         "  1. cerebro_estado()        → resumen de todo (poca tokens)\n"
         "  2. agenda_pendientes()     → solo ítems sin hacer (poca tokens)\n"
@@ -103,23 +103,23 @@ mcp = FastMCP(
         "  7. legal_buscar()          → acervo SJF/DOF\n"
         "Los writes (registrar, marcar_hecho, dispatch) tienen respuesta corta.\n"
         "RECORDATORIOS (IMPORTANTE): si Polo dice 'recuérdame'/'avísame' algo a una hora, usa "
-        "SIEMPRE la herramienta `recordar(...)` de ESTE Cerebro — escribe en la cola que Louis "
+        "SIEMPRE la herramienta `recordar(...)` de ESTE Cerebro — escribe en la cola que Donna "
         "dispara por TELEGRAM (el canal real de Polo). NUNCA uses las 'tareas programadas' nativas "
         "de Claude para esto: esas NO llegan a Telegram y Polo no las recibe. Si NO te dio la hora, "
         "PREGÚNTASELA antes; nunca inventes una hora.\n"
         "DOCUMENTOS (CRÍTICO): CUALQUIER documento/archivo que generes para Polo (informe, "
         "minuta, doc de preparación de reunión, escrito, plan) DEBES registrarlo con "
         "`entregable_registrar` incluyendo su `contenido` COMPLETO en markdown — si no lo "
-        "registras, Louis NO podrá traerlo cuando Polo lo pida por Telegram. Edita después con "
+        "registras, Donna NO podrá traerlo cuando Polo lo pida por Telegram. Edita después con "
         "`entregable_actualizar`.\n"
         "AL CERRAR UN ENTREGABLE DE CLIENTE (flujo completo, en este orden):\n"
         "  1) `entregable_registrar(...)` con el `contenido` COMPLETO del documento "
-        "(fuente de verdad que Louis podrá leer y retomar).\n"
+        "(fuente de verdad que Donna podrá leer y retomar).\n"
         "  2) `aprender(...)` el contexto clave (cliente, folios, base legal, estatus).\n"
-        "  3) por CADA fecha/deadline del trabajo, un `recordar(...)` para que Louis le "
+        "  3) por CADA fecha/deadline del trabajo, un `recordar(...)` para que Donna le "
         "avise a Polo por Telegram (con holgura antes del vencimiento).\n"
         "  4) un `recordar(...)` que PROPONGA a Polo cargar el proyecto a kawiil-central "
-        "(donde vive el cliente); Louis lo crea cuando Polo confirme.\n"
+        "(donde vive el cliente); Donna lo crea cuando Polo confirme.\n"
         "  Si después editas el documento, persiste los cambios con `entregable_actualizar(...)`.\n"
         "Principio: datos duros, sin interpretación."
     ),
@@ -411,7 +411,7 @@ def entregables_listar(estado: Optional[str] = None, cliente: Optional[str] = No
 @mcp.tool()
 def agenda_snapshot() -> str:
     """
-    [DETALLE] Contexto operativo de Louis: pendientes de HOY, sección URGENTE,
+    [DETALLE] Contexto operativo de Donna: pendientes de HOY, sección URGENTE,
     último IMPORTANT crítico y última entrada de JOURNAL. Truncado inteligente.
     Usar solo cuando agenda_pendientes() no es suficiente. ~500 tokens típico.
     """
@@ -475,7 +475,7 @@ def entregable_estado(nombre_o_titulo: str, completo: bool = False) -> str:
 @mcp.tool()
 def memoria_leer(archivo: str = "IMPORTANT", max_chars: int = 2000) -> str:
     """
-    [DETALLE] Lee un archivo de memoria de Louis (IMPORTANT, JOURNAL, LEARNINGS,
+    [DETALLE] Lee un archivo de memoria de Donna (IMPORTANT, JOURNAL, LEARNINGS,
     PEOPLE, PROJECTS). max_chars limita la respuesta (default 2000, max 8000).
     Solo usar cuando agenda_snapshot() no alcanza.
     """
@@ -610,7 +610,7 @@ def agenda_editar(patron: str, nuevo_texto: str) -> str:
     return "✅ SEGUIMIENTOS actualizado."
 
 
-# ── Aprendizaje: Cowork siembra contexto en la memoria de Louis ─────────────
+# ── Aprendizaje: Cowork siembra contexto en la memoria de Donna ─────────────
 _APRENDER_DESTINOS = {
     "IMPORTANT": "IMPORTANT.md",
     "PROJECTS": "PROJECTS.md",
@@ -627,9 +627,9 @@ def _norm_line(s: str) -> str:
 @mcp.tool()
 def aprender(detalle: str, archivo: str = "IMPORTANT", cliente: str = "") -> str:
     """
-    Enseña a Louis un hecho/contexto DURABLE desde Cowork — queda en su memoria de
+    Enseña a Donna un hecho/contexto DURABLE desde Cowork — queda en su memoria de
     largo plazo (la lee en cada sesión de Telegram/Slack). Úsalo cuando Polo te da
-    contexto que conviene que Louis recuerde: datos de un cliente/proyecto, una
+    contexto que conviene que Donna recuerde: datos de un cliente/proyecto, una
     decisión, una preferencia, una persona o una instrucción permanente.
     archivo: IMPORTANT | PROJECTS | PEOPLE | CLIENTES | LEARNINGS
       - IMPORTANT: decisiones/hechos clave o instrucciones permanentes
@@ -666,7 +666,7 @@ def aprender(detalle: str, archivo: str = "IMPORTANT", cliente: str = "") -> str
 def bitacora_cowork(resumen: str, cliente: str = "") -> str:
     """
     Registra una nota de lo trabajado en esta sesión de Cowork. Se guarda en la
-    bitácora que Louis DESTILA cada noche → de ahí extrae hechos durables a PEOPLE/
+    bitácora que Donna DESTILA cada noche → de ahí extrae hechos durables a PEOPLE/
     CLIENTES/SEGUIMIENTOS/IMPORTANT automáticamente. Úsalo al cerrar un tema o al final de
     la sesión, con un resumen de qué se hizo y qué contexto nuevo surgió.
     """
@@ -675,7 +675,7 @@ def bitacora_cowork(resumen: str, cliente: str = "") -> str:
         return "Dame un resumen con sustancia (mín. 8 caracteres)."
     ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     texto = f"[Cowork{(' · ' + cliente.strip()) if cliente.strip() else ''}] {resumen}"
-    # 1) Línea JSONL que el destilador nocturno de Louis ingiere (mismo formato que Telegram).
+    # 1) Línea JSONL que el destilador nocturno de Donna ingiere (mismo formato que Telegram).
     jl = SPACES_PATH / "cowork-history.jsonl"
     with jl.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps({"ts": ts, "role": "user", "content": texto}, ensure_ascii=False) + "\n")
@@ -685,16 +685,16 @@ def bitacora_cowork(resumen: str, cliente: str = "") -> str:
     with md.open("a", encoding="utf-8") as fh:
         fh.write(f"- [{ts[:16].replace('T', ' ')}] {texto}\n")
     _invalidate(md)
-    return "📓 Bitácora guardada — Louis lo destilará esta noche a su memoria."
+    return "📓 Bitácora guardada — Donna lo destilará esta noche a su memoria."
 
 
 @mcp.tool()
 def recordar(mensaje: str, fecha_hora: str = "", en_minutos: int = 0,
              recurrencia: str = "") -> str:
     """
-    Programa un RECORDATORIO que Louis enviará a Polo por Telegram a la hora indicada.
+    Programa un RECORDATORIO que Donna enviará a Polo por Telegram a la hora indicada.
     Úsalo cuando Polo diga 'recuérdame', 'avísame', 'mándame X a tal hora'. Escribe en
-    la MISMA cola que dispara Louis — así un recordatorio pedido desde Cowork SÍ llega
+    la MISMA cola que dispara Donna — así un recordatorio pedido desde Cowork SÍ llega
     (antes se perdían: Cowork no tenía esta herramienta).
 
     - fecha_hora: ISO 8601 con zona, ej '2026-06-23T06:00:00-06:00' (hora de CDMX). Si
@@ -748,12 +748,12 @@ def recordar(mensaje: str, fecha_hora: str = "", en_minutos: int = 0,
         return f"No pude guardar el recordatorio: {e}"
     rec_txt = f" · se repite {rec}" if rec else ""
     return (f"⏰ Recordatorio agendado para {dt.strftime('%Y-%m-%d %H:%M')} CDMX{rec_txt}. "
-            f"Louis se lo enviará a Polo por Telegram.\nMensaje: {mensaje[:120]}")
+            f"Donna se lo enviará a Polo por Telegram.\nMensaje: {mensaje[:120]}")
 
 
 @mcp.tool()
 def recordatorios_pendientes() -> str:
-    """Lista los recordatorios PENDIENTES (aún sin disparar) que Louis tiene en cola.
+    """Lista los recordatorios PENDIENTES (aún sin disparar) que Donna tiene en cola.
     Útil para confirmarle a Polo qué tiene agendado, o antes de crear uno nuevo. Omite
     el briefing matutino automático del sistema."""
     if not REMINDERS_QUEUE.exists():
@@ -794,7 +794,7 @@ def entregable_registrar(
     Registra un entregable producido en Cowork.
     estado: borrador | listo | en_vobo | aprobado | archivado
     `contenido` (opcional pero RECOMENDADO): el CUERPO COMPLETO del documento en markdown.
-    Se guarda como fuente de verdad compartida → Louis puede LEERLO y RETOMARLO
+    Se guarda como fuente de verdad compartida → Donna puede LEERLO y RETOMARLO
     (entregable_estado completo=True). Conforme lo edites en Cowork, persiste los cambios
     con entregable_actualizar() para que la última versión quede compartida.
     """
@@ -825,7 +825,7 @@ def entregable_registrar(
 def entregable_actualizar(nombre_o_titulo: str, contenido: str, nota: str = "") -> str:
     """Actualiza el CUERPO (contenido) de un entregable existente — la fuente de verdad
     compartida. Úsalo cuando edites el documento en Cowork, para que la última versión
-    quede guardada y Louis pueda leerla/retomarla (entregable_estado completo=True).
+    quede guardada y Donna pueda leerla/retomarla (entregable_estado completo=True).
     Reemplaza la sección '## Contenido', bumpea fecha_actualizacion y deja rastro en el
     historial."""
     contenido = (contenido or "").strip()
@@ -851,7 +851,7 @@ def entregable_actualizar(nombre_o_titulo: str, contenido: str, nota: str = "") 
             entrada = f"- {fecha} — contenido actualizado" + (f": {nota}" if nota else "")
             f.write_text(txt.rstrip() + f"\n{entrada}\n", encoding="utf-8")
             _invalidate(f)
-            return f"✅ Contenido actualizado en «{meta.get('titulo', f.stem)}». Louis puede retomarlo."
+            return f"✅ Contenido actualizado en «{meta.get('titulo', f.stem)}». Donna puede retomarlo."
     return f"No encontrado: «{nombre_o_titulo}». Regístralo primero con entregable_registrar()."
 
 
@@ -893,7 +893,7 @@ def dispatch_preparar_brief(
     contexto_adicional: str = "",
 ) -> str:
     """
-    Louis prepara un brief para que Cowork produzca un entregable.
+    Donna prepara un brief para que Cowork produzca un entregable.
     Se guarda en _briefs/. Devuelve confirmación corta.
     urgencia: baja | normal | alta | urgente
     """
@@ -927,7 +927,7 @@ def dispatch_preparar_brief(
 
     content = (
         f"---\ntipo: brief_dispatch\ntarea: {tarea}\ncliente: {cliente}\n"
-        f"urgencia: {urgencia}\nestado: pendiente\npreparado_por: Louis\n"
+        f"urgencia: {urgencia}\nestado: pendiente\npreparado_por: Donna\n"
         f"fecha_creacion: {fecha} {hora}\n---\n\n"
         f"# Brief: {tarea}\n\n"
         f"Cliente: {cliente} | Urgencia: {urgencia} | Fecha: {fecha} {hora}\n\n"

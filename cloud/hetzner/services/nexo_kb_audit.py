@@ -61,7 +61,7 @@ _load_env_files()
 
 try:
     import nexo_retrieve
-    from louis_core import _es_conocimiento_sensible, _KB_SENSIBLE_RE
+    from donna_core import _es_conocimiento_sensible, _KB_SENSIBLE_RE
 except Exception as e:  # pragma: no cover
     print(f"ERROR importando dependencias: {e}", file=sys.stderr)
     sys.exit(1)

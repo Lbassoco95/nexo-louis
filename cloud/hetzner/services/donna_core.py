@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-louis_core.py — lógica compartida entre canales (Telegram, Slack, …).
+donna_core.py — lógica compartida entre canales (Telegram, Slack, …).
 
 Encapsula:
   - Routing Ollama / Claude
@@ -41,7 +41,7 @@ ANTHROPIC_ENV_FILE = HOME_OC / ".env"
 # Cada línea es un evento JSON: {ts, evento, agente, modelo, parent, detalle}.
 AGENT_ACTIVITY_FILE = HOME_OC / "logs" / "agent-activity.jsonl"
 
-# ── Cerebro Kawiil — almacén compartido Cowork ↔ Louis ──────────────────
+# ── Cerebro Kawiil — almacén compartido Cowork ↔ Donna ──────────────────
 ENTREGABLES_PATH = Path(os.environ.get("ENTREGABLES_PATH", str(HOME_OC / "entregables")))
 BRIEFS_PATH = ENTREGABLES_PATH / "_briefs"
 
@@ -438,7 +438,7 @@ CLAUDE_FORCE_PREFIXES = (
 )
 
 # ===== Logger =====
-log = logging.getLogger("louis_core")
+log = logging.getLogger("donna_core")
 
 
 # ===== Env helpers =====
@@ -501,7 +501,7 @@ def http_post_json(url: str, headers: dict, body: dict, timeout: int = 120):
 
 
 # ===== Memoria estructurada =====
-# Memorias laborales + ejecutivas + personales. Louis lleva CRM ligero (CLIENTES,
+# Memorias laborales + ejecutivas + personales. Donna lleva CRM ligero (CLIENTES,
 # PROSPECTOS), agenda personal (PERSONAL, FAMILIA), salud (SALUD), viajes (VIAJES)
 # y la operación normal de Kawiil/Yoltik (PROJECTS, PEOPLE, IMPORTANT, SEGUIMIENTOS).
 MEMORY_FILES = [
@@ -564,8 +564,8 @@ def load_system_prompt(channel: str = "telegram") -> str:
     )
     parts.append(
         "\n\n# IDENTIDAD Y TONO (Ollama / chat normal)\n"
-        "Eres Louis (Nexo), asistente ejecutivo DE Polo Bassoco (CEO Kawiil/Yoltik). "
-        "Hablas A Polo en segunda persona — NUNCA te llames Louis ni le digas 'Hola Louis'.\n"
+        "Eres Donna (Nexo), asistente ejecutivo DE Polo Bassoco (CEO Kawiil/Yoltik). "
+        "Hablas A Polo en segunda persona — NUNCA te llames Donna ni le digas 'Hola Donna'.\n"
         "Español mexicano profesional. Conciso: máx. 3 párrafos salvo que pida detalle.\n"
         "NO describas tu pipeline interno (no digas 'revisando snapshot', 'según instrucción', etc.).\n"
         "Si falta un dato en memoria/snapshot, dilo; no inventes plazos, casos ni placeholders.\n"
@@ -730,7 +730,7 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "Está PROHIBIDO decir 'no tengo acceso' cuando existe una tool para eso.\n"
         "\n# DOCUMENTOS QUE POLO HACE EN COWORK — SÍ LOS TIENES (vía Cerebro)\n"
         "Los documentos/entregables que Polo produce en Cowork y quedan REGISTRADOS viven en el "
-        "almacén compartido Cowork↔Louis, y TÚ LOS PUEDES LEER. Cuando Polo pregunte por 'el "
+        "almacén compartido Cowork↔Donna, y TÚ LOS PUEDES LEER. Cuando Polo pregunte por 'el "
         "documento/archivo/minuta que hice en Cowork' (para una reunión, cliente o tema), PRIMERO "
         "búscalo ahí: `cerebro_listar` para ubicarlo y `cerebro_leer` para traer su contenido. "
         "PROHIBIDO responder 'no tengo acceso a Cowork' o mandar a Polo a Dropbox/OneDrive/Mac sin "
@@ -855,7 +855,7 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "## ⛔ NUNCA INVENTES ESTADO DE INFRAESTRUCTURA / INSTALACIÓN\n"
         "Esto incluye: qué agentes están instalados, si el sync Mac↔Hetzner está activo, qué "
         "servicios corren, qué repos/deploy keys existen, qué falta por configurar. JAMÁS generes "
-        "un 'Estado actual de Louis' ni una lista de 'pendientes de infraestructura' de memoria o "
+        "un 'Estado actual de Donna' ni una lista de 'pendientes de infraestructura' de memoria o "
         "por suposición. Esos reportes plausibles pero falsos rompen la confianza (ej: decir 'los "
         "agentes no están instalados' cuando SÍ lo están). Antes de afirmar el estado de algo:\n"
         "- ¿Qué agentes tengo? → `listar_agentes` (lee los .md REALES instalados).\n"
@@ -944,7 +944,7 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "4. Llama `editar_mi_codigo` con descripcion clara. Se valida sintaxis automáticamente y se hace backup.\n"
         "5. Llama `reiniciar_mi_servicio` para que tome efecto. Verifica que quede 'active'.\n"
         "6. Si algo falla, usa `restaurar_mi_codigo` con el backup_id que te devolvió editar_mi_codigo.\n"
-        "Los archivos editables son: louis_core.py, telegram-bridge.py, slack-bridge.py, scheduler.py, "
+        "Los archivos editables son: donna_core.py, telegram-bridge.py, slack-bridge.py, scheduler.py, "
         "m365.py, m365/m365.py, import-legal-agents.sh. Servicios reiniciables: telegram-bridge, "
         "slack-bridge, scheduler. NUNCA toques credenciales, .env, o archivos fuera de la whitelist."
         "\n\n# PROACTIVIDAD — TÚ PERSIGUES A POLO, NO AL REVÉS\n"
@@ -1442,7 +1442,7 @@ def build_operational_snapshot(compact: bool = True) -> str:
 
 # ═══════════════════════════════════════════════════════════════════════════
 # CEREBRO KAWIIL — helpers de lectura directa del almacén compartido
-# Louis lee del disco local (0 tokens). Cowork escribe vía MCP.
+# Donna lee del disco local (0 tokens). Cowork escribe vía MCP.
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _cerebro_parsear_fm(path: Path) -> dict:
@@ -1510,7 +1510,7 @@ def _cerebro_proyecto_estado(nombre: str) -> str:
 def _cerebro_leer(nombre: str, max_chars: int = 12000) -> str:
     """Lee el CONTENIDO COMPLETO (cuerpo) de un entregable del almacén compartido por
     título/cliente/palabra clave. Para TRAER documentos que Polo produjo en Cowork —
-    Louis los puede leer/retomar. Devuelve el más reciente que coincida."""
+    Donna los puede leer/retomar. Devuelve el más reciente que coincida."""
     if not ENTREGABLES_PATH.exists():
         return f"Cerebro no disponible en {ENTREGABLES_PATH}."
     termino = (nombre or "").strip().lower()
@@ -1572,7 +1572,7 @@ def _cerebro_crear_brief(tarea: str, cliente: str, insumos: str = "",
 
     content = (
         f"---\ntipo: brief_dispatch\ntarea: {tarea}\ncliente: {cliente}\n"
-        f"urgencia: {urgencia}\nestado: pendiente\npreparado_por: Louis\n"
+        f"urgencia: {urgencia}\nestado: pendiente\npreparado_por: Donna\n"
         f"fecha_creacion: {fecha} {ahora.strftime('%H:%M')}\n---\n\n"
         f"# Brief: {tarea}\n\n"
         f"Cliente: {cliente} | Urgencia: {urgencia}\n\n"
@@ -1613,9 +1613,9 @@ _ESTADOS_ENTREGABLE = ("borrador", "listo", "en_vobo", "aprobado", "archivado")
 
 def _entregable_registrar(titulo: str, cliente: str = "", contenido: str = "",
                           tipo: str = "documento", estado: str = "borrador",
-                          preparado_por: str = "Louis") -> str:
+                          preparado_por: str = "Donna") -> str:
     """Escribe un entregable a ENTREGABLES_PATH con frontmatter. Cierra el ciclo:
-    el trabajo de un agente (o de Louis) queda como entregable y aparece en el
+    el trabajo de un agente (o de Donna) queda como entregable y aparece en el
     tablero/seguimiento. estado por defecto 'borrador' (para tu Vo.Bo.)."""
     titulo = (titulo or "").strip()
     if not titulo:
@@ -1668,7 +1668,7 @@ def _entregable_actualizar_estado(nombre: str, nuevo_estado: str) -> str:
 
 def _contexto_cliente(cliente: str, max_chars: int = 4000) -> str:
     """Reúne lo que Cerebro/memoria YA saben de un cliente (entregables, SEGUIMIENTOS,
-    CLIENTES/PEOPLE/IMPORTANT) para inyectarlo al agente — así Louis se mantiene
+    CLIENTES/PEOPLE/IMPORTANT) para inyectarlo al agente — así Donna se mantiene
     actualizado de lo que se trabaja (incl. lo de Cowork) sin que Polo reenvíe todo."""
     cliente = (cliente or "").strip()
     if not cliente:
@@ -1703,7 +1703,7 @@ def _contexto_cliente(cliente: str, max_chars: int = 4000) -> str:
 
 
 def _encargar_a_agente(agente: str, tarea: str, cliente: str = "", contexto: str = "") -> str:
-    """Fase 5 — Orquestación. Louis canaliza: invoca al agente, GUARDA su resultado
+    """Fase 5 — Orquestación. Donna canaliza: invoca al agente, GUARDA su resultado
     como entregable BORRADOR (para tu Vo.Bo.) y te avisa. Cierra el ciclo
     info→agente→entregable→seguimiento. No finaliza solo (queda en borrador).
     Inyecta automáticamente el contexto del cliente (Cerebro/memoria)."""
@@ -1737,7 +1737,7 @@ def _cerebro_sync_agenda() -> str:
     """
     Compara los pendientes abiertos de SEGUIMIENTOS.md con el estado real en el
     cerebro. Devuelve las discrepancias encontradas y encola una notificación
-    si hay algo que Louis reportaba como pendiente pero ya está listo.
+    si hay algo que Donna reportaba como pendiente pero ya está listo.
     """
     agenda_f = SPACE / "SEGUIMIENTOS.md"
     if not agenda_f.exists():
@@ -1786,7 +1786,7 @@ def _cerebro_sync_agenda() -> str:
     try:
         _encolar_notificacion(
             f"🔄 *Cerebro Kawiil — discrepancias detectadas*\n\n{reporte[:800]}\n\n"
-            f"Louis puede actualizar AGENDA con `agenda_marcar_hecho()` si ya está listo.",
+            f"Donna puede actualizar AGENDA con `agenda_marcar_hecho()` si ya está listo.",
             canal="telegram",
         )
     except Exception:
@@ -1820,7 +1820,7 @@ def _encolar_notificacion(mensaje: str, canal: str = "telegram") -> None:
 def _cerebro_entregables_snapshot() -> str:
     """
     Resumen del cerebro para build_operational_snapshot(): conteos + últimos 5 títulos.
-    Incluir los títulos recientes es lo que permite a Louis saber QUÉ se trabajó en
+    Incluir los títulos recientes es lo que permite a Donna saber QUÉ se trabajó en
     Cowork sin tener que leer cada archivo completo.
     """
     if not ENTREGABLES_PATH.exists():
@@ -1849,7 +1849,7 @@ def _cerebro_entregables_snapshot() -> str:
         nudge = f"\n→ {conteo['listo']} listo(s) Vo.Bo.: {clientes_str}"
     if n_briefs:
         nudge += f"\n→ {n_briefs} brief(s) pendiente(s) de dispatch a agentes."
-    # Últimos 5 entregables (por fecha de modificación): para que Louis sepa QUÉ se trabajó.
+    # Últimos 5 entregables (por fecha de modificación): para que Donna sepa QUÉ se trabajó.
     all_items.sort(key=lambda x: x[0].stat().st_mtime, reverse=True)
     recientes = []
     for f, meta in all_items[:5]:
@@ -2347,7 +2347,7 @@ def build_overnight_advances_scan() -> str | None:
 # ═══════════════════════════════════════════════════════════════════════════
 # MONITOR UNIFICADO — todas las fuentes conectadas → HTML por Telegram
 # Reemplaza build_overnight_advances_scan() para la ejecución en vivo.
-# Genera HTML individuales (usando louis_html) para eventos importantes y
+# Genera HTML individuales (usando donna_html) para eventos importantes y
 # los almacena en /opt/openclaw/events/{fecha}/ para acceso por URL.
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -2396,25 +2396,25 @@ def _telegram_send_html_doc(html_bytes: bytes, fname: str, caption: str,
         return False
 
 
-def _load_louis_html():
-    """Importa louis_html.py dinámicamente desde el mismo directorio."""
+def _load_donna_html():
+    """Importa donna_html.py dinámicamente desde el mismo directorio."""
     import importlib.util
-    _p = Path(__file__).parent / "louis_html.py"
+    _p = Path(__file__).parent / "donna_html.py"
     try:
-        spec = importlib.util.spec_from_file_location("louis_html", str(_p))
+        spec = importlib.util.spec_from_file_location("donna_html", str(_p))
         m = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(m)  # type: ignore[union-attr]
         return m
     except Exception as e:
-        log.warning(f"_load_louis_html: {e}")
+        log.warning(f"_load_donna_html: {e}")
         return None
 
 
 def _generate_event_html(evento: dict, fecha_str: str) -> bytes | None:
-    """Genera HTML interactivo (louis_html.render_page) para un evento detectado."""
+    """Genera HTML interactivo (donna_html.render_page) para un evento detectado."""
     import html as _he
-    louis_html = _load_louis_html()
-    if not louis_html:
+    donna_html = _load_donna_html()
+    if not donna_html:
         return None
     tipo = evento.get("tipo", "evento")
     titulo = evento.get("titulo", "Evento")
@@ -2425,7 +2425,7 @@ def _generate_event_html(evento: dict, fecha_str: str) -> bytes | None:
     iconos = {"reunion": "🤝", "email_cliente": "📧", "decision_slack": "💬",
               "documento": "📄", "entregable": "📦"}
     icono = iconos.get(tipo, "📌")
-    kpi_row = louis_html.kpi_cards([
+    kpi_row = donna_html.kpi_cards([
         {"value": icono,                       "label": tipo.replace("_", " ")},
         {"value": "⚡" if urgente else "🔵",   "label": "urgente" if urgente else "normal"},
         {"value": fecha_str,                   "label": "detectado"},
@@ -2437,9 +2437,9 @@ def _generate_event_html(evento: dict, fecha_str: str) -> bytes | None:
         body += (f"<details class='sec' open><summary>⚡ Acción recomendada</summary>"
                  f"<p style='font-size:.95em;line-height:1.6'>{_he.escape(accion)}</p></details>")
     ctx = f"{titulo}\n\n{resumen}" + (f"\n\nAcción: {accion}" if accion else "")
-    return louis_html.render_page(
+    return donna_html.render_page(
         titulo=f"{icono} {titulo}",
-        agente="Louis Monitor",
+        agente="Donna Monitor",
         body_html=body,
         ctx_md=ctx,
         con_chat=True,
@@ -3070,7 +3070,7 @@ def build_system_health_report_data():
                    f"JOURNAL.md (última entrada):\n{journal_md}")
         _raw_ia = _invocar_agente(
             "revisor-ia",
-            f"Evalúa la calidad de las respuestas y el comportamiento de Louis para {fecha_str}.",
+            f"Evalúa la calidad de las respuestas y el comportamiento de Donna para {fecha_str}.",
             contexto=_ctx_ia,
         )
         analisis_agentes["ia"] = _parse_agent_json(_raw_ia)
@@ -3086,7 +3086,7 @@ def build_system_health_report_data():
                     f"ALIMENTACION.md:\n{alim_ctx}")
         _raw_apr = _invocar_agente(
             "revisor-aprendizaje",
-            f"Analiza el estado del aprendizaje de Louis para {fecha_str}.",
+            f"Analiza el estado del aprendizaje de Donna para {fecha_str}.",
             contexto=_ctx_apr,
         )
         analisis_agentes["aprendizaje"] = _parse_agent_json(_raw_apr)
@@ -3101,7 +3101,7 @@ def build_system_health_report_data():
                     f"SEGUIMIENTOS.md (pendientes abiertos):\n{seg_ctx}")
         _raw_evo = _invocar_agente(
             "revisor-evolucion",
-            f"Analiza la evolución del desarrollo de Louis para {fecha_str}.",
+            f"Analiza la evolución del desarrollo de Donna para {fecha_str}.",
             contexto=_ctx_evo,
         )
         analisis_agentes["evolucion"] = _parse_agent_json(_raw_evo)
@@ -3115,7 +3115,7 @@ def build_system_health_report_data():
         api_key = load_anthropic_key()
         if api_key:
             _prompt_fb = (
-                f"Revisión de sistema Louis — {fecha_str}.\n\n"
+                f"Revisión de sistema Donna — {fecha_str}.\n\n"
                 f"MÓDULOS:\n{mod_resumen}\n\nCOACH:\n{coach_ctx[:400]}\n\n"
                 'Responde JSON: {"bien":[],"gaps":[],"mejoras":[]}'
             )
@@ -3155,7 +3155,7 @@ def build_system_health_report_data():
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SEGUIMIENTO PROACTIVO — Cerebro + Agentes
-# Louis rastrea qué hay nuevo en Cerebro y qué indexaron los agentes sin
+# Donna rastrea qué hay nuevo en Cerebro y qué indexaron los agentes sin
 # esperar a que Polo pregunte. El scheduler llama build_cerebro_followup()
 # a las 10:00 y 14:00; devuelve None → silencio, texto → aviso a Polo.
 # ═══════════════════════════════════════════════════════════════════════════
@@ -3512,14 +3512,14 @@ def sanitize_ollama_response(text: str) -> str:
     if not out:
         out = text.strip()
     out = re.sub(
-        r"^(¡Hola|Hola),?\s+Louis[!,.]?\s*",
+        r"^(¡Hola|Hola),?\s+Donna[!,.]?\s*",
         "¡Hola Polo! ",
         out,
         count=1,
         flags=re.IGNORECASE,
     )
     out = re.sub(
-        r"¿Qué prefieres hacer primero,?\s+Louis\??",
+        r"¿Qué prefieres hacer primero,?\s+Donna\??",
         "¿Por dónde empezamos?",
         out,
         flags=re.IGNORECASE,
@@ -3763,7 +3763,7 @@ def _format_memory_tool_confirmations(tool_results: list[str]) -> str:
 
 
 # ===== Escritura determinística de memoria (sin Claude / sin créditos) =====
-# Permite que Louis "aprenda" aunque la cuenta Anthropic no tenga créditos: la
+# Permite que Donna "aprenda" aunque la cuenta Anthropic no tenga créditos: la
 # forma explícita "anota [en <archivo>]: <contenido>" se guarda directo con
 # append_to_memory, sin pasar por Sonnet. Es el carril de aprendizaje a prueba
 # de fallos — siempre disponible, gratis y local.
@@ -4192,7 +4192,7 @@ def _reason_briefing(snapshot: str) -> str | None:
     hoy = _fmt_dt_es(datetime.now(get_active_tz()))
     cal = _briefing_calendar_block("hoy")
     sys = (
-        "Eres Louis, asistente ejecutivo de Polo (CEO de Kawiil). Redacta su BRIEFING "
+        "Eres Donna, asistente ejecutivo de Polo (CEO de Kawiil). Redacta su BRIEFING "
         "matutino a partir de los datos de abajo.\n"
         "FUENTES (CRÍTICO):\n"
         "- El bloque CALENDARIO es la ÚNICA fuente de verdad para HORAS de juntas/reuniones. "
@@ -4373,7 +4373,7 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "read_memory",
-        "description": "Lee un archivo de memoria de Louis (SEGUIMIENTOS.md, USER.md, LEARNINGS.md, JOURNAL.md, IMPORTANT.md, PROJECTS.md, PEOPLE.md).",
+        "description": "Lee un archivo de memoria de Donna (SEGUIMIENTOS.md, USER.md, LEARNINGS.md, JOURNAL.md, IMPORTANT.md, PROJECTS.md, PEOPLE.md).",
         "input_schema": {
             "type": "object",
             "properties": {"filename": {"type": "string", "enum": MEMORY_FILES + ["JOURNAL.md"]}},
@@ -4451,7 +4451,7 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "agendar_recordatorio",
-        "description": "Programa un recordatorio PROACTIVO que Louis envía al canal a la hora indicada. ÚSALO siempre que Polo diga 'recuérdame', 'avísame', 'en X minutos', 'mañana a las X', etc. IMPORTANTE: para tiempo RELATIVO ('en 12 minutos', 'en 2 horas') usa `en_minutos` (12, 120…) y el SERVIDOR calcula la hora real — NO calcules tú la hora absoluta (te equivocas con la hora). Usa `fecha_hora` SOLO para una fecha/hora específica futura.",
+        "description": "Programa un recordatorio PROACTIVO que Donna envía al canal a la hora indicada. ÚSALO siempre que Polo diga 'recuérdame', 'avísame', 'en X minutos', 'mañana a las X', etc. IMPORTANTE: para tiempo RELATIVO ('en 12 minutos', 'en 2 horas') usa `en_minutos` (12, 120…) y el SERVIDOR calcula la hora real — NO calcules tú la hora absoluta (te equivocas con la hora). Usa `fecha_hora` SOLO para una fecha/hora específica futura.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -4494,7 +4494,7 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "corregir_nombre",
-        "description": "Registra una corrección PERMANENTE de nombre de cliente mal transcrito por voz (ej. 'Vez Motos' → 'Best Motos'). A partir de ese momento Louis corrige solo ese nombre en TODOS los recordatorios/notas nuevos. ÚSALO cuando Polo diga 'no es X, es Y' sobre un nombre que la transcripción equivoca seguido.",
+        "description": "Registra una corrección PERMANENTE de nombre de cliente mal transcrito por voz (ej. 'Vez Motos' → 'Best Motos'). A partir de ese momento Donna corrige solo ese nombre en TODOS los recordatorios/notas nuevos. ÚSALO cuando Polo diga 'no es X, es Y' sobre un nombre que la transcripción equivoca seguido.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -4661,11 +4661,11 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "mac_wake_request",
-        "description": "Cuando la Mac está offline y Louis necesita que se prenda (ej: para correr scripts SJF, sync de Projects, etc.), evalúa último estado: si batería suficiente → manda Telegram a Polo pidiéndole que la prenda; si batería <10% o estado 'discharging' → manda mensaje 'conéctala al cargador'; si no hay heartbeat reciente → 'no he visto tu Mac, ¿está bien?'. NO intenta WoL automático (no estamos en la misma LAN).",
+        "description": "Cuando la Mac está offline y Donna necesita que se prenda (ej: para correr scripts SJF, sync de Projects, etc.), evalúa último estado: si batería suficiente → manda Telegram a Polo pidiéndole que la prenda; si batería <10% o estado 'discharging' → manda mensaje 'conéctala al cargador'; si no hay heartbeat reciente → 'no he visto tu Mac, ¿está bien?'. NO intenta WoL automático (no estamos en la misma LAN).",
         "input_schema": {
             "type": "object",
             "properties": {
-                "razon": {"type": "string", "description": "Por qué Louis necesita la Mac prendida. Ej: 'para correr backfill SJF', 'para sync de Projects'."},
+                "razon": {"type": "string", "description": "Por qué Donna necesita la Mac prendida. Ej: 'para correr backfill SJF', 'para sync de Projects'."},
             },
             "required": ["razon"],
         },
@@ -4717,7 +4717,7 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "hetzner_estado",
-        "description": "Lee estado/archivos REALES de Hetzner (el servidor de Louis). ÚSALO en vez de inventar cuando Polo pida revisar la cola de la Mac, resultados de comandos, logs, heartbeat o conteos legales. NUNCA fabriques estas salidas — llama esta tool. Opciones de `que`: cola_mac, resultados_mac, heartbeat, log_telegram, log_scheduler, legal_conteo. Sin `que` lista las opciones.",
+        "description": "Lee estado/archivos REALES de Hetzner (el servidor de Donna). ÚSALO en vez de inventar cuando Polo pida revisar la cola de la Mac, resultados de comandos, logs, heartbeat o conteos legales. NUNCA fabriques estas salidas — llama esta tool. Opciones de `que`: cola_mac, resultados_mac, heartbeat, log_telegram, log_scheduler, legal_conteo. Sin `que` lista las opciones.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -4876,7 +4876,7 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "kawiil_central_tablas",
-        "description": "Lista las tablas del schema public en la BD de kawiil-central (Supabase). Útil para descubrir el modelo de datos antes de operar (Louis no asume nombres, los descubre).",
+        "description": "Lista las tablas del schema public en la BD de kawiil-central (Supabase). Útil para descubrir el modelo de datos antes de operar (Donna no asume nombres, los descubre).",
         "input_schema": {"type": "object", "properties": {}},
     },
     {
@@ -5001,7 +5001,7 @@ TOOLS_DEFINITION = [
             "type": "object",
             "properties": {
                 "tarea_id": {"type": "string"},
-                "texto": {"type": "string", "description": "Texto del avance (Polo puede dictar lo que avanzó, Louis lo aterriza aquí)"},
+                "texto": {"type": "string", "description": "Texto del avance (Polo puede dictar lo que avanzó, Donna lo aterriza aquí)"},
                 "porcentaje": {"type": "integer", "description": "% de avance (opcional)"},
             },
             "required": ["tarea_id", "texto"],
@@ -5081,7 +5081,7 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "leer_mi_codigo",
-        "description": "Lee uno de los archivos del runtime de Louis (whitelist: louis_core.py, telegram-bridge.py, slack-bridge.py, scheduler.py, m365.py, m365/m365.py, import-legal-agents.sh). Úsalo ANTES de editar para ver el estado actual y poder hacer un match exacto.",
+        "description": "Lee uno de los archivos del runtime de Donna (whitelist: donna_core.py, telegram-bridge.py, slack-bridge.py, scheduler.py, m365.py, m365/m365.py, import-legal-agents.sh). Úsalo ANTES de editar para ver el estado actual y poder hacer un match exacto.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -5137,7 +5137,7 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "verificar_conexiones",
-        "description": "Verifica EN VIVO el estado de Louis: host, IP, servicios, credenciales, M365, Ollama. Usa cuando Polo pregunte por status, dónde estás, qué tienes conectado.",
+        "description": "Verifica EN VIVO el estado de Donna: host, IP, servicios, credenciales, M365, Ollama. Usa cuando Polo pregunte por status, dónde estás, qué tienes conectado.",
         "input_schema": {
             "type": "object",
             "properties": {"incluir_m365": {"type": "boolean", "default": True}},
@@ -5146,7 +5146,7 @@ TOOLS_DEFINITION = [
     # Slack tools
     {
         "name": "slack_resumen",
-        "description": "Lee los mensajes recientes de los canales de Slack donde Louis-Nexo está invitado. Devuelve en un solo call: lista de canales + últimos mensajes de cada uno. ÚSALA SIEMPRE que Polo pregunte qué hay en Slack, qué le mandaron, o qué pasa en algún canal. Es la tool principal para Slack.",
+        "description": "Lee los mensajes recientes de los canales de Slack donde Donna-Nexo está invitado. Devuelve en un solo call: lista de canales + últimos mensajes de cada uno. ÚSALA SIEMPRE que Polo pregunte qué hay en Slack, qué le mandaron, o qué pasa en algún canal. Es la tool principal para Slack.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -5157,12 +5157,12 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "slack_canales",
-        "description": "Lista los canales de Slack donde Louis-Nexo está invitado. Úsala para saber qué canales puede leer antes de llamar slack_leer.",
+        "description": "Lista los canales de Slack donde Donna-Nexo está invitado. Úsala para saber qué canales puede leer antes de llamar slack_leer.",
         "input_schema": {"type": "object", "properties": {}},
     },
     {
         "name": "slack_leer",
-        "description": "Lee mensajes recientes de un canal de Slack (o DM) donde Louis-Nexo está invitado. Usa 'canal' con el nombre (ej: 'general') o el ID (C…). Devuelve los últimos N mensajes con autor, fecha y texto. Úsala cuando Polo pregunte qué hay en Slack, qué le mandaron, o qué está pasando en un canal.",
+        "description": "Lee mensajes recientes de un canal de Slack (o DM) donde Donna-Nexo está invitado. Usa 'canal' con el nombre (ej: 'general') o el ID (C…). Devuelve los últimos N mensajes con autor, fecha y texto. Úsala cuando Polo pregunte qué hay en Slack, qué le mandaron, o qué está pasando en un canal.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -5199,7 +5199,7 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "slack_dm_leer",
-        "description": "Lee los mensajes directos (DMs) recientes del usuario indicado con Louis-Nexo. Usa el nombre de usuario o ID (U…). Útil cuando Polo pregunta qué le mandaron por DM.",
+        "description": "Lee los mensajes directos (DMs) recientes del usuario indicado con Donna-Nexo. Usa el nombre de usuario o ID (U…). Útil cuando Polo pregunta qué le mandaron por DM.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -5614,7 +5614,7 @@ TOOLS_DEFINITION = [
     {
         "name": "cerebro_listar",
         "description": (
-            "Lista los entregables del almacén compartido Cowork↔Louis. "
+            "Lista los entregables del almacén compartido Cowork↔Donna. "
             "Filtrar por estado (borrador/listo/en_vobo/aprobado/archivado) y/o cliente. "
             "Usar para saber qué ya se produjo en Cowork antes de reportar algo como pendiente."
         ),
@@ -5644,7 +5644,7 @@ TOOLS_DEFINITION = [
         "name": "cerebro_leer",
         "description": (
             "Lee el CONTENIDO COMPLETO de un documento/entregable del almacén compartido "
-            "Cowork↔Louis (lo que Polo produjo en Cowork y quedó registrado). ÚSALO cuando "
+            "Cowork↔Donna (lo que Polo produjo en Cowork y quedó registrado). ÚSALO cuando "
             "Polo pregunte por 'el documento/archivo/minuta que hice en Cowork' para una "
             "reunión, cliente o tema. NUNCA respondas que 'no tienes acceso a Cowork': los "
             "documentos REGISTRADOS sí los puedes leer aquí. Busca por título, cliente o "
@@ -5663,7 +5663,7 @@ TOOLS_DEFINITION = [
         "description": (
             "Crea un brief de dispatch en el cerebro para que Cowork produzca un entregable. "
             "Notifica a Polo por Telegram inmediatamente ('brief listo, ábrelo en Cowork'). "
-            "Usar cuando Louis identifica trabajo que debe delegarse a Cowork."
+            "Usar cuando Donna identifica trabajo que debe delegarse a Cowork."
         ),
         "input_schema": {
             "type": "object",
@@ -5680,7 +5680,7 @@ TOOLS_DEFINITION = [
     {
         "name": "encargar_a_agente",
         "description": (
-            "ORQUESTACIÓN: Louis canaliza trabajo a un agente kawiil-* y GUARDA su resultado "
+            "ORQUESTACIÓN: Donna canaliza trabajo a un agente kawiil-* y GUARDA su resultado "
             "como entregable BORRADOR en Cerebro (para Vo.Bo. de Polo), avisándole. Cierra el "
             "ciclo info→agente→entregable→seguimiento. Úsalo cuando una tarea le toca a un agente "
             "especializado (ej. kawiil-nelli compliance, kawiil-amatl contratos, kawiil-investigacion "
@@ -5735,7 +5735,7 @@ TOOLS_DEFINITION = [
         "name": "cerebro_sync_agenda",
         "description": (
             "Compara los pendientes abiertos de SEGUIMIENTOS.md con el estado real del cerebro. "
-            "Detecta lo que Louis reporta como 'pendiente' pero ya está 'listo' o 'aprobado' en Cowork. "
+            "Detecta lo que Donna reporta como 'pendiente' pero ya está 'listo' o 'aprobado' en Cowork. "
             "Notifica a Polo por Telegram si hay discrepancias. "
             "Usar en briefing matutino o cuando Polo pregunta por el estado de proyectos."
         ),
@@ -5865,7 +5865,7 @@ def _run_m365_tool(name: str, args: dict) -> str:
 
 
 def _verificar_conexiones(incluir_m365: bool = True) -> str:
-    out = ["=== Verificación EN VIVO de Louis ===\n"]
+    out = ["=== Verificación EN VIVO de Donna ===\n"]
     try:
         hostname = subprocess.run(["hostname"], capture_output=True, text=True, timeout=2).stdout.strip()
         out.append(f"Hostname: {hostname}")
@@ -6944,7 +6944,7 @@ def _slack_canales() -> str:
             ctype = "DM" if ch.get("is_im") else ("privado" if ch.get("is_private") else "público")
             miembro = "" if ch.get("is_member") or ch.get("is_im") else "  (no miembro)"
             rows.append(f"  {cid}  {name}  [{ctype}]{miembro}")
-        return f"Canales visibles para Louis ({len(rows)}):\n" + "\n".join(rows) if rows else "No hay canales."
+        return f"Canales visibles para Donna ({len(rows)}):\n" + "\n".join(rows) if rows else "No hay canales."
     except Exception as e:
         return f"ERROR al listar canales Slack: {e}"
 
@@ -6964,7 +6964,7 @@ def _slack_leer(canal: str, limite: int = 20) -> str:
                     channel_id = ch["id"]
                     break
             if not channel_id:
-                return f"No encontré el canal '#{canal}'. Revisa el nombre o invítame con /invite @Louis."
+                return f"No encontré el canal '#{canal}'. Revisa el nombre o invítame con /invite @Donna."
         history = client.conversations_history(channel=channel_id, limit=min(limite, 100))
         msgs = history.get("messages", [])
         if not msgs:
@@ -7191,7 +7191,7 @@ def _queue_file(content: bytes, filename: str, caption: str = "") -> None:
 
 # ===== Proyectos (sync desde ~/Documents/Claude/Projects de la Mac) =====
 PROJECTS_DIR = HOME_OC / "projects"
-# Carpeta donde Louis guarda lo que genera (PDFs, informes). Se sincroniza de
+# Carpeta donde Donna guarda lo que genera (PDFs, informes). Se sincroniza de
 # regreso a la Mac. Va con prefijo "_" para distinguirse de los proyectos de Polo.
 GENERATED_DIR = PROJECTS_DIR / "_Louis-Generados"
 _PROJ_TEXT_EXT = {".md", ".markdown", ".txt", ".csv", ".json", ".rtf"}
@@ -7364,7 +7364,7 @@ def _break_long_tokens(text: str, max_len: int = 45) -> str:
     return " ".join(out)
 
 
-def _generar_pdf(titulo: str, contenido: str, agente: str = "Louis") -> bytes | None:
+def _generar_pdf(titulo: str, contenido: str, agente: str = "Donna") -> bytes | None:
     """Genera un PDF a partir de contenido markdown. Retorna None si fpdf2 no está instalado."""
     try:
         from fpdf import FPDF
@@ -7476,7 +7476,7 @@ def _generar_pdf(titulo: str, contenido: str, agente: str = "Louis") -> bytes | 
     return bytes(pdf.output())
 
 
-def _generar_pptx(titulo: str, contenido: str, agente: str = "Louis") -> bytes | None:
+def _generar_pptx(titulo: str, contenido: str, agente: str = "Donna") -> bytes | None:
     """Genera un PowerPoint (.pptx) desde markdown. Retorna None si python-pptx no está."""
     try:
         from pptx import Presentation
@@ -7582,7 +7582,7 @@ def _generar_xlsx(titulo: str, contenido: str) -> bytes | None:
     return buf.getvalue()
 
 
-def _generar_docx(titulo: str, contenido: str, agente: str = "Louis") -> bytes | None:
+def _generar_docx(titulo: str, contenido: str, agente: str = "Donna") -> bytes | None:
     """Genera un Word (.docx) desde markdown (encabezados, negritas, tablas, listas).
     Retorna None si python-docx no está instalado."""
     try:
@@ -7597,7 +7597,7 @@ def _generar_docx(titulo: str, contenido: str, agente: str = "Louis") -> bytes |
     doc = Document()
     h = doc.add_heading(titulo[:120], level=0)
     sub = doc.add_paragraph()
-    run = sub.add_run(f"Elaborado por Louis · Kawiil — {agente} · {_dt.date.today().strftime('%d/%m/%Y')}")
+    run = sub.add_run(f"Elaborado por Donna · Kawiil — {agente} · {_dt.date.today().strftime('%d/%m/%Y')}")
     run.italic = True
     run.font.size = Pt(9)
     run.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
@@ -7678,7 +7678,7 @@ def _limpiar_contenido_doc(texto: str) -> str:
     return t.strip()
 
 
-def _generar_documento_tool(tipo: str, titulo: str, contenido: str, agente: str = "Louis") -> str:
+def _generar_documento_tool(tipo: str, titulo: str, contenido: str, agente: str = "Donna") -> str:
     """Genera PDF/HTML/PPTX/XLSX en el servidor y lo encola para envío por Telegram."""
     import datetime as _dt
     tipo = tipo.lower().strip()
@@ -7789,7 +7789,7 @@ def generar_documento_directo(api_key: str, system_prompt: str, history: list,
         # si el flujo legal no dio contenido suficiente, cae al flujo normal de abajo
 
     instruccion = (
-        f"Eres el generador de documentos de Louis (Kawiil). El usuario pidió:\n«{user_message}»\n\n"
+        f"Eres el generador de documentos de Donna (Kawiil). El usuario pidió:\n«{user_message}»\n\n"
         "Escribe AHORA el DOCUMENTO COMPLETO y FINAL en formato markdown:\n"
         "- Usa # para el título principal, ## para secciones, ### para subsecciones.\n"
         "- Usa - para viñetas y tablas con | columna | columna |.\n"
@@ -8193,7 +8193,7 @@ def _mac_enqueue_command(comando: str, args: dict | None = None, razon: str = ""
 
 def _hetzner_estado(que: str = "") -> str:
     """Lee estado/archivos REALES de Hetzner (whitelist). Fuente de verdad para que
-    Louis no invente salidas. NO ejecuta bash arbitrario; solo lee lo whitelisted."""
+    Donna no invente salidas. NO ejecuta bash arbitrario; solo lee lo whitelisted."""
     que = (que or "").strip().lower()
     logs_dir = HOME_OC / "logs"
     opciones = {
@@ -8643,7 +8643,7 @@ def _vault_obtener(item_id: str, campo: str, razon: str) -> str:
 
 
 # ===== Kawiil Central (Vercel + Supabase, producción) =====
-# NO se clona el repo. Louis opera directo contra la BD de producción y la
+# NO se clona el repo. Donna opera directo contra la BD de producción y la
 # URL pública de Vercel para verificar disponibilidad.
 KAWIIL_CENTRAL_AUDIT_LOG = HOME_OC / "logs" / "kawiil-central-ops.log"
 
@@ -9224,7 +9224,7 @@ def _kawiil_central_proyectos(estado: str = "", limit: int = 20, cliente: str = 
     params = []
     cliente_label = ""
     # Filtro por CLIENTE (id uuid o nombre sin acentos). Determinístico: resuelve el
-    # nombre contra la tabla de clientes y filtra por client_id. Evita que Louis
+    # nombre contra la tabla de clientes y filtra por client_id. Evita que Donna
     # "adivine" entre los 197 proyectos y se contradiga (no tiene → sí → no).
     if cliente and "client_id" in cols:
         ids = []
@@ -9444,7 +9444,7 @@ def _kawiil_central_crear_tarea(titulo: str, proyecto_id: str, descripcion: str 
         elif "proyecto_id" in cols: data["proyecto_id"] = proyecto_id
 
     # Hereda organization_id del proyecto — requerido por las políticas RLS de Supabase
-    # para que el frontend pueda ver la tarea creada por Louis.
+    # para que el frontend pueda ver la tarea creada por Donna.
     if proyecto_id and "organization_id" in cols:
         try:
             cur.execute("SELECT organization_id FROM public.projects WHERE id::text = %s",
@@ -9935,8 +9935,8 @@ _DISTILL_TARGETS = {
 }
 
 _DISTILL_SYSTEM = (
-    "Eres el módulo de memoria de Louis, asistente ejecutivo de Polo (Kawiil, despacho "
-    "legal/tech en México). Te paso la conversación de HOY entre Polo y Louis. Extrae SOLO "
+    "Eres el módulo de memoria de Donna, asistente ejecutivo de Polo (Kawiil, despacho "
+    "legal/tech en México). Te paso la conversación de HOY entre Polo y Donna. Extrae SOLO "
     "hechos DURABLES y ESPECÍFICOS que valga la pena recordar a largo plazo y clasifícalos. "
     "Devuelve EXCLUSIVAMENTE un JSON válido con estas llaves (arrays de strings, una frase "
     'corta por hecho; usa [] si no hay nada):\n'
@@ -9944,12 +9944,12 @@ _DISTILL_SYSTEM = (
     "Reglas:\n"
     "- PEOPLE: datos durables de personas (rol, empresa, relación, junta recurrente, preferencias).\n"
     "- CLIENTES: datos de clientes/prospectos (razón social, RFC, contacto, estatus, servicio).\n"
-    "- SEGUIMIENTOS: seguimientos activos/compromisos por hacer DE POLO (no tareas internas de Louis).\n"
+    "- SEGUIMIENTOS: seguimientos activos/compromisos por hacer DE POLO (no tareas internas de Donna).\n"
     "- IMPORTANT: decisiones, hechos clave o instrucciones permanentes de Polo.\n"
     "- Cada hecho debe ser ESPECÍFICO: con nombre propio, empresa, fecha, monto o dato concreto. "
     "Si es vago o genérico, OMÍTELO.\n"
-    "- NO guardes hechos sobre Louis mismo, el sistema, el bot, la memoria, los archivos .md, ni "
-    "tareas de mantenimiento ('actualizar SEGUIMIENTOS', 'consolidar memoria', 'Louis es asistente…'). "
+    "- NO guardes hechos sobre Donna mismo, el sistema, el bot, la memoria, los archivos .md, ni "
+    "tareas de mantenimiento ('actualizar SEGUIMIENTOS', 'consolidar memoria', 'Donna es asistente…'). "
     "Solo el MUNDO de Polo: personas, clientes, casos, compromisos, decisiones.\n"
     "- NO incluyas charla trivial, saludos, briefings, ni cosas efímeras (clima, '¿qué hay hoy?').\n"
     "- NO inventes: solo lo explícito en la conversación. Usa nombres correctos y completos.\n"
@@ -9999,7 +9999,7 @@ def _distill_collect_today(today: str, max_chars: int = 18000) -> str:
                 continue
             content = (d.get("content") or "").strip()
             if content:
-                quien = "Polo" if d.get("role") == "user" else "Louis"
+                quien = "Polo" if d.get("role") == "user" else "Donna"
                 turns.append((str(d.get("ts", "")), f"{quien}: {content}"))
     turns.sort(key=lambda t: t[0])
     txt = "\n".join(t[1] for t in turns)
@@ -10203,14 +10203,14 @@ _DOC_THRESHOLD = 2500  # chars above which agent output is sent as a file
 
 
 def _md_to_html(titulo: str, agente: str, md: str) -> bytes:
-    """Convierte markdown → HTML interactivo. El motor vive en louis_html.py
+    """Convierte markdown → HTML interactivo. El motor vive en donna_html.py
     (módulo ÚNICO compartido con los boletines DOF/SJF): mejorar el look ahí
     mejora TODOS los documentos a la vez."""
-    import louis_html as _LH
+    import donna_html as _LH
     return _LH.md_to_html(titulo, agente, md)
 
 
-def _generar_html(titulo: str, contenido: str, agente: str = "Louis") -> bytes | None:
+def _generar_html(titulo: str, contenido: str, agente: str = "Donna") -> bytes | None:
     """Genera HTML interactivo (colapsables + buscador) desde markdown. Sin libs externas."""
     try:
         return _md_to_html(titulo, agente, contenido)
@@ -10231,7 +10231,7 @@ def _invocar_agente(
     Empuja el agente al stack para que las invocaciones anidadas (un agente que
     llama a otro vía consejo_experto_legal) queden registradas con su `parent`.
     Si el output supera _DOC_THRESHOLD chars, lo envía como archivo HTML y retorna
-    un resumen corto para que Louis no lo vomite como texto plano en Telegram.
+    un resumen corto para que Donna no lo vomite como texto plano en Telegram.
     """
     if not _AGENT_NAME_RE.match(nombre):
         return f"ERROR: nombre '{nombre}' inválido."
@@ -10259,7 +10259,7 @@ def _invocar_agente(
             import datetime as _dt_ag
             safe_nombre = nombre.replace("/", "_")
             fname_base = f"{safe_nombre}_{_dt_ag.datetime.now().strftime('%Y%m%d_%H%M')}"
-            # Reportes de agentes → HTML interactivo (motor único louis_html: logo
+            # Reportes de agentes → HTML interactivo (motor único donna_html: logo
             # Kawiil, secciones colapsables, buscador y chat). Regla de Polo: HTML por defecto.
             html_bytes = _md_to_html(titulo, nombre, raw)
             _queue_file(html_bytes, f"{fname_base}.html",
@@ -10522,7 +10522,7 @@ def _buscar_conocimiento(query, top_k=6, space_id="general"):
     """Recupera fragmentos relevantes por significado de AMBAS KBs: la KB-Negocio
     (Supabase pgvector, nube) y la KB-Sensible LOCAL (SQLite en el VPS, Bloque 5).
 
-    La invariante es de ALMACENAMIENTO, no de recuperación: Louis SÍ puede recuperar lo
+    La invariante es de ALMACENAMIENTO, no de recuperación: Donna SÍ puede recuperar lo
     sensible para responderle a Polo por su canal privado; los locales se marcan con 🔒.
     Aditivo y a prueba de fallos: cada fuente falla a vacío sin romper el gateway."""
     import os as _os
@@ -11479,7 +11479,7 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
     _tools_cached = [dict(t) for t in TOOLS_DEFINITION]
     _tools_cached[-1] = {**_tools_cached[-1], "cache_control": {"type": "ephemeral"}}
     # Hora REAL fresca en CADA llamada, DESPUÉS del bloque cacheado (no rompe el
-    # caché del prompt grande). Resuelve que Louis use la hora "congelada" del
+    # caché del prompt grande). Resuelve que Donna use la hora "congelada" del
     # contexto: aquí siempre ve la hora exacta del instante.
     try:
         _now_live = datetime.now(get_active_tz())
