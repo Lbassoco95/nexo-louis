@@ -17,7 +17,7 @@ from pathlib import Path
 DB = os.environ.get("DOF_DB_PATH", "/opt/openclaw/legal/dof/biblioteca_dof.db")
 CREDS = os.environ.get("TELEGRAM_CREDS", "/opt/openclaw/credentials/telegram.env")
 DOCS_DIR = Path(os.environ.get("DOF_DOCS_DIR", "/opt/openclaw/docs/dof"))
-LOUIS_DOMAIN = os.environ.get("LOUIS_DOMAIN", "")
+DONNA_DOMAIN = os.environ.get("DONNA_DOMAIN", "")
 URL = "https://www.dof.gob.mx/nota_detalle.php?codigo={cod}&fecha={f}"
 MES = ["", "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
        "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
@@ -135,8 +135,8 @@ def save_html_public(content: bytes, fname: str) -> str:
     except Exception as e:
         print(f"WARN: no guardé HTML en disco: {e}", file=sys.stderr)
         return ""
-    if LOUIS_DOMAIN:
-        return f"https://{LOUIS_DOMAIN}/docs/dof/{fname}"
+    if DONNA_DOMAIN:
+        return f"https://{DONNA_DOMAIN}/docs/dof/{fname}"
     return ""
 
 

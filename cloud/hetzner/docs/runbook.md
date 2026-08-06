@@ -96,7 +96,7 @@ launchctl load ~/Library/LaunchAgents/ai.kawiil.louissync.plist
 
 Forzar un push manual:
 ```bash
-LOUIS_REMOTE_HOST=louis.kawiil.mx \
+LOUIS_REMOTE_HOST=donna.kawiil.mx \
 LOUIS_REMOTE_USER=polo \
 LOUIS_SSH_KEY=~/.ssh/louis_sync \
   bash ~/Documents/Claude/Projects/Yoltik\ Desarrollos/yoltik-ai-setup/cloud/hetzner/sync/mac-push.sh
@@ -128,7 +128,7 @@ docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile --force
 
 Ver fecha del cert:
 ```bash
-echo | openssl s_client -connect louis.kawiil.mx:443 -servername louis.kawiil.mx 2>/dev/null \
+echo | openssl s_client -connect donna.kawiil.mx:443 -servername donna.kawiil.mx 2>/dev/null \
   | openssl x509 -noout -dates
 ```
 
@@ -166,9 +166,9 @@ Para volver a encender: `sudo ./deploy.sh --skip-bootstrap`.
 Si quieres que solo tu identidad de Cloudflare pueda abrir la UI de OpenClaw,
 sin exponerla al mundo:
 
-1. En Cloudflare DNS → louis.kawiil.mx → "Proxied" (nube naranja).
+1. En Cloudflare DNS → donna.kawiil.mx → "Proxied" (nube naranja).
 2. Cloudflare Zero Trust → Applications → Add → Self-hosted.
-3. Application domain: `louis.kawiil.mx`.
+3. Application domain: `donna.kawiil.mx`.
 4. Policy: require email = `lbassoco@kawiil.mx`.
 5. Caddy queda igual; Cloudflare hace el gate antes de llegar al VPS.
 

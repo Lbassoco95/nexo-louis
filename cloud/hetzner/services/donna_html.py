@@ -223,7 +223,7 @@ def render_page(titulo: str, agente: str, body_html: str, *,
     esc = _html.escape
     fecha = _dt.datetime.now().strftime("%d/%m/%Y %H:%M")
 
-    chat_url = _os.environ.get("CHAT_ENDPOINT", "https://louis.kawiil.mx/v1/chat/completions")
+    chat_url = _os.environ.get("CHAT_ENDPOINT", "https://donna.kawiil.mx/v1/chat/completions")
     chat_token = _os.environ.get("OPENCLAW_GATEWAY_TOKEN", "")
     ctx_json = _json.dumps((ctx_md or "")[:4000])
     script_js = (f'const CHAT_URL={_json.dumps(chat_url)};'

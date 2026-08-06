@@ -29,7 +29,7 @@ MES = ["", "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
        "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 TZ = dt.timezone(dt.timedelta(hours=-6))  # CDMX
 
-CHAT_URL = os.environ.get("CHAT_ENDPOINT", "https://louis.kawiil.mx/v1/chat/completions")
+CHAT_URL = os.environ.get("CHAT_ENDPOINT", "https://donna.kawiil.mx/v1/chat/completions")
 CHAT_TOKEN = os.environ.get("OPENCLAW_GATEWAY_TOKEN", "")
 
 # ── Marca Kawiil ──────────────────────────────────────────────────────────
@@ -893,7 +893,7 @@ def main():
                f"<b>{len(eventos)}</b> eventos · <b>{len(pend)}</b> pendientes{av_txt}")
     import json as _json
     safari_btn = _json.dumps({"inline_keyboard": [[
-        {"text": "📱 Abrir dashboard interactivo →", "url": "https://louis.kawiil.mx/briefing"}
+        {"text": "📱 Abrir dashboard interactivo →", "url": "https://donna.kawiil.mx/briefing"}
     ]]})
     fname = f"Briefing_{fecha_obj.isoformat().replace('-', '')}.html"
     ok = send_doc(build_html(eventos, pend, fecha_obj, rango, err, avances), fname, caption, reply_markup=safari_btn)

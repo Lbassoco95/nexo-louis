@@ -59,7 +59,7 @@ cd ~/Documents/Claude/Projects/Yoltik\ Desarrollos/yoltik-ai-setup/cloud/hetzner
 cat > /tmp/louis-env-draft <<EOF
 # Generado $(date -Iseconds) — copia a /opt/louis/.env en Hetzner
 
-LOUIS_DOMAIN=louis.kawiil.mx
+DONNA_DOMAIN=donna.kawiil.mx
 AGENTS_DOMAIN=agents.kawiil.mx
 ACME_EMAIL=lbassoco@kawiil.mx
 SYSTEM_USER=polo

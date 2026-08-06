@@ -11,7 +11,7 @@
 #
 # Uso:
 #   ./mac-install.sh LOUIS_REMOTE_HOST [SYSTEM_USER]
-#   ./mac-install.sh louis.kawiil.mx polo
+#   ./mac-install.sh donna.kawiil.mx polo
 
 set -euo pipefail
 
@@ -20,7 +20,7 @@ REMOTE_USER="${2:-polo}"
 
 if [[ -z "$REMOTE_HOST" ]]; then
   echo "Uso: $0 LOUIS_REMOTE_HOST [SYSTEM_USER]"
-  echo "Ej:   $0 louis.kawiil.mx polo"
+  echo "Ej:   $0 donna.kawiil.mx polo"
   exit 1
 fi
 

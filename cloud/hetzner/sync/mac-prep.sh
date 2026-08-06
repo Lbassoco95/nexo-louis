@@ -3,9 +3,9 @@
 # ~/.openclaw/credentials/*.env y prepara el push al VPS.
 #
 # Uso:
-#   ./mac-prep.sh HETZNER_IP [LOUIS_DOMAIN] [AGENTS_DOMAIN]
+#   ./mac-prep.sh HETZNER_IP [DONNA_DOMAIN] [AGENTS_DOMAIN]
 #   ./mac-prep.sh 91.99.123.45
-#   ./mac-prep.sh 91.99.123.45 louis.kawiil.mx agents.kawiil.mx
+#   ./mac-prep.sh 91.99.123.45 donna.kawiil.mx agents.kawiil.mx
 #
 # Salida:
 #   /tmp/louis.env       — listo para scp al VPS como /opt/louis/.env
@@ -18,11 +18,11 @@
 set -uo pipefail
 
 HETZNER_IP="${1:-}"
-LOUIS_DOMAIN="${2:-louis.kawiil.mx}"
+DONNA_DOMAIN="${2:-donna.kawiil.mx}"
 AGENTS_DOMAIN="${3:-agents.kawiil.mx}"
 
 if [[ -z "$HETZNER_IP" ]]; then
-  echo "Uso: $0 HETZNER_IP [LOUIS_DOMAIN] [AGENTS_DOMAIN]"
+  echo "Uso: $0 HETZNER_IP [DONNA_DOMAIN] [AGENTS_DOMAIN]"
   echo "Ej:   $0 91.99.123.45"
   exit 1
 fi
@@ -110,7 +110,7 @@ emit() {
   echo "# Generado por mac-prep.sh el $(date -Iseconds)"
   echo "# Destino: /opt/louis/.env en $HETZNER_IP"
   echo ""
-  emit LOUIS_DOMAIN              "$LOUIS_DOMAIN"
+  emit DONNA_DOMAIN              "$DONNA_DOMAIN"
   emit AGENTS_DOMAIN             "$AGENTS_DOMAIN"
   emit ACME_EMAIL                "lbassoco@kawiil.mx"
   emit SYSTEM_USER               "polo"

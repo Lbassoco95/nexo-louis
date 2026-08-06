@@ -12,7 +12,7 @@ services:
       - /opt/louis-data/caddy/data:/data
       - /opt/louis-data/caddy/config:/config
     environment:
-      LOUIS_DOMAIN: ${LOUIS_DOMAIN}
+      DONNA_DOMAIN: ${DONNA_DOMAIN}
       AGENTS_DOMAIN: ${AGENTS_DOMAIN}
       CEREBRO_DOMAIN: ${CEREBRO_DOMAIN:-cerebro.kawiil.mx}
       CEREBRO_PORT: ${CEREBRO_PORT:-4040}

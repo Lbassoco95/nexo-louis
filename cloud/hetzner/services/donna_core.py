@@ -2248,7 +2248,7 @@ def build_cierre_html_data():
     caption = (f"🌆 <b>Cierre del día</b> — {fecha_obj.strftime('%d/%m/%Y')}\n"
                f"<b>{len(pendientes)}</b> pendientes · <b>{len(kc_stalled)}</b> sin avance en kawiil")
     safari_btn = _json.dumps({"inline_keyboard": [[
-        {"text": "📱 Abrir resumen interactivo →", "url": "https://louis.kawiil.mx/cierre"}
+        {"text": "📱 Abrir resumen interactivo →", "url": "https://donna.kawiil.mx/cierre"}
     ]]})
     return html_bytes, fname, caption, safari_btn
 
@@ -2838,7 +2838,7 @@ def build_weekly_review_html_data():
                f"<b>{cerrados}</b> cerrados · <b>{abiertos}</b> abiertos · "
                f"<b>{len(estancados)}</b> estancados")
     safari_btn = _json.dumps({"inline_keyboard": [[
-        {"text": "📱 Abrir review interactiva →", "url": "https://louis.kawiil.mx/review"}
+        {"text": "📱 Abrir review interactiva →", "url": "https://donna.kawiil.mx/review"}
     ]]})
     return html_bytes, fname, caption, safari_btn
 
@@ -3148,7 +3148,7 @@ def build_system_health_report_data():
                f"<b>{n_issues}</b> issues · "
                f"<b>4</b> agentes de revisión")
     safari_btn = _json.dumps({"inline_keyboard": [[
-        {"text": "📱 Ver informe completo →", "url": "https://louis.kawiil.mx/sistema"}
+        {"text": "📱 Ver informe completo →", "url": "https://donna.kawiil.mx/sistema"}
     ]]})
     return html_bytes, fname, caption, safari_btn
 

@@ -14,7 +14,7 @@
 #
 # Uso:
 #   ./mac-update-bridges.sh                       # default 204.168.131.21
-#   ./mac-update-bridges.sh louis.kawiil.mx       # con dominio o IP
+#   ./mac-update-bridges.sh donna.kawiil.mx       # con dominio o IP
 
 set -euo pipefail
 

@@ -1,7 +1,7 @@
-# Caddyfile — reverse proxy con auto-TLS para Louis
+# Caddyfile — reverse proxy con auto-TLS para Donna
 #
 # Caddy 2 hace ACME (Let's Encrypt) automáticamente. Solo asegúrate que:
-#  - LOUIS_DOMAIN y AGENTS_DOMAIN apunten (A record) a la IP del VPS
+#  - DONNA_DOMAIN y AGENTS_DOMAIN apunten (A record) a la IP del VPS
 #  - El puerto 80 esté abierto (lo está por ufw)
 #  - El email de contacto es correcto (mostrado en certs y notificaciones LE)
 
@@ -10,8 +10,8 @@
     # Logs en JSON van al stderr del container; docker compose logs los captura.
 }
 
-# ── Louis (OpenClaw) ────────────────────────────────────────
-{$LOUIS_DOMAIN} {
+# ── Donna (OpenClaw) ────────────────────────────────────────
+{$DONNA_DOMAIN} {
     encode zstd gzip
 
     # Headers de seguridad básicos

@@ -12,7 +12,7 @@ empujando memoria (`AGENDA.md`, prompts, recuerdos) hacia el cloud cada 5 minuto
                           ▼
                 ┌──────────────────┐
                 │  Caddy (host:443)│  ← auto-TLS Let's Encrypt
-                │  louis.kawiil.mx │
+                │  donna.kawiil.mx │
                 │  agents.kawiil.mx│
                 └────────┬─────────┘
                          │
@@ -85,7 +85,7 @@ Una vez Donna está vivo en Hetzner, en tu **Mac** corres:
 
 ```bash
 cd ~/Documents/Claude/Projects/Yoltik\ Desarrollos/yoltik-ai-setup/cloud/hetzner/sync
-./mac-install.sh louis.kawiil.mx polo
+./mac-install.sh donna.kawiil.mx polo
 ```
 
 Eso registra un `launchd` job que cada 5 minutos empuja:

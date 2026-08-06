@@ -141,7 +141,7 @@ def build_html_doc(stats: dict, fecha: str) -> bytes:
     """Genera HTML interactivo con barras de progreso SJF/DOF y chat widget."""
     import json as _json
     AZUL, MARINO = "#1a6ef5", "#0a1a8c"
-    chat_url = os.environ.get("CHAT_ENDPOINT", "https://louis.kawiil.mx/v1/chat/completions")
+    chat_url = os.environ.get("CHAT_ENDPOINT", "https://donna.kawiil.mx/v1/chat/completions")
     chat_token = os.environ.get("OPENCLAW_GATEWAY_TOKEN", "")
 
     sjf_pct = stats.get("sjf_pct", 0.0)

@@ -124,7 +124,7 @@ log "Generando $ENV_OUT (consumido por openclaw.service Y telegram-bridge.servic
   echo "KAWIIL_AGENTS_URL=http://127.0.0.1:8000"
   [[ -n "${KAWIIL_DISPATCH_TOKEN:-}" ]]   && echo "KAWIIL_DISPATCH_TOKEN=${KAWIIL_DISPATCH_TOKEN}"
   [[ -n "${DEEPSEEK_API_KEY:-}" ]]        && echo "DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}"
-  [[ -n "${LOUIS_DOMAIN:-}" ]]            && echo "LOUIS_DOMAIN=${LOUIS_DOMAIN}"
+  [[ -n "${DONNA_DOMAIN:-}" ]]            && echo "DONNA_DOMAIN=${DONNA_DOMAIN}"
 } > "$ENV_OUT"
 chmod 600 "$ENV_OUT"
 chown "$SYSTEM_USER":"$SYSTEM_USER" "$ENV_OUT"

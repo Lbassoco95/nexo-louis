@@ -38,7 +38,7 @@ require_env() {
   # shellcheck disable=SC1091
   source .env
   set +a
-  for var in LOUIS_DOMAIN AGENTS_DOMAIN ACME_EMAIL SYSTEM_USER ANTHROPIC_API_KEY; do
+  for var in DONNA_DOMAIN AGENTS_DOMAIN ACME_EMAIL SYSTEM_USER ANTHROPIC_API_KEY; do
     [[ -n "${!var:-}" ]] || fail ".env: variable $var está vacía"
   done
 }
@@ -229,12 +229,12 @@ else
   warn "slack-bridge.py aún no copiado al seed — sin arrancar"
 fi
 
-# Gateway HTTP de Donna — la cara de louis.kawiil.mx (Caddy → 127.0.0.1:3000).
+# Gateway HTTP de Donna — la cara de donna.kawiil.mx (Caddy → 127.0.0.1:3000).
 # Reemplaza al binario oficial de OpenClaw (openclaw.ai responde 403).
 if [[ -f /opt/openclaw/scripts/openclaw_gateway.py ]]; then
   systemctl enable --now openclaw-gateway
   if systemctl is-active --quiet openclaw-gateway; then
-    ok "openclaw-gateway activo (louis.kawiil.mx → :${OPENCLAW_PORT:-3000})"
+    ok "openclaw-gateway activo (donna.kawiil.mx → :${OPENCLAW_PORT:-3000})"
   else
     warn "openclaw-gateway no levantó — journalctl -u openclaw-gateway -n 50"
   fi
@@ -243,7 +243,7 @@ if [[ -f /opt/openclaw/scripts/openclaw_gateway.py ]]; then
   grep -q '^OPENCLAW_GATEWAY_TOKEN=' "$ENV_OUT" 2>/dev/null \
     || warn "openclaw-gateway SIN token — protégelo con Cloudflare Access antes de exponer DNS"
 else
-  warn "openclaw_gateway.py no copiado — louis.kawiil.mx devolverá 502"
+  warn "openclaw_gateway.py no copiado — donna.kawiil.mx devolverá 502"
 fi
 
 # Scheduler — motor de tareas repetitivas (recordatorios recurrentes + briefing matutino).
@@ -325,7 +325,7 @@ echo ""
 ok "Deploy completo."
 echo ""
 echo "Próximos pasos:"
-echo "  1. Apunta DNS de $LOUIS_DOMAIN y $AGENTS_DOMAIN a $(hostname -I | awk '{print $1}')"
+echo "  1. Apunta DNS de $DONNA_DOMAIN y $AGENTS_DOMAIN a $(hostname -I | awk '{print $1}')"
 echo "  2. Espera ~60s a que Caddy obtenga el certificado TLS"
 echo "  3. Corre: ./verify.sh"
-echo "  4. Desde tu Mac: cd .../yoltik-ai-setup/cloud/hetzner/sync && ./mac-install.sh $LOUIS_DOMAIN $SYSTEM_USER"
+echo "  4. Desde tu Mac: cd .../yoltik-ai-setup/cloud/hetzner/sync && ./mac-install.sh $DONNA_DOMAIN $SYSTEM_USER"

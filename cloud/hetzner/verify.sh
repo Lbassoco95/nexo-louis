@@ -92,11 +92,11 @@ for port in 80 443; do
 done
 
 # 9) TLS público (si DNS ya propagó)
-if [[ -n "${LOUIS_DOMAIN:-}" ]]; then
-  if curl -fsS -m 10 -I "https://${LOUIS_DOMAIN}" 2>/dev/null | head -1 | grep -qE "HTTP/[12]"; then
-    ok "https://${LOUIS_DOMAIN} responde"
+if [[ -n "${DONNA_DOMAIN:-}" ]]; then
+  if curl -fsS -m 10 -I "https://${DONNA_DOMAIN}" 2>/dev/null | head -1 | grep -qE "HTTP/[12]"; then
+    ok "https://${DONNA_DOMAIN} responde"
   else
-    warn "https://${LOUIS_DOMAIN} aún no responde (DNS o ACME en curso)"
+    warn "https://${DONNA_DOMAIN} aún no responde (DNS o ACME en curso)"
   fi
 fi
 

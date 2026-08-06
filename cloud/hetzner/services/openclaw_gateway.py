@@ -10,7 +10,7 @@ delgada que envuelve `donna_core` y expone tres rutas:
   POST /v1/chat/completions        → endpoint compatible con OpenAI (usa donna_core)
   POST /v1/tools/{name}            → ejecutar tool directamente (debug)
 
-Diseñado para correr en 127.0.0.1:3000 detrás de Caddy en louis.kawiil.mx.
+Diseñado para correr en 127.0.0.1:3000 detrás de Caddy en donna.kawiil.mx.
 
 Pruebas rápidas (en el VPS):
   curl -s http://127.0.0.1:3000/v1/status | jq '.agents_count,.models.ollama'
