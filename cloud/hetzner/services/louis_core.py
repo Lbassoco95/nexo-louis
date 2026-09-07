@@ -41,7 +41,17 @@ ANTHROPIC_ENV_FILE = HOME_OC / ".env"
 # Cada línea es un evento JSON: {ts, evento, agente, modelo, parent, detalle}.
 AGENT_ACTIVITY_FILE = HOME_OC / "logs" / "agent-activity.jsonl"
 
-# ── Cerebro Kawiil — almacén compartido Cowork ↔ Louis ──────────────────
+# ── Identidad del asistente ──────────────────────────────────────────────
+# Nombre de marca con el que Donna se presenta y firma lo que produce (antes
+# "Louis"). Los NOMBRES DE ARCHIVO, servicios systemd y rutas siguen siendo
+# louis_core.py / telegram-bridge.service / _Louis-Generados a propósito:
+# renombrarlos rompería los units, los logs y el sync a la Mac.
+# El nombre visible en Telegram (el título del chat) se cambia en @BotFather
+# (/setname), no aquí.
+ASSISTANT_NAME = "Donna"
+ASSISTANT_NAME_LEGACY = "Louis"
+
+# ── Cerebro Kawiil — almacén compartido Cowork ↔ Donna ──────────────────
 ENTREGABLES_PATH = Path(os.environ.get("ENTREGABLES_PATH", str(HOME_OC / "entregables")))
 BRIEFS_PATH = ENTREGABLES_PATH / "_briefs"
 
@@ -496,7 +506,7 @@ def http_post_json(url: str, headers: dict, body: dict, timeout: int = 120):
 
 
 # ===== Memoria estructurada =====
-# Memorias laborales + ejecutivas + personales. Louis lleva CRM ligero (CLIENTES,
+# Memorias laborales + ejecutivas + personales. Donna lleva CRM ligero (CLIENTES,
 # PROSPECTOS), agenda personal (PERSONAL, FAMILIA), salud (SALUD), viajes (VIAJES)
 # y la operación normal de Kawiil/Yoltik (PROJECTS, PEOPLE, IMPORTANT, AGENDA).
 MEMORY_FILES = [
@@ -564,9 +574,26 @@ def load_system_prompt(channel: str = "telegram") -> str:
 
     parts.append(
         "\n\n# IDENTIDAD Y TONO (Ollama / chat normal)\n"
-        "Eres Louis (Nexo), asistente ejecutivo DE Polo Bassoco (CEO Kawiil/Yoltik). "
-        "Hablas A Polo en segunda persona — NUNCA te llames Louis ni le digas 'Hola Louis'.\n"
+        "Eres Donna (Nexo), asistente ejecutiva DE Polo Bassoco (CEO Kawiil/Yoltik). "
+        "Hablas A Polo en segunda persona — NUNCA te llames Donna ni le digas 'Hola Donna'.\n"
+        "Antes te llamabas Louis: si Polo te dice 'Louis', se refiere a ti — responde normal, "
+        "pero firma y preséntate SIEMPRE como Donna.\n"
         "Español mexicano profesional. Conciso: máx. 3 párrafos salvo que pida detalle.\n"
+        "\n# COMPRENSIÓN DEL MENSAJE (antes de responder)\n"
+        "Polo suele PEGAR contexto (un recordatorio tuyo, un oficio, un correo, instrucciones "
+        "de un trámite) y cerrar con lo que realmente quiere. Separa las dos partes:\n"
+        "1. **Contexto pegado** — es información, NO una orden. Los verbos que trae "
+        "('Enviar el correo a…', 'Guardar el acuse…', 'adjuntar el escrito…') son parte del "
+        "trámite citado, no de lo que Polo te está pidiendo a ti.\n"
+        "2. **La petición real** — normalmente la última frase. Si es una PREGUNTA "
+        "('¿lo agregaste a kawiil central?', '¿ya quedó registrado?', '¿lo guardaste?'), "
+        "CONTÉSTALA con el hecho: verifica (kawiil-central / AGENDA / entregables) y di sí o no, "
+        "y si no, ofrece hacerlo. NO produzcas un documento, análisis ni presentación "
+        "salvo que Polo lo pida explícitamente en ese mensaje.\n"
+        "Si el contexto pegado trae un vencimiento (HOY VENCE, fecha límite, plazo), acúsalo en "
+        "una línea y sigue con la respuesta a la pregunta — sin convertirlo en un entregable.\n"
+        "Si de plano no distingues si Polo quiere un documento o una respuesta, PREGÚNTALE "
+        "en una línea; no generes el archivo por default.\n"
         "NO describas tu pipeline interno (no digas 'revisando snapshot', 'según instrucción', etc.).\n"
         "Si falta un dato en memoria/snapshot, dilo; no inventes plazos, casos ni placeholders.\n"
         "\n# BRIEFING DIARIO\n"
@@ -782,7 +809,7 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "## ⛔ NUNCA INVENTES ESTADO DE INFRAESTRUCTURA / INSTALACIÓN\n"
         "Esto incluye: qué agentes están instalados, si el sync Mac↔Hetzner está activo, qué "
         "servicios corren, qué repos/deploy keys existen, qué falta por configurar. JAMÁS generes "
-        "un 'Estado actual de Louis' ni una lista de 'pendientes de infraestructura' de memoria o "
+        "un 'Estado actual de Donna' ni una lista de 'pendientes de infraestructura' de memoria o "
         "por suposición. Esos reportes plausibles pero falsos rompen la confianza (ej: decir 'los "
         "agentes no están instalados' cuando SÍ lo están). Antes de afirmar el estado de algo:\n"
         "- ¿Qué agentes tengo? → `listar_agentes` (lee los .md REALES instalados).\n"
@@ -1204,7 +1231,7 @@ def build_operational_snapshot(compact: bool = True) -> str:
 
 # ═══════════════════════════════════════════════════════════════════════════
 # CEREBRO KAWIIL — helpers de lectura directa del almacén compartido
-# Louis lee del disco local (0 tokens). Cowork escribe vía MCP.
+# Donna lee del disco local (0 tokens). Cowork escribe vía MCP.
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _cerebro_parsear_fm(path: Path) -> dict:
@@ -1303,7 +1330,7 @@ def _cerebro_crear_brief(tarea: str, cliente: str, insumos: str = "",
 
     content = (
         f"---\ntipo: brief_dispatch\ntarea: {tarea}\ncliente: {cliente}\n"
-        f"urgencia: {urgencia}\nestado: pendiente\npreparado_por: Louis\n"
+        f"urgencia: {urgencia}\nestado: pendiente\npreparado_por: {ASSISTANT_NAME}\n"
         f"fecha_creacion: {fecha} {ahora.strftime('%H:%M')}\n---\n\n"
         f"# Brief: {tarea}\n\n"
         f"Cliente: {cliente} | Urgencia: {urgencia}\n\n"
@@ -1344,9 +1371,9 @@ _ESTADOS_ENTREGABLE = ("borrador", "listo", "en_vobo", "aprobado", "archivado")
 
 def _entregable_registrar(titulo: str, cliente: str = "", contenido: str = "",
                           tipo: str = "documento", estado: str = "borrador",
-                          preparado_por: str = "Louis") -> str:
+                          preparado_por: str = ASSISTANT_NAME) -> str:
     """Escribe un entregable a ENTREGABLES_PATH con frontmatter. Cierra el ciclo:
-    el trabajo de un agente (o de Louis) queda como entregable y aparece en el
+    el trabajo de un agente (o de Donna) queda como entregable y aparece en el
     tablero/seguimiento. estado por defecto 'borrador' (para tu Vo.Bo.)."""
     titulo = (titulo or "").strip()
     if not titulo:
@@ -1399,7 +1426,7 @@ def _entregable_actualizar_estado(nombre: str, nuevo_estado: str) -> str:
 
 def _contexto_cliente(cliente: str, max_chars: int = 4000) -> str:
     """Reúne lo que Cerebro/memoria YA saben de un cliente (entregables, AGENDA,
-    CLIENTES/PEOPLE/IMPORTANT) para inyectarlo al agente — así Louis se mantiene
+    CLIENTES/PEOPLE/IMPORTANT) para inyectarlo al agente — así Donna se mantiene
     actualizado de lo que se trabaja (incl. lo de Cowork) sin que Polo reenvíe todo."""
     cliente = (cliente or "").strip()
     if not cliente:
@@ -1434,7 +1461,7 @@ def _contexto_cliente(cliente: str, max_chars: int = 4000) -> str:
 
 
 def _encargar_a_agente(agente: str, tarea: str, cliente: str = "", contexto: str = "") -> str:
-    """Fase 5 — Orquestación. Louis canaliza: invoca al agente, GUARDA su resultado
+    """Fase 5 — Orquestación. Donna canaliza: invoca al agente, GUARDA su resultado
     como entregable BORRADOR (para tu Vo.Bo.) y te avisa. Cierra el ciclo
     info→agente→entregable→seguimiento. No finaliza solo (queda en borrador).
     Inyecta automáticamente el contexto del cliente (Cerebro/memoria)."""
@@ -1468,7 +1495,7 @@ def _cerebro_sync_agenda() -> str:
     """
     Compara los pendientes abiertos de AGENDA.md con el estado real en el
     cerebro. Devuelve las discrepancias encontradas y encola una notificación
-    si hay algo que Louis reportaba como pendiente pero ya está listo.
+    si hay algo que Donna reportaba como pendiente pero ya está listo.
     """
     agenda_f = SPACE / "AGENDA.md"
     if not agenda_f.exists():
@@ -1517,7 +1544,7 @@ def _cerebro_sync_agenda() -> str:
     try:
         _encolar_notificacion(
             f"🔄 *Cerebro Kawiil — discrepancias detectadas*\n\n{reporte[:800]}\n\n"
-            f"Louis puede actualizar AGENDA con `agenda_marcar_hecho()` si ya está listo.",
+            f"Donna puede actualizar AGENDA con `agenda_marcar_hecho()` si ya está listo.",
             canal="telegram",
         )
     except Exception:
@@ -1997,14 +2024,14 @@ def sanitize_ollama_response(text: str) -> str:
     if not out:
         out = text.strip()
     out = re.sub(
-        r"^(¡Hola|Hola),?\s+Louis[!,.]?\s*",
+        r"^(¡Hola|Hola),?\s+(Donna|Louis)[!,.]?\s*",
         "¡Hola Polo! ",
         out,
         count=1,
         flags=re.IGNORECASE,
     )
     out = re.sub(
-        r"¿Qué prefieres hacer primero,?\s+Louis\??",
+        r"¿Qué prefieres hacer primero,?\s+(Donna|Louis)\??",
         "¿Por dónde empezamos?",
         out,
         flags=re.IGNORECASE,
@@ -2118,9 +2145,13 @@ _DOC_TYPE_RE = re.compile(
     r"\b(pdf|html|interactiv\w+|p[aá]gina\s+web|micrositio|pptx|powerpoint|presentaci[oó]n|"
     r"deck|excel|xlsx|hoja\s+de\s+c[aá]lculo|"
     r"documento|dictamen|informe|reporte|an[aá]lisis|acta\s+constitutiva)\b", re.IGNORECASE)
+# Los imperativos con pronombre enclítico llevan acento ("prepárame", "ármame",
+# "conviérteme"), así que cada verbo acepta su variante acentuada.
 _DOC_VERB_RE = re.compile(
-    r"\b(gen[eé]ra\w*|elabora\w*|prepara\w*|arma\w*|haz\w*|hag\w*|conviert\w*|crea\w*|"
-    r"entr[eé]ga\w*|p[aá]sa\w*|m[aá]nda\w*|env[ií]a\w*|comp[aá]rt\w*|dame|necesito|quiero)\b",
+    r"\b(gen[eé]ra\w*|el[aá]bora\w*|prep[aá]ra\w*|[aá]rma\w*|haz\w*|hag\w*|"
+    r"convi[eé]rt\w*|cr[eé]a\w*|redact\w*|"
+    r"entr[eé]ga\w*|p[aá]sa\w*|m[aá]nda\w*|env[ií]a\w*|comp[aá]rt\w*|"
+    r"dame|d[eé]jame|necesito|quiero|ocupo)\b",
     re.IGNORECASE)
 # Señales de que NO es un pedido de documento sino una consulta de estado/conteo
 # (ej: "cuántas tesis con su PDF", "números totales del DOF", "cómo vamos").
@@ -2129,6 +2160,48 @@ _DOC_NEGATIVE_RE = re.compile(
     r"\b(cu[aá]nt\w*|n[uú]mero?s?|total\w*|c[oó]mo\s+(vamos|va|van|est[aá]\w*)|"
     r"estad[oí]stic\w*|estado\s+(del?|de\s+la)|descargad\w*|indexad\w*|organizad\w*|"
     r"avance|conteo|resumen\s+de\s+(estado|n[uú]meros))\b",
+    re.IGNORECASE)
+
+# ── Comprensión: distinguir PEDIDO de documento vs. PREGUNTA / contexto pegado ──
+# Polo suele pegar un recordatorio, un oficio o un correo COMPLETO y cerrar con una
+# pregunta ("…lo agregaste a kawiil central para que llevemos el seguimiento?").
+# Ese texto pegado trae palabras que parecen pedido de documento ("enviar",
+# "presentación", "escrito") aunque son parte del CONTEXTO citado, no una orden.
+# Estas tres reglas evitan que la pregunta se convierta en un PDF/PPTX basura.
+
+# 1) Sentidos NO documentales de palabras que sí son tipos de documento. Se borran
+#    del mensaje ANTES de buscar el tipo. "constancia de presentación en tiempo"
+#    (un trámite legal) ya no se lee como "hazme una presentación".
+_DOC_TYPE_SENTIDO_LEGAL_RE = re.compile(
+    r"\b(constancia|acuse|fecha|plazo|t[eé]rmino|d[ií]a|hora|forma|v[ií]a|prueba|"
+    r"comprobante|sello)\s+(de\s+)?presentaci[oó]n\w*"
+    r"|\bpresentaci[oó]n\s+(en\s+tiempo|extempor[aá]nea|del?\s+(escrito|aviso|"
+    r"promoci[oó]n|demanda|informe\s+legal|documentaci[oó]n|solicitud|recurso))"
+    r"|\bde\s+presentaci[oó]n\s+en\s+tiempo\b",
+    re.IGNORECASE)
+
+# 2) Preguntas de SEGUIMIENTO dirigidas al asistente sobre algo que ya se hizo o se
+#    registró: "¿lo agregaste a kawiil central?", "¿ya lo guardaste?", "¿lo subiste?".
+#    Son preguntas que hay que CONTESTAR, no órdenes de producir un documento.
+#    Se prefiere el PASADO (inequívocamente estatus). Del presente solo se aceptan
+#    verbos de REGISTRO ("¿lo agregas a kawiil central?" = hazlo, no un documento);
+#    quedan fuera 'pones/metes/cargas/pasas' porque sí admiten "…en un PDF".
+_DOC_PREGUNTA_SEGUIMIENTO_RE = re.compile(
+    r"\b(lo|la|los|las|le|eso|esto|ya)\s+(lo\s+|la\s+|los\s+|las\s+|le\s+)?"
+    r"(agregaste|agregas|guardaste|guardas|registraste|registras|subiste|subes|"
+    r"anotaste|anotas|cargaste|metiste|pusiste|capturaste|"
+    r"diste\s+de\s+alta|checaste|revisaste|viste|tienes|tomaste\s+nota|"
+    r"mandaste|enviaste|hiciste|hicimos|qued[oó])\b"
+    r"|\bqu[eé]\s+(sabes|tienes|hay)\s+de\b"
+    r"|\b(est[aá]|qued[oó]|lo\s+tienes)\s+registrad\w*\b",
+    re.IGNORECASE)
+
+#    Válvula de escape: si Polo nombra un FORMATO explícito ("en PDF", "como word",
+#    "en powerpoint"), es un pedido de documento aunque venga en forma de pregunta
+#    ("¿me lo pasas en PDF?"). El guardia de preguntas no aplica en ese caso.
+_DOC_FORMATO_EXPLICITO_RE = re.compile(
+    r"\b(en|como)\s+(un\s+|una\s+|el\s+|la\s+)?"
+    r"(pdf|word|docx|pptx|power\s?point|excel|xlsx|html|deck)\b",
     re.IGNORECASE)
 
 # Señales de ACCIÓN YA REALIZADA (pasado/completado) — un REPORTE de estatus, no una
@@ -2144,12 +2217,64 @@ _DOC_DONE_RE = re.compile(
     re.IGNORECASE)
 
 
+# 3) Cercanía verbo↔tipo. Antes bastaba que el verbo y el tipo aparecieran EN
+#    CUALQUIER PARTE del mensaje: en un recordatorio pegado de 600 caracteres,
+#    "Enviar el correo…" (línea 2) y "…presentación en tiempo" (línea 8) se leían
+#    como "envíame una presentación". Ahora el verbo tiene que estar PEGADO al tipo.
+_DOC_PROXIMIDAD = 45
+
+
+def _doc_verbo_pegado_al_tipo(msg: str, ventana: int = _DOC_PROXIMIDAD) -> bool:
+    """True si algún verbo de pedido cae a menos de `ventana` caracteres de algún
+    tipo de documento ("hazme un informe", "necesito el PDF", "el deck me lo pasas").
+    Evita falsos positivos por coincidencias lejanas dentro de texto pegado."""
+    tipos = [m.span() for m in _DOC_TYPE_RE.finditer(msg)]
+    if not tipos:
+        return False
+    verbos = [m.span() for m in _DOC_VERB_RE.finditer(msg)]
+    if not verbos:
+        return False
+    for ti, tf in tipos:
+        for vi, vf in verbos:
+            if vi >= tf:
+                dist = vi - tf          # verbo después del tipo
+            elif vf <= ti:
+                dist = ti - vf          # verbo antes del tipo
+            else:
+                dist = 0                # se traslapan
+            if dist <= ventana:
+                return True
+    return False
+
+
+def _limpiar_sentidos_no_documentales(msg: str) -> str:
+    """Quita del mensaje las frases donde una palabra-tipo NO significa documento
+    (ej. 'constancia de presentación en tiempo' = trámite, no un PowerPoint)."""
+    return _DOC_TYPE_SENTIDO_LEGAL_RE.sub(" ", msg or "")
+
+
+def es_pregunta_de_seguimiento(user_message: str) -> bool:
+    """True si Polo está PREGUNTANDO por el estatus de algo (típicamente si ya quedó
+    registrado/guardado/enviado), no pidiendo trabajo nuevo. Requiere signo de
+    interrogación para no confundir una orden ('agrégalo a kawiil central') con una
+    pregunta ('¿lo agregaste a kawiil central?')."""
+    msg = (user_message or "").strip()
+    if not msg:
+        return False
+    if "?" not in msg and "¿" not in msg:
+        return False
+    if _DOC_FORMATO_EXPLICITO_RE.search(msg):
+        return False
+    return bool(_DOC_PREGUNTA_SEGUIMIENTO_RE.search(msg))
+
+
 def needs_doc_sonnet(user_message: str) -> bool:
     """True si Polo pide GENERAR un documento (PDF/PPTX/XLSX). Usa Sonnet — sigue
     instrucciones de tool-calling mucho mejor que Haiku para generar_documento.
-    Excluye consultas de estado/conteo (cuántas, números, descargadas) y REPORTES de
-    acción ya realizada (ya se envió/entregamos/se mandó), aunque mencionen 'PDF' o
-    'documento', porque ésos NO son pedidos de generar sino seguimiento/estatus."""
+    Excluye consultas de estado/conteo (cuántas, números, descargadas), REPORTES de
+    acción ya realizada (ya se envió/entregamos/se mandó) y PREGUNTAS de seguimiento
+    ('¿lo agregaste a kawiil central?'), aunque mencionen 'PDF' o 'documento',
+    porque ésos NO son pedidos de generar sino seguimiento/estatus."""
     if not user_message:
         return False
     msg = user_message.strip()
@@ -2159,7 +2284,11 @@ def needs_doc_sonnet(user_message: str) -> bool:
         return False
     if _DOC_DONE_RE.search(msg):
         return False
-    return bool(_DOC_TYPE_RE.search(msg) and _DOC_VERB_RE.search(msg))
+    # Pregunta de seguimiento → hay que CONTESTARLA, no generar un archivo.
+    if es_pregunta_de_seguimiento(msg):
+        return False
+    limpio = _limpiar_sentidos_no_documentales(msg)
+    return _doc_verbo_pegado_al_tipo(limpio)
 
 
 def needs_sonnet_auto(user_message: str) -> bool:
@@ -2201,7 +2330,7 @@ def _format_memory_tool_confirmations(tool_results: list[str]) -> str:
 
 
 # ===== Escritura determinística de memoria (sin Claude / sin créditos) =====
-# Permite que Louis "aprenda" aunque la cuenta Anthropic no tenga créditos: la
+# Permite que Donna "aprenda" aunque la cuenta Anthropic no tenga créditos: la
 # forma explícita "anota [en <archivo>]: <contenido>" se guarda directo con
 # append_to_memory, sin pasar por Sonnet. Es el carril de aprendizaje a prueba
 # de fallos — siempre disponible, gratis y local.
@@ -2554,7 +2683,7 @@ def _reason_briefing(snapshot: str) -> str | None:
         return None
     hoy = _fmt_dt_es(datetime.now(get_active_tz()))
     sys = (
-        "Eres Louis, asistente ejecutivo de Polo (CEO de Kawiil). Redacta su BRIEFING "
+        "Eres Donna, asistente ejecutiva de Polo (CEO de Kawiil). Redacta su BRIEFING "
         "matutino a partir de los datos de AGENDA/IMPORTANT/JOURNAL/CLIENTES de abajo. "
         "REGLAS: saluda en 1 línea; PRIORIZA lo crítico de hoy en máx. 5 viñetas, agrupando "
         "y descartando duplicados, ruido y entradas viejas; sé conciso y accionable; resalta "
@@ -2674,7 +2803,7 @@ TENANT_ENUM = ["kawiil", "yoltik"]
 TOOLS_DEFINITION = [
     {
         "name": "read_memory",
-        "description": "Lee un archivo de memoria de Louis (AGENDA.md, USER.md, LEARNINGS.md, JOURNAL.md, IMPORTANT.md, PROJECTS.md, PEOPLE.md).",
+        "description": "Lee un archivo de memoria de Donna (AGENDA.md, USER.md, LEARNINGS.md, JOURNAL.md, IMPORTANT.md, PROJECTS.md, PEOPLE.md).",
         "input_schema": {
             "type": "object",
             "properties": {"filename": {"type": "string", "enum": MEMORY_FILES + ["JOURNAL.md"]}},
@@ -2752,7 +2881,7 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "agendar_recordatorio",
-        "description": "Programa un recordatorio PROACTIVO que Louis envía al canal a la hora indicada. ÚSALO siempre que Polo diga 'recuérdame', 'avísame', 'en X minutos', 'mañana a las X', etc. IMPORTANTE: para tiempo RELATIVO ('en 12 minutos', 'en 2 horas') usa `en_minutos` (12, 120…) y el SERVIDOR calcula la hora real — NO calcules tú la hora absoluta (te equivocas con la hora). Usa `fecha_hora` SOLO para una fecha/hora específica futura.",
+        "description": "Programa un recordatorio PROACTIVO que Donna envía al canal a la hora indicada. ÚSALO siempre que Polo diga 'recuérdame', 'avísame', 'en X minutos', 'mañana a las X', etc. IMPORTANTE: para tiempo RELATIVO ('en 12 minutos', 'en 2 horas') usa `en_minutos` (12, 120…) y el SERVIDOR calcula la hora real — NO calcules tú la hora absoluta (te equivocas con la hora). Usa `fecha_hora` SOLO para una fecha/hora específica futura.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2795,7 +2924,7 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "corregir_nombre",
-        "description": "Registra una corrección PERMANENTE de nombre de cliente mal transcrito por voz (ej. 'Vez Motos' → 'Best Motos'). A partir de ese momento Louis corrige solo ese nombre en TODOS los recordatorios/notas nuevos. ÚSALO cuando Polo diga 'no es X, es Y' sobre un nombre que la transcripción equivoca seguido.",
+        "description": "Registra una corrección PERMANENTE de nombre de cliente mal transcrito por voz (ej. 'Vez Motos' → 'Best Motos'). A partir de ese momento Donna corrige solo ese nombre en TODOS los recordatorios/notas nuevos. ÚSALO cuando Polo diga 'no es X, es Y' sobre un nombre que la transcripción equivoca seguido.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2962,11 +3091,11 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "mac_wake_request",
-        "description": "Cuando la Mac está offline y Louis necesita que se prenda (ej: para correr scripts SJF, sync de Projects, etc.), evalúa último estado: si batería suficiente → manda Telegram a Polo pidiéndole que la prenda; si batería <10% o estado 'discharging' → manda mensaje 'conéctala al cargador'; si no hay heartbeat reciente → 'no he visto tu Mac, ¿está bien?'. NO intenta WoL automático (no estamos en la misma LAN).",
+        "description": "Cuando la Mac está offline y Donna necesita que se prenda (ej: para correr scripts SJF, sync de Projects, etc.), evalúa último estado: si batería suficiente → manda Telegram a Polo pidiéndole que la prenda; si batería <10% o estado 'discharging' → manda mensaje 'conéctala al cargador'; si no hay heartbeat reciente → 'no he visto tu Mac, ¿está bien?'. NO intenta WoL automático (no estamos en la misma LAN).",
         "input_schema": {
             "type": "object",
             "properties": {
-                "razon": {"type": "string", "description": "Por qué Louis necesita la Mac prendida. Ej: 'para correr backfill SJF', 'para sync de Projects'."},
+                "razon": {"type": "string", "description": "Por qué Donna necesita la Mac prendida. Ej: 'para correr backfill SJF', 'para sync de Projects'."},
             },
             "required": ["razon"],
         },
@@ -3018,7 +3147,7 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "hetzner_estado",
-        "description": "Lee estado/archivos REALES de Hetzner (el servidor de Louis). ÚSALO en vez de inventar cuando Polo pida revisar la cola de la Mac, resultados de comandos, logs, heartbeat o conteos legales. NUNCA fabriques estas salidas — llama esta tool. Opciones de `que`: cola_mac, resultados_mac, heartbeat, log_telegram, log_scheduler, legal_conteo. Sin `que` lista las opciones.",
+        "description": "Lee estado/archivos REALES de Hetzner (el servidor de Donna). ÚSALO en vez de inventar cuando Polo pida revisar la cola de la Mac, resultados de comandos, logs, heartbeat o conteos legales. NUNCA fabriques estas salidas — llama esta tool. Opciones de `que`: cola_mac, resultados_mac, heartbeat, log_telegram, log_scheduler, legal_conteo. Sin `que` lista las opciones.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -3177,7 +3306,7 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "kawiil_central_tablas",
-        "description": "Lista las tablas del schema public en la BD de kawiil-central (Supabase). Útil para descubrir el modelo de datos antes de operar (Louis no asume nombres, los descubre).",
+        "description": "Lista las tablas del schema public en la BD de kawiil-central (Supabase). Útil para descubrir el modelo de datos antes de operar (Donna no asume nombres, los descubre).",
         "input_schema": {"type": "object", "properties": {}},
     },
     {
@@ -3280,7 +3409,7 @@ TOOLS_DEFINITION = [
             "type": "object",
             "properties": {
                 "tarea_id": {"type": "string"},
-                "texto": {"type": "string", "description": "Texto del avance (Polo puede dictar lo que avanzó, Louis lo aterriza aquí)"},
+                "texto": {"type": "string", "description": "Texto del avance (Polo puede dictar lo que avanzó, Donna lo aterriza aquí)"},
                 "porcentaje": {"type": "integer", "description": "% de avance (opcional)"},
             },
             "required": ["tarea_id", "texto"],
@@ -3360,7 +3489,7 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "leer_mi_codigo",
-        "description": "Lee uno de los archivos del runtime de Louis (whitelist: louis_core.py, telegram-bridge.py, slack-bridge.py, scheduler.py, m365.py, m365/m365.py, import-legal-agents.sh). Úsalo ANTES de editar para ver el estado actual y poder hacer un match exacto.",
+        "description": "Lee uno de los archivos del runtime de Donna (whitelist: louis_core.py, telegram-bridge.py, slack-bridge.py, scheduler.py, m365.py, m365/m365.py, import-legal-agents.sh). Úsalo ANTES de editar para ver el estado actual y poder hacer un match exacto.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -3416,7 +3545,7 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "verificar_conexiones",
-        "description": "Verifica EN VIVO el estado de Louis: host, IP, servicios, credenciales, M365, Ollama. Usa cuando Polo pregunte por status, dónde estás, qué tienes conectado.",
+        "description": "Verifica EN VIVO el estado de Donna: host, IP, servicios, credenciales, M365, Ollama. Usa cuando Polo pregunte por status, dónde estás, qué tienes conectado.",
         "input_schema": {
             "type": "object",
             "properties": {"incluir_m365": {"type": "boolean", "default": True}},
@@ -3570,7 +3699,11 @@ TOOLS_DEFINITION = [
             "presentaciones, tablas. EL FORMATO POR DEFECTO ES HTML interactivo (el estándar de Kawiil: dashboard "
             "colapsable + buscador + chat embebido). SOLO usa otro formato si Polo lo pide explícitamente: "
             "'en word' → docx (editable); 'en pdf' → pdf; 'presentación/deck' → pptx; 'excel/tabla de datos' → xlsx. "
-            "El contenido debe ser markdown completo — encabezados con #, listas con -, tablas con |."
+            "El contenido debe ser markdown completo — encabezados con #, listas con -, tablas con |. "
+            "NO LA USES cuando Polo solo te PREGUNTA por el estatus de algo ('¿lo agregaste a kawiil "
+            "central?', '¿ya lo guardaste?', '¿lo registraste?') ni cuando te PEGA contexto (un "
+            "recordatorio, un oficio, un correo) para que lo tomes en cuenta: ahí contesta la pregunta "
+            "o registra lo que corresponda. Un documento se genera solo si Polo lo pide."
         ),
         "input_schema": {
             "type": "object",
@@ -3867,7 +4000,7 @@ TOOLS_DEFINITION = [
     {
         "name": "cerebro_listar",
         "description": (
-            "Lista los entregables del almacén compartido Cowork↔Louis. "
+            "Lista los entregables del almacén compartido Cowork↔Donna. "
             "Filtrar por estado (borrador/listo/en_vobo/aprobado/archivado) y/o cliente. "
             "Usar para saber qué ya se produjo en Cowork antes de reportar algo como pendiente."
         ),
@@ -3898,7 +4031,7 @@ TOOLS_DEFINITION = [
         "description": (
             "Crea un brief de dispatch en el cerebro para que Cowork produzca un entregable. "
             "Notifica a Polo por Telegram inmediatamente ('brief listo, ábrelo en Cowork'). "
-            "Usar cuando Louis identifica trabajo que debe delegarse a Cowork."
+            "Usar cuando Donna identifica trabajo que debe delegarse a Cowork."
         ),
         "input_schema": {
             "type": "object",
@@ -3915,7 +4048,7 @@ TOOLS_DEFINITION = [
     {
         "name": "encargar_a_agente",
         "description": (
-            "ORQUESTACIÓN: Louis canaliza trabajo a un agente kawiil-* y GUARDA su resultado "
+            "ORQUESTACIÓN: Donna canaliza trabajo a un agente kawiil-* y GUARDA su resultado "
             "como entregable BORRADOR en Cerebro (para Vo.Bo. de Polo), avisándole. Cierra el "
             "ciclo info→agente→entregable→seguimiento. Úsalo cuando una tarea le toca a un agente "
             "especializado (ej. kawiil-nelli compliance, kawiil-amatl contratos, kawiil-investigacion "
@@ -3970,7 +4103,7 @@ TOOLS_DEFINITION = [
         "name": "cerebro_sync_agenda",
         "description": (
             "Compara los pendientes abiertos de AGENDA.md con el estado real del cerebro. "
-            "Detecta lo que Louis reporta como 'pendiente' pero ya está 'listo' o 'aprobado' en Cowork. "
+            "Detecta lo que Donna reporta como 'pendiente' pero ya está 'listo' o 'aprobado' en Cowork. "
             "Notifica a Polo por Telegram si hay discrepancias. "
             "Usar en briefing matutino o cuando Polo pregunta por el estado de proyectos."
         ),
@@ -4080,7 +4213,7 @@ def _run_m365_tool(name: str, args: dict) -> str:
 
 
 def _verificar_conexiones(incluir_m365: bool = True) -> str:
-    out = ["=== Verificación EN VIVO de Louis ===\n"]
+    out = ["=== Verificación EN VIVO de Donna ===\n"]
     try:
         hostname = subprocess.run(["hostname"], capture_output=True, text=True, timeout=2).stdout.strip()
         out.append(f"Hostname: {hostname}")
@@ -5151,7 +5284,7 @@ def _slack_canales() -> str:
             ctype = "DM" if ch.get("is_im") else ("privado" if ch.get("is_private") else "público")
             miembro = "" if ch.get("is_member") or ch.get("is_im") else "  (no miembro)"
             rows.append(f"  {cid}  {name}  [{ctype}]{miembro}")
-        return f"Canales visibles para Louis ({len(rows)}):\n" + "\n".join(rows) if rows else "No hay canales."
+        return f"Canales visibles para Donna ({len(rows)}):\n" + "\n".join(rows) if rows else "No hay canales."
     except Exception as e:
         return f"ERROR al listar canales Slack: {e}"
 
@@ -5306,7 +5439,7 @@ def _queue_file(content: bytes, filename: str, caption: str = "") -> None:
 
 # ===== Proyectos (sync desde ~/Documents/Claude/Projects de la Mac) =====
 PROJECTS_DIR = HOME_OC / "projects"
-# Carpeta donde Louis guarda lo que genera (PDFs, informes). Se sincroniza de
+# Carpeta donde Donna guarda lo que genera (PDFs, informes). Se sincroniza de
 # regreso a la Mac. Va con prefijo "_" para distinguirse de los proyectos de Polo.
 GENERATED_DIR = PROJECTS_DIR / "_Louis-Generados"
 _PROJ_TEXT_EXT = {".md", ".markdown", ".txt", ".csv", ".json", ".rtf"}
@@ -5479,7 +5612,7 @@ def _break_long_tokens(text: str, max_len: int = 45) -> str:
     return " ".join(out)
 
 
-def _generar_pdf(titulo: str, contenido: str, agente: str = "Louis") -> bytes | None:
+def _generar_pdf(titulo: str, contenido: str, agente: str = ASSISTANT_NAME) -> bytes | None:
     """Genera un PDF a partir de contenido markdown. Retorna None si fpdf2 no está instalado."""
     try:
         from fpdf import FPDF
@@ -5591,7 +5724,7 @@ def _generar_pdf(titulo: str, contenido: str, agente: str = "Louis") -> bytes | 
     return bytes(pdf.output())
 
 
-def _generar_pptx(titulo: str, contenido: str, agente: str = "Louis") -> bytes | None:
+def _generar_pptx(titulo: str, contenido: str, agente: str = ASSISTANT_NAME) -> bytes | None:
     """Genera un PowerPoint (.pptx) desde markdown. Retorna None si python-pptx no está."""
     try:
         from pptx import Presentation
@@ -5697,7 +5830,7 @@ def _generar_xlsx(titulo: str, contenido: str) -> bytes | None:
     return buf.getvalue()
 
 
-def _generar_docx(titulo: str, contenido: str, agente: str = "Louis") -> bytes | None:
+def _generar_docx(titulo: str, contenido: str, agente: str = ASSISTANT_NAME) -> bytes | None:
     """Genera un Word (.docx) desde markdown (encabezados, negritas, tablas, listas).
     Retorna None si python-docx no está instalado."""
     try:
@@ -5712,7 +5845,7 @@ def _generar_docx(titulo: str, contenido: str, agente: str = "Louis") -> bytes |
     doc = Document()
     h = doc.add_heading(titulo[:120], level=0)
     sub = doc.add_paragraph()
-    run = sub.add_run(f"Elaborado por Louis · Kawiil — {agente} · {_dt.date.today().strftime('%d/%m/%Y')}")
+    run = sub.add_run(f"Elaborado por {ASSISTANT_NAME} · Kawiil — {agente} · {_dt.date.today().strftime('%d/%m/%Y')}")
     run.italic = True
     run.font.size = Pt(9)
     run.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
@@ -5793,7 +5926,7 @@ def _limpiar_contenido_doc(texto: str) -> str:
     return t.strip()
 
 
-def _generar_documento_tool(tipo: str, titulo: str, contenido: str, agente: str = "Louis") -> str:
+def _generar_documento_tool(tipo: str, titulo: str, contenido: str, agente: str = ASSISTANT_NAME) -> str:
     """Genera PDF/HTML/PPTX/XLSX en el servidor y lo encola para envío por Telegram."""
     import datetime as _dt
     tipo = tipo.lower().strip()
@@ -5831,7 +5964,9 @@ def _doc_tipo_de_mensaje(user_message: str) -> str:
     """Infiere el formato del documento pedido. Default = HTML interactivo
     (el estándar de Kawiil). Polo puede pedir otro formato explícito por Telegram
     (word/pdf/excel/powerpoint) y se respeta."""
-    m = (user_message or "").lower()
+    # Limpia sentidos NO documentales antes de inferir el formato: "constancia de
+    # presentación en tiempo" no debe elegir PPTX.
+    m = _limpiar_sentidos_no_documentales(user_message or "").lower()
     if re.search(r"\b(word|docx|documento\s+de\s+word|editable|en\s+word)\b", m):
         return "docx"
     if re.search(r"\b(pptx|powerpoint|presentaci[oó]n|deck|diapositiva)\b", m):
@@ -5855,9 +5990,17 @@ _LEGAL_FUERTE_RE = re.compile(
 
 def _es_analisis_legal(msg: str) -> bool:
     """True si el pedido es un ANÁLISIS/dictamen legal (para armarlo con el flujo
-    multi-agente, no de un solo tiro). No matchea 'redacta un contrato' (eso es plantilla)."""
-    m = (msg or "")
-    return bool(_LEGAL_ANALISIS_RE.search(m) or _LEGAL_FUERTE_RE.search(m))
+    multi-agente, no de un solo tiro). No matchea 'redacta un contrato' (eso es plantilla).
+
+    La señal FUERTE (CNBV, IMPI, amparo, jurisprudencia…) por sí sola NO alcanza:
+    Polo menciona esas autoridades todo el tiempo al hablar de un trámite ("Oficio
+    CNBV 411-2/1364/2026, hay que enviarlo hoy"), y eso no es un pedido de dictamen.
+    Se exige además que el mensaje pida un ENTREGABLE (análisis/dictamen/documento…).
+    """
+    m = _limpiar_sentidos_no_documentales(msg or "")
+    if _LEGAL_ANALISIS_RE.search(m):
+        return True
+    return bool(_LEGAL_FUERTE_RE.search(m) and _DOC_TYPE_RE.search(m))
 
 
 def generar_documento_directo(api_key: str, system_prompt: str, history: list,
@@ -5904,7 +6047,7 @@ def generar_documento_directo(api_key: str, system_prompt: str, history: list,
         # si el flujo legal no dio contenido suficiente, cae al flujo normal de abajo
 
     instruccion = (
-        f"Eres el generador de documentos de Louis (Kawiil). El usuario pidió:\n«{user_message}»\n\n"
+        f"Eres el generador de documentos de Donna (Kawiil). El usuario pidió:\n«{user_message}»\n\n"
         "Escribe AHORA el DOCUMENTO COMPLETO y FINAL en formato markdown:\n"
         "- Usa # para el título principal, ## para secciones, ### para subsecciones.\n"
         "- Usa - para viñetas y tablas con | columna | columna |.\n"
@@ -6308,7 +6451,7 @@ def _mac_enqueue_command(comando: str, args: dict | None = None, razon: str = ""
 
 def _hetzner_estado(que: str = "") -> str:
     """Lee estado/archivos REALES de Hetzner (whitelist). Fuente de verdad para que
-    Louis no invente salidas. NO ejecuta bash arbitrario; solo lee lo whitelisted."""
+    Donna no invente salidas. NO ejecuta bash arbitrario; solo lee lo whitelisted."""
     que = (que or "").strip().lower()
     logs_dir = HOME_OC / "logs"
     opciones = {
@@ -6758,7 +6901,7 @@ def _vault_obtener(item_id: str, campo: str, razon: str) -> str:
 
 
 # ===== Kawiil Central (Vercel + Supabase, producción) =====
-# NO se clona el repo. Louis opera directo contra la BD de producción y la
+# NO se clona el repo. Donna opera directo contra la BD de producción y la
 # URL pública de Vercel para verificar disponibilidad.
 KAWIIL_CENTRAL_AUDIT_LOG = HOME_OC / "logs" / "kawiil-central-ops.log"
 
@@ -7339,7 +7482,7 @@ def _kawiil_central_proyectos(estado: str = "", limit: int = 20, cliente: str = 
     params = []
     cliente_label = ""
     # Filtro por CLIENTE (id uuid o nombre sin acentos). Determinístico: resuelve el
-    # nombre contra la tabla de clientes y filtra por client_id. Evita que Louis
+    # nombre contra la tabla de clientes y filtra por client_id. Evita que Donna
     # "adivine" entre los 197 proyectos y se contradiga (no tiene → sí → no).
     if cliente and "client_id" in cols:
         ids = []
@@ -7977,8 +8120,8 @@ _DISTILL_TARGETS = {
 }
 
 _DISTILL_SYSTEM = (
-    "Eres el módulo de memoria de Louis, asistente ejecutivo de Polo (Kawiil, despacho "
-    "legal/tech en México). Te paso la conversación de HOY entre Polo y Louis. Extrae SOLO "
+    "Eres el módulo de memoria de Donna, asistente ejecutiva de Polo (Kawiil, despacho "
+    "legal/tech en México). Te paso la conversación de HOY entre Polo y Donna. Extrae SOLO "
     "hechos DURABLES y ESPECÍFICOS que valga la pena recordar a largo plazo y clasifícalos. "
     "Devuelve EXCLUSIVAMENTE un JSON válido con estas llaves (arrays de strings, una frase "
     'corta por hecho; usa [] si no hay nada):\n'
@@ -7986,12 +8129,12 @@ _DISTILL_SYSTEM = (
     "Reglas:\n"
     "- PEOPLE: datos durables de personas (rol, empresa, relación, junta recurrente, preferencias).\n"
     "- CLIENTES: datos de clientes/prospectos (razón social, RFC, contacto, estatus, servicio).\n"
-    "- AGENDA: pendientes/tareas/compromisos por hacer DE POLO (no tareas internas de Louis).\n"
+    "- AGENDA: pendientes/tareas/compromisos por hacer DE POLO (no tareas internas de Donna).\n"
     "- IMPORTANT: decisiones, hechos clave o instrucciones permanentes de Polo.\n"
     "- Cada hecho debe ser ESPECÍFICO: con nombre propio, empresa, fecha, monto o dato concreto. "
     "Si es vago o genérico, OMÍTELO.\n"
-    "- NO guardes hechos sobre Louis mismo, el sistema, el bot, la memoria, los archivos .md, ni "
-    "tareas de mantenimiento ('actualizar AGENDA', 'consolidar memoria', 'Louis es asistente…'). "
+    "- NO guardes hechos sobre Donna misma, el sistema, el bot, la memoria, los archivos .md, ni "
+    "tareas de mantenimiento ('actualizar AGENDA', 'consolidar memoria', 'Donna es asistente…'). "
     "Solo el MUNDO de Polo: personas, clientes, casos, compromisos, decisiones.\n"
     "- NO incluyas charla trivial, saludos, briefings, ni cosas efímeras (clima, '¿qué hay hoy?').\n"
     "- NO inventes: solo lo explícito en la conversación. Usa nombres correctos y completos.\n"
@@ -8039,7 +8182,7 @@ def _distill_collect_today(today: str, max_chars: int = 18000) -> str:
                 continue
             content = (d.get("content") or "").strip()
             if content:
-                quien = "Polo" if d.get("role") == "user" else "Louis"
+                quien = "Polo" if d.get("role") == "user" else "Donna"
                 turns.append((str(d.get("ts", "")), f"{quien}: {content}"))
     turns.sort(key=lambda t: t[0])
     txt = "\n".join(t[1] for t in turns)
@@ -8250,7 +8393,7 @@ def _md_to_html(titulo: str, agente: str, md: str) -> bytes:
     return _LH.md_to_html(titulo, agente, md)
 
 
-def _generar_html(titulo: str, contenido: str, agente: str = "Louis") -> bytes | None:
+def _generar_html(titulo: str, contenido: str, agente: str = ASSISTANT_NAME) -> bytes | None:
     """Genera HTML interactivo (colapsables + buscador) desde markdown. Sin libs externas."""
     try:
         return _md_to_html(titulo, agente, contenido)
@@ -8271,7 +8414,7 @@ def _invocar_agente(
     Empuja el agente al stack para que las invocaciones anidadas (un agente que
     llama a otro vía consejo_experto_legal) queden registradas con su `parent`.
     Si el output supera _DOC_THRESHOLD chars, lo envía como archivo HTML y retorna
-    un resumen corto para que Louis no lo vomite como texto plano en Telegram.
+    un resumen corto para que Donna no lo vomite como texto plano en Telegram.
     """
     if not _AGENT_NAME_RE.match(nombre):
         return f"ERROR: nombre '{nombre}' inválido."
@@ -9232,7 +9375,7 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
     _tools_cached = [dict(t) for t in TOOLS_DEFINITION]
     _tools_cached[-1] = {**_tools_cached[-1], "cache_control": {"type": "ephemeral"}}
     # Hora REAL fresca en CADA llamada, DESPUÉS del bloque cacheado (no rompe el
-    # caché del prompt grande). Resuelve que Louis use la hora "congelada" del
+    # caché del prompt grande). Resuelve que Donna use la hora "congelada" del
     # contexto: aquí siempre ve la hora exacta del instante.
     try:
         _now_live = datetime.now(get_active_tz())

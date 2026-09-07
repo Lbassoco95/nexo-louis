@@ -7,7 +7,7 @@ a ejecutar y devuelve JSON por stdout con el resultado. Persiste cookies/
 localStorage entre llamadas usando `storage_state` de Playwright en disco.
 
 Esto evita meter Playwright como dependencia en louis_core (donde sería pesado
-y solo necesario a veces). Louis lo invoca con `python3 browser_runner.py` y
+y solo necesario a veces). Donna lo invoca con `python3 browser_runner.py` y
 le pipea el JSON del comando.
 
 Comandos soportados:

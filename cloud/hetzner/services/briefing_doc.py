@@ -207,7 +207,7 @@ td.t{{font-size:.72em;color:#999;text-transform:capitalize;width:64px}}
 <h2>⏰ Calendario ({len(eventos)} eventos)</h2>
 {cal}
 {pend_html}
-<div class="ft">Fuente: Calendario M365 en vivo ({", ".join(TENANTS)}) + AGENDA.md · Dato duro, sin interpretación · Louis (Kawiil)</div>
+<div class="ft">Fuente: Calendario M365 en vivo ({", ".join(TENANTS)}) + AGENDA.md · Dato duro, sin interpretación · Donna (Kawiil)</div>
 </body></html>"""
     return doc.encode("utf-8")
 

@@ -1,5 +1,5 @@
 """
-self_update.py — capacidad de Louis para editarse a sí mismo (con guardrails).
+self_update.py — capacidad de Donna para editarse a sí mismo (con guardrails).
 
 Tools expuestas vía louis_core:
   • leer_mi_codigo(archivo)              — lee un archivo del runtime
@@ -17,12 +17,12 @@ Guardrails:
     NO incluye 'ollama' (binario) ni 'openclaw' (no manejamos).
 
 Workflow esperado:
-  1. Polo dice 'agrega X a Louis'
-  2. Louis llama leer_mi_codigo(archivo) para ver estado actual
-  3. Louis propone el cambio en chat (muestra old → new)
+  1. Polo dice 'agrega X a Donna'
+  2. Donna llama leer_mi_codigo(archivo) para ver estado actual
+  3. Donna propone el cambio en chat (muestra old → new)
   4. Polo confirma ('hazlo' / 'sí')
-  5. Louis llama editar_mi_codigo → valida sintaxis → guarda backup
-  6. Louis llama reiniciar_mi_servicio → verifica
+  5. Donna llama editar_mi_codigo → valida sintaxis → guarda backup
+  6. Donna llama reiniciar_mi_servicio → verifica
   7. Si rompe → rollback automático + reporta el error
 """
 
@@ -147,7 +147,7 @@ def leer_mi_codigo(archivo: str, offset: int = 0, limit: int = 200) -> str:
 def editar_mi_codigo(archivo: str, old_string: str, new_string: str, descripcion: str = "") -> str:
     """
     Hace replace en el archivo. Backup + valida sintaxis. NO reinicia el servicio
-    (eso es paso aparte para que Louis pueda confirmar antes).
+    (eso es paso aparte para que Donna pueda confirmar antes).
     """
     try:
         path = _resolve_file(archivo)
@@ -201,14 +201,14 @@ def editar_mi_codigo(archivo: str, old_string: str, new_string: str, descripcion
 def reiniciar_mi_servicio(servicio: str) -> str:
     """systemctl restart + verifica is-active. Si falla, intenta rollback del último backup.
 
-    Nota: si Louis reinicia su PROPIO bridge (el que está respondiendo a Polo en este momento),
+    Nota: si Donna reinicia su PROPIO bridge (el que está respondiendo a Polo en este momento),
     se mata a sí mismo y la respuesta jamás vuelve. En ese caso, hacemos restart deferred
     via 'at' o systemd-run para que arranque después de que el current request termine.
     """
     if servicio not in RESTARTABLE_SERVICES:
         return f"ERROR: servicio '{servicio}' no está en la whitelist. Permitidos: {sorted(RESTARTABLE_SERVICES)}"
 
-    # Detectar si Louis está reiniciando su propio bridge — el script que llama a esto
+    # Detectar si Donna está reiniciando su propio bridge — el script que llama a esto
     # vive en uno de los servicios. Si nombre coincide con un proceso activo del mismo
     # archivo de script, hacemos deferred restart.
     me_script = os.environ.get("LOUIS_BRIDGE_SCRIPT", "")  # set por bridges si quieren

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Cerebro Kawiil — MCP Server  (token-efficient edition)
-Cerebro compartido Louis ↔ Cowork. Corre en Hetzner, se conecta como
+Cerebro compartido Donna ↔ Cowork. Corre en Hetzner, se conecta como
 connector en la app de Claude (SSE).
 
 Principio de costo: resumen primero, detalle solo si se pide.
@@ -13,7 +13,7 @@ Principio de costo: resumen primero, detalle solo si se pide.
 Variables de entorno:
   CEREBRO_KAWIIL_TOKEN   Bearer token para autenticar el connector
   CEREBRO_PORT           Puerto interno (default: 4040)
-  OPENCLAW_SPACES        Ruta a la memoria de Louis (default: /opt/openclaw/spaces/general)
+  OPENCLAW_SPACES        Ruta a la memoria de Donna (default: /opt/openclaw/spaces/general)
   ENTREGABLES_PATH       Almacén compartido  (default: /opt/openclaw/entregables)
   SJF_DB_PATH            SQLite SJF          (default: /opt/openclaw/legal/sjf.db)
   DOF_DB_PATH            SQLite DOF          (default: /opt/openclaw/legal/dof.db)
@@ -83,7 +83,7 @@ def _invalidate(path: Path) -> None:
 mcp = FastMCP(
     "Cerebro Kawiil",
     instructions=(
-        "Cerebro compartido Louis ↔ Cowork.\n"
+        "Cerebro compartido Donna ↔ Cowork.\n"
         "REGLA DE COSTO: empezar siempre por las herramientas compactas:\n"
         "  1. cerebro_estado()        → resumen de todo (poca tokens)\n"
         "  2. agenda_pendientes()     → solo ítems sin hacer (poca tokens)\n"
@@ -384,7 +384,7 @@ def entregables_listar(estado: Optional[str] = None, cliente: Optional[str] = No
 @mcp.tool()
 def agenda_snapshot() -> str:
     """
-    [DETALLE] Contexto operativo de Louis: pendientes de HOY, sección URGENTE,
+    [DETALLE] Contexto operativo de Donna: pendientes de HOY, sección URGENTE,
     último IMPORTANT crítico y última entrada de JOURNAL. Truncado inteligente.
     Usar solo cuando agenda_pendientes() no es suficiente. ~500 tokens típico.
     """
@@ -448,7 +448,7 @@ def entregable_estado(nombre_o_titulo: str, completo: bool = False) -> str:
 @mcp.tool()
 def memoria_leer(archivo: str = "IMPORTANT", max_chars: int = 2000) -> str:
     """
-    [DETALLE] Lee un archivo de memoria de Louis (IMPORTANT, JOURNAL, LEARNINGS,
+    [DETALLE] Lee un archivo de memoria de Donna (IMPORTANT, JOURNAL, LEARNINGS,
     PEOPLE, PROJECTS). max_chars limita la respuesta (default 2000, max 8000).
     Solo usar cuando agenda_snapshot() no alcanza.
     """
@@ -654,7 +654,7 @@ def dispatch_preparar_brief(
     contexto_adicional: str = "",
 ) -> str:
     """
-    Louis prepara un brief para que Cowork produzca un entregable.
+    Donna prepara un brief para que Cowork produzca un entregable.
     Se guarda en _briefs/. Devuelve confirmación corta.
     urgencia: baja | normal | alta | urgente
     """
@@ -688,7 +688,7 @@ def dispatch_preparar_brief(
 
     content = (
         f"---\ntipo: brief_dispatch\ntarea: {tarea}\ncliente: {cliente}\n"
-        f"urgencia: {urgencia}\nestado: pendiente\npreparado_por: Louis\n"
+        f"urgencia: {urgencia}\nestado: pendiente\npreparado_por: Donna\n"
         f"fecha_creacion: {fecha} {hora}\n---\n\n"
         f"# Brief: {tarea}\n\n"
         f"Cliente: {cliente} | Urgencia: {urgencia} | Fecha: {fecha} {hora}\n\n"

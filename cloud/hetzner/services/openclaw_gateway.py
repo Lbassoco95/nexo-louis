@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-openclaw_gateway.py — Gateway HTTP nativo para Louis.
+openclaw_gateway.py — Gateway HTTP nativo para Donna.
 
 NO depende de un "binario OpenClaw" externo (openclaw.ai 403). Es una capa
 delgada que envuelve `louis_core` y expone tres rutas:
@@ -74,7 +74,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Louis · Agentes en vivo</title>
+<title>Donna · Agentes en vivo</title>
 <style>
   :root { --bg:#0b0f1a; --panel:#131a2b; --txt:#e6ecf5; --dim:#8a96ad;
           --idle:#2b3650; --active:#27e0a0; --line:#1f2a44; }
@@ -111,7 +111,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
 </head>
 <body>
 <header>
-  <h1>🧠 Louis — Agentes en vivo</h1>
+  <h1>🧠 Donna — Agentes en vivo</h1>
   <span class="badge"><span class="dot" style="background:var(--active)"></span><b id="nActive">0</b> trabajando</span>
   <span class="badge"><span class="dot" style="background:var(--idle)"></span><b id="nTotal">0</b> agentes</span>
   <span class="badge" id="clock" style="margin-left:auto"></span>
@@ -120,7 +120,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
   <div id="stage">
     <svg id="svg" viewBox="0 0 1000 800" preserveAspectRatio="xMidYMid meet"></svg>
     <div class="empty" id="empty">Esperando actividad de agentes…<br>
-      <span style="font-size:12px">Cuando Louis invoque un agente desde Telegram, su círculo se encenderá aquí.</span>
+      <span style="font-size:12px">Cuando Donna invoque un agente desde Telegram, su círculo se encenderá aquí.</span>
     </div>
   </div>
   <aside>
@@ -139,7 +139,7 @@ function el(tag, attrs){ const e=document.createElementNS(NS,tag);
   for(const k in attrs) e.setAttribute(k, attrs[k]); return e; }
 
 function layout(agents){
-  // Louis al centro; agentes en anillo. Si un agente tiene parent agente,
+  // Donna al centro; agentes en anillo. Si un agente tiene parent agente,
   // se ubica cerca de su parent.
   const cx=500, cy=400, R=280;
   const pos={ __louis__:{x:cx,y:cy} };
@@ -162,7 +162,7 @@ function render(data){
   SVG.innerHTML='';
   const pos = layout(agents);
 
-  // Conexiones: agente→parent (o →Louis centro).
+  // Conexiones: agente→parent (o →Donna centro).
   agents.forEach(a=>{
     const p = a.parent && pos[a.parent] ? pos[a.parent] : pos.__louis__;
     const me = pos[a.nombre];
@@ -173,11 +173,11 @@ function render(data){
     SVG.appendChild(line);
   });
 
-  // Nodo central Louis
+  // Nodo central Donna
   SVG.appendChild(el('circle',{cx:pos.__louis__.x,cy:pos.__louis__.y,r:34,
     fill:'#1b2438',stroke:'#3d7bff','stroke-width':2}));
   const lt=el('text',{x:pos.__louis__.x,y:pos.__louis__.y+5,
-    'text-anchor':'middle',class:'nodeLabel'}); lt.textContent='LOUIS'; SVG.appendChild(lt);
+    'text-anchor':'middle',class:'nodeLabel'}); lt.textContent='DONNA'; SVG.appendChild(lt);
 
   // Nodos de agentes
   agents.forEach(a=>{
@@ -601,7 +601,7 @@ class Handler(BaseHTTPRequestHandler):
                 role = m.get("role")
                 content = m.get("content", "")
                 if role == "system":
-                    continue  # Louis usa su propio system prompt
+                    continue  # Donna usa su propio system prompt
                 if role == "user":
                     if user_msg:
                         history.append({"role": "user", "content": user_msg})

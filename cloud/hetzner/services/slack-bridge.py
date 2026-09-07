@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Slack bridge para Louis (Nexo) — Hetzner.
+Slack bridge para Donna (Nexo) — Hetzner.
 
 Usa Socket Mode (slack_bolt) — sin webhooks públicos.
 Toda la lógica de routing, tools y M365 está en louis_core.py.

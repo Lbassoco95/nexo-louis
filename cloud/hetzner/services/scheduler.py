@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-louis-scheduler — proactividad de Louis.
+louis-scheduler — proactividad de Donna.
 
 Cada 60s revisa /opt/openclaw/reminders/queue.jsonl. Para cada entry con
 `fire_at` <= now, manda el mensaje al canal (Telegram default), opcionalmente
@@ -141,10 +141,10 @@ _REFUSAL_RE = re.compile(
 
 
 def enrich_with_ollama(raw_message: str) -> str:
-    """Reformula recordatorio en tono Louis vía Ollama local. Si Ollama devuelve un
+    """Reformula recordatorio en tono Donna vía Ollama local. Si Ollama devuelve un
     rechazo/basura (o algo demasiado distinto/largo), manda el mensaje ORIGINAL."""
     sys_prompt = (
-        "Eres Louis, asistente ejecutivo de Polo. Reformula este recordatorio en tono "
+        "Eres Donna, asistente ejecutivo de Polo. Reformula este recordatorio en tono "
         "directo y cálido, 1-2 líneas, en español. Telegram *negrita* legacy. NO inventes "
         "hechos, NO pidas permiso, NO te disculpes: SOLO devuelve el recordatorio reformulado."
     )
@@ -166,7 +166,7 @@ MORNING_BRIEFING_MARKER = "__morning_briefing__"
 # Indexación legal en background: tick cada 10 min (10 × 60s), 10 docs por agente
 LEGAL_BG_TICK_INTERVAL = 10  # cada cuántos ticks de 60s correr el bg-indexer
 
-# Chequeos intradía (Fase 3): horas CDMX en que Louis empuja seguimiento si hay algo.
+# Chequeos intradía (Fase 3): horas CDMX en que Donna empuja seguimiento si hay algo.
 INTRADAY_SLOTS = {13: "tarde", 18: "cierre"}
 INTRADAY_STATE = HOME_OC / "state" / "intraday_sent.json"
 

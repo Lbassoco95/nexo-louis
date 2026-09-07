@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """gamma_gen.py — genera diseños con la API de Gamma (v1.0) desde el servidor.
 
-Por qué: Louis intentaba usar el SITIO gamma.app (SPA con JS) desde el servidor
+Por qué: Donna intentaba usar el SITIO gamma.app (SPA con JS) desde el servidor
 y Gamma lo bloquea. La forma correcta es la API REST v1.0, que sí funciona
 server-side. Esto genera presentaciones / documentos / posts sociales y
 devuelve la URL de Gamma + el export (png/pdf/pptx).

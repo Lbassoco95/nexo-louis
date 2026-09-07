@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Telegram bridge para Louis (Nexo) — versión Hetzner.
+Telegram bridge para Donna (Nexo) — versión Hetzner.
 
 Long polling de Telegram → louis_core (routing Ollama/Claude + tools) →
 respuesta formateada para Telegram Markdown legacy.
@@ -31,7 +31,7 @@ import urllib.error
 sys.path.insert(0, str(Path(__file__).parent))
 import louis_core as core
 
-# Frases con las que Louis "promete" producir/entregar un documento. Si aparecen en
+# Frases con las que Donna "promete" producir/entregar un documento. Si aparecen en
 # su respuesta pero NO encoló ningún archivo, la red de seguridad lo genera de verdad
 # (vía el flujo directo) para que nunca quede en "voy a generar" sin entregar.
 _PROMESA_DOC_RE = re.compile(
@@ -45,7 +45,7 @@ _PROMESA_DOC_RE = re.compile(
 
 
 def _promete_documento(text: str) -> bool:
-    """True si la respuesta de Louis promete producir/entregar un documento pero
+    """True si la respuesta de Donna promete producir/entregar un documento pero
     (probablemente) no lo adjuntó. Conservador: exige verbo de acción + sustantivo
     documental cercano, para no disparar generaciones (costosas) por falsos positivos."""
     if not text:
@@ -630,7 +630,7 @@ def process_update(update, telegram_token, chat_id, api_key, system_prompt):
     if not pending_files and core.needs_doc_sonnet(user_input) and len(response) > 1200:
         try:
             titulo = (user_input or "documento")[:70].strip().rstrip(".?!")
-            pdf = core._generar_pdf(titulo, response, "Louis")
+            pdf = core._generar_pdf(titulo, response, "Donna")
             if pdf:
                 fname = f"{titulo[:40].replace(' ', '_')}_{_dt_mod.datetime.now().strftime('%H%M%S')}.pdf"
                 pending_files = [(pdf, fname, f"📄 {titulo[:60]}")]
@@ -638,13 +638,14 @@ def process_update(update, telegram_token, chat_id, api_key, system_prompt):
         except Exception as e:
             log.warning(f"Red de seguridad PDF falló: {e}")
 
-    # Red de seguridad #2: Louis PROMETIÓ un documento (en sus palabras) pero no
+    # Red de seguridad #2: Donna PROMETIÓ un documento (en sus palabras) pero no
     # encoló nada — el caso "voy a generar los perfiles de puesto" y no regresa. No
     # dependía de que tu mensaje dijera 'PDF'. Lo generamos de verdad por el flujo
     # directo (Sonnet escribe el contenido → archivo) para cerrar el seguimiento.
-    elif not pending_files and _promete_documento(response):
+    elif (not pending_files and _promete_documento(response)
+          and not core.es_pregunta_de_seguimiento(user_input)):
         try:
-            log.info("→ Louis prometió documento sin entregarlo; generando vía flujo directo")
+            log.info("→ Donna prometió documento sin entregarlo; generando vía flujo directo")
             doc_resp, _m = core.generar_documento_directo(
                 api_key, system_prompt, history, user_input
             )
@@ -662,7 +663,7 @@ def process_update(update, telegram_token, chat_id, api_key, system_prompt):
         html_body = _extract_html_from_fence(response)
 
     if html_body:
-        fname = f"louis_{_dt_mod.datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+        fname = f"donna_{_dt_mod.datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
         caption = "📄 Análisis listo — abre en Safari → Compartir → Imprimir → PDF"
         telegram_send_file(telegram_token, chat_id, html_body, fname, caption=caption)
     elif pending_files:
