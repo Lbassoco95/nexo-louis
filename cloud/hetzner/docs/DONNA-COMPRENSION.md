@@ -178,7 +178,28 @@ Cuatro causas distintas:
    valiendo** (así el horario no depende de la zona del server: un
    `timedatectl set-timezone UTC` movería todos los avisos 6 horas en silencio), pero
    NO era una causa de los mensajes a deshoras.
-2. **`Persistent=true` en los timers que notifican** — **ésta sí, y quedó comprobada.**
+2. ~~**`Persistent=true` en los timers que notifican** — comprobada con el 20:20 de
+   `legal-estado`.~~
+   **CORRECCIÓN 2 (y van dos):** también falsa. El `legal-estado.timer` REAL de
+   producción (rama de agosto) es `OnCalendar=*-*-* 00/4:20:00 America/Mexico_City` —
+   **cada 4 horas a las :20**: 00:20, 04:20, 08:20, 12:20, 16:20, 20:20. El disparo de
+   las 20:20 era una corrida normal, no un catch-up. (Lo que yo comparaba era contra el
+   `Mon,Fri 09:15` de `main`, que llevaba meses sin ser lo que corría.)
+   Quitar `Persistent` de los timers que notifican sigue siendo defendible —un boletín
+   perdido no debería dispararse al arrancar a cualquier hora— pero **no está
+   comprobado** que haya causado ningún mensaje a deshoras.
+
+   **La causa más probable, ahora sí leyendo la unit correcta:** ese timer dispara a las
+   **00:20 y 04:20**, y `estado_legal.py` decide si manda (schedule adaptativo: diario
+   las primeras 2 semanas, cada 3 días los días 15-35, semanal después). Un reporte a
+   medianoche o a las 4am es *por diseño*. Y la ventana de silencio que se agregó al
+   scheduler **no lo cubre**: los timers de systemd mandan por su propio camino, sin
+   pasar por la cola de recordatorios.
+   Verificar con: `journalctl -u legal-estado --since "7 days ago"`.
+   Arreglo natural: `08/4:20` (08:20, 12:20, 16:20, 20:20) en lugar de `00/4:20`, o que
+   `estado_legal.py` respete las horas de silencio.
+
+3. **`Persistent=true`, sin comprobar** —
    Si el server estaba caído (o el timer se reinicia) a la hora del boletín, systemd
    dispara la corrida perdida de inmediato, a cualquier hora. La prueba salió en el
    propio `list-timers` del deploy: `legal-estado.timer` está programado
@@ -188,12 +209,12 @@ Cuatro causas distintas:
    y `sjf-weekly`. Se mantiene en los jobs silenciosos (harvest/index), que no molestan.
    El server además tiene `*** System restart required ***` pendiente, así que los
    reinicios —y sus catch-ups— pasan de verdad.
-3. **Sin horas de silencio en el scheduler**: un `fire_at` de madrugada (o mal calculado
+4. **Sin horas de silencio en el scheduler**: un `fire_at` de madrugada (o mal calculado
    por el modelo) disparaba a esa hora. Ahora ventana **22:00 → 07:00 CDMX**; los avisos
    de esa franja **no se pierden**, se reprograman a las 07:00. `"urgente": true` en la
    entry se salta el silencio. Configurable: `DONNA_QUIET_START` / `DONNA_QUIET_END`.
    → Si el briefing matutino está en cola antes de las 7:00, baja `DONNA_QUIET_END`.
-4. **La cola se vaciaba de golpe**: `fire_at <= now` mandaba todo el atraso junto. Ahora
+5. **La cola se vaciaba de golpe**: `fire_at <= now` mandaba todo el atraso junto. Ahora
    máximo `DONNA_MAX_POR_TICK` (3) por minuto, y un aviso con más de 2h de atraso llega
    marcado `⏰ (atrasado Nh)` para que Polo no lo lea como de ahora.
 
