@@ -1,11 +1,14 @@
 [Unit]
-Description=Resumen semanal SJF de Louis (lunes por la mañana)
+Description=Resumen semanal SJF de Donna (lunes por la mañana)
 
 [Timer]
-# Lunes 8:00 hora del server (el harvester diario ya corrió el jueves/viernes
-# anteriores, así que el lunes la edición de la semana pasada ya está en la BD).
-OnCalendar=Mon *-*-* 08:00:00
-Persistent=true
+# Lunes 8:00 CDMX (el harvester diario ya corrió el jueves/viernes anteriores, así
+# que el lunes la edición de la semana pasada ya está en la BD).
+# La zona es EXPLÍCITA: sin ella systemd usa la hora del server (UTC) y este resumen
+# —que se manda por Telegram— salía a las 2:00am CDMX.
+# Sin Persistent: si el server estuvo caído el lunes, NO queremos que el resumen
+# semanal se dispare al arrancar a cualquier hora; que espere al lunes siguiente.
+OnCalendar=Mon *-*-* 08:00:00 America/Mexico_City
 
 [Install]
 WantedBy=timers.target

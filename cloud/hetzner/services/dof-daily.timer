@@ -5,7 +5,9 @@ Description=Dispara el boletín MATUTINO del DOF (lunes a viernes, mañana CDMX)
 # El DOF no publica fines de semana. Reportamos la edición MATUTINA del DÍA EN CURSO
 # (el script default = --mat + hoy). La vespertina la dispara dof-daily-tarde.timer.
 OnCalendar=Mon..Fri *-*-* 09:00:00 America/Mexico_City
-Persistent=true
+# Sin Persistent: este timer manda boletín matutino del DOF por Telegram. Con Persistent, un run
+# perdido (server caído/reiniciado) se disparaba al arrancar a cualquier hora.
+# Si se pierde una corrida, se espera a la siguiente ventana normal.
 
 [Install]
 WantedBy=timers.target

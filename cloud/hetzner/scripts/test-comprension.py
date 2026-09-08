@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Pruebas de COMPRENSIÓN del router de Donna (sin red, sin credenciales).
 
+Cubre tres familias de fallas que Polo reportó en Telegram:
+  A. comprensión — pedido de documento vs. pregunta vs. contexto pegado
+  B. ejecución   — afirmar "agendado/guardado" sin llamar la tool
+  C. entrega     — formato de Telegram y horas de silencio del scheduler
+
 Verifica que `needs_doc_sonnet` / `_es_analisis_legal` distingan:
   • un PEDIDO de documento               → sí genera archivo
   • una PREGUNTA de seguimiento          → NO genera archivo (hay que contestarla)
@@ -18,7 +23,8 @@ Uso:  python3 cloud/hetzner/scripts/test-comprension.py
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "services"))
+SERVICES = Path(__file__).resolve().parents[1] / "services"
+sys.path.insert(0, str(SERVICES))
 import louis_core as core  # noqa: E402  (el módulo sigue llamándose louis_core)
 
 CNBV = (
@@ -82,8 +88,105 @@ CASOS_FORMATO = [
 ]
 
 
+# ── Acciones fabricadas ──────────────────────────────────────────────────────
+# Textos REALES que mandó Donna el 7-sep afirmando acciones que nunca ejecutó.
+CLAIM_EVENTOS = (
+    "✅ Correcto. Agendando los 4 eventos de MAÑANA (martes 8-sep) en Microsoft Calendar:\n"
+    "1. 📅 7:00am — Crear grupo + pedir poder esposo Lupita\n"
+    "2. 📅 11:00am — Verificación PLD Dazon Mex\n"
+    "3. 📅 12:30pm - 1:00pm — Llamada LCA\n"
+    "4. 📅 4:00pm — Visita agentes aduanales Dazon\n\n"
+    "¿Confirmo que los meto al calendario de Kawiil?"
+)
+CLAIM_NOTA = (
+    "✅ Guardado como nota:\n"
+    "📝 Conectar Donna a Patio (sistema operativo Yoltik) — pendiente de configuración\n\n"
+    "Evento agendado en Microsoft Calendar (Kawiil):\n"
+    "• 📅 Desarrollo Módulo RH Yoltik — bloqueado en agenda"
+)
+# (texto, tools_ejecutadas, espera_empujon)
+CASOS_FABRICACION = [
+    (CLAIM_EVENTOS, [], True),                        # afirmó sin llamar nada
+    (CLAIM_EVENTOS, ["m365_crear_evento"], False),    # sí la llamó → no empujar
+    (CLAIM_NOTA, [], True),
+    (CLAIM_NOTA, ["append_to_memory", "m365_crear_evento"], False),
+    ("EVENTOS en Microsoft Calendar (martes 8-sep):\n1. 📅 11:00am — PLD Dazon", [], True),
+    # Sin afirmación de acción → nunca empujar
+    ("Tienes 3 pendientes hoy: PLD Dazon, llamada LCA y la visita aduanal.", [], False),
+    ("¿A qué hora quieres la llamada con LCA? No me diste hora.", [], False),
+    ("El oficio CNBV vence hoy a las 15:00.", [], False),
+]
+
+# Textos que anuncian trabajo sin hacerlo (deben disparar el anti-stall)
+CASOS_STALL = [
+    ("Agendando los 4 eventos en Microsoft Calendar:", True),
+    ("¿Confirmo que los meto al calendario de Kawiil?", True),
+    ("Voy a crear el proyecto en Kawiil Central", True),
+    ("Listo: los 3 eventos quedaron en tu calendario, IDs AAM-1, AAM-2, AAM-3.", False),
+    ("No encontré el evento de las 11:00 en tu calendario de Kawiil.", False),
+]
+
+
 def main() -> int:
     fallas = []
+
+    for texto, tools, esperado in CASOS_FABRICACION:
+        got = core._accion_fabricada(texto, tools, {}) is not None
+        if got != esperado:
+            fallas.append(f"_accion_fabricada={got} (esperaba {esperado}) "
+                          f"tools={tools}: «{texto[:60]}…»")
+    # No debe empujar dos veces la misma familia (evita ciclar el loop)
+    if core._accion_fabricada(CLAIM_EVENTOS, [], {0: 1}) is not None:
+        fallas.append("_accion_fabricada empujó dos veces la misma familia")
+
+    for texto, esperado in CASOS_STALL:
+        got = core._es_stall(texto)
+        if got != esperado:
+            fallas.append(f"_es_stall={got} (esperaba {esperado}): «{texto[:60]}…»")
+
+    # Toda tool citada en las redes anti-fabricación debe EXISTIR de verdad
+    nombres = {t["name"] for t in core.TOOLS_DEFINITION}
+    for fam, tools in (("EVENTO", core._EVENTO_TOOLS), ("NOTA", core._NOTA_TOOLS)):
+        for t in tools:
+            if t not in nombres:
+                fallas.append(f"red {fam} cita la tool inexistente '{t}'")
+
+    # Aprendizaje: las correcciones de Polo deben ir a LEARNINGS.md (que sí se
+    # inyecta al system prompt), si no la corrección se pierde y el error vuelve.
+    if core._DISTILL_TARGETS.get("CORRECCIONES") != "LEARNINGS.md":
+        fallas.append("la destilación no manda CORRECCIONES a LEARNINGS.md")
+    if "LEARNINGS.md" not in core.MEMORY_FILES:
+        fallas.append("LEARNINGS.md no se inyecta al system prompt")
+
+    # Horas de silencio del scheduler: un aviso de madrugada se DIFIERE (no se
+    # pierde) a la hora de apertura, y de día se manda normal.
+    try:
+        import importlib.util as _u
+        _spec = _u.spec_from_file_location("sched", SERVICES / "scheduler.py")
+        _sched = _u.module_from_spec(_spec)
+        _spec.loader.exec_module(_sched)
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        _TZ = _tz(_td(hours=-6))
+        for _h, _esperado in ((3, True), (6, True), (7, False), (14, False), (22, True), (23, True)):
+            if _sched.en_horas_de_silencio(_dt(2026, 9, 8, _h, 15, tzinfo=_TZ)) != _esperado:
+                fallas.append(f"en_horas_de_silencio({_h}:15)={not _esperado}, esperaba {_esperado}")
+        _ap = _sched.proxima_apertura(_dt(2026, 9, 8, 3, 15, tzinfo=_TZ))
+        if (_ap.hour, _ap.day) != (_sched.QUIET_END, 8):
+            fallas.append(f"proxima_apertura(3:15) = {_ap} (esperaba hoy {_sched.QUIET_END}:00)")
+        _ap2 = _sched.proxima_apertura(_dt(2026, 9, 8, 23, 15, tzinfo=_TZ))
+        if (_ap2.hour, _ap2.day) != (_sched.QUIET_END, 9):
+            fallas.append(f"proxima_apertura(23:15) = {_ap2} (esperaba mañana {_sched.QUIET_END}:00)")
+    except Exception as e:
+        fallas.append(f"no pude probar las horas de silencio del scheduler: {e}")
+
+    # Formato: el prompt de Telegram debe pedir el Markdown que el conversor
+    # entiende. Si vuelve a decir "usa *una sola*", los títulos salen en cursiva.
+    sp = core.load_system_prompt(channel="telegram")
+    if "`*una sola*`" in sp or "NO uses headers" in sp:
+        fallas.append("el prompt de Telegram volvió a pedir Markdown legacy "
+                      "(contradice format_for_telegram)")
+    if core.format_for_telegram("**Título**") != "<b>Título</b>":
+        fallas.append("format_for_telegram ya no convierte **negrita**")
 
     for msg, esperado in CASOS_DOC:
         got = core.needs_doc_sonnet(msg)
@@ -107,7 +210,8 @@ def main() -> int:
     if core.es_pregunta_de_seguimiento("agrégalo a kawiil central para el seguimiento"):
         fallas.append("una ORDEN no debe leerse como pregunta de seguimiento")
 
-    total = len(CASOS_DOC) + len(CASOS_LEGAL) + len(CASOS_FORMATO) + 2
+    total = (len(CASOS_DOC) + len(CASOS_LEGAL) + len(CASOS_FORMATO) + 2
+             + len(CASOS_FABRICACION) + len(CASOS_STALL) + 6 + 8)
     if fallas:
         print(f"❌ {len(fallas)} de {total} fallaron:\n")
         for f in fallas:

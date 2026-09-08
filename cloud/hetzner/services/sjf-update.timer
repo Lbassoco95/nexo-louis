@@ -1,11 +1,12 @@
 [Unit]
-Description=Dispara el harvester SJF de Louis (diario)
+Description=Dispara el harvester SJF de Donna (diario)
 Documentation=https://github.com/Lbassoco95/kawiil-agents
 
 [Timer]
-# El Semanario publica los jueves; corremos diario por la mañana (hora del server)
-# con margen aleatorio para no pegarle al API siempre al mismo segundo.
-OnCalendar=*-*-* 13:30:00
+# El Semanario publica los jueves; corremos diario a las 13:30 CDMX (zona explícita,
+# antes era hora del server = UTC) con margen aleatorio para no pegarle al API
+# siempre al mismo segundo. Job SILENCIOSO: Persistent sí, no molesta a Polo.
+OnCalendar=*-*-* 13:30:00 America/Mexico_City
 RandomizedDelaySec=900
 Persistent=true
 

@@ -1,5 +1,5 @@
 [Unit]
-Description=Louis DOF — boletín MATUTINO del Diario Oficial (Telegram, curado por impacto)
+Description=Donna DOF — boletín MATUTINO del Diario Oficial (Telegram, curado por impacto)
 After=network-online.target
 Wants=network-online.target
 

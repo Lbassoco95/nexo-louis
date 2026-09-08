@@ -150,6 +150,32 @@ def telegram_get_updates(token: str, offset: int):
         return None
 
 
+def _chunk_html(formatted: str, limite: int = 4000) -> list:
+    """Parte el mensaje ya convertido a HTML en trozos de <= `limite`, cortando en
+    salto de línea (o espacio) en lugar de a mitad de carácter.
+
+    Cortar a ciegas en 4000 partía tags (`<b>` en un chunk, `</b>` en el otro):
+    Telegram devolvía 400 y ESE chunk caía a texto plano, así que un mensaje largo
+    salía mitad con formato y mitad en crudo — el 'algunos mensajes con un formato
+    y luego con otro'."""
+    if not formatted:
+        return []
+    chunks = []
+    remaining = formatted
+    while remaining:
+        if len(remaining) <= limite:
+            chunks.append(remaining)
+            break
+        corte = remaining.rfind("\n", 0, limite)
+        if corte < limite // 2:
+            corte = remaining.rfind(" ", 0, limite)
+        if corte < limite // 2:
+            corte = limite
+        chunks.append(remaining[:corte])
+        remaining = remaining[corte:].lstrip("\n")
+    return chunks
+
+
 def telegram_send_message(token: str, chat_id: str, text: str, parse_mode: str = "Markdown"):
     """
     Manda mensaje a Telegram. Aplica format_for_telegram() para convertir el
@@ -162,11 +188,7 @@ def telegram_send_message(token: str, chat_id: str, text: str, parse_mode: str =
     formatted = core.format_for_telegram(text) if use_format else text
     tg_parse = "HTML" if use_format else None
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    chunks = []
-    remaining = formatted
-    while remaining:
-        chunks.append(remaining[:4000])
-        remaining = remaining[4000:]
+    chunks = _chunk_html(formatted)
     for chunk in chunks:
         body = {"chat_id": chat_id, "text": chunk, "disable_web_page_preview": True}
         if tg_parse:

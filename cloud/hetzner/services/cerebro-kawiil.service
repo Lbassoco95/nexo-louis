@@ -1,5 +1,5 @@
 [Unit]
-Description=Cerebro Kawiil MCP Server — cerebro compartido Louis ↔ Cowork
+Description=Cerebro Kawiil MCP Server — cerebro compartido Donna ↔ Cowork
 Documentation=https://github.com/Lbassoco95/nexo-louis
 After=network-online.target
 Wants=network-online.target

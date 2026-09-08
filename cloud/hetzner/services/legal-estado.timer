@@ -5,7 +5,9 @@ Description=Dispara el reporte de avance de descargas legales (lunes y viernes, 
 # Lunes y viernes: cuánto llevamos, si vamos al día con el presente, y cuánto
 # del histórico (backfill) llevamos almacenado de SJF y DOF.
 OnCalendar=Mon,Fri *-*-* 09:15:00 America/Mexico_City
-Persistent=true
+# Sin Persistent: este timer manda reporte de avance de descargas por Telegram. Con Persistent, un run
+# perdido (server caído/reiniciado) se disparaba al arrancar a cualquier hora.
+# Si se pierde una corrida, se espera a la siguiente ventana normal.
 
 [Install]
 WantedBy=timers.target

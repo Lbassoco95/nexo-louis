@@ -108,8 +108,36 @@ _STALL_RE = re.compile(
     r"|procedo\s+a|paso\s+a\s+\w+|sigo\s+con|contin[uú]o\s+con|enseguida"
     r"|cre[oa]r?[eé]?\s+(la|el|las|los)\s+(tarea|subtarea|sub-tarea|proyecto|cliente)"
     r"|registr[oa]r?[eé]?\s+(la|el|en|ahora)"
-    r"|dame\s+un\s+momento|perm[ií]teme|un\s+momento)",
+    r"|dame\s+un\s+momento|perm[ií]teme|un\s+momento"
+    # Gerundio de acción: "Agendando los 4 eventos…", "Creando el proyecto…". Suena a
+    # trabajo en curso, pero el turno termina ahí y la tool nunca se llamó.
+    r"|\b(agendando|creando|registrando|guardando|anotando|program[aá]ndolo\w*|"
+    r"metiendo|bloqueando|dando\s+de\s+alta|subiendo|mandando|enviando)\b"
+    # Bucle de confirmación: Polo ya dio los datos y aun así pregunta permiso.
+    r"|¿\s*(confirmo|procedo|lo\s+hago|los?\s+(meto|creo|agendo|registro|guardo)|"
+    r"quieres\s+que\s+(lo|los|las)\s+\w+))",
     re.IGNORECASE)
+
+
+def _accion_fabricada(turn_text: str, tools_executed: list, ya_empujadas: dict):
+    """Devuelve (indice_familia, instrucción correctiva) si el turno AFIRMA una acción
+    de escritura que ninguna tool ejecutada respalda. None si todo cuadra.
+
+    Solo empuja UNA vez por familia: si tras el empujón sigue sin llamar la tool, se
+    deja pasar el texto (el prompt ya le prohíbe afirmar) en vez de ciclar el loop.
+    """
+    txt = turn_text or ""
+    if not txt.strip():
+        return None
+    for i, (claim_re, tools, instruccion) in enumerate(_CLAIM_NETS):
+        if ya_empujadas.get(i, 0) >= 1:
+            continue
+        if not claim_re.search(txt):
+            continue
+        if any(t in tools_executed for t in tools):
+            continue
+        return i, instruccion
+    return None
 
 
 _TOOL_LEAK_RE = re.compile(r"DSML|invoke\s+name=|tool_calls|antml:|parameter\s+name=|</?invoke>|</?parameter>", re.IGNORECASE)
@@ -133,6 +161,46 @@ _REMINDER_CLAIM_RE = re.compile(
     r"agend[eé]\s+(el|tu|un)\s+recordatorio|te\s+(llegar[aá]|recordar[eé]|aviso|avisar[eé])\b|"
     r"te\s+lo\s+recuerdo\s+(a las|el|mañana|en)|qued[oó]\s+agendado)",
     re.IGNORECASE)
+
+# ── Anti-fabricación de ACCIONES ────────────────────────────────────────────
+# Donna decía "✅ Agendando los 4 eventos en Microsoft Calendar" / "✅ Guardado
+# como nota" y NO llamaba ninguna tool: el calendario quedaba vacío y la nota no
+# existía. Cada familia declara (a) cómo suena la afirmación y (b) qué tools la
+# hacen verdad. Si afirma sin haber llamado ninguna, se le empuja a ejecutarla.
+_EVENTO_CLAIM_RE = re.compile(
+    r"(agend(?:ado|ada|ados|adas|ando|é|o)\b|"
+    r"(?:evento|eventos|junta|juntas|cita|citas)\s+(?:creado|creados|agendad\w+|bloquead\w+|"
+    r"registrad\w+|en\s+(?:el\s+|tu\s+|mi\s+)?(?:calendario|microsoft|outlook))|"
+    r"(?:lo|los|las|la)\s+(?:met[íi]|puse|bloque[eé])\s+en\s+(?:el\s+|tu\s+|su\s+)?calendario|"
+    r"bloque\w*\s+en\s+(?:tu\s+|el\s+|mi\s+)?(?:agenda|calendario)|"
+    r"(?:creado|creados|a[ñn]adid\w+)\s+en\s+(?:microsoft|outlook|el\s+calendario))",
+    re.IGNORECASE)
+_EVENTO_TOOLS = ("m365_crear_evento", "m365_actualizar_evento")
+
+_NOTA_CLAIM_RE = re.compile(
+    r"(guardad\w*\s+(?:como\s+)?(?:nota|en\s+(?:la\s+)?(?:memoria|agenda|nota))|"
+    r"(?:lo\s+|la\s+|los\s+)?(?:guard[eé]|anot[eé]|registr[eé]|apunt[eé])\b|"
+    r"qued[oó]\s+(?:guardad\w*|anotad\w*|registrad\w*)|"
+    r"(?:nota|memoria|agenda)\s+actualizad\w*)",
+    re.IGNORECASE)
+_NOTA_TOOLS = ("append_to_memory", "write_memory", "agendar_recordatorio",
+               "entregable_registrar", "cerebro_crear_brief", "cerebro_sync_agenda")
+
+# (regex de afirmación, tools que la vuelven verdad, instrucción correctiva)
+_CLAIM_NETS = [
+    (_EVENTO_CLAIM_RE, _EVENTO_TOOLS,
+     "NO llamaste `m365_crear_evento`, así que esos eventos NO existen en el calendario "
+     "de Polo. NO inventes que los agendaste. Créalos AHORA, UNO POR UNO con "
+     "`m365_crear_evento` (tenant 'kawiil' si Polo no dijo otro; usa la fecha y hora que "
+     "ya te dio; 30 min de duración si no especificó fin). Después dime SOLO los que la "
+     "tool confirmó, con su hora real. Si de plano falta un dato indispensable, pregunta "
+     "solo por ese dato y no afirmes nada."),
+    (_NOTA_CLAIM_RE, _NOTA_TOOLS,
+     "NO llamaste ninguna tool de memoria, así que esa nota NO se guardó. NO inventes que "
+     "la guardaste. Guárdala AHORA con `append_to_memory` (archivo AGENDA.md para "
+     "pendientes, IMPORTANT.md para contexto que no se puede perder) y confírmame solo si "
+     "la tool devolvió OK."),
+]
 
 
 def _es_stall(texto: str) -> bool:
@@ -594,6 +662,25 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "una línea y sigue con la respuesta a la pregunta — sin convertirlo en un entregable.\n"
         "Si de plano no distingues si Polo quiere un documento o una respuesta, PREGÚNTALE "
         "en una línea; no generes el archivo por default.\n"
+        "\n# ACCIONES: EJECUTA, NO ANUNCIES\n"
+        "Regla dura: **nunca digas que hiciste algo si no llamaste la tool y te devolvió OK.** "
+        "Ni 'agendado', ni 'guardado', ni 'registrado', ni 'creado', ni 'Agendando…'. Si no "
+        "ejecutaste, no pasó — y decir que pasó es el peor error que puedes cometer, porque Polo "
+        "se confía y el evento nunca aparece en su calendario.\n"
+        "1. **No pidas permiso dos veces.** Si Polo ya te dio el dato (día, hora, nombre), eso ES "
+        "la confirmación: ejecuta. Nada de '¿confirmo que los meto al calendario?' — hazlo y "
+        "reporta. Solo pregunta si falta un dato indispensable, y pregunta SOLO por ese dato.\n"
+        "2. **Un ítem = una llamada.** Cuatro horarios son cuatro `m365_crear_evento`. No los "
+        "agrupes ni los des por hechos en bloque.\n"
+        "3. **Reporta lo que devolvió la tool**, con la hora real que quedó. Si una falló, dilo: "
+        "'3 de 4 quedaron; la de 4:00pm falló por X'. Nunca un ✅ parejo si no todas pasaron.\n"
+        "4. **Recordatorio ≠ evento.** 'Recordatorio' / 'recuérdame' / 'avísame' → "
+        "`agendar_recordatorio` (te llega por Telegram). 'Evento' / 'junta' / 'cita' / 'bloquea en "
+        "el calendario' → `m365_crear_evento`. Si Polo te corrige el tipo, corrige la herramienta, "
+        "no solo el texto del mensaje.\n"
+        "5. **'Anótalo en la memoria'** → `append_to_memory` de verdad (AGENDA.md para pendientes, "
+        "IMPORTANT.md para contexto que no se puede perder). Un '📝 Guardado' sin tool es una "
+        "mentira que además pierde la información.\n"
         "NO describas tu pipeline interno (no digas 'revisando snapshot', 'según instrucción', etc.).\n"
         "Si falta un dato en memoria/snapshot, dilo; no inventes plazos, casos ni placeholders.\n"
         "\n# BRIEFING DIARIO\n"
@@ -610,14 +697,19 @@ def load_system_prompt(channel: str = "telegram") -> str:
         canal_text = (
             "\n\n# CANAL ACTUAL: Telegram\n"
             "Estás respondiendo por Telegram. Polo prefiere respuestas largas y formales por default. "
-            "**FORMATO TELEGRAM:** usa Markdown legacy de Telegram:\n"
-            "- Negrita: `*una sola*` (NO `**dos**`, eso aparece literal)\n"
+            "**FORMATO TELEGRAM:** escribe Markdown ESTÁNDAR y ya. El servidor lo convierte "
+            "a HTML de Telegram antes de enviarlo (`format_for_telegram`), así que no adaptes "
+            "nada al 'Markdown legacy' de Telegram:\n"
+            "- Negrita: `**dos asteriscos**` (UN solo asterisco `*así*` sale en CURSIVA)\n"
             "- Cursiva: `_texto_`\n"
-            "- Código: `` `texto` ``\n"
+            "- Código: `` `texto` `` y bloques con ```\n"
             "- Links: `[texto](url)`\n"
-            "- NO uses headers `#`, `##`, `###` (aparecen como texto plano)\n"
-            "- Emojis sí, son nativos\n"
-            "- Para 'títulos' de secciones usa `*Título:*` en negrita.\n"
+            "- Títulos de sección: `## Título` (se renderizan en negrita) o `**Título:**`\n"
+            "- Viñetas con `-` (se convierten a •). Emojis nativos, sí.\n"
+            "- NO uses tablas `| a | b |`: Telegram no las renderiza y se aplastan a viñetas. "
+            "Si necesitas comparar, usa viñetas con `campo — valor`.\n"
+            "Usa UN SOLO estilo en todo el mensaje: mezclar `*x*` con `**x**` es lo que hace que "
+            "unos mensajes se vean en negrita y otros en cursiva.\n"
             "Si recibes un audio transcrito, considera que puede tener errores de transcripción "
             "(palabras técnicas como 'FIATCOIN', 'LFPIORPI', 'Kawiil', 'Yoltik' pueden venir mal escritas)."
         )
@@ -625,13 +717,13 @@ def load_system_prompt(channel: str = "telegram") -> str:
         canal_text = (
             "\n\n# CANAL ACTUAL: Slack\n"
             "Estás respondiendo por Slack. Tono más operativo, mensajes más cortos que en Telegram. "
-            "**FORMATO SLACK (mrkdwn):**\n"
-            "- Negrita: `*texto*` (un asterisco)\n"
-            "- Cursiva: `_texto_`\n"
-            "- Tachado: `~texto~`\n"
-            "- Código inline: `` `texto` ``\n"
-            "- Bloque de código: triple backticks\n"
-            "- Listas con `•` o `-`, sin headers Markdown.\n"
+            "**FORMATO SLACK:** escribe Markdown ESTÁNDAR igual que en Telegram; el servidor "
+            "lo convierte a mrkdwn (`format_for_slack`) antes de enviarlo:\n"
+            "- Negrita: `**texto**` (se convierte a `*texto*` de Slack)\n"
+            "- Cursiva: `_texto_` · Tachado: `~texto~`\n"
+            "- Código inline: `` `texto` `` · Bloque: triple backticks\n"
+            "- Títulos: `## Título` (se convierten a negrita) · Listas con `-`\n"
+            "- Links en Markdown normal `[texto](url)`\n"
             "- Mencionar usuarios con `<@USERID>`."
         )
     parts.append(canal_text)
@@ -3147,7 +3239,7 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "hetzner_estado",
-        "description": "Lee estado/archivos REALES de Hetzner (el servidor de Donna). ÚSALO en vez de inventar cuando Polo pida revisar la cola de la Mac, resultados de comandos, logs, heartbeat o conteos legales. NUNCA fabriques estas salidas — llama esta tool. Opciones de `que`: cola_mac, resultados_mac, heartbeat, log_telegram, log_scheduler, legal_conteo. Sin `que` lista las opciones.",
+        "description": "Lee estado/archivos REALES de Hetzner (el servidor de Donna). ÚSALO en vez de inventar cuando Polo pida revisar la cola de la Mac, resultados de comandos, logs, heartbeat o conteos legales. NUNCA fabriques estas salidas — llama esta tool. Opciones de `que`: cola_mac, resultados_mac, heartbeat, log_telegram, log_scheduler, legal_conteo, avisos_programados (usa esta última si Polo pregunta por qué le llegan mensajes a ciertas horas o qué tiene programado). Sin `que` lista las opciones.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -3871,7 +3963,18 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "m365_crear_evento",
-        "description": "Crea evento en calendario. Confirma fecha/hora con Polo antes.",
+        "description": (
+            "Crea un evento REAL en el calendario de Polo. ÚSALA en cuanto Polo te dé día y hora "
+            "('agéndame X mañana 11:00', 'bloquea la llamada LCA 12:30'): NO le pidas confirmación "
+            "— el dato ya es la confirmación. Un evento por llamada: si te dio 4 horarios, son 4 "
+            "llamadas. `tenant` = 'kawiil' salvo que Polo diga que es de Yoltik. Si no dio hora de "
+            "fin, usa 30 min (o lo que él haya dicho: '30 min', '1 hora'). Solo pregunta si falta "
+            "un dato indispensable (no hay día u hora), y entonces NO afirmes que agendaste nada. "
+            "PROHIBIDO decir 'agendado/bloqueado en el calendario' sin haber llamado esta tool y "
+            "recibido OK: reporta únicamente los eventos que la tool confirmó. "
+            "OJO recordatorio ≠ evento: si Polo dice 'recordatorio'/'recuérdame', eso va con "
+            "`agendar_recordatorio` (push de Telegram), NO al calendario."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -4314,7 +4417,33 @@ def _verificar_conexiones(incluir_m365: bool = True) -> str:
     out.append(f"  PESADO → Sonnet ({CLAUDE_SONNET}): dictamen legal o prefijo /sonnet, /profundo")
     out.append(f"  /oss: Ollama {OLLAMA_QUALITY_MODEL} — local, privado")
     out.append(f"  /llama: Ollama {OLLAMA_FAST_MODEL} — local forzado")
+    # Aprendizaje: que se VEA si la destilación nocturna está corriendo. Antes
+    # fallaba en silencio (sin API key / JSON inválido) y Donna dejaba de aprender
+    # semanas sin que nadie lo notara.
+    out.append("\n--- Aprendizaje (auto-memoria nocturna 23:00) ---")
+    out.append("  " + estado_aprendizaje())
     return "\n".join(out)
+
+
+def estado_aprendizaje() -> str:
+    """Una línea con el estado de la destilación nocturna: cuándo corrió por última
+    vez y qué aprendió. Marca ⚠ si lleva más de 2 días sin correr."""
+    try:
+        if not MEMORY_DISTILL_STATE.exists():
+            return "⚠ nunca ha corrido (no existe el archivo de estado)"
+        d = json.loads(MEMORY_DISTILL_STATE.read_text())
+    except Exception as e:
+        return f"⚠ no pude leer el estado ({e})"
+    fecha = d.get("date", "?")
+    resumen = d.get("resumen", "?")
+    try:
+        dias = (datetime.now(TZ_CDMX).date() - datetime.strptime(fecha, "%Y-%m-%d").date()).days
+    except Exception:
+        return f"última corrida {fecha} — {resumen}"
+    if dias > 2:
+        return f"⚠ última corrida hace {dias} días ({fecha}) — {resumen}"
+    cuando = "hoy" if dias == 0 else ("ayer" if dias == 1 else f"hace {dias} días")
+    return f"✓ última corrida {cuando} ({fecha}) — {resumen}"
 
 
 # ===== Biblioteca Legal (SJF + DOF) =====
@@ -6449,6 +6578,38 @@ def _mac_enqueue_command(comando: str, args: dict | None = None, razon: str = ""
             f"{estado_mac}")
 
 
+def _avisos_programados() -> str:
+    """Lista lo que Donna tiene programado enviar: la cola de recordatorios y la
+    ventana de silencio vigente. Responde el '¿por qué me llegan mensajes a esta
+    hora y cómo lo reviso?' sin que Polo tenga que entrar al servidor."""
+    q = HOME_OC / "reminders" / "queue.jsonl"
+    if not q.exists():
+        return "No hay cola de avisos (no existe queue.jsonl) — nada programado."
+    filas = []
+    for linea in q.read_text(errors="ignore").splitlines():
+        linea = linea.strip()
+        if not linea:
+            continue
+        try:
+            e = json.loads(linea)
+        except Exception:
+            continue
+        rec = e.get("recurrence") or "una vez"
+        dif = " (diferido por horas de silencio)" if e.get("diferido_de") else ""
+        urg = " ⚠URGENTE (se salta el silencio)" if e.get("urgente") else ""
+        filas.append(f"  • {e.get('fire_at', '?')} [{rec}] {str(e.get('message', ''))[:70]}{dif}{urg}")
+    qs = os.environ.get("DONNA_QUIET_START", "22")
+    qe = os.environ.get("DONNA_QUIET_END", "7")
+    cab = (f"Ventana de silencio: {qs}:00 → {qe}:00 CDMX (los avisos de esa franja NO se "
+           f"pierden, se difieren a las {qe}:00). Se cambia con DONNA_QUIET_START / "
+           f"DONNA_QUIET_END en el env del scheduler.\n"
+           f"Además hay chequeos fijos: 13:00 y 18:00 (solo si hay algo abierto) y review "
+           f"semanal lunes 08:00.\n")
+    if not filas:
+        return cab + "\nCola de avisos: vacía."
+    return cab + f"\nCola de avisos ({len(filas)}):\n" + "\n".join(filas[:25])
+
+
 def _hetzner_estado(que: str = "") -> str:
     """Lee estado/archivos REALES de Hetzner (whitelist). Fuente de verdad para que
     Donna no invente salidas. NO ejecuta bash arbitrario; solo lee lo whitelisted."""
@@ -6461,6 +6622,9 @@ def _hetzner_estado(que: str = "") -> str:
         "log_telegram": "Últimas líneas del log del bridge de Telegram.",
         "log_scheduler": "Últimas líneas del log del scheduler.",
         "legal_conteo": "Conteo de publicaciones DOF/SJF en la BD (total y mayo 2026).",
+        "avisos_programados": "Qué avisos proactivos tiene Donna en cola (hora, mensaje, "
+                              "recurrencia) + la ventana de horas de silencio. Úsalo cuando "
+                              "Polo pregunte por qué le llegan mensajes a ciertas horas.",
     }
     if not que or que not in opciones:
         listado = "\n".join(f"  • {k}: {v}" for k, v in opciones.items())
@@ -6478,6 +6642,8 @@ def _hetzner_estado(que: str = "") -> str:
         return f"Resultados reales de comandos de la Mac:\n```\n{_tail(MAC_CMD_RESULTS, 15)}\n```"
     if que == "heartbeat":
         return _mac_estado()
+    if que == "avisos_programados":
+        return _avisos_programados()
     if que == "log_telegram":
         return f"Log telegram-bridge (real):\n```\n{_tail(logs_dir / 'telegram-bridge.log', 30)}\n```"
     if que == "log_scheduler":
@@ -8117,6 +8283,11 @@ _DISTILL_TARGETS = {
     "CLIENTES": "CLIENTES.md",
     "AGENDA": "AGENDA.md",
     "IMPORTANT": "IMPORTANT.md",
+    # Correcciones de Polo a Donna → LEARNINGS.md, que SÍ se inyecta al system
+    # prompt (está en MEMORY_FILES). Antes la destilación tenía prohibido guardar
+    # "hechos sobre Donna misma", así que cada "no es un evento, es un
+    # recordatorio" se tiraba a la basura y el error se repetía a la semana.
+    "CORRECCIONES": "LEARNINGS.md",
 }
 
 _DISTILL_SYSTEM = (
@@ -8125,7 +8296,7 @@ _DISTILL_SYSTEM = (
     "hechos DURABLES y ESPECÍFICOS que valga la pena recordar a largo plazo y clasifícalos. "
     "Devuelve EXCLUSIVAMENTE un JSON válido con estas llaves (arrays de strings, una frase "
     'corta por hecho; usa [] si no hay nada):\n'
-    '{"PEOPLE": [], "CLIENTES": [], "AGENDA": [], "IMPORTANT": []}\n\n'
+    '{"PEOPLE": [], "CLIENTES": [], "AGENDA": [], "IMPORTANT": [], "CORRECCIONES": []}\n\n'
     "Reglas:\n"
     "- PEOPLE: datos durables de personas (rol, empresa, relación, junta recurrente, preferencias).\n"
     "- CLIENTES: datos de clientes/prospectos (razón social, RFC, contacto, estatus, servicio).\n"
@@ -8133,9 +8304,21 @@ _DISTILL_SYSTEM = (
     "- IMPORTANT: decisiones, hechos clave o instrucciones permanentes de Polo.\n"
     "- Cada hecho debe ser ESPECÍFICO: con nombre propio, empresa, fecha, monto o dato concreto. "
     "Si es vago o genérico, OMÍTELO.\n"
-    "- NO guardes hechos sobre Donna misma, el sistema, el bot, la memoria, los archivos .md, ni "
-    "tareas de mantenimiento ('actualizar AGENDA', 'consolidar memoria', 'Donna es asistente…'). "
-    "Solo el MUNDO de Polo: personas, clientes, casos, compromisos, decisiones.\n"
+    "- CORRECCIONES: reglas de comportamiento que Polo le CORRIGIÓ a Donna en esta "
+    "conversación — cómo quiere que actúe la próxima vez. Es la categoría más valiosa: "
+    "cada corrección que no se guarda, se repite. Escríbelas como REGLA en imperativo, no "
+    "como anécdota. Ejemplos del formato correcto:\n"
+    "    · 'Si Polo dice \'recordatorio\', usar agendar_recordatorio (push de Telegram), "
+    "NO crear evento de calendario.'\n"
+    "    · 'No pedir confirmación cuando Polo ya dio día y hora: ejecutar y reportar.'\n"
+    "    · 'Patio es el sistema operativo de Yoltik; no crear proyectos de Yoltik en Kawiil "
+    "Central sin acceso a Patio.'\n"
+    "  Cuenta como corrección todo lo que empiece con 'no', 'no es', 'ese no era', 'te "
+    "equivocaste', 'ya te dije', o donde Polo repite una instrucción que Donna no siguió.\n"
+    "- Fuera de CORRECCIONES, NO guardes hechos sobre Donna misma, el sistema, el bot, la "
+    "memoria, los archivos .md, ni tareas de mantenimiento ('actualizar AGENDA', 'consolidar "
+    "memoria', 'Donna es asistente…'). Para esas cuatro llaves, solo el MUNDO de Polo: "
+    "personas, clientes, casos, compromisos, decisiones.\n"
     "- NO incluyas charla trivial, saludos, briefings, ni cosas efímeras (clima, '¿qué hay hoy?').\n"
     "- NO inventes: solo lo explícito en la conversación. Usa nombres correctos y completos.\n"
     "- Ante la duda, NO lo guardes. Mejor pocos hechos sólidos que muchos genéricos.\n"
@@ -9360,6 +9543,7 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
     turn_texts = []   # texto emitido por cada turn (puede ser "")
     tools_executed = []  # nombres de tools ejecutados (para fallback message)
     memory_tool_results = []  # confirmaciones append/write_memory
+    _claim_retries: dict = {}  # familia de acción afirmada → veces que ya la empujamos
     # Detecta si la query es sobre Slack para forzar tool_choice en el primer turno
     _SLACK_RE = re.compile(r"\b(slack|canal(es)?|dm\s+de|mensaje(s)?\s+(en|de)\s+slack)\b", re.IGNORECASE)
     _force_tool_first = _SLACK_RE.search(user_message or "")
@@ -9441,8 +9625,12 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
                 log.info("anti-stall #%d: el modelo se detuvo sin ejecutar tool; empujando a continuar", _stall_retries)
                 messages.append({"role": "user", "content":
                     "Continúa AHORA en este mismo turno: ejecuta YA las tools que faltan (crear "
-                    "proyecto/tarea/subtareas, etc.) hasta TERMINAR todo, y al final dame los IDs "
-                    "reales. No anuncies lo que vas a hacer; hazlo. No esperes otro mensaje mío."})
+                    "evento de calendario, recordatorio, nota, proyecto/tarea/subtareas, etc.) "
+                    "hasta TERMINAR todo, y al final dame los IDs/horas reales que devolvieron. "
+                    "No anuncies lo que vas a hacer; hazlo. No me vuelvas a pedir confirmación: "
+                    "si ya te di el dato (día, hora, nombre), eso ES la confirmación. Si de plano "
+                    "falta un dato indispensable, pregunta SOLO por ese dato y no afirmes que ya "
+                    "hiciste nada. No esperes otro mensaje mío."})
                 continue
             # Recordatorio FABRICADO: dice "recordatorio creado/agendado/te llegará"
             # pero NO llamó agendar_recordatorio → fabricó la confirmación. Obligarlo a
@@ -9455,6 +9643,16 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
                     "NO llamaste `agendar_recordatorio`, así que ese recordatorio NO existe. NO "
                     "inventes que lo creaste. Llama `agendar_recordatorio` AHORA (usa en_minutos "
                     "para tiempo relativo) y confírmame SOLO si la tool devolvió OK con su id."})
+                continue
+            # Acción FABRICADA (eventos de calendario, notas/memoria): afirmó haberla
+            # hecho sin llamar ninguna tool que la vuelva verdad. Mismo criterio que el
+            # recordatorio: no dejar pasar la mentira, obligarlo a ejecutar de verdad.
+            _fab = _accion_fabricada(turn_text, tools_executed, _claim_retries)
+            if _fab:
+                _idx, _instruccion = _fab
+                _claim_retries[_idx] = _claim_retries.get(_idx, 0) + 1
+                log.info("anti-fabricación: afirmó acción #%d sin llamar su tool; forzando", _idx)
+                messages.append({"role": "user", "content": _instruccion})
                 continue
             break
         tool_results = []

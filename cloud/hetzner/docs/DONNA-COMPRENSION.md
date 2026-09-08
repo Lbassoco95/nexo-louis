@@ -103,3 +103,108 @@ las descripciones de las tools de Slack).
 cd /opt/louis && git pull && ./deploy.sh --skip-bootstrap
 systemctl restart telegram-bridge slack-bridge openclaw-gateway
 ```
+
+---
+
+# Segunda ronda (7-sep, tarde): acciones fabricadas, formatos y horarios
+
+De la conversación de las 6:54–6:57pm salieron tres fallas más. Ninguna era falta de
+inteligencia del modelo: eran instrucciones contradictorias y plomería.
+
+## A. Decía "agendado" y el calendario quedaba vacío
+
+Donna escribió *"✅ Correcto. Agendando los 4 eventos de MAÑANA en Microsoft Calendar…"*
+y *"Evento agendado en Microsoft Calendar (Kawiil)"*. No se creó nada.
+
+Causas, en orden de culpa:
+
+1. **La descripción de la tool le ordenaba preguntar.** `m365_crear_evento` decía
+   literal: *"Crea evento en calendario. Confirma fecha/hora con Polo antes."* Polo ya
+   había dado las 4 horas exactas y ella igual preguntó *"¿Confirmo que los meto al
+   calendario de Kawiil?"* — obedeciendo la tool. De ahí el bucle infinito de
+   confirmación.
+2. **Nada verificaba la afirmación.** Ya existía una red anti-fabricación para
+   recordatorios (`_REMINDER_CLAIM_RE` → obliga a llamar `agendar_recordatorio`), pero
+   no para eventos ni para notas. Afirmar era gratis.
+3. **`_es_stall` no veía el gerundio.** Detectaba "voy a crear" pero no "Agendando…",
+   y tampoco el "¿Confirmo que…?".
+
+Arreglos:
+
+- `m365_crear_evento` ahora dice lo contrario: si Polo dio día y hora, **ejecuta sin
+  preguntar** (el dato ES la confirmación), una llamada por evento, `tenant` = kawiil por
+  default, 30 min si no hay fin, y prohibido decir "agendado" sin OK de la tool. Incluye
+  la distinción recordatorio ≠ evento.
+- `_CLAIM_NETS`: tabla de (afirmación, tools que la vuelven verdad, corrección). Cubre
+  eventos (`m365_crear_evento`) y notas/memoria (`append_to_memory`, …). Si el turno
+  afirma sin haber llamado ninguna, `_accion_fabricada()` lo empuja a ejecutarla de
+  verdad — una vez por familia, para no ciclar el loop.
+- `_es_stall` ahora cubre gerundios de acción (agendando, creando, registrando,
+  guardando, bloqueando…) y el bucle de confirmación (`¿confirmo`, `¿procedo`,
+  `¿los meto`, `¿quieres que lo…`).
+- System prompt, sección `# ACCIONES: EJECUTA, NO ANUNCIES`: nunca afirmar sin OK de la
+  tool; no pedir permiso dos veces; un ítem = una llamada; reportar lo que devolvió la
+  tool (incluidos los fallos parciales); recordatorio ≠ evento; "anótalo" = tool de
+  memoria de verdad.
+
+## B. Unos mensajes con un formato y otros con otro
+
+El prompt y el conversor se contradecían:
+
+| El prompt le pedía | Lo que `format_for_telegram` hace |
+|---|---|
+| "Negrita: `*una sola*`, NO `**dos**`" | `*x*` → **cursiva**; `**x**` → negrita |
+| "NO uses headers `#`" | `# x` → negrita |
+
+Cuando obedecía el prompt, los títulos salían en cursiva; cuando escribía su Markdown
+natural, salían bien. Mismo bot, dos estilos. Arreglado: el prompt de Telegram (y el de
+Slack, que tenía el mismo desfase) ahora pide **Markdown estándar**, que es lo que los
+conversores entienden, y advierte de no mezclar `*x*` con `**x**`.
+
+Segunda causa: el troceado a 4000 caracteres cortaba a ciegas y partía los tags
+(`<b>` en un chunk, `</b>` en el otro) → Telegram devolvía 400 y **ese** chunk caía a
+texto plano, así que un mensaje largo salía mitad con formato y mitad en crudo.
+`_chunk_html()` ahora corta en salto de línea.
+
+## C. Mensajes a todas horas
+
+Cuatro causas distintas:
+
+1. **`sjf-weekly.timer` sin zona horaria**: `OnCalendar=Mon 08:00` se interpreta en hora
+   del server (UTC) = **2:00am CDMX**, y ese timer manda resumen por Telegram. Ahora
+   `America/Mexico_City` explícito. Igual `sjf-update.timer` (13:30 UTC → 13:30 CDMX).
+2. **`Persistent=true` en los timers que notifican**: si el server estaba caído a la hora
+   del boletín, systemd lo disparaba al arrancar, a cualquier hora. Quitado de
+   `dof-daily`, `dof-daily-tarde`, `legal-digest`, `legal-estado`, `sjf-weekly`. Se
+   mantiene en los jobs silenciosos (harvest/index).
+3. **Sin horas de silencio en el scheduler**: un `fire_at` de madrugada (o mal calculado
+   por el modelo) disparaba a esa hora. Ahora ventana **22:00 → 07:00 CDMX**; los avisos
+   de esa franja **no se pierden**, se reprograman a las 07:00. `"urgente": true` en la
+   entry se salta el silencio. Configurable: `DONNA_QUIET_START` / `DONNA_QUIET_END`.
+   → Si el briefing matutino está en cola antes de las 7:00, baja `DONNA_QUIET_END`.
+4. **La cola se vaciaba de golpe**: `fire_at <= now` mandaba todo el atraso junto. Ahora
+   máximo `DONNA_MAX_POR_TICK` (3) por minuto, y un aviso con más de 2h de atraso llega
+   marcado `⏰ (atrasado Nh)` para que Polo no lo lea como de ahora.
+
+Para revisarlo sin entrar al servidor: `hetzner_estado(que="avisos_programados")` lista
+la cola (hora, mensaje, recurrencia, diferidos) y la ventana de silencio vigente.
+
+## D. El proceso de aprendizaje
+
+La destilación nocturna (23:00, Haiku → AGENDA/PEOPLE/CLIENTES/IMPORTANT) existía, pero
+tenía dos agujeros:
+
+1. **Prohibía aprender de las correcciones.** La regla decía *"NO guardes hechos sobre
+   Donna misma, el sistema, el bot"*, así que los tres "no, eso no era" de Polo se
+   tiraban a la basura y el mismo error volvía. Ahora hay categoría `CORRECCIONES` →
+   `LEARNINGS.md`, que **sí** se inyecta al system prompt, con instrucción de escribirlas
+   como regla en imperativo ("si Polo dice 'recordatorio', usar `agendar_recordatorio`,
+   no crear evento").
+2. **Fallaba en silencio.** El scheduler solo logueaba el caso `OK`; sin API key o con
+   JSON inválido, Donna dejaba de aprender semanas sin que nadie lo notara. Ahora loguea
+   warning, y `estado_aprendizaje()` aparece en `/status`: última corrida, qué aprendió, y
+   ⚠ si lleva más de 2 días sin correr.
+
+Lo que **no** es el cuello de botella: la capacidad del modelo. Ninguna de estas fallas
+mejora con más GPU — eran una descripción de tool que ordenaba preguntar, un prompt que
+contradecía al conversor y un timer sin zona horaria.

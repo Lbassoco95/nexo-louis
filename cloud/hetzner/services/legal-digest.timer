@@ -4,7 +4,9 @@ Description=Dispara el digest semanal de aprendizajes legales — lunes 09:30 CD
 [Timer]
 OnCalendar=Mon *-*-* 09:30:00 America/Mexico_City
 RandomizedDelaySec=300
-Persistent=true
+# Sin Persistent: este timer manda digest semanal de aprendizajes por Telegram. Con Persistent, un run
+# perdido (server caído/reiniciado) se disparaba al arrancar a cualquier hora.
+# Si se pierde una corrida, se espera a la siguiente ventana normal.
 
 [Install]
 WantedBy=timers.target

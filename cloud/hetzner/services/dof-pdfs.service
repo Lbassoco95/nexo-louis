@@ -1,5 +1,5 @@
 [Unit]
-Description=Louis DOF — genera PDF individual por nota (consulta offline + Ollama)
+Description=Donna DOF — genera PDF individual por nota (consulta offline + Ollama)
 After=network-online.target
 Wants=network-online.target
 
