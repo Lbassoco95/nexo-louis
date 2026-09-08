@@ -173,6 +173,94 @@ def reparar(clave: str, lote: int, aplicar: bool):
         con.close()
 
 
+
+# ── Fecha aproximada desde la CITA ─────────────────────────────────────────
+# El API deja `fechaPublicacion` vacía en las tesis históricas (el backfill), pero
+# la cita del Semanario lleva el mes y el año dentro: "Gaceta del Semanario Judicial
+# de la Federación. Libro 87, Junio de 2021, Tomo III". De ahí se puede derivar una
+# fecha aproximada, que para saber si una tesis es vigente alcanza y sobra.
+_MESES = {
+    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
+    "julio": 7, "agosto": 8, "septiembre": 9, "setiembre": 9, "octubre": 10,
+    "noviembre": 11, "diciembre": 12,
+}
+_MES_ANIO_RE = re.compile(
+    r"\b(" + "|".join(_MESES) + r")\s+de\s+(\d{4})\b", re.IGNORECASE)
+_ANIO_RE = re.compile(r"\b(1[89]\d{2}|20\d{2})\b")
+
+
+def fecha_desde_cita(*textos):
+    """Devuelve (fecha_iso, precision) a partir de la cita, o (None, None).
+
+    precision: 'mes' si se pudo ubicar mes y año, 'anio' si solo el año. Se marca a
+    propósito: una fecha derivada NO es lo mismo que la que publica la Corte, y
+    quien la lea tiene que poder distinguirlas.
+    """
+    for t in textos:
+        if not t:
+            continue
+        t = str(t)
+        m = _MES_ANIO_RE.search(t)
+        if m:
+            return f"{int(m.group(2)):04d}-{_MESES[m.group(1).lower()]:02d}-01", "mes"
+    for t in textos:
+        if not t:
+            continue
+        m = _ANIO_RE.search(str(t))
+        if m:
+            return f"{int(m.group(1)):04d}-01-01", "anio"
+    return None, None
+
+
+def analizar_proxy(muestra: int):
+    """Qué información de fecha traen los campos alternativos de las tesis sin fecha.
+    No escribe nada: sirve para decidir si vale derivar la fecha y de dónde."""
+    con = abrir()
+    try:
+        filas = con.execute(
+            "SELECT registro_digital, epoca, fuente, localizacion, tomo, volumen, raw_json "
+            "FROM tesis WHERE (fecha_publicacion IS NULL OR fecha_publicacion = '') "
+            f"LIMIT {int(muestra)}").fetchall()
+        if not filas:
+            print("No hay tesis sin fecha.")
+            return
+        print(f"--- Campos de fecha alternativos ({len(filas)} tesis sin fecha) ---\n")
+        for r in filas[:6]:
+            print(f"  registro {r['registro_digital']}")
+            for c in ("epoca", "fuente", "localizacion", "tomo", "volumen"):
+                v = r[c]
+                if v not in (None, ""):
+                    print(f"      {c:14} = {str(v)[:110]}")
+            f, prec = fecha_desde_cita(r["fuente"], r["localizacion"], r["tomo"], r["volumen"])
+            print(f"      → derivable   = {f or 'NO'}" + (f"  (precisión: {prec})" if f else ""))
+            print()
+
+        # ¿De cuántas se podría derivar, y con qué precisión?
+        cont = Counter()
+        por_epoca = Counter()
+        for r in filas:
+            f, prec = fecha_desde_cita(r["fuente"], r["localizacion"], r["tomo"], r["volumen"])
+            cont[prec or "ninguna"] += 1
+            por_epoca[(r["epoca"] or "sin época")] += 1
+        print(f"--- Cobertura sobre la muestra de {len(filas)} ---")
+        for k, n in cont.most_common():
+            print(f"  {k:9}: {n:,} ({100*n//len(filas)}%)")
+        print("\n--- Épocas de las tesis sin fecha ---")
+        for k, n in por_epoca.most_common(8):
+            print(f"  {str(k)[:40]:42} {n:,}")
+
+        # ¿Y las que SÍ tienen fecha, de qué época son? Confirma la hipótesis de que
+        # el API solo la da para las recientes.
+        print("\n--- Épocas de las tesis que SÍ tienen fecha ---")
+        for r in con.execute(
+            "SELECT epoca, COUNT(*) n FROM tesis "
+            "WHERE fecha_publicacion IS NOT NULL AND fecha_publicacion != '' "
+            "GROUP BY epoca ORDER BY n DESC LIMIT 8"):
+            print(f"  {str(r['epoca'])[:40]:42} {r['n']:,}")
+    finally:
+        con.close()
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -181,8 +269,12 @@ def main():
     ap.add_argument("--aplicar", action="store_true", help="escribe de verdad (sin esto, ensayo)")
     ap.add_argument("--lote", type=int, default=5000, help="filas por lote (default 5000)")
     ap.add_argument("--muestra", type=int, default=200, help="tesis a inspeccionar (default 200)")
+    ap.add_argument("--proxy", action="store_true",
+                    help="analiza fuente/epoca/localizacion para derivar fecha aproximada")
     a = ap.parse_args()
-    if a.reparar:
+    if a.proxy:
+        analizar_proxy(a.muestra)
+    elif a.reparar:
         if not a.clave:
             sys.exit("--reparar necesita --clave. Corre el diagnóstico primero.")
         reparar(a.clave, a.lote, a.aplicar)
