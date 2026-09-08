@@ -1078,3 +1078,40 @@ importar la posición.
 `test-comprension.py` cubre las dos mitades y falla si vuelve cualquiera: un
 `logging.FileHandler` en el código, o una unit que redirija a archivo corriendo `python3`
 sin `-u`. Verificado quitando el `-u` a mano: la prueba falla con el nombre de la unit.
+
+---
+
+## El ensayo del derivador de fechas no servía
+
+`--derivar --rehacer` sin `--aplicar` contestaba **"Nada que derivar"**. Dos defectos, y
+el segundo es el grave:
+
+1. La condición de pendientes excluía las filas ya presentes en `tesis_fecha_aprox`,
+   pero el `DELETE` de `--rehacer` solo corre con `--aplicar`. En ensayo veía las
+   151,587 filas todavía ahí y concluía que no había nada que hacer. El ensayo era
+   inservible **justo en el modo en que más se necesita**.
+
+2. El histograma por década solo se imprimía **después de escribir**. El ensayo daba 8
+   ejemplos al azar, así que no podía contestar la única pregunta que importa antes de
+   escribir 151 mil filas: *¿hay años fuera de rango?* Las fechas basura (1800, 2099) de
+   la primera corrida se descubrieron **después** de haberlas escrito, y esto habría
+   vuelto a pasar.
+
+Ahora el ensayo calcula la derivación completa en memoria y reporta lo mismo que el modo
+aplicar —origen, rango, histograma— vía `_resumen_derivacion()`, que ambos comparten: si
+el ensayo reportara menos que la corrida real, no serviría para decidir. Y si detecta
+años fuera de `[1917, año actual]`, **rehúsa** y sale con código 1:
+
+```
+✗ NO apliques: N fecha(s) caen fuera de [1917, 2026]. Arregla fecha_desde_cita() primero.
+```
+
+El código de salida se propaga (`sys.exit(main())`). Antes el `return 1` se descartaba:
+el freno imprimía el aviso y el proceso salía con 0, así que cualquier `&&` alrededor
+daba el ensayo por bueno.
+
+Verificado con una base falsa de 5 tesis: ensayo desde cero, aplicar, ensayo `--rehacer`
+(el que estaba roto), y `--rehacer --aplicar` limpiando `1800-01-01` y `2099-01-01` a
+`no-derivable`. El freno se probó inyectando un año fuera de rango, porque
+`fecha_desde_cita()` ya no puede producir uno — un freno que no se puede disparar no
+está probado.

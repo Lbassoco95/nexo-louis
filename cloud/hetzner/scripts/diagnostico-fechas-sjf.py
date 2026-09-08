@@ -315,7 +315,45 @@ def integridad_fts(con) -> str:
         return str(e)
 
 
-def derivar_fechas(lote: int, aplicar: bool, rehacer: bool = False):
+def _resumen_derivacion(pares) -> int:
+    """Reporta origen, rango e histograma por década de una derivación.
+
+    `pares` es un iterable de (fecha_iso | None, precision | None) — lo que devuelve
+    `fecha_desde_cita`. Lo usan IGUAL el ensayo y el modo aplicar: si el ensayo
+    reportara menos que la corrida real, no serviría para decidir.
+
+    Devuelve cuántas fechas caen fuera de [_ANIO_MIN, _ANIO_MAX]. El histograma por
+    década es lo que habría delatado de inmediato las fechas basura (1800, 2099) de
+    la primera corrida, en vez de tener que notarlas en el MIN/MAX.
+    """
+    from collections import Counter
+    origen = Counter()
+    decadas = Counter()
+    fechas = []
+    for f, prec in pares:
+        origen[f"cita/{prec}" if f else "no-derivable"] += 1
+        if f:
+            fechas.append(f)
+            decadas[f[:3] + "0s"] += 1
+    for k, n in origen.most_common():
+        print(f"  {k}: {n:,}")
+    if not fechas:
+        print("  (ninguna fecha derivable)")
+        return 0
+    print(f"\n✓ {len(fechas):,} tesis con fecha derivada. "
+          f"Rango: {min(fechas)} … {max(fechas)}")
+    fuera = 0
+    print("\n  Distribución por década:")
+    for d in sorted(decadas):
+        anio = int(d[:3]) * 10
+        malo = not (_ANIO_MIN - 10 <= anio <= _ANIO_MAX)
+        if malo:
+            fuera += decadas[d]
+        print(f"    {d}: {decadas[d]:,}{'  ⚠ FUERA DE RANGO' if malo else ''}")
+    return fuera
+
+
+def derivar_fechas(lote: int, aplicar: bool, rehacer: bool = False) -> int:
     """Llena la fecha aproximada derivándola de la cita del Semanario.
 
     Dos decisiones de diseño:
@@ -369,27 +407,52 @@ def derivar_fechas(lote: int, aplicar: bool, rehacer: bool = False):
                 con.commit()
                 print("✓ Tabla `tesis_fecha_aprox` creada (no se tocó `tesis`)")
 
-        cond_pend = ("SELECT COUNT(*) FROM tesis t "
-                     "WHERE (t.fecha_publicacion IS NULL OR t.fecha_publicacion = '')"
-                     + (" AND NOT EXISTS (SELECT 1 FROM tesis_fecha_aprox a "
-                        "WHERE a.registro_digital = t.registro_digital)" if existe else ""))
-        pend = con.execute(cond_pend).fetchone()[0]
-        print(f"Tesis sin fecha del API y sin fecha derivada: {pend:,}")
+        # Un solo lugar define qué es "candidata". Con --rehacer la tabla aparte se
+        # borra al aplicar, así que el ENSAYO también tiene que ignorarla: si no,
+        # cuenta 0 pendientes, imprime "Nada que derivar" y es imposible
+        # previsualizar un recálculo — el ensayo quedaba inservible justo en el modo
+        # en que más se necesita.
+        _sin_fecha = "(t.fecha_publicacion IS NULL OR t.fecha_publicacion = '')"
+        _no_derivada = ("NOT EXISTS (SELECT 1 FROM tesis_fecha_aprox a "
+                        "WHERE a.registro_digital = t.registro_digital)")
+        _where = _sin_fecha + (f" AND {_no_derivada}" if (existe and not rehacer) else "")
+        pend = con.execute(f"SELECT COUNT(*) FROM tesis t WHERE {_where}").fetchone()[0]
+        etiqueta = ("Tesis a recalcular (se ignoran las derivadas: se borran al aplicar)"
+                    if rehacer else "Tesis sin fecha del API y sin fecha derivada")
+        print(f"{etiqueta}: {pend:,}")
         if not pend:
             print("Nada que derivar.")
             return
 
         if not aplicar:
+            # El ensayo calcula la derivación COMPLETA en memoria y reporta lo MISMO
+            # que el modo aplicar. Antes solo imprimía 8 ejemplos al azar, así que no
+            # podía contestar la única pregunta que importa antes de escribir 151 mil
+            # filas: ¿hay años fuera de rango? Las fechas basura (1800, 2099) de la
+            # primera corrida se descubrieron después de haberlas escrito.
+            print("\nCalculando la derivación completa (sin escribir)…", flush=True)
+            pares = []
+            for r in con.execute(
+                    "SELECT t.fuente, t.localizacion, t.tomo, t.volumen "
+                    f"FROM tesis t WHERE {_where}"):
+                pares.append(fecha_desde_cita(r["fuente"], r["localizacion"],
+                                              r["tomo"], r["volumen"]))
+            fuera = _resumen_derivacion(pares)
+
             ej = con.execute(
-                "SELECT registro_digital, epoca, localizacion, volumen, tomo, fuente "
-                "FROM tesis WHERE (fecha_publicacion IS NULL OR fecha_publicacion = '') "
-                "ORDER BY RANDOM() LIMIT 8").fetchall()
-            print("\nMuestra de lo que se escribiría (al azar):")
+                "SELECT t.registro_digital, t.epoca, t.localizacion, t.volumen, t.fuente, t.tomo "
+                f"FROM tesis t WHERE {_where} ORDER BY RANDOM() LIMIT 8").fetchall()
+            print("\n  Muestra al azar:")
             for r in ej:
                 f, prec = fecha_desde_cita(r["fuente"], r["localizacion"], r["tomo"], r["volumen"])
-                print(f"  {r['registro_digital']}  {str(r['epoca'])[:16]:18} → "
+                print(f"    {r['registro_digital']}  {str(r['epoca'])[:16]:18} → "
                       f"{f or 'NO DERIVABLE'}  ({prec or '-'})")
+
             print("\n(ENSAYO — nada se escribió. Agrega --aplicar.)")
+            if fuera:
+                print(f"✗ NO apliques: {fuera:,} fecha(s) caen fuera de "
+                      f"[{_ANIO_MIN}, {_ANIO_MAX}]. Arregla fecha_desde_cita() primero.")
+                return 1
             print("Al aplicar NO se toca la tabla `tesis`: se escribe en "
                   "`tesis_fecha_aprox`,\nasí que no se dispara el trigger del FTS ni se "
                   "reescribe el índice.")
@@ -424,21 +487,20 @@ def derivar_fechas(lote: int, aplicar: bool, rehacer: bool = False):
             hechas += len(escrituras)
             print(f"  … {hechas:,}/{pend:,}  (derivadas: {derivables:,})", flush=True)
 
-        r = con.execute("SELECT COUNT(*), MIN(fecha_aprox), MAX(fecha_aprox) "
-                        "FROM tesis_fecha_aprox WHERE fecha_aprox IS NOT NULL").fetchone()
-        print(f"\n✓ {r[0]:,} tesis con fecha derivada. Rango: {r[1]} … {r[2]}")
-        for row in con.execute("SELECT fecha_origen, COUNT(*) n FROM tesis_fecha_aprox "
-                               "GROUP BY fecha_origen ORDER BY n DESC"):
-            print(f"  {row[0]}: {row[1]:,}")
-        # Histograma por década. Es lo que habría delatado de inmediato las fechas
-        # basura (1800, 2099) en lugar de tener que notarlas en el MIN/MAX.
-        print("\n  Distribución por década:")
-        for row in con.execute(
-            "SELECT substr(fecha_aprox,1,3) || '0s' d, COUNT(*) n FROM tesis_fecha_aprox "
-            "WHERE fecha_aprox IS NOT NULL GROUP BY d ORDER BY d"):
-            aviso = "  ⚠ fuera de rango" if not (
-                _ANIO_MIN - 10 <= int(row[0][:3]) * 10 <= _ANIO_MAX) else ""
-            print(f"    {row[0]}: {row[1]:,}{aviso}")
+        # Mismo resumen que el ensayo, pero leído de lo que quedó ESCRITO — así se
+        # compara manzana con manzana lo previsto contra lo aplicado.
+        print()
+        # `fecha_origen` se guarda como "cita/mes" | "cita/anio" | "no-derivable";
+        # _resumen_derivacion espera la precisión suelta, así que se le quita el
+        # prefijo. Una fila sin fecha entra como (None, None) y cuenta como
+        # no-derivable, igual que en el ensayo.
+        escritas = [(row[0], (row[1] or "").split("/")[-1] if row[0] else None)
+                    for row in con.execute(
+                        "SELECT fecha_aprox, fecha_origen FROM tesis_fecha_aprox")]
+        fuera = _resumen_derivacion(escritas)
+        if fuera:
+            print(f"\n✗ {fuera:,} fecha(s) quedaron fuera de [{_ANIO_MIN}, {_ANIO_MAX}]. "
+                  f"Revierte con: DROP TABLE tesis_fecha_aprox;")
         print("\nPara revertir todo: DROP TABLE tesis_fecha_aprox;  (`tesis` nunca se tocó)")
     finally:
         con.close()
@@ -459,7 +521,7 @@ def main():
                     help="borra lo ya derivado y lo recalcula (tras corregir el parser)")
     a = ap.parse_args()
     if a.derivar:
-        derivar_fechas(a.lote, a.aplicar, a.rehacer)
+        return derivar_fechas(a.lote, a.aplicar, a.rehacer)
     elif a.proxy:
         analizar_proxy(a.muestra)
     elif a.reparar:
@@ -471,4 +533,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # El código de salida importa: el ensayo devuelve 1 cuando detecta años fuera de
+    # rango. Sin propagarlo, el freno solo imprime un aviso y el proceso sale con 0,
+    # así que cualquier `&&` o script alrededor daría el ensayo por bueno.
+    sys.exit(main())
