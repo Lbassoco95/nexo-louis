@@ -886,3 +886,62 @@ Dos cuidados en la reparación: es **ensayo por default** (hay que pasar `--apli
 va **por lotes de 5,000** porque el trigger `tesis_au` reindexa el FTS en cada `UPDATE`
 — un `UPDATE` masivo de una sola vez reescribiría el índice completo en una transacción
 gigante. Por lotes se ve el avance y se puede interrumpir.
+
+## Las tesis sin fecha: qué dijeron los datos
+
+El diagnóstico en el server:
+
+- **178,554** tesis · **26,967 (15%)** con `fecha_publicacion` · **151,587 sin**
+- Las que SÍ tienen fecha son **Décima (17,991), Undécima (7,683) y Duodécima (1,293)
+  Época** — suma exacta de 26,967. Las que no, son **Novena Época y anteriores**.
+- En la muestra, `fechaPublicacion` viene en la respuesta del API pero **vacía**: no es
+  un bug del scraper. El API solo la da desde la Décima Época (2011+).
+
+Pero la **cita** sí lleva la fecha:
+
+```
+localizacion = [J]; 9a. Época; Pleno; S.J.F. y su Gaceta; Tomo V, Mayo de 1997; Pág. 5
+volumen      = Tomo V, Mayo de 1997
+```
+
+`fecha_desde_cita()` la extrae con precisión de mes. Cobertura del 100% en la primera
+muestra — **pero esa muestra no era representativa**: un `LIMIT 200` sin `ORDER BY`
+devuelve las primeras filas en orden de rowid, que vienen en bloques del mismo tomo
+(198693-198698, todas Novena Época de mayo-1997). Se cambió a **muestreo estratificado
+por época con `ORDER BY RANDOM()`**, y la cobertura se reporta **por época**, no solo
+global: si una época entera no es derivable (los "Volumen 175-180, Cuarta Parte" de la
+Séptima Época no traen mes), se ve en vez de diluirse en el promedio.
+
+### Dos decisiones de diseño, y por qué
+
+**1. Va en una tabla aparte (`tesis_fecha_aprox`), no en una columna de `tesis`.**
+Salió de una falla en pruebas: al hacer `UPDATE tesis`, el trigger `tesis_au` ejecuta un
+`'delete'` contra el índice FTS externo, y si el índice no tiene esa fila —porque la
+tabla se pobló antes de que existieran los triggers, o el índice se reconstruyó— SQLite
+responde **`database disk image is malformed`**. Un `UPDATE` masivo podía tronar a media
+corrida sobre 178 mil filas. Con la tabla aparte no se dispara ningún trigger, no se
+reescribe el índice de 1.5 GB, y se revierte con un `DROP TABLE`. El script comprueba de
+todos modos la integridad del FTS (`integrity-check`) y avisa.
+
+**2. La fecha derivada NO se mezcla con `fecha_publicacion`,** y en cada resultado se
+marca con `~`:
+
+```
+[SJF/~1997-05 · Pleno]      NOTARIOS. FE PÚBLICA          ← derivada de la cita
+[SJF/2024-03-15 · 1a Sala]  AVISO DE FE PÚBLICA LFPIORPI  ← la que publica la Corte
+```
+
+Una fecha sacada de "Tomo V, Mayo de 1997" es una inferencia con precisión de mes. Si
+algún día se cita una tesis apoyándose en su fecha, hay que poder saber de dónde salió el
+dato — mezclarlas crearía justo el tipo de dato falsamente confiable que esta sesión
+estuvo corrigiendo toda la tarde. `orden="reciente"` usa `COALESCE(fecha_publicacion,
+fecha_aprox)`, así que ordena por vigencia usando la mejor fecha disponible.
+
+Si la tabla no existe, la búsqueda degrada limpio y muestra la época. Probados los dos
+caminos.
+
+```bash
+python3 /opt/louis/scripts/diagnostico-fechas-sjf.py --proxy      # cobertura por época
+python3 /opt/louis/scripts/diagnostico-fechas-sjf.py --derivar    # ensayo
+python3 /opt/louis/scripts/diagnostico-fechas-sjf.py --derivar --aplicar
+```

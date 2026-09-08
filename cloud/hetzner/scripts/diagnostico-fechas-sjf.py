@@ -217,10 +217,24 @@ def analizar_proxy(muestra: int):
     No escribe nada: sirve para decidir si vale derivar la fecha y de dónde."""
     con = abrir()
     try:
-        filas = con.execute(
-            "SELECT registro_digital, epoca, fuente, localizacion, tomo, volumen, raw_json "
-            "FROM tesis WHERE (fecha_publicacion IS NULL OR fecha_publicacion = '') "
-            f"LIMIT {int(muestra)}").fetchall()
+        # Muestreo ESTRATIFICADO por época. Un `LIMIT 200` sin ORDER BY devuelve las
+        # primeras filas en orden de rowid, que vienen en bloques del mismo tomo y mes
+        # (ej. 198693-198698, todas Novena Época mayo-1997): una cobertura del 100%
+        # sobre ese bloque no dice nada del acervo completo.
+        epocas = [r[0] for r in con.execute(
+            "SELECT epoca FROM tesis "
+            "WHERE (fecha_publicacion IS NULL OR fecha_publicacion = '') "
+            "GROUP BY epoca ORDER BY COUNT(*) DESC").fetchall()]
+        por_epoca_n = max(int(muestra) // max(len(epocas), 1), 20)
+        filas = []
+        for ep in epocas:
+            filas += con.execute(
+                "SELECT registro_digital, epoca, fuente, localizacion, tomo, volumen, raw_json "
+                "FROM tesis WHERE (fecha_publicacion IS NULL OR fecha_publicacion = '') "
+                "  AND epoca IS ? ORDER BY RANDOM() LIMIT ?",
+                (ep, por_epoca_n)).fetchall()
+        print(f"(muestreo estratificado: hasta {por_epoca_n} al azar de cada una de "
+              f"{len(epocas)} época(s) sin fecha)\n")
         if not filas:
             print("No hay tesis sin fecha.")
             return
@@ -237,17 +251,30 @@ def analizar_proxy(muestra: int):
 
         # ¿De cuántas se podría derivar, y con qué precisión?
         cont = Counter()
-        por_epoca = Counter()
+        por_ep = {}
         for r in filas:
             f, prec = fecha_desde_cita(r["fuente"], r["localizacion"], r["tomo"], r["volumen"])
             cont[prec or "ninguna"] += 1
-            por_epoca[(r["epoca"] or "sin época")] += 1
-        print(f"--- Cobertura sobre la muestra de {len(filas)} ---")
+            ep = r["epoca"] or "sin época"
+            d = por_ep.setdefault(ep, Counter())
+            d[prec or "ninguna"] += 1
+        print(f"--- Cobertura global sobre la muestra de {len(filas)} ---")
         for k, n in cont.most_common():
             print(f"  {k:9}: {n:,} ({100*n//len(filas)}%)")
-        print("\n--- Épocas de las tesis sin fecha ---")
-        for k, n in por_epoca.most_common(8):
-            print(f"  {str(k)[:40]:42} {n:,}")
+        # Por época es lo que importa: si una época no es derivable, se ve aquí y no
+        # se diluye en el promedio.
+        print("\n--- Cobertura POR ÉPOCA (con el total real de cada una) ---")
+        totales = {r[0]: r[1] for r in con.execute(
+            "SELECT epoca, COUNT(*) FROM tesis "
+            "WHERE (fecha_publicacion IS NULL OR fecha_publicacion = '') "
+            "GROUP BY epoca").fetchall()}
+        for ep, d in sorted(por_ep.items(), key=lambda kv: -totales.get(kv[0], 0)):
+            n = sum(d.values())
+            ok = n - d.get("ninguna", 0)
+            tot = totales.get(ep if ep != "sin época" else None, 0)
+            marca = "✓" if ok == n else ("⚠" if ok else "✗")
+            print(f"  {marca} {str(ep)[:32]:34} {ok}/{n} derivables "
+                  f"· {tot:,} tesis sin fecha en esta época")
 
         # ¿Y las que SÍ tienen fecha, de qué época son? Confirma la hipótesis de que
         # el API solo la da para las recientes.
@@ -261,6 +288,138 @@ def analizar_proxy(muestra: int):
         con.close()
 
 
+
+def integridad_fts(con) -> str:
+    """Comprueba el índice FTS. Devuelve '' si está bien, o el error.
+
+    Importa antes de escribir: el trigger `tesis_au` hace un `'delete'` contra el
+    índice FTS externo en cada UPDATE de `tesis`, y si el índice no tiene esa fila
+    —porque la tabla se pobló antes de que existieran los triggers, o el índice se
+    reconstruyó— FTS5 lo reporta como `database disk image is malformed`. Un UPDATE
+    masivo podría tronar a media corrida sobre 178 mil filas.
+    """
+    try:
+        con.execute("INSERT INTO tesis_fts(tesis_fts) VALUES('integrity-check')")
+        return ""
+    except Exception as e:
+        # La comprobación se emite como INSERT, así que en modo solo-lectura falla
+        # por permisos y no por el índice. No hay que confundir una cosa con la otra.
+        if "readonly" in str(e).lower():
+            return "(no comprobable en modo lectura — se verifica al aplicar)"
+        return str(e)
+
+
+def derivar_fechas(lote: int, aplicar: bool):
+    """Llena la fecha aproximada derivándola de la cita del Semanario.
+
+    Dos decisiones de diseño:
+
+    1. Va en una TABLA APARTE (`tesis_fecha_aprox`), no en una columna de `tesis`.
+       Así no se dispara el trigger `tesis_au`, que en cada UPDATE reindexa el FTS:
+       eso evita reescribir el índice de 1.5 GB fila por fila, y evita el riesgo de
+       `database disk image is malformed` si el índice estuviera desincronizado.
+       De paso es reversible con un `DROP TABLE`.
+
+    2. La fecha derivada NO se mezcla con `fecha_publicacion`. Una fecha sacada de
+       "Tomo V, Mayo de 1997" es una inferencia nuestra con precisión de mes, no el
+       dato que publica la Corte. Si algún día se cita una tesis apoyándose en su
+       fecha, hay que poder saber de dónde salió.
+    """
+    con = abrir(escritura=aplicar)
+    try:
+        problema = integridad_fts(con)
+        if problema.startswith("(no comprobable"):
+            print(f"· Índice FTS {problema}")
+        elif problema:
+            print(f"⚠ El índice FTS reporta: {problema[:120]}")
+            print("  (Con la tabla aparte no estorba, pero conviene reconstruirlo:")
+            print("   sqlite3 <db> \"INSERT INTO tesis_fts(tesis_fts) VALUES('rebuild');\")")
+        else:
+            print("✓ Índice FTS íntegro")
+
+        existe = bool(con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tesis_fecha_aprox'"
+        ).fetchone())
+        if not existe:
+            if not aplicar:
+                print("Se creará la tabla `tesis_fecha_aprox` (con --aplicar)")
+            else:
+                con.execute("""
+                    CREATE TABLE tesis_fecha_aprox (
+                        registro_digital INTEGER PRIMARY KEY,
+                        fecha_aprox      TEXT,      -- ISO, día 01 (precisión de mes)
+                        fecha_origen     TEXT,      -- cita/mes | cita/anio | no-derivable
+                        derivada_at      TEXT NOT NULL
+                    )""")
+                con.execute("CREATE INDEX idx_tfa_fecha ON tesis_fecha_aprox(fecha_aprox)")
+                con.commit()
+                print("✓ Tabla `tesis_fecha_aprox` creada (no se tocó `tesis`)")
+
+        cond_pend = ("SELECT COUNT(*) FROM tesis t "
+                     "WHERE (t.fecha_publicacion IS NULL OR t.fecha_publicacion = '')"
+                     + (" AND NOT EXISTS (SELECT 1 FROM tesis_fecha_aprox a "
+                        "WHERE a.registro_digital = t.registro_digital)" if existe else ""))
+        pend = con.execute(cond_pend).fetchone()[0]
+        print(f"Tesis sin fecha del API y sin fecha derivada: {pend:,}")
+        if not pend:
+            print("Nada que derivar.")
+            return
+
+        if not aplicar:
+            ej = con.execute(
+                "SELECT registro_digital, epoca, localizacion, volumen, tomo, fuente "
+                "FROM tesis WHERE (fecha_publicacion IS NULL OR fecha_publicacion = '') "
+                "ORDER BY RANDOM() LIMIT 8").fetchall()
+            print("\nMuestra de lo que se escribiría (al azar):")
+            for r in ej:
+                f, prec = fecha_desde_cita(r["fuente"], r["localizacion"], r["tomo"], r["volumen"])
+                print(f"  {r['registro_digital']}  {str(r['epoca'])[:16]:18} → "
+                      f"{f or 'NO DERIVABLE'}  ({prec or '-'})")
+            print("\n(ENSAYO — nada se escribió. Agrega --aplicar.)")
+            print("Al aplicar NO se toca la tabla `tesis`: se escribe en "
+                  "`tesis_fecha_aprox`,\nasí que no se dispara el trigger del FTS ni se "
+                  "reescribe el índice.")
+            return
+
+        ahora = __import__("datetime").datetime.now().isoformat(timespec="seconds")
+        hechas = derivables = 0
+        while True:
+            filas = con.execute(
+                "SELECT t.registro_digital, t.fuente, t.localizacion, t.tomo, t.volumen "
+                "FROM tesis t "
+                "WHERE (t.fecha_publicacion IS NULL OR t.fecha_publicacion = '') "
+                "  AND NOT EXISTS (SELECT 1 FROM tesis_fecha_aprox a "
+                "                  WHERE a.registro_digital = t.registro_digital) "
+                f"LIMIT {int(lote)}").fetchall()
+            if not filas:
+                break
+            escrituras = []
+            for r in filas:
+                f, prec = fecha_desde_cita(r["fuente"], r["localizacion"], r["tomo"], r["volumen"])
+                if f:
+                    derivables += 1
+                # Las no derivables también se registran, para que la consulta de
+                # pendientes avance y no se reintenten en cada corrida.
+                escrituras.append((r["registro_digital"], f,
+                                   f"cita/{prec}" if f else "no-derivable", ahora))
+            con.executemany(
+                "INSERT OR REPLACE INTO tesis_fecha_aprox "
+                "(registro_digital, fecha_aprox, fecha_origen, derivada_at) VALUES (?,?,?,?)",
+                escrituras)
+            con.commit()
+            hechas += len(escrituras)
+            print(f"  … {hechas:,}/{pend:,}  (derivadas: {derivables:,})", flush=True)
+
+        r = con.execute("SELECT COUNT(*), MIN(fecha_aprox), MAX(fecha_aprox) "
+                        "FROM tesis_fecha_aprox WHERE fecha_aprox IS NOT NULL").fetchone()
+        print(f"\n✓ {r[0]:,} tesis con fecha derivada. Rango: {r[1]} … {r[2]}")
+        for row in con.execute("SELECT fecha_origen, COUNT(*) n FROM tesis_fecha_aprox "
+                               "GROUP BY fecha_origen ORDER BY n DESC"):
+            print(f"  {row[0]}: {row[1]:,}")
+        print("\nPara revertir todo: DROP TABLE tesis_fecha_aprox;  (`tesis` nunca se tocó)")
+    finally:
+        con.close()
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -271,8 +430,12 @@ def main():
     ap.add_argument("--muestra", type=int, default=200, help="tesis a inspeccionar (default 200)")
     ap.add_argument("--proxy", action="store_true",
                     help="analiza fuente/epoca/localizacion para derivar fecha aproximada")
+    ap.add_argument("--derivar", action="store_true",
+                    help="llena fecha_aprox/fecha_origen desde la cita (columnas APARTE)")
     a = ap.parse_args()
-    if a.proxy:
+    if a.derivar:
+        derivar_fechas(a.lote, a.aplicar)
+    elif a.proxy:
         analizar_proxy(a.muestra)
     elif a.reparar:
         if not a.clave:

@@ -519,7 +519,7 @@ def _fts_query(termino: str) -> str:
 
 
 def _buscar_fts(db_path, tabla, fts, rowid_col, campos, termino, limite,
-                filtro="", orden="relevancia", col_fecha="") -> tuple:
+                filtro="", orden="relevancia", col_fecha="", join_extra="") -> tuple:
     """Busca con FTS5 y devuelve (filas, via). `via` dice qué camino se usó, para
     que no haya que adivinar si el índice está funcionando.
 
@@ -528,15 +528,22 @@ def _buscar_fts(db_path, tabla, fts, rowid_col, campos, termino, limite,
     """
     q = _fts_query(termino)
     if q:
-        sel = ", ".join(f"t.{c}" for c in campos)
+        # Los campos de la tabla unida (fa.*) se cualifican aparte de los de `t`.
+        sel = ", ".join(("fa." + c) if c == "fecha_aprox" else f"t.{c}" for c in campos)
         # Se piden más filas de las pedidas porque el filtro (ej. incluido=1) se
         # aplica DESPUÉS del ranking; si no, un filtro estricto vaciaría el resultado.
         holgura = max(int(limite) * 5, 25)
-        ordenar = (f"t.{col_fecha} DESC, m.rank"
-                   if orden == "reciente" and col_fecha else "m.rank")
+        if orden == "reciente" and col_fecha:
+            # COALESCE: ordena por la fecha del API y, si no hay, por la derivada.
+            expr = (f"COALESCE(t.{col_fecha}, fa.fecha_aprox)"
+                    if "fecha_aprox" in campos else f"t.{col_fecha}")
+            ordenar = f"{expr} DESC, m.rank"
+        else:
+            ordenar = "m.rank"
         sql = (f"SELECT {sel} FROM {tabla} t "
                f"JOIN (SELECT rowid, rank FROM {fts} WHERE {fts} MATCH ? "
                f"      ORDER BY rank LIMIT ?) m ON t.{rowid_col} = m.rowid "
+               f"{join_extra} "
                f"{('WHERE ' + filtro) if filtro else ''} "
                f"ORDER BY {ordenar} LIMIT ?")
         try:
@@ -595,16 +602,29 @@ def legal_buscar(termino: str, fuente: str = "ambas", limite: int = 5,
     if fuente in ("sjf", "ambas") and SJF_DB_PATH.exists():
         tablas = _tablas_db(SJF_DB_PATH)
         if "tesis" in tablas:
+            # `tesis_fecha_aprox` la llena scripts/diagnostico-fechas-sjf.py derivando
+            # el mes/año de la cita del Semanario, para las tesis anteriores a la
+            # Décima Época (el API no les da fechaPublicacion). Va en tabla aparte a
+            # propósito: una fecha inferida no es la que publica la Corte.
+            campos = ["rubro", "texto", "fecha_publicacion", "epoca", "instancia"]
+            if "tesis_fecha_aprox" in tablas:
+                campos.append("fecha_aprox")
             filas, via = _buscar_fts(
                 SJF_DB_PATH, "tesis", "tesis_fts", "registro_digital",
-                ["rubro", "texto", "fecha_publicacion", "epoca", "instancia"],
-                termino, limite, orden=orden, col_fecha="fecha_publicacion")
+                campos, termino, limite, orden=orden,
+                col_fecha="fecha_publicacion",
+                join_extra=("LEFT JOIN tesis_fecha_aprox fa "
+                            "ON fa.registro_digital = t.registro_digital"
+                            if "tesis_fecha_aprox" in tablas else ""))
             vias.append(f"SJF:{via}")
             for f in filas:
                 # Sin fecha, la ÉPOCA y la instancia son lo único que ubica la tesis
                 # en el tiempo — y saber si una tesis es vigente no es un adorno.
                 fecha = f.get("fecha_publicacion") or ""
-                sello = fecha or (f.get("epoca") or "época?")
+                # El «~» marca que la fecha es DERIVADA de la cita (precisión de mes),
+                # no la que publica la Corte. La distinción se ve en cada resultado.
+                aprox = f.get("fecha_aprox") or ""
+                sello = fecha or (f"~{aprox[:7]}" if aprox else (f.get("epoca") or "época?"))
                 inst = f.get("instancia") or ""
                 resultados.append(
                     f"[SJF/{sello}{(' · ' + inst) if inst else ''}] {f.get('rubro','')}\n"
