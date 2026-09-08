@@ -307,3 +307,35 @@ sudo git clone -b claude/telegram-bot-comprehension-e6c6d2 \
 
 Si el server no tiene credencial de GitHub, el script imprime las dos salidas: registrar
 una deploy key, o empujar desde la Mac con rsync (el flujo del README).
+
+## Alta de la deploy key (una sola vez por server)
+
+El repo es privado y `louis-prod` no traía credencial de GitHub
+(`git@github.com: Permission denied (publickey)`). Se registra una **deploy key de
+solo lectura** — suficiente para `clone`/`fetch`, y no puede escribir al repo:
+
+```bash
+# 1) En el server, como polo. Genera la llave solo si no existe y pre-registra
+#    github.com en known_hosts (si no, `git clone` se cuelga pidiendo yes/no).
+sudo sh -c '
+  install -d -m 700 /root/.ssh
+  [ -f /root/.ssh/id_ed25519 ] || ssh-keygen -t ed25519 -f /root/.ssh/id_ed25519 -N "" -C "louis-prod deploy"
+  ssh-keygen -F github.com -f /root/.ssh/known_hosts >/dev/null 2>&1 \
+    || ssh-keyscan -t ed25519 github.com >> /root/.ssh/known_hosts
+  cat /root/.ssh/id_ed25519.pub
+'
+```
+
+2. Copia la línea `ssh-ed25519 AAAA…` y pégala en
+   github.com/Lbassoco95/nexo-louis → **Settings → Deploy keys → Add deploy key**.
+   Título: `louis-prod`. **NO** marques "Allow write access".
+
+3. Comprueba y clona:
+
+```bash
+sudo ssh -T git@github.com   # debe decir: "Hi Lbassoco95/nexo-louis! You've successfully authenticated"
+sudo git clone -b <rama> git@github.com:Lbassoco95/nexo-louis.git /opt/louis-src
+/opt/louis-src/cloud/hetzner/scripts/actualizar.sh <rama>
+```
+
+De ahí en adelante todo deploy es un solo comando: `/opt/louis/scripts/actualizar.sh <rama>`.
