@@ -627,3 +627,42 @@ que nadie lo notara, y el primer deploy en meses degradó producción. Dos mitig
 Pendiente menor: el docstring del módulo (líneas 18-19) documenta las rutas viejas
 `legal/sjf.db` / `legal/dof.db`. Se dejó igual a propósito, para que la verificación de
 arriba salga limpia; corregirlo va en un commit aparte.
+
+## `verificar-drift.sh`: distinguir edición viva de cambio del repo
+
+Después de restaurar el Cerebro quedó la pregunta obvia: **¿los otros 7 archivos también
+traían código que el repo no tiene?** Un `diff -q respaldo vs /opt/louis/services/` NO
+la contesta — ahí ya está la versión nueva del repo, así que los 8 "difieren" y no se
+distingue una edición viva de un cambio legítimo. (Mi primera instrucción de verificación
+tenía ese error, y de paso comparaba contra una copia del repo que en el server todavía
+estaba sin actualizar.)
+
+La comparación correcta es contra la versión del repo **anterior al deploy**, o sea la
+rama base:
+
+```bash
+/opt/louis/scripts/verificar-drift.sh            # toma el respaldo más reciente
+/opt/louis/scripts/verificar-drift.sh /opt/openclaw/.respaldo-20260907202308
+```
+
+Para cada archivo compara `origin/main:cloud/hetzner/services/<f>` contra el respaldo:
+
+- **idéntico** → el repo era la fuente de verdad, el deploy no perdió nada;
+- **difiere** → había código en vivo que git no tenía; imprime cuántas líneas y los dos
+  comandos para sacar el diff completo y portarlo al repo.
+
+Como referencia, lo que cambió en el repo en esta sesión (`origin/main` → rama):
+
+| Archivo | Líneas |
+|---|---|
+| `louis_core.py` | +731 −114 |
+| `cerebro_kawiil_mcp.py` | +273 −34 |
+| `scheduler.py` | +60 −6 |
+| `telegram-bridge.py` | +48 −14 |
+| `slack-bridge.py` | +13 −2 |
+| `openclaw_gateway.py`, `self_update.py` | +9 −9 (renombre a Donna) |
+| `browser_runner.py` | +1 −1 |
+
+Si `verificar-drift.sh` reporta un archivo sucio, el diff que salga **no** son estos
+cambios: son ediciones vivas que hay que rescatar del respaldo. **No borres los
+respaldos hasta cerrar esa revisión** — son la única copia.
