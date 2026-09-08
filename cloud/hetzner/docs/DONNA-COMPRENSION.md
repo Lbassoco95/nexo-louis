@@ -1205,3 +1205,22 @@ une los intervalos, los recorta al rango, descuenta lo ya contado, y `_pct()` av
 si aun así pasara de 100 en vez de esconderlo. Probada con un caso de números
 verificables a mano —y con `row_factory=sqlite3.Row`, porque la primera prueba usó
 una conexión configurada distinto a la de producción y dejó pasar un `TypeError`.
+
+### El deploy no instalaba los scrapers legales
+
+Casi se repite el error del renombre. `actualizar.sh --solo-servicios` instalaba
+`services/*.py` y las units, pero **no** `legal-scrapers/`. El runtime de esos
+scripts vive en `/opt/openclaw/legal/`, y el rsync solo llega a
+`/opt/louis/legal-scrapers/`: el arreglo del backfill se habría subido, el deploy
+habría reportado verde, y el server habría seguido corriendo el código viejo.
+`deploy.sh` sí los instala, pero siempre corremos `--solo-servicios`, que lo salta.
+
+Ahora se instalan los ocho, y con la misma regla que el resto: **un archivo de la
+lista que no exista en el paquete es un `fail`**, no algo que saltarse en silencio.
+
+Y una comprobación que ataca la causa en vez del síntoma: se extraen los
+`ExecStart=` de todas las units, se filtran los que apuntan a
+`/opt/openclaw/legal/`, y se exige que cada uno **exista en disco**. Es la
+comprobación que habría cachado esto de inmediato, en vez de descubrirlo semanas
+después por un acervo incompleto. Probada con una unit cuyo script falta y otra
+cuyo script está: detecta exactamente el que falta.

@@ -163,6 +163,46 @@ instalar_solo_servicios() {
       printf "  · %s era un huérfano del renombre → movido al respaldo\n" "$viejo"
     fi
   done
+  # ── Scrapers legales ──────────────────────────────────────────────────────
+  # deploy.sh los instala, pero SIEMPRE corremos --solo-servicios (que lo salta),
+  # así que sin esto el runtime en /opt/openclaw/legal/ se queda con la versión
+  # vieja para siempre. Justo lo que pasó con el arreglo del backfill del SJF: el
+  # rsync llega a /opt/louis/legal-scrapers/, no al runtime.
+  local nleg=0
+  for par in \
+      "sjf_harvest.py:sjf" "sjf_weekly_summary.py:sjf" "sjf_biblioteca.py:sjf" \
+      "sjf_backfill.py:sjf" "dof_biblioteca.py:dof" "dof_daily_summary.py:dof" \
+      "legal_digest.py:." "estado_legal.py:."; do
+    local arch="${par%%:*}" sub="${par##*:}"
+    if [[ ! -f "$PAQUETE/legal-scrapers/$arch" ]]; then
+      printf "  \033[1;31m✗ legal-scrapers/%s no existe — la lista está desfasada\033[0m\n" "$arch"
+      faltantes=$((faltantes+1))
+      continue
+    fi
+    sudo mkdir -p "$oc/legal/$sub"
+    sudo install -m 0755 -o "$su" -g "$su" "$PAQUETE/legal-scrapers/$arch" "$oc/legal/$sub/$arch"
+    nleg=$((nleg+1))
+  done
+  ok "$nleg scrapers legales instalados en $oc/legal/"
+
+  # Anti-desfase: cada ExecStart de las units que apunte a $oc/legal/ tiene que
+  # existir en disco. Es la comprobación que habría cachado que --solo-servicios
+  # nunca instalaba estos archivos, en vez de descubrirlo por un acervo incompleto.
+  local huerfanos=0
+  while read -r destino; do
+    [[ -z "$destino" ]] && continue
+    if ! sudo test -f "$destino"; then
+      printf "  \033[1;31m✗ una unit ejecuta %s y ese archivo NO existe\033[0m\n" "$destino"
+      huerfanos=$((huerfanos+1))
+    fi
+  done < <(grep -h "^ExecStart=" "$PAQUETE"/services/*.service 2>/dev/null \
+           | grep -o "@@OPENCLAW_HOME@@/legal/[A-Za-z0-9_/.-]*\.py" \
+           | sed "s|@@OPENCLAW_HOME@@|$oc|" | sort -u)
+  if [[ $huerfanos -gt 0 ]]; then
+    fail "$huerfanos unit(s) apuntan a scripts que no existen en el runtime.
+ Agrégalos a la lista de scrapers legales en este script."
+  fi
+
   [[ -f "$PAQUETE/services/m365.py" ]] && \
     sudo install -m 0755 -o "$su" -g "$su" "$PAQUETE/services/m365.py" "$oc/scripts/m365/m365.py"
   for sc in seed-kawiil-agents.sh import-legal-agents.sh seed-morning-briefing.sh; do
