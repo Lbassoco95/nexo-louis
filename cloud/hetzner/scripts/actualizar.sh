@@ -209,9 +209,18 @@ fi
 # deploy.sh usa `enable --now`, que NO reinicia lo que ya está corriendo.
 log "Reiniciando servicios (para que cargue el código nuevo)"
 sudo systemctl daemon-reload
-for s in "${SERVICIOS[@]}"; do
-  if systemctl list-unit-files | grep -q "^${s}.service"; then
-    sudo systemctl restart "$s" && ok "$s reiniciado" || printf "  ! %s no reinició\n" "$s"
+# cerebro-kawiil se reinicia también: importa donna_core, así que sin reinicio se
+# queda con el core viejo en memoria. Antes se omitía por miedo a perder ediciones
+# en vivo; ahora el manifiesto de hashes ya avisa de eso antes de pisar nada.
+for s in "${SERVICIOS[@]}" cerebro-kawiil; do
+  # Preguntar al DISCO, no parsear `systemctl list-unit-files`: ese grep se saltó
+  # scheduler y openclaw-gateway sin decir nada, y quedaron corriendo el core viejo
+  # en memoria mientras el script reportaba éxito.
+  if [[ -f "/etc/systemd/system/${s}.service" ]]; then
+    sudo systemctl restart "$s" && ok "$s reiniciado" \
+      || printf "  ! %s NO reinició — sudo systemctl status %s\n" "$s" "$s"
+  else
+    printf "  · %s.service no está instalado (se omite)\n" "$s"
   fi
 done
 # Los .timer cambiaron (zona horaria explícita y se quitó Persistent de los que
@@ -242,10 +251,27 @@ done
 # cerebro-kawiil NO se reinicia automáticamente: es el MCP que comparte memoria con
 # Cowork, y reiniciarlo aplica la versión del repo. Si el archivo en disco cambió,
 # hay que decirlo — el servicio sigue corriendo el código anterior en memoria.
-if systemctl is-active --quiet cerebro-kawiil 2>/dev/null; then
-  printf "  %-20s %s\n" "cerebro-kawiil" "active (NO reiniciado)"
-  printf "      ↳ corre el código que tenía en memoria; el de disco ya es el del repo.\n"
-  printf "      ↳ para aplicarlo: sudo systemctl restart cerebro-kawiil\n"
+# El script no puede dar el deploy por bueno solo porque los comandos no fallaron:
+# hay que comprobar que cada servicio arrancó DESPUÉS de que se escribió el core.
+# Un servicio con timestamp anterior está corriendo el código viejo en memoria.
+log "Verificando que cada servicio cargó el código nuevo"
+_core="/opt/openclaw/scripts/donna_core.py"
+if sudo test -f "$_core"; then
+  _mtime="$(sudo stat -c %Y "$_core")"
+  _viejos=0
+  for s in "${SERVICIOS[@]}" cerebro-kawiil; do
+    systemctl is-active --quiet "$s" 2>/dev/null || continue
+    _ts="$(systemctl show -p ActiveEnterTimestampMonotonic --value "$s" 2>/dev/null || echo 0)"
+    _arranque="$(date -d "$(systemctl show -p ActiveEnterTimestamp --value "$s" 2>/dev/null)" +%s 2>/dev/null || echo 0)"
+    if [[ "$_arranque" -gt 0 && "$_arranque" -lt "$_mtime" ]]; then
+      printf "  \033[1;31m✗ %s arrancó ANTES del core nuevo — corre el viejo en memoria\033[0m\n" "$s"
+      _viejos=$((_viejos+1))
+    else
+      ok "$s cargó el código nuevo"
+    fi
+  done
+  [[ $_viejos -gt 0 ]] && fail "$_viejos servicio(s) no cargaron el código nuevo. Corre:
+   sudo systemctl restart ${SERVICIOS[*]} cerebro-kawiil"
 fi
 
 log "Próximos disparos (verifica la HORA: debe ser CDMX, no UTC)"
