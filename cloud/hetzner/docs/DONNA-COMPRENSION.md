@@ -370,3 +370,60 @@ Hace nada más lo que cambia al actualizar la lógica:
 Nota aparte: que `LOUIS_DOMAIN` esté vacía en `.env` vale la pena revisarla en frío
 —Caddy y el TLS de `louis.kawiil.mx` dependen de ella— pero no bloquea al bot y no es
 algo que convenga tocar en el mismo movimiento que un hotfix.
+
+---
+
+# `slack-bridge`: 268,148 reinicios en ~34 días (hallado durante el deploy)
+
+Al verificar el deploy, `slack-bridge` aparecía en `activating`. El journal:
+
+```
+slack-bridge.service: Scheduled restart job, restart counter is at 268148.
+slack-bridge.service: Main process exited, code=exited, status=1/FAILURE
+```
+
+A un reinicio cada 11s, 268,148 reinicios ≈ **34 días** en bucle. Es anterior al
+deploy de hoy, no lo causaron los cambios.
+
+**Causa:** `load_credentials()` hace `sys.exit(1)` cuando faltan `SLACK_BOT_TOKEN` /
+`SLACK_APP_TOKEN`. Es una condición **permanente** —reintentar no la arregla— pero la
+unit tenía `Restart=always` + `RestartSec=10`, así que reintentaba indefinidamente. El
+traceback no salía en el journal porque la unit manda stdout/stderr a
+`/opt/openclaw/logs/slack-bridge.log`.
+
+**Por qué nadie lo vio en un mes:** `_verificar_conexiones` (el `/status` de Donna)
+imprimía `? slack-bridge: activating` — indistinguible de un servicio que apenas
+arranca. Un servicio muerto y uno iniciando se veían igual.
+
+## Arreglos
+
+1. **Código de salida dedicado.** Los errores de configuración salen con `78`
+   (`EX_CONFIG`, la convención de `sysexits.h`) en lugar de `1`, y las units llevan
+   `RestartPreventExitStatus=78`: falta un token → el servicio queda en `failed`,
+   visible, y deja de consumir recursos. Un crash real (red, API caída) sigue
+   reintentando. El log dice qué hacer para revivirlo
+   (`systemctl reset-failed … && systemctl start …`).
+2. **Backoff exponencial** en las 5 units con `Restart=always`: `RestartSteps=5` +
+   `RestartMaxDelaySec=300` → 10s, 20s, … hasta 5 min, en vez de martillar cada 10s.
+   Sigue auto-sanando, sin quemar el server. (Requiere systemd ≥ 254; Ubuntu 24.04
+   trae 255.)
+3. **`/status` ahora distingue arranque de bucle** (`_formato_estado_servicio` +
+   `_n_reinicios`, que lee `NRestarts`):
+
+   ```
+   ✓ telegram-bridge: active
+   ✗ slack-bridge: EN BUCLE DE CAÍDA — 268,148 reinicios. NO está arrancando,
+     se cae y vuelve a intentar. Revisa: journalctl -u slack-bridge -n 30
+   ✓ openclaw-gateway: active (⚠ 47 reinicios acumulados — se ha estado cayendo)
+   ✗ cerebro-kawiil: FAILED — no va a reintentar solo.
+   · ollama: inactive (apagado a propósito)
+   ```
+
+## Qué hacer con Slack
+
+- **Si no usas Slack:** `sudo systemctl disable --now slack-bridge`.
+- **Si sí lo usas:** pon `SLACK_BOT_TOKEN=xoxb-…` y `SLACK_APP_TOKEN=xapp-…` en
+  `/opt/openclaw/credentials/slack.env` y arráncalo.
+
+Revisa también el tamaño del log, que llevaba un mes creciendo con cada reinicio:
+`du -sh /opt/openclaw/logs/`.

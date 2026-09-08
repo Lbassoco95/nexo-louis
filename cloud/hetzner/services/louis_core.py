@@ -4423,8 +4423,7 @@ def _verificar_conexiones(incluir_m365: bool = True) -> str:
         try:
             r = subprocess.run(["systemctl", "is-active", svc], capture_output=True, text=True, timeout=3)
             state = r.stdout.strip() or r.stderr.strip()
-            mark = "✓" if state == "active" else ("·" if state == "inactive" else "?")
-            out.append(f"  {mark} {svc}: {state}")
+            out.append("  " + _formato_estado_servicio(svc, state, _n_reinicios(svc)))
         except Exception as e:
             out.append(f"  ? {svc}: error ({e})")
     out.append("\n--- Credenciales en /opt/openclaw/credentials/ ---")
@@ -4502,6 +4501,44 @@ def _verificar_conexiones(incluir_m365: bool = True) -> str:
     out.append("\n--- Aprendizaje (auto-memoria nocturna 23:00) ---")
     out.append("  " + estado_aprendizaje())
     return "\n".join(out)
+
+
+def _n_reinicios(svc: str) -> int:
+    """Cuántas veces systemd ha reiniciado el servicio (NRestarts). -1 si no se pudo."""
+    try:
+        r = subprocess.run(["systemctl", "show", "-p", "NRestarts", "--value", svc],
+                           capture_output=True, text=True, timeout=3)
+        return int((r.stdout or "").strip() or -1)
+    except Exception:
+        return -1
+
+
+# Umbral para llamarle BUCLE a los reinicios. Con RestartSec=10 y backoff, un servicio
+# sano no pasa de un puñado; cientos = se está cayendo y volviendo a arrancar.
+_REINICIOS_BUCLE = 20
+
+
+def _formato_estado_servicio(svc: str, state: str, nrestarts: int) -> str:
+    """Una línea por servicio. Distingue 'arrancando' de 'lleva 268,148 reinicios',
+    que es la razón por la que slack-bridge estuvo ~34 días caído sin que nadie lo
+    notara: `is-active` decía 'activating' y se leía como que apenas iniciaba."""
+    if state == "active":
+        if nrestarts > _REINICIOS_BUCLE:
+            return (f"✓ {svc}: active (⚠ {nrestarts:,} reinicios acumulados — "
+                    f"se ha estado cayendo)")
+        return f"✓ {svc}: active"
+    if state == "inactive":
+        return f"· {svc}: inactive (apagado a propósito)"
+    if state == "failed":
+        return (f"✗ {svc}: FAILED — no va a reintentar solo. "
+                f"Revisa: journalctl -u {svc} -n 30")
+    if state == "activating" and nrestarts > _REINICIOS_BUCLE:
+        return (f"✗ {svc}: EN BUCLE DE CAÍDA — {nrestarts:,} reinicios. "
+                f"NO está arrancando, se cae y vuelve a intentar. "
+                f"Revisa: journalctl -u {svc} -n 30")
+    if state == "activating":
+        return f"~ {svc}: activating (arrancando)"
+    return f"? {svc}: {state}" + (f" ({nrestarts:,} reinicios)" if nrestarts > 0 else "")
 
 
 def estado_aprendizaje() -> str:

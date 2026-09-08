@@ -186,6 +186,27 @@ def main() -> int:
         if t not in nombres:
             fallas.append(f"se fuerza la tool inexistente '{t}'")
 
+    # ── Visibilidad de servicios caídos ─────────────────────────────────────
+    # slack-bridge estuvo ~34 días en bucle (268,148 reinicios) y /status lo
+    # mostraba como "activating", indistinguible de un arranque normal.
+    CASOS_SERVICIO = [
+        ("slack-bridge", "activating", 268148, "BUCLE DE CAÍDA"),
+        ("slack-bridge", "activating", 2, "arrancando"),
+        ("telegram-bridge", "active", 1, "active"),
+        ("telegram-bridge", "active", 5000, "reinicios acumulados"),
+        ("scheduler", "failed", 3, "FAILED"),
+        ("ollama", "inactive", 0, "apropósito".replace("apropósito", "a propósito")),
+    ]
+    for svc, st, n, esperado in CASOS_SERVICIO:
+        linea = core._formato_estado_servicio(svc, st, n)
+        if esperado not in linea:
+            fallas.append(f"_formato_estado_servicio({svc},{st},{n}) no dice "
+                          f"'{esperado}': «{linea}»")
+    # Un bucle NUNCA debe leerse como el arranque benigno "activating (arrancando)".
+    # (La línea del bucle sí contiene la palabra, en "NO está arrancando".)
+    if "(arrancando)" in core._formato_estado_servicio("slack-bridge", "activating", 268148):
+        fallas.append("un bucle de 268k reinicios se sigue reportando como arranque normal")
+
     # Horas de silencio del scheduler: un aviso de madrugada se DIFIERE (no se
     # pierde) a la hora de apertura, y de día se manda normal.
     try:
@@ -240,7 +261,7 @@ def main() -> int:
 
     total = (len(CASOS_DOC) + len(CASOS_LEGAL) + len(CASOS_FORMATO) + 2
              + len(CASOS_FABRICACION) + len(CASOS_STALL) + 6 + 8
-             + len(CASOS_ESCRITURA) * 2 + 3)
+             + len(CASOS_ESCRITURA) * 2 + 3 + len(CASOS_SERVICIO) + 1)
     if fallas:
         print(f"❌ {len(fallas)} de {total} fallaron:\n")
         for f in fallas:

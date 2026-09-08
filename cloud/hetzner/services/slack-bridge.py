@@ -50,6 +50,13 @@ else:
     HOME_OC = HOME / ".openclaw"
 SPACE = HOME_OC / "spaces" / "general"
 CREDS_SLACK = HOME_OC / "credentials" / "slack.env"
+
+# Código de salida para ERROR DE CONFIGURACIÓN (convención EX_CONFIG de sysexits.h).
+# Faltar un token no se arregla reintentando: la unit lleva RestartPreventExitStatus=78
+# para que el servicio quede en `failed` (visible) en vez de reiniciarse para siempre
+# — slack-bridge llevaba 268,148 reinicios (~34 días) sin que nadie lo notara.
+EX_CONFIG = 78
+
 HISTORY_FILE = SPACE / "slack-history.jsonl"
 LOG_DIR = HOME_OC / "logs"
 LOG_FILE = LOG_DIR / "slack-bridge.log"
@@ -73,7 +80,11 @@ def load_credentials():
         log.error(
             f"Faltan SLACK_BOT_TOKEN (xoxb-...) o SLACK_APP_TOKEN (xapp-...) en {CREDS_SLACK} o env"
         )
-        sys.exit(1)
+        log.error("Es un error de CONFIGURACIÓN: reintentar no lo arregla. El servicio "
+                  "quedará en 'failed' a propósito. Pon los tokens y corre: "
+                  "sudo systemctl reset-failed slack-bridge && sudo systemctl start slack-bridge "
+                  "(o si no usas Slack: sudo systemctl disable --now slack-bridge)")
+        sys.exit(EX_CONFIG)
     allowed_users = [
         u.strip() for u in (creds.get("SLACK_ALLOWED_USERS") or "").split(",") if u.strip()
     ]

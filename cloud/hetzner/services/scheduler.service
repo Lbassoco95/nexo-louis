@@ -13,6 +13,14 @@ EnvironmentFile=@@ENV_FILE@@
 ExecStart=/usr/bin/python3 @@OPENCLAW_HOME@@/scripts/scheduler.py
 Restart=always
 RestartSec=10
+# Un error de CONFIGURACIÓN (código 78, EX_CONFIG: falta un token) NO se reintenta:
+# el servicio queda en 'failed', visible, en vez de reiniciarse para siempre.
+# slack-bridge llevaba 268,148 reinicios (~34 días) porque le faltaban los tokens.
+RestartPreventExitStatus=78
+# Backoff exponencial para crashes REALES (red, API caída): 10s → 20s → … → 5 min,
+# en vez de un reintento fijo cada 10s. Sigue auto-sanando, sin martillar el server.
+RestartSteps=5
+RestartMaxDelaySec=300
 StandardOutput=append:@@OPENCLAW_HOME@@/logs/scheduler.log
 StandardError=append:@@OPENCLAW_HOME@@/logs/scheduler.log
 SyslogIdentifier=louis-scheduler
