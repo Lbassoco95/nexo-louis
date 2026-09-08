@@ -17,7 +17,9 @@ Environment=BACKFILL_THROTTLE_MS=150
 Environment=BACKFILL_404_THRESHOLD=50
 Environment=BACKFILL_404_JUMP=50000
 Environment=SJF_BACKFILL_FLOOR=0
-ExecStart=/usr/bin/python3 @@OPENCLAW_HOME@@/legal/sjf/sjf_backfill.py
+# -u: sin esto el stdout va a un archivo en bloques de 4 KB y no se puede seguir
+# el progreso en vivo (`tail -f`) mientras el job corre.
+ExecStart=/usr/bin/python3 -u @@OPENCLAW_HOME@@/legal/sjf/sjf_backfill.py
 StandardOutput=append:@@OPENCLAW_HOME@@/logs/sjf-backfill.log
 StandardError=append:@@OPENCLAW_HOME@@/logs/sjf-backfill.log
 SyslogIdentifier=louis-sjf-backfill

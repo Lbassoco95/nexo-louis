@@ -10,7 +10,13 @@ User=@@SYSTEM_USER@@
 Group=@@SYSTEM_USER@@
 WorkingDirectory=@@OPENCLAW_HOME@@
 EnvironmentFile=@@ENV_FILE@@
-ExecStart=/usr/bin/python3 @@OPENCLAW_HOME@@/scripts/telegram-bridge.py
+# -u (unbuffered): con StandardOutput=append: el stdout es un archivo normal, y
+# Python lo bufferea en bloques de 4 KB. Sin -u el log se atrasa hasta llenar el
+# buffer y se PIERDE lo pendiente si el proceso muere de golpe. Antes no se notaba
+# porque el código añadía además un logging.FileHandler que escribía al instante
+# — pero eso duplicaba cada línea en el archivo. La forma correcta es una sola
+# escritura (stdout) y sin buffer.
+ExecStart=/usr/bin/python3 -u @@OPENCLAW_HOME@@/scripts/telegram-bridge.py
 Restart=always
 RestartSec=10
 # Un error de CONFIGURACIÓN (código 78, EX_CONFIG: falta un token) NO se reintenta:

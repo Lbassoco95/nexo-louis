@@ -11,7 +11,9 @@ WorkingDirectory=@@OPENCLAW_HOME@@/legal/dof
 Environment=DOF_BASE_DIR=@@OPENCLAW_HOME@@/legal/dof
 Environment=DOF_DB_PATH=@@OPENCLAW_HOME@@/legal/dof/biblioteca_dof.db
 Environment=DOF_PDF_DIR=@@OPENCLAW_HOME@@/legal/dof/pdfs
-ExecStart=/usr/bin/python3 @@OPENCLAW_HOME@@/legal/dof/dof_biblioteca.py download-contents --batch 800 --workers 4
+# -u: sin esto el stdout va a un archivo en bloques de 4 KB y no se puede seguir
+# el progreso en vivo (`tail -f`) mientras el job corre.
+ExecStart=/usr/bin/python3 -u @@OPENCLAW_HOME@@/legal/dof/dof_biblioteca.py download-contents --batch 800 --workers 4
 StandardOutput=append:@@OPENCLAW_HOME@@/logs/dof-contents.log
 StandardError=append:@@OPENCLAW_HOME@@/logs/dof-contents.log
 SyslogIdentifier=louis-dof-contents

@@ -276,6 +276,26 @@ def main() -> int:
             fallas.append(f"{mod_name} añade un FileHandler; la unit systemd ya "
                           f"redirige stdout al mismo archivo → log duplicado")
 
+    # …pero quitar el FileHandler solo es correcto si el stdout NO va bufferado.
+    # Con StandardOutput=append: el stdout es un archivo normal y Python lo bufferea
+    # en bloques de 4 KB: el log se atrasa y se pierde lo pendiente si el proceso
+    # muere de golpe. Las dos mitades del arreglo van juntas o ninguna sirve.
+    _units = sorted((SERVICES if (SERVICES / "scheduler.service").is_file()
+                     else Path(__file__).resolve().parents[1] / "services").glob("*.service"))
+    _n_units = 0
+    for unit in _units:
+        src = unit.read_text()
+        if "StandardOutput=append:" not in src:
+            continue
+        _n_units += 1
+        for linea in src.splitlines():
+            if linea.startswith("ExecStart=") and "/python3 " in linea and "python3 -u " not in linea:
+                fallas.append(f"{unit.name} redirige stdout a un archivo pero corre "
+                              f"python3 sin -u → log bufferado y perdible: {linea}")
+    if _n_units == 0:
+        fallas.append("no encontré ninguna unit con StandardOutput=append: — "
+                      "¿se movieron los .service? esta prueba dejó de cubrir nada")
+
     for texto, tools, esperado in CASOS_FABRICACION:
         got = core._accion_fabricada(texto, tools, {}) is not None
         if got != esperado:
@@ -444,7 +464,7 @@ def main() -> int:
              # nuevos: diagnósticos negativos, errores de Slack, canal del briefing
              + len(CASOS_DIAGNOSTICO) + 1 + len(core._DIAG_SERVICIOS)
              + len(CASOS_SLACK_ERR) * 3 + 4 + 4 + 1 + 1
-             + _casos_briefing + 2)
+             + _casos_briefing + 2 + _n_units + 1)
     if fallas:
         print(f"❌ {len(fallas)} de {total} fallaron:\n")
         for f in fallas:

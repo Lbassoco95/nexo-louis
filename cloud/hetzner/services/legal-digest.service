@@ -10,7 +10,9 @@ Group=@@SYSTEM_USER@@
 WorkingDirectory=@@OPENCLAW_HOME@@/legal
 Environment=LOUIS_SCRIPTS=@@OPENCLAW_HOME@@/scripts
 Environment=LEGAL_KNOWLEDGE_BASE=@@OPENCLAW_HOME@@/spaces/general/agents/knowledge
-ExecStart=/usr/bin/python3 @@OPENCLAW_HOME@@/legal/legal_digest.py --dias 7
+# -u: sin esto el stdout va a un archivo en bloques de 4 KB y no se puede seguir
+# el progreso en vivo (`tail -f`) mientras el job corre.
+ExecStart=/usr/bin/python3 -u @@OPENCLAW_HOME@@/legal/legal_digest.py --dias 7
 StandardOutput=append:@@OPENCLAW_HOME@@/logs/legal-digest.log
 StandardError=append:@@OPENCLAW_HOME@@/logs/legal-digest.log
 SyslogIdentifier=louis-legal-digest

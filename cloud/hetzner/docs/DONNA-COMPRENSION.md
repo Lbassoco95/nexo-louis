@@ -1056,3 +1056,25 @@ Las pruebas (`test-comprension.py`, 152 casos) cubren los tres arreglos, incluye
 toda tool citada en las redes de diagnóstico **exista de verdad** en `TOOLS_DEFINITION`
 —el modo en que una red anti-fabricación se rompe en silencio es citando una tool que
 alguien renombró.
+
+### Corrección: quitar el FileHandler era la mitad del arreglo
+
+El primer intento dejó el log **atrasado** en vez de duplicado. Con
+`StandardOutput=append:` el stdout del proceso es un archivo normal, y Python lo
+bufferea en bloques de 4 KB: mientras existía el `FileHandler` —que vacía en cada
+línea— eso no se notaba, porque una de las dos copias siempre llegaba al instante. Al
+quitarlo, quedó solo la copia bufferada: el log puede ir horas atrasado y se **pierde**
+lo pendiente si el proceso muere de golpe, que es justo cuando se necesita leerlo.
+
+Ninguna de las 15 units traía `-u` ni `PYTHONUNBUFFERED`. Ahora todas corren
+`python3 -u`. Las dos mitades van juntas: una sola escritura (stdout), sin buffer.
+
+El test del `uniq -d` con que se intentó verificar el arreglo **tampoco servía**: con el
+stdout bufferado las dos copias no salen pegadas, así que no aparecen como duplicados
+adyacentes. Un archivo sin duplicados adyacentes no probaba nada. La prueba correcta
+compara líneas completas (con timestamp al milisegundo, cada llamada al log es única) sin
+importar la posición.
+
+`test-comprension.py` cubre las dos mitades y falla si vuelve cualquiera: un
+`logging.FileHandler` en el código, o una unit que redirija a archivo corriendo `python3`
+sin `-u`. Verificado quitando el `-u` a mano: la prueba falla con el nombre de la unit.

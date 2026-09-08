@@ -9,7 +9,9 @@ Type=oneshot
 User=@@SYSTEM_USER@@
 Group=@@SYSTEM_USER@@
 WorkingDirectory=@@OPENCLAW_HOME@@/legal/sjf
-ExecStart=/usr/bin/python3 @@OPENCLAW_HOME@@/legal/sjf/sjf_harvest.py
+# -u: sin esto el stdout va a un archivo en bloques de 4 KB y no se puede seguir
+# el progreso en vivo (`tail -f`) mientras el job corre.
+ExecStart=/usr/bin/python3 -u @@OPENCLAW_HOME@@/legal/sjf/sjf_harvest.py
 StandardOutput=append:@@OPENCLAW_HOME@@/logs/sjf-update.log
 StandardError=append:@@OPENCLAW_HOME@@/logs/sjf-update.log
 SyslogIdentifier=louis-sjf
