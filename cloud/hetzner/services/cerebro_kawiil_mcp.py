@@ -25,12 +25,13 @@ import re
 import base64
 import hashlib
 import html as _html
+import json
 import secrets
 import sqlite3
 import sys
 import time
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -49,9 +50,16 @@ BEARER_TOKEN     = os.environ.get("CEREBRO_KAWIIL_TOKEN", "")
 PORT             = int(os.environ.get("CEREBRO_PORT", "4040"))
 SPACES_PATH      = Path(os.environ.get("OPENCLAW_SPACES", "/opt/openclaw/spaces/general"))
 ENTREGABLES_PATH = Path(os.environ.get("ENTREGABLES_PATH", "/opt/openclaw/entregables"))
-SJF_DB_PATH      = Path(os.environ.get("SJF_DB_PATH", "/opt/openclaw/legal/sjf.db"))
-DOF_DB_PATH      = Path(os.environ.get("DOF_DB_PATH", "/opt/openclaw/legal/dof.db"))
+SJF_DB_PATH      = Path(os.environ.get("SJF_DB_PATH", "/opt/openclaw/legal/sjf/biblioteca.db"))
+DOF_DB_PATH      = Path(os.environ.get("DOF_DB_PATH", "/opt/openclaw/legal/dof/biblioteca_dof.db"))
 CACHE_TTL        = int(os.environ.get("CEREBRO_CACHE_TTL", "60"))
+
+# Cola de recordatorios que lee el scheduler de Donna (misma que usa el bridge de
+# Telegram). Lo que Cowork agende aquí, Donna lo dispara. CDMX no usa DST → -06:00 fijo.
+OPENCLAW_HOME    = Path(os.environ.get("OPENCLAW_HOME", "/opt/openclaw"))
+REMINDERS_QUEUE  = OPENCLAW_HOME / "reminders" / "queue.jsonl"
+TZ_CDMX          = timezone(timedelta(hours=-6))
+REMINDER_RECURRENCIAS = {"daily", "weekly", "monthly", "yearly"}
 
 ESTADOS_VALIDOS = {"borrador", "listo", "en_vobo", "aprobado", "archivado"}
 ICONO_ESTADO    = {"borrador": "📝", "listo": "✅", "en_vobo": "🔄",
@@ -94,6 +102,25 @@ mcp = FastMCP(
         "  6. memoria_leer()          → archivo de memoria completo\n"
         "  7. legal_buscar()          → acervo SJF/DOF\n"
         "Los writes (registrar, marcar_hecho, dispatch) tienen respuesta corta.\n"
+        "RECORDATORIOS (IMPORTANTE): si Polo dice 'recuérdame'/'avísame' algo a una hora, usa "
+        "SIEMPRE la herramienta `recordar(...)` de ESTE Cerebro — escribe en la cola que Donna "
+        "dispara por TELEGRAM (el canal real de Polo). NUNCA uses las 'tareas programadas' nativas "
+        "de Claude para esto: esas NO llegan a Telegram y Polo no las recibe. Si NO te dio la hora, "
+        "PREGÚNTASELA antes; nunca inventes una hora.\n"
+        "DOCUMENTOS (CRÍTICO): CUALQUIER documento/archivo que generes para Polo (informe, "
+        "minuta, doc de preparación de reunión, escrito, plan) DEBES registrarlo con "
+        "`entregable_registrar` incluyendo su `contenido` COMPLETO en markdown — si no lo "
+        "registras, Donna NO podrá traerlo cuando Polo lo pida por Telegram. Edita después con "
+        "`entregable_actualizar`.\n"
+        "AL CERRAR UN ENTREGABLE DE CLIENTE (flujo completo, en este orden):\n"
+        "  1) `entregable_registrar(...)` con el `contenido` COMPLETO del documento "
+        "(fuente de verdad que Donna podrá leer y retomar).\n"
+        "  2) `aprender(...)` el contexto clave (cliente, folios, base legal, estatus).\n"
+        "  3) por CADA fecha/deadline del trabajo, un `recordar(...)` para que Donna le "
+        "avise a Polo por Telegram (con holgura antes del vencimiento).\n"
+        "  4) un `recordar(...)` que PROPONGA a Polo cargar el proyecto a kawiil-central "
+        "(donde vive el cliente); Donna lo crea cuando Polo confirme.\n"
+        "  Si después editas el documento, persiste los cambios con `entregable_actualizar(...)`.\n"
         "Principio: datos duros, sin interpretación."
     ),
     # Detrás de Caddy con dominio propio: el Host no es localhost. Desactivamos
@@ -284,7 +311,7 @@ def cerebro_estado() -> str:
 
     # Memoria: solo indica qué archivos existen y su tamaño
     partes_mem = []
-    for nombre in ("AGENDA", "IMPORTANT", "JOURNAL", "PROJECTS", "PEOPLE"):
+    for nombre in ("SEGUIMIENTOS", "IMPORTANT", "JOURNAL", "PROJECTS", "PEOPLE"):
         f = SPACES_PATH / f"{nombre}.md"
         if f.exists():
             partes_mem.append(f"{nombre}({f.stat().st_size//1024}KB)")
@@ -326,17 +353,17 @@ def cerebro_estado() -> str:
 @mcp.tool()
 def agenda_pendientes() -> str:
     """
-    [COMPACTO] Solo los ítems sin hacer (- [ ]) de la AGENDA, máximo 20.
+    [COMPACTO] Solo los ítems sin hacer (- [ ]) de SEGUIMIENTOS, máximo 20.
     Usar en lugar de agenda_snapshot() cuando solo se necesita la lista de tareas.
     ~200 tokens típico.
     """
-    texto = _read_cached(SPACES_PATH / "AGENDA.md")
+    texto = _read_cached(SPACES_PATH / "SEGUIMIENTOS.md")
     if not texto:
-        return "AGENDA.md no disponible."
+        return "SEGUIMIENTOS.md no disponible."
 
     items = [l.strip() for l in texto.splitlines() if re.match(r"^\s*-\s*\[\s*\]\s+", l)]
     if not items:
-        return "Sin pendientes abiertos en AGENDA."
+        return "Sin pendientes abiertos en SEGUIMIENTOS."
     return f"Pendientes ({len(items)}):\n" + "\n".join(items[:20])
 
 
@@ -388,7 +415,7 @@ def agenda_snapshot() -> str:
     último IMPORTANT crítico y última entrada de JOURNAL. Truncado inteligente.
     Usar solo cuando agenda_pendientes() no es suficiente. ~500 tokens típico.
     """
-    agenda    = _read_cached(SPACES_PATH / "AGENDA.md")
+    agenda    = _read_cached(SPACES_PATH / "SEGUIMIENTOS.md")
     important = _read_cached(SPACES_PATH / "IMPORTANT.md")
     journal   = _read_cached(SPACES_PATH / "JOURNAL.md")
 
@@ -485,12 +512,12 @@ def legal_buscar(termino: str, fuente: str = "ambas", limite: int = 5,
         if "tesis" in tablas:
             filas = _query_db(
                 SJF_DB_PATH,
-                "SELECT rubro, texto, fecha FROM tesis WHERE texto LIKE ? OR rubro LIKE ? LIMIT ?",
+                "SELECT rubro, texto, fecha_publicacion FROM tesis WHERE texto LIKE ? OR rubro LIKE ? LIMIT ?",
                 (f"%{termino}%", f"%{termino}%", limite),
             )
             for f in filas:
                 resultados.append(
-                    f"[SJF/{f.get('fecha','')}] {f.get('rubro','')}\n"
+                    f"[SJF/{f.get('fecha_publicacion','')}] {f.get('rubro','')}\n"
                     f"{(f.get('texto') or '')[:excerpt_chars]}…"
                 )
         elif tablas:
@@ -499,17 +526,17 @@ def legal_buscar(termino: str, fuente: str = "ambas", limite: int = 5,
 
     if fuente in ("dof", "ambas") and DOF_DB_PATH.exists():
         tablas = _tablas_db(DOF_DB_PATH)
-        if "publicaciones" in tablas:
+        if "notas" in tablas:
             filas = _query_db(
                 DOF_DB_PATH,
-                "SELECT titulo, contenido, fecha_publicacion FROM publicaciones "
-                "WHERE contenido LIKE ? OR titulo LIKE ? LIMIT ?",
+                "SELECT titulo, texto_plano, fecha FROM notas "
+                "WHERE (texto_plano LIKE ? OR titulo LIKE ?) AND incluido=1 LIMIT ?",
                 (f"%{termino}%", f"%{termino}%", limite),
             )
             for f in filas:
                 resultados.append(
-                    f"[DOF/{f.get('fecha_publicacion','')}] {f.get('titulo','')}\n"
-                    f"{(f.get('contenido') or '')[:excerpt_chars]}…"
+                    f"[DOF/{f.get('fecha','')}] {f.get('titulo','')}\n"
+                    f"{(f.get('texto_plano') or '')[:excerpt_chars]}…"
                 )
         elif tablas:
             cols = [c["name"] for c in _query_db(DOF_DB_PATH, f"PRAGMA table_info({tablas[0]})")]
@@ -544,9 +571,9 @@ def legal_estado() -> str:
 @mcp.tool()
 def agenda_marcar_hecho(patron: str) -> str:
     """Marca como hecho (- [x]) el primer pendiente que contenga `patron`."""
-    f = SPACES_PATH / "AGENDA.md"
+    f = SPACES_PATH / "SEGUIMIENTOS.md"
     if not f.exists():
-        return "AGENDA.md no encontrada."
+        return "SEGUIMIENTOS.md no encontrada."
     content = f.read_text(encoding="utf-8")
     lineas, cambiado, original = [], False, ""
     for l in content.splitlines():
@@ -564,10 +591,10 @@ def agenda_marcar_hecho(patron: str) -> str:
 
 @mcp.tool()
 def agenda_editar(patron: str, nuevo_texto: str) -> str:
-    """Reemplaza la primera línea de AGENDA.md que contenga `patron` por `nuevo_texto`."""
-    f = SPACES_PATH / "AGENDA.md"
+    """Reemplaza la primera línea de SEGUIMIENTOS.md que contenga `patron` por `nuevo_texto`."""
+    f = SPACES_PATH / "SEGUIMIENTOS.md"
     if not f.exists():
-        return "AGENDA.md no encontrada."
+        return "SEGUIMIENTOS.md no encontrada."
     content = f.read_text(encoding="utf-8")
     lineas, cambiado = [], False
     for l in content.splitlines():
@@ -580,7 +607,178 @@ def agenda_editar(patron: str, nuevo_texto: str) -> str:
         return f"Sin línea con: «{patron}»"
     f.write_text("\n".join(lineas) + "\n", encoding="utf-8")
     _invalidate(f)
-    return "✅ AGENDA actualizada."
+    return "✅ SEGUIMIENTOS actualizado."
+
+
+# ── Aprendizaje: Cowork siembra contexto en la memoria de Donna ─────────────
+_APRENDER_DESTINOS = {
+    "IMPORTANT": "IMPORTANT.md",
+    "PROJECTS": "PROJECTS.md",
+    "PEOPLE": "PEOPLE.md",
+    "CLIENTES": "CLIENTES.md",
+    "LEARNINGS": "LEARNINGS.md",
+}
+
+
+def _norm_line(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "")).strip().lower()
+
+
+@mcp.tool()
+def aprender(detalle: str, archivo: str = "IMPORTANT", cliente: str = "") -> str:
+    """
+    Enseña a Donna un hecho/contexto DURABLE desde Cowork — queda en su memoria de
+    largo plazo (la lee en cada sesión de Telegram/Slack). Úsalo cuando Polo te da
+    contexto que conviene que Donna recuerde: datos de un cliente/proyecto, una
+    decisión, una preferencia, una persona o una instrucción permanente.
+    archivo: IMPORTANT | PROJECTS | PEOPLE | CLIENTES | LEARNINGS
+      - IMPORTANT: decisiones/hechos clave o instrucciones permanentes
+      - PROJECTS:  estado/contexto vivo de un proyecto o caso
+      - PEOPLE:    datos durables de una persona (rol, empresa, relación)
+      - CLIENTES:  datos de un cliente/prospecto (razón social, contacto, estatus)
+      - LEARNINGS: reglas/lecciones de cómo trabaja Polo
+    `cliente` (opcional) antepone la empresa/cliente para que el contexto quede bien definido.
+    """
+    detalle = (detalle or "").strip()
+    if len(detalle) < 4:
+        return "Dame un detalle con sustancia (mín. 4 caracteres)."
+    nombre = archivo.strip().upper().replace(".MD", "")
+    fname = _APRENDER_DESTINOS.get(nombre)
+    if not fname:
+        return f"archivo inválido. Opciones: {', '.join(_APRENDER_DESTINOS)}"
+    f = SPACES_PATH / fname
+    fecha = datetime.now().strftime("%Y-%m-%d")
+    cuerpo = f"{cliente.strip()} — {detalle}" if cliente.strip() else detalle
+    objetivo = _norm_line(cuerpo)
+    for l in _read_cached(f).splitlines():       # dedup: no repetir lo equivalente
+        if objetivo and objetivo in _norm_line(l):
+            return f"👍 Ya estaba en {nombre}, no dupliqué."
+    existente = f.read_text(encoding="utf-8") if f.exists() else ""
+    with f.open("a", encoding="utf-8") as fh:
+        if existente and not existente.endswith("\n"):
+            fh.write("\n")
+        fh.write(f"- [{fecha}] {cuerpo}  · [Cowork]\n")
+    _invalidate(f)
+    return f"🧠 Aprendido en {nombre}: {cuerpo[:120]}"
+
+
+@mcp.tool()
+def bitacora_cowork(resumen: str, cliente: str = "") -> str:
+    """
+    Registra una nota de lo trabajado en esta sesión de Cowork. Se guarda en la
+    bitácora que Donna DESTILA cada noche → de ahí extrae hechos durables a PEOPLE/
+    CLIENTES/SEGUIMIENTOS/IMPORTANT automáticamente. Úsalo al cerrar un tema o al final de
+    la sesión, con un resumen de qué se hizo y qué contexto nuevo surgió.
+    """
+    resumen = (resumen or "").strip()
+    if len(resumen) < 8:
+        return "Dame un resumen con sustancia (mín. 8 caracteres)."
+    ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    texto = f"[Cowork{(' · ' + cliente.strip()) if cliente.strip() else ''}] {resumen}"
+    # 1) Línea JSONL que el destilador nocturno de Donna ingiere (mismo formato que Telegram).
+    jl = SPACES_PATH / "cowork-history.jsonl"
+    with jl.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"ts": ts, "role": "user", "content": texto}, ensure_ascii=False) + "\n")
+    _invalidate(jl)
+    # 2) Copia legible en COWORK.md (para revisión humana).
+    md = SPACES_PATH / "COWORK.md"
+    with md.open("a", encoding="utf-8") as fh:
+        fh.write(f"- [{ts[:16].replace('T', ' ')}] {texto}\n")
+    _invalidate(md)
+    return "📓 Bitácora guardada — Donna lo destilará esta noche a su memoria."
+
+
+@mcp.tool()
+def recordar(mensaje: str, fecha_hora: str = "", en_minutos: int = 0,
+             recurrencia: str = "") -> str:
+    """
+    Programa un RECORDATORIO que Donna enviará a Polo por Telegram a la hora indicada.
+    Úsalo cuando Polo diga 'recuérdame', 'avísame', 'mándame X a tal hora'. Escribe en
+    la MISMA cola que dispara Donna — así un recordatorio pedido desde Cowork SÍ llega
+    (antes se perdían: Cowork no tenía esta herramienta).
+
+    - fecha_hora: ISO 8601 con zona, ej '2026-06-23T06:00:00-06:00' (hora de CDMX). Si
+      no pones zona se asume CDMX. Calcula la fecha REAL desde HOY; si dudas del día/
+      fecha actual, llama antes cerebro_estado().
+    - en_minutos: alternativa para tiempo relativo ('en 30 min'/'en 2 h' → 30 / 120).
+      El servidor calcula la hora con el reloj real (más confiable para relativos).
+    - recurrencia (opcional): 'daily' | 'weekly' | 'monthly' | 'yearly'.
+
+    IMPORTANTE: si Polo NO te dio hora/fecha, NO inventes una — pregúntasela primero
+    y solo entonces llama esta herramienta con la hora confirmada.
+    """
+    mensaje = (mensaje or "").strip()
+    if len(mensaje) < 3:
+        return "Dame el texto del recordatorio (mín. 3 caracteres)."
+    rec = (recurrencia or "").strip().lower() or None
+    if rec and rec not in REMINDER_RECURRENCIAS:
+        return f"recurrencia inválida. Opciones: {', '.join(sorted(REMINDER_RECURRENCIAS))}."
+    try:
+        if en_minutos and int(en_minutos) > 0:
+            dt = datetime.now(TZ_CDMX) + timedelta(minutes=int(en_minutos))
+        elif fecha_hora.strip():
+            dt = datetime.fromisoformat(fecha_hora.strip())
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=TZ_CDMX)
+        else:
+            return ("Falta la hora. Pregúntale a Polo a qué hora/fecha quiere el "
+                    "recordatorio y vuelve a llamar con 'fecha_hora' (ISO) o 'en_minutos'.")
+    except Exception as e:
+        return (f"fecha_hora inválida '{fecha_hora}'. Usa ISO 8601, ej "
+                f"'2026-06-23T06:00:00-06:00'. ({e})")
+    ahora = datetime.now(TZ_CDMX)
+    if dt < ahora - timedelta(minutes=1):
+        return (f"Esa hora ({dt.strftime('%Y-%m-%d %H:%M')}) ya pasó (ahora son las "
+                f"{ahora.strftime('%H:%M')} CDMX). Confirma la fecha/hora con Polo.")
+    entry = {
+        "id": secrets.token_hex(4),
+        "fire_at": dt.isoformat(),
+        "message": mensaje,
+        "channel": "telegram",
+        "mode": "raw",          # texto exacto, sin reformular
+        "recurrence": rec,
+        "created_at": datetime.now(TZ_CDMX).isoformat(),
+        "source": "cowork",
+    }
+    try:
+        REMINDERS_QUEUE.parent.mkdir(parents=True, exist_ok=True)
+        with REMINDERS_QUEUE.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        return f"No pude guardar el recordatorio: {e}"
+    rec_txt = f" · se repite {rec}" if rec else ""
+    return (f"⏰ Recordatorio agendado para {dt.strftime('%Y-%m-%d %H:%M')} CDMX{rec_txt}. "
+            f"Donna se lo enviará a Polo por Telegram.\nMensaje: {mensaje[:120]}")
+
+
+@mcp.tool()
+def recordatorios_pendientes() -> str:
+    """Lista los recordatorios PENDIENTES (aún sin disparar) que Donna tiene en cola.
+    Útil para confirmarle a Polo qué tiene agendado, o antes de crear uno nuevo. Omite
+    el briefing matutino automático del sistema."""
+    if not REMINDERS_QUEUE.exists():
+        return "(no hay recordatorios pendientes)"
+    items = []
+    for line in REMINDERS_QUEUE.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        if d.get("message") == "__morning_briefing__":
+            continue
+        items.append(d)
+    if not items:
+        return "(no hay recordatorios pendientes)"
+    items.sort(key=lambda e: e.get("fire_at", ""))
+    out = [f"{len(items)} recordatorio(s) pendiente(s):"]
+    for d in items[:30]:
+        fa = str(d.get("fire_at", "?"))[:16].replace("T", " ")
+        rectxt = f" ({d['recurrence']})" if d.get("recurrence") else ""
+        out.append(f"• {fa}{rectxt} — {str(d.get('message',''))[:80]}")
+    return "\n".join(out)
 
 
 @mcp.tool()
@@ -590,10 +788,15 @@ def entregable_registrar(
     estado: str = "borrador",
     descripcion: str = "",
     responsable: str = "Cowork",
+    contenido: str = "",
 ) -> str:
     """
     Registra un entregable producido en Cowork.
     estado: borrador | listo | en_vobo | aprobado | archivado
+    `contenido` (opcional pero RECOMENDADO): el CUERPO COMPLETO del documento en markdown.
+    Se guarda como fuente de verdad compartida → Donna puede LEERLO y RETOMARLO
+    (entregable_estado completo=True). Conforme lo edites en Cowork, persiste los cambios
+    con entregable_actualizar() para que la última versión quede compartida.
     """
     estado = estado.lower()
     if estado not in ESTADOS_VALIDOS:
@@ -602,7 +805,7 @@ def entregable_registrar(
     fecha    = datetime.now().strftime("%Y-%m-%d")
     filepath = ENTREGABLES_PATH / f"{fecha}-{_slug(titulo)}.md"
     if filepath.exists():
-        return f"Ya existe: {filepath.name}. Usa entregable_actualizar_estado()."
+        return f"Ya existe: {filepath.name}. Usa entregable_actualizar_estado() o entregable_actualizar()."
     content = (
         f"---\ntitulo: {titulo}\ncliente: {cliente}\nestado: {estado}\n"
         f"responsable: {responsable}\nfecha_creacion: {fecha}\n"
@@ -610,10 +813,46 @@ def entregable_registrar(
         f"# {titulo}\n\n"
         f"**Cliente:** {cliente} | **Estado:** {estado} | **Responsable:** {responsable}\n\n"
         f"## Descripción\n\n{descripcion or 'Sin descripción.'}\n\n"
+        f"## Contenido\n\n{contenido or '(pendiente — agrega el cuerpo con entregable_actualizar)'}\n\n"
         f"## Historial\n\n- {fecha} — Registrado como `{estado}` por {responsable}\n"
     )
     filepath.write_text(content, encoding="utf-8")
-    return f"✅ {filepath.name} | estado:{estado}"
+    _invalidate(filepath)
+    return f"✅ {filepath.name} | estado:{estado}{' | con contenido' if contenido else ''}"
+
+
+@mcp.tool()
+def entregable_actualizar(nombre_o_titulo: str, contenido: str, nota: str = "") -> str:
+    """Actualiza el CUERPO (contenido) de un entregable existente — la fuente de verdad
+    compartida. Úsalo cuando edites el documento en Cowork, para que la última versión
+    quede guardada y Donna pueda leerla/retomarla (entregable_estado completo=True).
+    Reemplaza la sección '## Contenido', bumpea fecha_actualizacion y deja rastro en el
+    historial."""
+    contenido = (contenido or "").strip()
+    if len(contenido) < 10:
+        return "Dame el contenido del documento (mín. 10 caracteres)."
+    ENTREGABLES_PATH.mkdir(parents=True, exist_ok=True)
+    termino = nombre_o_titulo.lower()
+    fecha   = datetime.now().strftime("%Y-%m-%d")
+    nuevo_bloque = f"## Contenido\n\n{contenido}\n\n"
+    for f in ENTREGABLES_PATH.glob("*.md"):
+        if f.name.startswith("_"):
+            continue
+        meta = _parsear_fm(f)
+        if termino in f.stem.lower() or termino in meta.get("titulo", "").lower():
+            txt = f.read_text(encoding="utf-8")
+            if re.search(r"(?ms)^## Contenido\b.*?(?=^## |\Z)", txt):
+                txt = re.sub(r"(?ms)^## Contenido\b.*?(?=^## |\Z)", lambda m: nuevo_bloque, txt, count=1)
+            elif re.search(r"(?m)^## Historial\b", txt):
+                txt = re.sub(r"(?m)^## Historial\b", lambda m: nuevo_bloque + "## Historial", txt, count=1)
+            else:
+                txt = txt.rstrip() + "\n\n" + nuevo_bloque
+            txt = re.sub(r"(?m)^fecha_actualizacion:.*$", lambda m: f"fecha_actualizacion: {fecha}", txt, count=1)
+            entrada = f"- {fecha} — contenido actualizado" + (f": {nota}" if nota else "")
+            f.write_text(txt.rstrip() + f"\n{entrada}\n", encoding="utf-8")
+            _invalidate(f)
+            return f"✅ Contenido actualizado en «{meta.get('titulo', f.stem)}». Donna puede retomarlo."
+    return f"No encontrado: «{nombre_o_titulo}». Regístralo primero con entregable_registrar()."
 
 
 @mcp.tool()
@@ -667,8 +906,8 @@ def dispatch_preparar_brief(
     hora     = ahora.strftime("%H:%M")
     filepath = briefs_path / f"{fecha}-brief-{_slug(tarea)}.md"
 
-    # Contexto de AGENDA (solo líneas relevantes)
-    agenda_txt  = _read_cached(SPACES_PATH / "AGENDA.md")
+    # Contexto de SEGUIMIENTOS (solo líneas relevantes)
+    agenda_txt  = _read_cached(SPACES_PATH / "SEGUIMIENTOS.md")
     kws         = [tarea.lower()[:20], cliente.lower()[:15]]
     relevantes  = [l for l in agenda_txt.splitlines()
                    if any(k in l.lower() for k in kws)][:8]
@@ -695,7 +934,7 @@ def dispatch_preparar_brief(
         f"## Tarea\n{tarea}\n\n"
         f"## Insumos\n{insumos or 'Consultar acervo legal y memoria según aplique.'}\n\n"
         f"## Entregables previos del cliente\n{previos_txt}\n\n"
-        f"## AGENDA relevante\n{agenda_ctx}\n\n"
+        f"## SEGUIMIENTOS relevante\n{agenda_ctx}\n\n"
         f"## Contexto adicional\n{contexto_adicional or '(ninguno)'}\n\n"
         f"## Pasos para Cowork\n"
         f"1. Revisar insumos y entregables previos\n"

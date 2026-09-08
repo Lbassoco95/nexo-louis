@@ -570,3 +570,60 @@ sudo diff /opt/openclaw/.respaldo-20260907202308/scripts/cerebro_kawiil_mcp.py \
 
 Si el cambio vale, hay que portarlo al repo — no volver a editar solo el server, o el
 siguiente deploy lo pisa otra vez.
+
+---
+
+# El repo tenía el Cerebro MESES atrasado (y el deploy lo degradó)
+
+El diff entre el respaldo y el repo salió **al revés** de lo supuesto: el archivo VIVO
+era la versión buena y nueva; `cloud/hetzner/services/cerebro_kawiil_mcp.py` estaba
+meses atrás. El `--solo-servicios` sobrescribió el archivo en disco con la versión
+vieja. El servicio siguió corriendo el código bueno **en memoria**, así que un
+`systemctl restart cerebro-kawiil` habría destruido:
+
+| Perdido | Qué hace |
+|---|---|
+| `recordar()` | Recordatorios pedidos en Cowork → la cola que Donna dispara por Telegram. Sin esto se perdían en silencio. |
+| `recordatorios_pendientes()` | Listar lo agendado |
+| `aprender()` | Sembrar memoria durable desde Cowork (IMPORTANT/PROJECTS/PEOPLE/CLIENTES/**LEARNINGS**) con dedup |
+| `bitacora_cowork()` | Escribe `cowork-history.jsonl`, que el destilador nocturno ingiere |
+| `entregable_actualizar()` | Actualizar el cuerpo de un entregable |
+| `entregable_registrar(contenido=…)` | **El cuerpo COMPLETO del documento** — así se guardan los 203 entregables |
+| Rutas de BD | `legal/sjf/biblioteca.db`, `legal/dof/biblioteca_dof.db` (el repo apuntaba a `legal/sjf.db` y `legal/dof.db`, que no existen) |
+| Esquema SQL | `tesis.fecha_publicacion`, tabla `notas` con `texto_plano` e `incluido=1` (el repo consultaba una tabla `publicaciones` con `contenido`, esquema que ya no existe → `legal_buscar` habría reventado) |
+| `SEGUIMIENTOS.md` | El archivo de memoria, renombrado desde `AGENDA.md` |
+| Instrucciones del server | Las reglas de RECORDATORIOS y DOCUMENTOS que ve Cowork |
+
+## Restauración
+
+1. **En el server** (antes de cualquier reinicio):
+   ```bash
+   sudo cp /opt/openclaw/.respaldo-20260907202308/scripts/cerebro_kawiil_mcp.py \
+           /opt/openclaw/scripts/cerebro_kawiil_mcp.py
+   ```
+2. **En el repo**: la versión buena se reconstruyó aplicando el diff en reverso
+   (798 → 1037 líneas, 18 herramientas expuestas, que son las mismas del MCP vivo).
+
+**Verificación:** el diff entre el repo original y la reconstrucción debe ser el inverso
+exacto del diff observado en producción. Comprobado hunk por hunk: **28 de 28**, ninguno
+de más ni de menos. Para confirmarlo contra el archivo real:
+
+```bash
+sudo diff /opt/openclaw/.respaldo-20260907202308/scripts/cerebro_kawiil_mcp.py \
+          /opt/louis/services/cerebro_kawiil_mcp.py     # debe salir vacío
+```
+
+## La lección
+
+`self_update.py` deja que Donna edite su propio código en `/opt/openclaw/scripts/`, y
+esas ediciones **nunca vuelven al repo**. El repo dejó de ser la fuente de verdad sin
+que nadie lo notara, y el primer deploy en meses degradó producción. Dos mitigaciones:
+
+- `actualizar.sh` guarda un manifiesto de hashes y **avisa antes de pisar** un archivo
+  editado en vivo (imprime el `diff` contra el respaldo).
+- `cerebro-kawiil` no se reinicia automáticamente: sigue con su código en memoria hasta
+  que reiniciarlo sea una decisión consciente.
+
+Pendiente menor: el docstring del módulo (líneas 18-19) documenta las rutas viejas
+`legal/sjf.db` / `legal/dof.db`. Se dejó igual a propósito, para que la verificación de
+arriba salga limpia; corregirlo va en un commit aparte.
