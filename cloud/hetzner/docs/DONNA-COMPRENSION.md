@@ -427,3 +427,48 @@ arranca. Un servicio muerto y uno iniciando se veían igual.
 
 Revisa también el tamaño del log, que llevaba un mes creciendo con cada reinicio:
 `du -sh /opt/openclaw/logs/`.
+
+## Cargar las credenciales de Slack
+
+`scripts/configurar-slack.sh` — pide los tokens con `read -rs` (no se hacen eco ni
+quedan en `~/.bash_history`), escribe `/opt/openclaw/credentials/slack.env` en `0600`
+con dueño el usuario del servicio, y levanta el bridge.
+
+```bash
+/opt/louis/scripts/configurar-slack.sh
+```
+
+Lo que el bridge lee de ese archivo (`slack-bridge.py` → `load_credentials`):
+
+| Variable | Obligatoria | De dónde sale |
+|---|---|---|
+| `SLACK_BOT_TOKEN` | sí | api.slack.com/apps → tu app → **OAuth & Permissions** → Bot User OAuth Token (`xoxb-…`) |
+| `SLACK_APP_TOKEN` | sí | **Basic Information → App-Level Tokens** → Generate, scope `connections:write` (`xapp-…`) |
+| `SLACK_DEFAULT_DM_USER` | no | Tu user ID (`U…`); lo usa `scheduler.py` para mandarte recordatorios por DM |
+| `SLACK_ALLOWED_USERS` | no | Whitelist `U123,U456` |
+| `SLACK_SIGNING_SECRET` | no | No se usa en Socket Mode; está por completitud |
+
+En la app de Slack hace falta, además de los tokens:
+
+- **Socket Mode encendido** (Settings → Socket Mode). Sin eso el `xapp-` no sirve.
+- **Event Subscriptions → Subscribe to bot events:** `app_mention` y `message.im`
+  (son los dos eventos que registra `slack-bridge.py`).
+- **Scopes de bot**, por lo que llama el código:
+  `chat:write` (`chat.postMessage`), `app_mentions:read`,
+  `channels:read` + `groups:read` + `im:read` + `mpim:read` (`conversations_list`),
+  `channels:history` + `groups:history` + `im:history` + `mpim:history`
+  (`conversations_history`), `users:read` (`users_info`, `users_list`),
+  `im:write` (`conversations_open`).
+  Si cambias scopes hay que **reinstalar la app** en el workspace y el `xoxb-` cambia.
+
+Dos trampas:
+
+1. **`slack_bolt` puede no estar instalado.** El bridge muere en el `import` *antes* de
+   leer los tokens, y el síntoma se confunde con "faltan credenciales". El script lo
+   verifica primero (`pip install --break-system-packages slack-bolt slack-sdk`).
+2. **`reset-failed` es obligatorio.** Con `RestartPreventExitStatus=78` el servicio
+   quedó en `failed` a propósito y systemd no lo reintenta hasta limpiar ese estado.
+3. **Un solo Socket Mode por App Token.** Si el OpenClaw de la Mac sigue corriendo con
+   el mismo `xapp-`, Slack desconecta al más viejo y los dos se pelean
+   (`docs/secrets.md`). Apaga el de la Mac:
+   `launchctl unload ~/Library/LaunchAgents/ai.openclaw.gateway.plist`.
