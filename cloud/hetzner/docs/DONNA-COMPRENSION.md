@@ -1115,3 +1115,93 @@ Verificado con una base falsa de 5 tesis: ensayo desde cero, aplicar, ensayo `--
 `no-derivable`. El freno se probó inyectando un año fuera de rango, porque
 `fecha_desde_cita()` ya no puede producir uno — un freno que no se puede disparar no
 está probado.
+
+---
+
+## Al acervo del SJF le faltaba el 75%, y el harvester llevaba 46 días sin hacer nada
+
+Salió de investigar un hueco en el histograma de fechas derivadas: 1980s, 1990s,
+**nada en los 2000s**, 2010s. La derivación no tenía la culpa —donde hay mes que
+extraer acierta el 99%— así que el hueco era del acervo.
+
+### Lo que medimos
+
+```
+ÉPOCA               candidatas   derivadas    rango derivado
+Octava Época            26,526      26,483    1988-06 … 1995-02     99%
+Novena Época             7,462       6,313    1995-03 … 1997-05     84%
+Quinta Época            68,132           0    (citan «Pág. N», sin mes)
+```
+
+La Novena Época corrió de **feb-1995 a oct-2011**: dieciséis años, de los que el
+acervo tiene dos. Y la cobertura de IDs:
+
+```
+178,554 tesis + 320,590 marcados 404 = 499,144 IDs intentados
+espacio real: 198,693 … 2,032,577  ≈ 2.03 millones
+→ ~1.5 millones de IDs NUNCA intentados. Acervo explorado al ~25%.
+```
+
+### Las dos causas
+
+**1. El salto de "zona muerta" descartaba sin evidencia y sin registro.** Tras 50
+IDs 404 seguidos, el walker saltaba 50,000 de golpe. El bloque no se guardaba en
+ninguna tabla —solo una línea de log— así que nada sabía que existía y nunca se
+volvía. Las últimas cuatro líneas del log son la pistola humeante:
+
+```
+2026-07-24 08:44:43  cursor → 148643
+2026-07-24 08:45:22  cursor →  98593
+2026-07-24 08:46:02  cursor →  48543
+2026-07-24 08:46:41  cursor →      0
+```
+
+**En dos minutos descartó 198,643 IDs con 200 sondeos.** El `min(registro_digital)`
+de la BD era 198,693: el walker llegó al fondo de lo que ya tenía y de ahí brincó a
+cero. Y los `registro_digital` **no son cronológicos** —220482 es Octava, 254401
+Séptima, 298923 Quinta: a mayor ID, época más vieja— así que la Novena de 1997-2011
+vivía justo debajo de 198,693, en el bloque que tiró en esos dos minutos.
+
+**2. Con el cursor en el piso, el job no hacía nada y salía en silencio.**
+`while done < BATCH and cursor > FLOOR` con ambos en 0 no entra nunca. Desde el
+24-jul el timer se disparó cada hora durante **46 días** sin intentar un solo ID, y
+nadie se enteró: `legal_conteo` reportaba 178,554 tesis, que se lee como completo.
+
+### El arreglo
+
+- **`backfill_saltos`**: cada bloque saltado queda anotado con su estado
+  (`pendiente` | `vacio-muestreado` | `recorrido`) y cuántos sondeos lo respaldan.
+- **Muestrear antes de descartar.** 50 huecos seguidos son evidencia de 50 huecos,
+  no de 50,000. Si el muestreo encuentra vida, se aterriza en el ID vivo más alto y
+  **lo de arriba queda `pendiente`**, no descartado: el muestreo aplaza, nunca tira.
+  Lo que el muestreo encuentra se guarda —tirar una tesis ya descargada sería pagar
+  la llamada dos veces.
+- **Dos densidades**: 24 sondeos para el triage en línea, 120 para decidir de verdad
+  si un bloque se descarta. Un bloque marcado vacío con el muestreo ralo se revisa
+  con el denso antes de darlo por muerto, y con eso el trabajo **converge** en vez de
+  no descartar nunca.
+- **El piso es el comienzo de la recuperación, no el final**: sin camino por delante,
+  el job trabaja los bloques pendientes.
+- **`--importar-log`**: reconstruye `backfill_saltos` de los 425 saltos históricos,
+  que solo existían como líneas de log. Es la única forma de saber *qué* volver a
+  recorrer sin re-caminar los 2 millones de IDs. Idempotente.
+- **Cobertura en cada corrida**, distinguiendo tres estados —confirmado, descartado
+  por muestreo denso, y sin tocar— más un aviso si una corrida no intentó nada.
+
+Medido contra el código anterior, con un SJF falso de dos islas separadas por un
+desierto de 60,000 IDs (la forma del espacio real):
+
+| | tesis recuperadas | isla enterrada (2,000 IDs) |
+|---|---|---|
+| código anterior, 8 corridas | 100 / 2,100 | **0** |
+| código nuevo, 8 corridas | **2,100 / 2,100** | **2,000** |
+
+### Tres intentos para que la métrica de cobertura fuera cierta
+
+Vale anotarlo porque es el mismo error de toda la sesión. Primero salió **100.5%**
+—el rango se sacaba solo de `tesis`, y los 404 caen por debajo de su mínimo. Luego
+**133.5%**, sumando el tamaño de bloques que se solapan entre sí. La versión buena
+une los intervalos, los recorta al rango, descuenta lo ya contado, y `_pct()` avisa
+si aun así pasara de 100 en vez de esconderlo. Probada con un caso de números
+verificables a mano —y con `row_factory=sqlite3.Row`, porque la primera prueba usó
+una conexión configurada distinto a la de producción y dejó pasar un `TypeError`.
