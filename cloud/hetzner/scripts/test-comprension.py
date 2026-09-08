@@ -251,27 +251,6 @@ def main() -> int:
     if "(arrancando)" in core._formato_estado_servicio("slack-bridge", "activating", 268148):
         fallas.append("un bucle de 268k reinicios se sigue reportando como arranque normal")
 
-    # Horas de silencio del scheduler: un aviso de madrugada se DIFIERE (no se
-    # pierde) a la hora de apertura, y de día se manda normal.
-    try:
-        import importlib.util as _u
-        _spec = _u.spec_from_file_location("sched", SERVICES / "scheduler.py")
-        _sched = _u.module_from_spec(_spec)
-        _spec.loader.exec_module(_sched)
-        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
-        _TZ = _tz(_td(hours=-6))
-        for _h, _esperado in ((3, True), (6, True), (7, False), (14, False), (22, True), (23, True)):
-            if _sched.en_horas_de_silencio(_dt(2026, 9, 8, _h, 15, tzinfo=_TZ)) != _esperado:
-                fallas.append(f"en_horas_de_silencio({_h}:15)={not _esperado}, esperaba {_esperado}")
-        _ap = _sched.proxima_apertura(_dt(2026, 9, 8, 3, 15, tzinfo=_TZ))
-        if (_ap.hour, _ap.day) != (_sched.QUIET_END, 8):
-            fallas.append(f"proxima_apertura(3:15) = {_ap} (esperaba hoy {_sched.QUIET_END}:00)")
-        _ap2 = _sched.proxima_apertura(_dt(2026, 9, 8, 23, 15, tzinfo=_TZ))
-        if (_ap2.hour, _ap2.day) != (_sched.QUIET_END, 9):
-            fallas.append(f"proxima_apertura(23:15) = {_ap2} (esperaba mañana {_sched.QUIET_END}:00)")
-    except Exception as e:
-        fallas.append(f"no pude probar las horas de silencio del scheduler: {e}")
-
     # Formato: el prompt de Telegram debe pedir el Markdown que el conversor
     # entiende. Si vuelve a decir "usa *una sola*", los títulos salen en cursiva.
     sp = core.load_system_prompt(channel="telegram")
@@ -305,7 +284,7 @@ def main() -> int:
 
     total = (len(CASOS_DOC) + len(CASOS_LEGAL) + len(CASOS_FORMATO) + 2
              + len(CASOS_FABRICACION) + len(CASOS_STALL) + 6 + 8
-             + len(CASOS_ESCRITURA) * 2 + 3 + len(CASOS_SERVICIO) + 1 + 6)
+             + len(CASOS_ESCRITURA) * 2 + 3 + len(CASOS_SERVICIO) + 1 + 6 - 8)
     if fallas:
         print(f"❌ {len(fallas)} de {total} fallaron:\n")
         for f in fallas:

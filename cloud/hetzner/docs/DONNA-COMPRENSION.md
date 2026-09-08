@@ -687,3 +687,52 @@ Como referencia, lo que cambió en el repo en esta sesión (`origin/main` → ra
 Si `verificar-drift.sh` reporta un archivo sucio, el diff que salga **no** son estos
 cambios: son ediciones vivas que hay que rescatar del respaldo. **No borres los
 respaldos hasta cerrar esa revisión** — son la única copia.
+
+
+---
+
+# Cierre del caso "mensajes a todas horas": no existía
+
+Tres hipótesis, tres equivocadas, y todas por el mismo vicio: razonar sobre el código de
+`main` sin comprobar que fuera el que corre, y presentar la inferencia como
+comprobación.
+
+| # | Hipótesis | Veredicto |
+|---|---|---|
+| 1 | `sjf-weekly.timer` sin zona horaria disparaba a las 2am | **Falsa** — el server ya está en CST; `list-timers` mostraba `LAST 08:00 CST` |
+| 2 | Catch-up de `Persistent=true` (el disparo de las 20:20) | **Falsa** — el timer real es `00/4:20`, cada 4h; 20:20 era una corrida normal |
+| 3 | El horario de `legal-estado` quedó clavado en la hora de arranque | **Falsa** — el mecanismo existe, pero el estado real dice `last_sent 08:20`, fase semanal |
+
+## Lo que dicen los datos
+
+`reminders/sent.jsonl`, 219 avisos:
+
+```
+05h×2  07h×104  08h×10  09h×51  10h×15  11h×4  12h×4
+13h×2  14h×4  15h×2  17h×2  18h×14  19h×3  22h×2
+```
+
+Fuera de 07:00–22:00: **4**, y los cuatro pedidos explícitamente — dos a las 22:00
+(recordatorios para el día siguiente, `source: user`/`cowork`) y dos el 3-jun a las
+05:26/05:31 (un briefing adelantado, una sola vez).
+
+**No hay mensajes a deshoras.** Lo que hay es **volumen concentrado**: 155 de 219 (71%)
+entre 07:00 y 09:00, más los boletines de los timers en la misma franja (DOF 09:00, DOF
+18:30, digest lunes 09:30, SJF lunes 08:00, legal-estado semanal 08:20). Unos 7 mensajes
+automáticos al día. Eso es una decisión de producto —¿cuántos boletines quiere Polo?— no
+un bug de horario.
+
+## Por eso se revierten las horas de silencio
+
+La ventana 22:00→07:00 habría **diferido a las 7:00 los dos recordatorios de las 22:00
+que Polo puso a propósito**, y movido el briefing de las 05:26. La implementación exime
+`urgente: true`, pero en los datos reales *todo* lo que cae fuera de horario es
+`source: user` o `cowork` — o sea, precisamente lo que no hay que tocar.
+
+`scheduler.py` vuelve a su estado original. Se van con él el tope de ráfaga y el prefijo
+`(atrasado Nh)`: también resolvían mecanismos que los datos no muestran ocurriendo.
+
+Lo único que sobrevive de este hilo es la **capacidad de medir**:
+`hetzner_estado(que="avisos_programados")` con el historial por hora. Si algún día
+vuelven los mensajes a deshoras, ese comando lo contesta en un minuto en vez de en tres
+hipótesis falsas.

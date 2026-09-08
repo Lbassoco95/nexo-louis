@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-louis-scheduler — proactividad de Donna.
+louis-scheduler — proactividad de Louis.
 
 Cada 60s revisa /opt/openclaw/reminders/queue.jsonl. Para cada entry con
 `fire_at` <= now, manda el mensaje al canal (Telegram default), opcionalmente
@@ -57,35 +57,6 @@ TZ_CDMX = timezone(timedelta(hours=-6))
 
 # Tick cada 60s — fino suficiente para recordatorios al minuto
 TICK_SECONDS = 60
-
-# ── Horas de silencio ───────────────────────────────────────────────────────
-# Polo se quejó de "mensajes a todas horas". Dos causas del lado del scheduler:
-#   1. un recordatorio con `fire_at` en la madrugada (o mal calculado) disparaba
-#      a esa hora, y
-#   2. `fire_at <= now` vaciaba TODO el atraso de golpe: si el servicio estuvo
-#      caído, al volver mandaba la cola completa a la hora que fuera.
-# Dentro de la ventana silenciosa los avisos NO se pierden: se REPROGRAMAN para
-# la hora de apertura (QUIET_END). Configurable por env sin tocar código.
-QUIET_START = int(os.environ.get("DONNA_QUIET_START", "22"))  # 22:00 CDMX
-QUIET_END = int(os.environ.get("DONNA_QUIET_END", "7"))       # 07:00 CDMX
-# Tope de mensajes por tick: evita la avalancha cuando la cola trae atraso.
-MAX_POR_TICK = int(os.environ.get("DONNA_MAX_POR_TICK", "3"))
-
-
-def en_horas_de_silencio(ahora: datetime) -> bool:
-    """True si `ahora` cae en la ventana silenciosa (cruza medianoche)."""
-    if QUIET_START == QUIET_END:
-        return False
-    h = ahora.hour
-    if QUIET_START > QUIET_END:      # p.ej. 22 → 7
-        return h >= QUIET_START or h < QUIET_END
-    return QUIET_START <= h < QUIET_END
-
-
-def proxima_apertura(ahora: datetime) -> datetime:
-    """Siguiente QUIET_END a partir de `ahora` (hoy si aún no pasó, si no mañana)."""
-    hoy = ahora.replace(hour=QUIET_END, minute=0, second=0, microsecond=0)
-    return hoy if hoy > ahora else hoy + timedelta(days=1)
 
 # ===== Logging =====
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -170,10 +141,10 @@ _REFUSAL_RE = re.compile(
 
 
 def enrich_with_ollama(raw_message: str) -> str:
-    """Reformula recordatorio en tono Donna vía Ollama local. Si Ollama devuelve un
+    """Reformula recordatorio en tono Louis vía Ollama local. Si Ollama devuelve un
     rechazo/basura (o algo demasiado distinto/largo), manda el mensaje ORIGINAL."""
     sys_prompt = (
-        "Eres Donna, asistente ejecutivo de Polo. Reformula este recordatorio en tono "
+        "Eres Louis, asistente ejecutivo de Polo. Reformula este recordatorio en tono "
         "directo y cálido, 1-2 líneas, en español. Telegram *negrita* legacy. NO inventes "
         "hechos, NO pidas permiso, NO te disculpes: SOLO devuelve el recordatorio reformulado."
     )
@@ -195,7 +166,7 @@ MORNING_BRIEFING_MARKER = "__morning_briefing__"
 # Indexación legal en background: tick cada 10 min (10 × 60s), 10 docs por agente
 LEGAL_BG_TICK_INTERVAL = 10  # cada cuántos ticks de 60s correr el bg-indexer
 
-# Chequeos intradía (Fase 3): horas CDMX en que Donna empuja seguimiento si hay algo.
+# Chequeos intradía (Fase 3): horas CDMX en que Louis empuja seguimiento si hay algo.
 INTRADAY_SLOTS = {13: "tarde", 18: "cierre"}
 INTRADAY_STATE = HOME_OC / "state" / "intraday_sent.json"
 
@@ -305,7 +276,6 @@ def tick():
         return
     to_keep = []
     fired = 0
-    diferidos = 0
     for entry in queue:
         try:
             fire_at_str = entry.get("fire_at")
@@ -318,20 +288,6 @@ def tick():
             continue
 
         if fire_at <= now:
-            # Ventana silenciosa → NO mandar; reprogramar para la hora de apertura.
-            # `urgente: true` en la entry se salta el silencio (vencimientos duros).
-            if en_horas_de_silencio(now) and not entry.get("urgente"):
-                nuevo = proxima_apertura(now)
-                to_keep.append({**entry, "fire_at": nuevo.isoformat(),
-                                "diferido_de": fire_at_str})
-                log.info(f"silencio ({now:%H:%M}) → {entry.get('id')} diferido a {nuevo:%Y-%m-%d %H:%M}")
-                diferidos += 1
-                continue
-            # Tope de ráfaga: el resto espera al siguiente tick (60s) en vez de
-            # vaciar la cola atrasada de golpe.
-            if fired >= MAX_POR_TICK:
-                to_keep.append(entry)
-                continue
             # Disparar
             raw = entry.get("message", "(recordatorio sin mensaje)")
             mode = entry.get("mode", "enrich")
@@ -346,13 +302,8 @@ def tick():
                 text = enrich_with_ollama(raw)
             else:
                 text = raw
-            # Prefijo discreto para distinguir mensaje proactivo. Si el aviso viene
-            # atrasado (server caído, o diferido por la ventana silenciosa), dilo:
-            # que Polo no lea como "ahora" algo que era de ayer.
-            atraso_h = (now - fire_at).total_seconds() / 3600
+            # Prefijo discreto para distinguir mensaje proactivo
             prefix = "☀️ " if mode == "briefing" or raw == MORNING_BRIEFING_MARKER else "⏰ "
-            if atraso_h >= 2 and mode != "briefing":
-                prefix = f"⏰ (atrasado {int(atraso_h)}h) "
             text = f"{prefix}{text}"
             if channel == "slack":
                 ok = send_slack(text)
@@ -372,7 +323,7 @@ def tick():
         else:
             to_keep.append(entry)
 
-    if fired > 0 or diferidos > 0:
+    if fired > 0:
         write_queue(to_keep)
 
 
@@ -405,13 +356,8 @@ def main():
         try:
             if datetime.now(TZ_CDMX).hour == 23:
                 r = core.run_memory_distillation()
-                # Antes solo se logueaba el caso OK: si la destilación fallaba (sin
-                # API key, JSON inválido, Haiku caído) NADIE se enteraba y Donna
-                # dejaba de aprender por semanas en silencio.
                 if r and r.startswith("OK"):
                     log.info(f"auto-memoria: {r}")
-                elif r and not r.startswith("(auto-memoria ya corrió"):
-                    log.warning(f"auto-memoria NO aprendió nada: {r}")
         except Exception as e:
             log.warning(f"auto-memoria tick falló: {e}")
 
