@@ -215,8 +215,18 @@ def main() -> int:
             fallas.append(f"_legal_conteo no cuenta las tesis del SJF: «{_rep[:120]}»")
         if "50 con texto" not in _rep:
             fallas.append("_legal_conteo no reporta cuántas tesis traen texto completo")
-        if "mayo-2026" in _rep or "2026-05" in _rep:
-            fallas.append("_legal_conteo volvió a traer la fecha clavada a mano")
+        # Ojo: NO buscar "2026-05" en el reporte — las BD reales contienen fechas de
+        # mayo de 2026 legítimamente (rangos MIN/MAX), y la prueba fallaba en el server
+        # aunque el código estuviera bien. Lo que hay que verificar es que el CÓDIGO no
+        # traiga un mes clavado a mano, así que se inspecciona la fuente.
+        if "mayo-2026" in _rep:
+            fallas.append("_legal_conteo volvió a imprimir la etiqueta 'mayo-2026'")
+        import inspect as _insp
+        _fuente = _insp.getsource(core._legal_conteo) + _insp.getsource(core._conteo_tabla)
+        import re as _re2
+        _clavadas = _re2.findall(r"['\"]20\d\d-\d\d", _fuente)
+        if _clavadas:
+            fallas.append(f"_legal_conteo trae fechas clavadas en el código: {_clavadas}")
         # Una tabla ausente se reporta, no revienta
         if "reformas: (no existe la tabla)" not in _rep:
             fallas.append("_legal_conteo no avisa de una tabla ausente")
