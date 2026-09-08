@@ -172,21 +172,31 @@ done
 # notifican). Un daemon-reload no recalcula el próximo disparo: hay que reiniciarlos.
 for t in dof-daily dof-daily-tarde legal-digest legal-estado sjf-update sjf-weekly \
          dof-harvest dof-contents dof-pdfs; do
-  if systemctl list-unit-files | grep -q "^${t}.timer"; then
+  if [[ -f "/etc/systemd/system/${t}.timer" ]]; then
     sudo systemctl restart "${t}.timer" 2>/dev/null && ok "${t}.timer reprogramado" \
-      || printf "  ! %s.timer no reinició\n" "$t"
+      || printf "  ! %s.timer NO reinició — sudo systemctl status %s.timer\n" "$t" "$t"
+  else
+    printf "  · %s.timer no está instalado (se omite)\n" "$t"
   fi
 done
 
 # ── 5) Verificar ────────────────────────────────────────────────────────────
 log "Estado"
 for s in "${SERVICIOS[@]}"; do
-  printf "  %-20s %s\n" "$s" "$(systemctl is-active "$s" 2>/dev/null || echo '?')"
+  # OJO: `is-active` sale con código != 0 para cualquier estado que no sea "active"
+  # (activating, failed…). Con `|| echo '?'` se imprimía el estado Y un '?' aparte.
+  est="$(systemctl is-active "$s" 2>/dev/null)" || true
+  printf "  %-20s %s\n" "$s" "${est:-desconocido}"
+  if [[ "$est" != "active" ]]; then
+    printf "      ↳ %s\n" "$(systemctl is-failed "$s" 2>/dev/null || true)"
+    printf "      ↳ revisa: sudo journalctl -u %s -n 30 --no-pager\n" "$s"
+  fi
 done
 
-log "Próximos disparos (deben verse en hora CDMX, no UTC)"
-systemctl list-timers --all 2>/dev/null \
-  | grep -E "dof-|legal-|sjf-" | awk '{printf "  %-22s %s %s\n", $NF, $1, $2}' || true
+log "Próximos disparos (verifica la HORA: debe ser CDMX, no UTC)"
+systemctl list-timers --all --no-pager 2>/dev/null | head -1 || true
+systemctl list-timers --all --no-pager 2>/dev/null | grep -E "dof-|legal-|sjf-" || true
+echo "  (hora del server: $(date '+%H:%M %Z')  ·  CDMX: $(TZ=America/Mexico_City date '+%H:%M'))"
 
 if [[ -f "$PAQUETE/scripts/test-comprension.py" ]]; then
   log "Pruebas de comprensión"
