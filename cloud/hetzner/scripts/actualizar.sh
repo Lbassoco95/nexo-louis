@@ -21,13 +21,24 @@ set -euo pipefail
 # ACME_EMAIL —que solo sirven para Caddy y el TLS— y además toca Caddy, docker,
 # cron y los seeds. Nada de eso cambia por actualizar tres archivos de Python.
 SOLO_SERVICIOS=false
+# --reexec: marca interna. Este script se sincroniza a sí mismo en el paso 2, y bash
+# ya tiene bufereada la parte de abajo del archivo: el resultado es que corre el
+# instalador de la versión ANTERIOR y reporta verde. Pasó de verdad: el arreglo del
+# backfill del SJF no se instaló y el deploy no dijo nada. Tras el rsync, si el
+# script cambió, se re-ejecuta la versión nueva con esta marca (que salta el fetch
+# y el rsync, ya hechos) para no ciclar.
+REEXEC=false
 ARGS=()
 for a in "$@"; do
   case "$a" in
     --solo-servicios) SOLO_SERVICIOS=true ;;
+    --reexec) REEXEC=true ;;
     *) ARGS+=("$a") ;;
   esac
 done
+# Hash de la versión que está corriendo AHORA, antes de tocar nada.
+YO="$(readlink -f "$0")"
+YO_HASH="$(sha256sum "$YO" 2>/dev/null | cut -d" " -f1 || echo desconocido)"
 set -- "${ARGS[@]+"${ARGS[@]}"}"
 
 RAMA="${1:-main}"
@@ -47,7 +58,9 @@ fail(){ printf "\033[1;31m✗\033[0m %s\n" "$*"; exit 1; }
 sudo -n true 2>/dev/null || fail "sudo pide contraseña. Revisa /etc/sudoers.d/polo (debe decir NOPASSWD: ALL)."
 
 # ── 1) Traer el código ──────────────────────────────────────────────────────
-if [[ -d "$FUENTE/.git" ]]; then
+if $REEXEC; then
+  log "Continuando con la versión actualizada de este script (fetch y rsync ya hechos)"
+elif [[ -d "$FUENTE/.git" ]]; then
   log "Actualizando $FUENTE (rama $RAMA)"
   sudo git -C "$FUENTE" fetch --prune origin
   sudo git -C "$FUENTE" checkout "$RAMA"
@@ -88,6 +101,21 @@ sudo rsync -a --exclude='.git' --exclude='.env' \
   "$FUENTE/cloud/hetzner/" "$PAQUETE/"
 [[ -f "$PAQUETE/.env" ]] || fail "Se perdió $PAQUETE/.env — restáuralo antes de seguir (deploy.sh lo exige)."
 ok "Paquete sincronizado, .env intacto"
+
+# El paso anterior pudo haber reemplazado ESTE script. Seguir con lo que bash tiene
+# en el buffer significaría instalar con las reglas viejas.
+if ! $REEXEC; then
+  NUEVO_HASH="$(sudo sha256sum "$PAQUETE/scripts/actualizar.sh" 2>/dev/null | cut -d" " -f1 || echo desconocido)"
+  if [[ "$NUEVO_HASH" != "desconocido" && "$NUEVO_HASH" != "$YO_HASH" ]]; then
+    log "Este script cambió en el paso anterior → re-ejecutando la versión nueva"
+    # Los args se arman en un arreglo: `$(cond && echo --flag)` mete una
+    # sustitución que falla cuando la condición es falsa, y bajo `set -e` eso es
+    # una trampa que no vale la pena.
+    REARGS=("$RAMA" --reexec)
+    if $SOLO_SERVICIOS; then REARGS+=(--solo-servicios); fi
+    exec bash "$PAQUETE/scripts/actualizar.sh" "${REARGS[@]}"
+  fi
+fi
 
 # ── 3) Instalar al runtime ──────────────────────────────────────────────────
 instalar_solo_servicios() {

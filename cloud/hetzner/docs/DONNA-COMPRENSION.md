@@ -1224,3 +1224,37 @@ Y una comprobación que ataca la causa en vez del síntoma: se extraen los
 comprobación que habría cachado esto de inmediato, en vez de descubrirlo semanas
 después por un acervo incompleto. Probada con una unit cuyo script falta y otra
 cuyo script está: detecta exactamente el que falta.
+
+### El deployer se sobrescribía a sí mismo mientras corría
+
+El deploy del arreglo del backfill salió **verde y no instaló nada**. `actualizar.sh`
+se sincroniza a sí mismo en el paso 2 (`rsync … → /opt/louis/`), y bash ya tiene
+bufereada la parte de abajo del archivo: ejecutó la función de instalación de la
+versión **anterior**, la que no copiaba `legal-scrapers/`. La salida no mintió por
+poco —faltaba la línea `✓ N scrapers legales instalados`— pero sin ese renglón
+esperado a propósito, habría pasado por bueno.
+
+Se detectó porque `--importar-log` contestó con el formato viejo
+(`Backfill desde 0 … Cursor en 0`) en vez de `Importados N saltos del log`. La
+verificación de efecto vuelve a ser lo único que sirve.
+
+Arreglo: se guarda el `sha256` del script **antes** de tocar nada; si tras el rsync
+cambió, se re-ejecuta la versión nueva con `--reexec`, que salta el fetch y el rsync
+(ya hechos) para no ciclar. Probado con una simulación del escenario exacto: primera
+corrida detecta el cambio y entra al instalador nuevo; segunda no re-ejecuta.
+
+### Un 403 ya no se lee como "no había nada que hacer"
+
+En la salida del deploy apareció `No pude primar sesión (HTTP Error 403: Forbidden)`.
+Los 403 no se marcan (se reintentan después), pero tampoco se contaban: una corrida
+entera bloqueada por el SJF reportaba `+0 nuevas, 0 404`, **idéntico** a una corrida
+sin trabajo pendiente. Con el acervo al 25% esa confusión es caro: se leería como
+"ya está completo".
+
+Ahora se cuentan y, si los rechazos superan a los avances, sale un `ERROR` que dice
+que la corrida no avanzó por **bloqueo**, no por falta de trabajo. Probado con un SJF
+falso que rechaza todo, y con uno sano para confirmar que no grita de más.
+
+Nota de método: el reemplazo del mensaje final no aplicó la primera vez porque lo
+hice sin aserción. Es el mismo error que este documento lleva media sesión
+registrando — un cambio que no se verifica no es un cambio.

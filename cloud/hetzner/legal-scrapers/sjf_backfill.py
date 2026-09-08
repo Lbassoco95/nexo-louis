@@ -232,7 +232,7 @@ def _recorrer(harvest, sjf, conn, present, known404, desde, hasta,
               presupuesto, permitir_salto=True):
     """Camina IDs hacia abajo desde `desde` hasta `hasta` (exclusive), gastando
     como máximo `presupuesto` intentos. Devuelve (ok, miss, cursor, gastados)."""
-    ok = miss = gastados = 0
+    ok = miss = gastados = rechazos = 0
     seguidos_404 = 0
     cursor = desde
     while gastados < presupuesto and cursor > hasta:
@@ -290,10 +290,18 @@ def _recorrer(harvest, sjf, conn, present, known404, desde, hasta,
                                   "vacio-muestreado", 0, probados)
             if miss % 50 == 0:
                 conn.commit()
-        # 403/otros: no marcar, reintentar en otra corrida
+        else:
+            # 403 y demás: NO se marcan (se reintentan en otra corrida), pero sí se
+            # cuentan. Sin esto, una corrida entera bloqueada por el SJF reportaba
+            # "+0 nuevas, 0 404" — idéntico a "no había nada que hacer". El 403 del
+            # priming de sesión ya salía en el log y se leía como ruido.
+            rechazos += 1
+            if rechazos in (1, 25) or rechazos % 200 == 0:
+                log.warning("El SJF respondió %s en %d de %d intentos de esta corrida",
+                            st, rechazos, gastados)
         time.sleep(THROTTLE_MS / 1000)
     conn.commit()
-    return ok, miss, cursor, gastados
+    return ok, miss, cursor, gastados, rechazos
 
 
 def importar_saltos_del_log(conn, ruta: str) -> int:
@@ -374,14 +382,14 @@ def main() -> int:
              hallados, n404, muerto, _pct(hallados + n404 + muerto, span), span, nunca)
     log.info("Cursor en %d (piso %d), lote %d", cursor, FLOOR, BATCH)
 
-    ok = miss = 0
+    ok = miss = rechazos = 0
     presupuesto = BATCH
 
     # ── Fase 1: seguir bajando, si queda camino ─────────────────────────────
     if cursor > FLOOR:
-        o, m, cursor, gastados = _recorrer(harvest, sjf, conn, present, known404,
-                                           cursor, FLOOR, presupuesto)
-        ok += o; miss += m; presupuesto -= gastados
+        o, m, cursor, gastados, rech = _recorrer(harvest, sjf, conn, present, known404,
+                                                 cursor, FLOOR, presupuesto)
+        ok += o; miss += m; presupuesto -= gastados; rechazos += rech
         conn.execute(
             "INSERT INTO progress(key,value,updated_at) VALUES('backfill_cursor',?,?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
@@ -421,10 +429,10 @@ def main() -> int:
             continue
         log.info("Bloque pendiente %d–%d: %d/%d vivos → recorriendo completo",
                  desde, hasta, len(vivos), probados)
-        o, m, parado, gastados = _recorrer(harvest, sjf, conn, present, known404,
-                                           hasta + 1, desde - 1, presupuesto,
-                                           permitir_salto=False)
-        ok += o; miss += m; presupuesto -= gastados + probados
+        o, m, parado, gastados, rech = _recorrer(harvest, sjf, conn, present, known404,
+                                                 hasta + 1, desde - 1, presupuesto,
+                                                 permitir_salto=False)
+        ok += o; miss += m; presupuesto -= gastados + probados; rechazos += rech
         if parado <= desde:
             _anotar_salto(conn, desde, hasta, "recorrido", len(vivos), probados)
         else:
@@ -442,10 +450,16 @@ def main() -> int:
     hallados, n404, span, nunca, muerto = _cobertura(conn)
     pend = conn.execute("SELECT COUNT(*) FROM backfill_saltos WHERE estado='pendiente'").fetchone()[0]
     conn.close()
-    log.info("== backfill: +%d nuevas, %d 404. Acervo: %d tesis. Cobertura %.1f%% "
-             "(%d IDs sin tocar, %d bloques pendientes)",
-             ok, miss, hallados, _pct(hallados + n404 + muerto, span), nunca, pend)
-    if not ok and not miss and not pend and nunca:
+    log.info("== backfill: +%d nuevas, %d 404, %d rechazados. Acervo: %d tesis. "
+             "Cobertura %.1f%% (%d IDs sin tocar, %d bloques pendientes)",
+             ok, miss, rechazos, hallados, _pct(hallados + n404 + muerto, span),
+             nunca, pend)
+    if rechazos and rechazos >= max(1, ok + miss):
+        log.error("El SJF rechazó %d de %d intentos: esta corrida NO avanzó por "
+                  "BLOQUEO, no por falta de trabajo. Revisa si el server está vetado "
+                  "(403) antes de suponer que el acervo está completo.",
+                  rechazos, rechazos + ok + miss)
+    if not ok and not miss and not rechazos and not pend and nunca:
         log.warning("Esta corrida no intentó NADA y quedan %d IDs SIN TOCAR sin ningún "
                     "bloque pendiente que los cubra. Recupera el histórico de saltos "
                     "con: sjf_backfill.py --importar-log", nunca)
