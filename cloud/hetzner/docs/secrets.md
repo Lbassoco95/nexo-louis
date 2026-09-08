@@ -59,7 +59,7 @@ cd ~/Documents/Claude/Projects/Yoltik\ Desarrollos/yoltik-ai-setup/cloud/hetzner
 cat > /tmp/louis-env-draft <<EOF
 # Generado $(date -Iseconds) — copia a /opt/louis/.env en Hetzner
 
-LOUIS_DOMAIN=louis.kawiil.mx
+DONNA_DOMAIN=donna.kawiil.mx
 AGENTS_DOMAIN=agents.kawiil.mx
 ACME_EMAIL=lbassoco@kawiil.mx
 SYSTEM_USER=polo
@@ -154,7 +154,7 @@ y vuelves a correr `bash sync/hetzner-prepare.sh` allá.
    ```
 4. Re-activa los tokens en `.env` de Hetzner, reinicia OpenClaw.
 5. Manda un mensaje de prueba por Telegram desde tu iPhone. Debe responder
-   Louis desde Hetzner.
+   Donna desde Hetzner.
 6. Si todo OK, vuelve a encender el de la Mac SOLO si lo quieres como backup
    en caliente — pero **con tokens diferentes** (otro bot de Telegram de
    pruebas, otro app de Slack). Compartir tokens entre 2 hosts no funciona.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # import-kawiil-agents.sh — Clona el repo privado Lbassoco95/kawiil-agents
-# y registra sus prompts como sub-agentes de Louis en
+# y registra sus prompts como sub-agentes de Donna en
 # /opt/openclaw/spaces/general/agents/.
 #
 # Uso (en Hetzner, sudo):
@@ -144,7 +144,7 @@ metadata:
 {body}
 
 # Capacidades disponibles
-Puedes usar todas las tools de Louis cuando seas invocado:
+Puedes usar todas las tools de Donna cuando seas invocado:
 - consejo_experto_legal(area, pregunta) — consulta a los 92 expertos legales US y obtén síntesis adaptada a México
 - kawiil_central_tareas / crear_tarea / actualizar_tarea / avance — opera el sistema de gestión Kawiil
 - m365_inbox / m365_responder — correos Kawiil/Yoltik

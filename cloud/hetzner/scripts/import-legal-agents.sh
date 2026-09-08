@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # import-legal-agents.sh — Clona anthropics/claude-for-legal y registra cada
-# SKILL.md como sub-agente Louis en /opt/openclaw/spaces/general/agents/.
+# SKILL.md como sub-agente Donna en /opt/openclaw/spaces/general/agents/.
 #
 # Cada sub-agente queda como `legal-<plugin>-<skill>.md` con frontmatter:
 #   nombre, especialidad (de description), modelo (claude-sonnet-4-6), origen
@@ -83,7 +83,7 @@ for plugin in $PLUGINS; do
     was_new=true
     [[ -f "$out_path" ]] && was_new=false
 
-    # Escribir el agente Louis
+    # Escribir el agente Donna
     {
       echo "---"
       echo "nombre: legal-${plugin%-legal}-${skill_slug}"

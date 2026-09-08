@@ -29,7 +29,7 @@ NoNewPrivileges=true
 ProtectSystem=full
 PrivateTmp=true
 ReadWritePaths=@@OPENCLAW_HOME@@
-MemoryMax=1G
+MemoryMax=4G
 TasksMax=256
 
 [Install]

@@ -51,11 +51,11 @@
 ## 🤖 Automatización legal recurrente (config permanente)
 - Cada viernes (CDMX): informe semanal SJF/tesis en PDF, vía agentes Kawiil, por Telegram
 - Cada día hábil: informe DOF del día hábil anterior en PDF, por Telegram
-- Louis programa y habla en zona horaria CDMX (UTC-06:00)
+- Donna programa y habla en zona horaria CDMX (UTC-06:00)
 
 ---
 
-## 🛠️ Pendientes infraestructura Louis
+## 🛠️ Pendientes infraestructura Donna
 - [ ] Clonar kawiil-agents (deploy key o PAT GitHub)
 - [ ] Llenar TELEGRAM_ALLOWED_CHAT_ID (hoy responde a cualquiera)
 - [ ] Instalar OpenClaw native (modo no-interactivo) — opcional

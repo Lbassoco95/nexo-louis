@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# setup-legal-timers.sh — instala/activa la automatización legal de Louis en el server.
+# setup-legal-timers.sh — instala/activa la automatización legal de Donna en el server.
 # Ejecutar con: sudo bash setup-legal-timers.sh
 #
 # Hace:
@@ -162,7 +162,7 @@ python3 -m py_compile "$SJF_DIR/sjf_weekly_summary.py" && echo "  ✓ sjf_weekly
 echo "[2/3] Escribiendo units systemd…"
 cat > /etc/systemd/system/sjf-update.service <<EOF
 [Unit]
-Description=Louis SJF harvester — actualiza tesis del Semanario Judicial
+Description=Donna SJF harvester — actualiza tesis del Semanario Judicial
 After=network-online.target
 Wants=network-online.target
 [Service]
@@ -179,7 +179,7 @@ EOF
 
 cat > /etc/systemd/system/sjf-update.timer <<EOF
 [Unit]
-Description=Dispara el harvester SJF de Louis (diario)
+Description=Dispara el harvester SJF de Donna (diario)
 [Timer]
 OnCalendar=*-*-* 13:30:00
 RandomizedDelaySec=900
@@ -190,7 +190,7 @@ EOF
 
 cat > /etc/systemd/system/sjf-weekly.service <<EOF
 [Unit]
-Description=Louis SJF — resumen semanal (Telegram)
+Description=Donna SJF — resumen semanal (Telegram)
 After=network-online.target
 Wants=network-online.target
 [Service]
@@ -205,7 +205,7 @@ EOF
 
 cat > /etc/systemd/system/sjf-weekly.timer <<EOF
 [Unit]
-Description=Resumen semanal SJF de Louis (lunes)
+Description=Resumen semanal SJF de Donna (lunes)
 [Timer]
 OnCalendar=Mon *-*-* 08:00:00
 Persistent=true

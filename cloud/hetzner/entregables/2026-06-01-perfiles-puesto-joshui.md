@@ -26,5 +26,5 @@ Incluyen: descripción de funciones, perfil requerido, relaciones de reporte.
 - 2026-06-04 — Estado actualizado a `listo`: perfiles redactados, pendientes de VoBo de dirección
 
 ---
-*Ejemplo: este archivo es la fuente de verdad que Louis debe leer.
-Sin él, Louis reporta el tema como "pendiente" aunque ya esté hecho.*
+*Ejemplo: este archivo es la fuente de verdad que Donna debe leer.
+Sin él, Donna reporta el tema como "pendiente" aunque ya esté hecho.*

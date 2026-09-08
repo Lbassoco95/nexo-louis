@@ -2,7 +2,7 @@
 # mac-install-louis-sync.sh — Registra DOS launchd agents en la Mac:
 #
 #   1) ai.kawiil.heartbeat   → cada 30s sube /opt/openclaw/state/mac_heartbeat.json
-#                              (Louis sabe si tu Mac está prendida y con qué batería)
+#                              (Donna sabe si tu Mac está prendida y con qué batería)
 #
 #   2) ai.kawiil.louis-sync  → cada 5 min rsync bidireccional Mac↔Hetzner
 #                              (Projects/ y .openclaw/spaces/, sin --delete)

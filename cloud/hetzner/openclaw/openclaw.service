@@ -1,5 +1,5 @@
 [Unit]
-Description=OpenClaw Gateway (Louis core)
+Description=OpenClaw Gateway (Donna core)
 Documentation=https://openclaw.ai
 After=network-online.target
 Wants=network-online.target

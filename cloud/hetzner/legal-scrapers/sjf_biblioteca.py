@@ -42,9 +42,9 @@ from pathlib import Path
 HOME = Path.home()
 BASE_DIR = HOME / "sjf_biblioteca"
 
-# La BD que Louis LEE en el servidor vive en /opt/openclaw/legal/sjf/biblioteca.db.
+# La BD que Donna LEE en el servidor vive en /opt/openclaw/legal/sjf/biblioteca.db.
 # Cuando este scraper corre en Hetzner debe escribir AHÍ (antes escribía en
-# ~/sjf_biblioteca/biblioteca.db, una BD muerta que Louis nunca leía → se estancó).
+# ~/sjf_biblioteca/biblioteca.db, una BD muerta que Donna nunca leía → se estancó).
 # Orden de resolución:
 #   1) $SJF_DB_PATH si está definido (override explícito).
 #   2) /opt/openclaw/legal/sjf/biblioteca.db si existe /opt/openclaw (= servidor).

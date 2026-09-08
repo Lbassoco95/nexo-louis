@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-sjf_harvest.py — actualización diaria del Semanario Judicial (SJF) para Louis.
+sjf_harvest.py — actualización diaria del Semanario Judicial (SJF) para Donna.
 
 Por qué existe (03-jun-2026): el scraper grande (`sjf_biblioteca.py`) se quedó
 estancado en abril porque (a) no había timer que lo corriera, y (b) le pegaba al
@@ -12,7 +12,7 @@ param, 200 con isSemanal=true).
 Este harvester es ligero y autosuficiente para el FETCH (cookie de sesión +
 isSemanal=true), pero reutiliza la persistencia del scraper instalado
 (`db_connect`, `normalize_tesis`, `upsert_tesis`) para escribir EXACTAMENTE en el
-mismo esquema que Louis ya lee. Camina desde MAX(registro)+1 hacia adelante hasta
+mismo esquema que Donna ya lee. Camina desde MAX(registro)+1 hacia adelante hasta
 GAP_TOLERANCE 404 consecutivos.
 
 Uso:
@@ -47,7 +47,7 @@ SCRAPER_PATH = os.environ.get("SJF_SCRAPER") or next(
     ) if Path(p).exists()),
     "/opt/openclaw/legal/sjf/sjf_biblioteca.py",
 )
-# BD que Louis LEE. El harvester escribe AQUÍ directamente (no vía el scraper, cuyo
+# BD que Donna LEE. El harvester escribe AQUÍ directamente (no vía el scraper, cuyo
 # DB_PATH lo revierte el sync de la Mac).
 DB_PATH = os.environ.get("SJF_DB_PATH", "/opt/openclaw/legal/sjf/biblioteca.db")
 API_BASE = "https://sjf2.scjn.gob.mx/services/sjftesismicroservice/api/public/tesis"
@@ -62,6 +62,8 @@ THROTTLE_MS = 400
 THROTTLE_JITTER_MS = 250
 RETRY_ATTEMPTS = 3
 RETRY_BACKOFF = 3
+# Saltos para el sondeo pre-scan (brinca períodos vacacionales / huecos grandes)
+PROBE_OFFSETS = (500, 1000, 2000, 5000, 10000, 20000, 50000)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("sjf_harvest")
@@ -148,10 +150,39 @@ def _load_scraper():
     return mod
 
 
+def _probe_for_anchor(max_reg: int) -> int:
+    """Sondea saltos grandes para brincar períodos vacacionales o huecos extensos.
+
+    Prueba registros en PROBE_OFFSETS; si encuentra uno publicado, retorna
+    max(max_reg, encontrado - GAP_TOLERANCE) para que el scan lineal lo alcance
+    dentro de GAP_TOLERANCE pasos.  Si todos los probes dan 404, retorna max_reg
+    (el scan lineal arranca desde ahí con la tolerancia normal).
+    """
+    log.info("Sondeo previo al scan: buscando tesis más allá de registro %d …", max_reg)
+    for off in PROBE_OFFSETS:
+        reg = max_reg + off
+        st, data = fetch_tesis(reg)
+        if st == 403:
+            log.warning("Sondeo: WAF bloqueó en %d — abortando sondeo, scan normal", reg)
+            return max_reg
+        if st == 200 and data:
+            start = max(max_reg, reg - GAP_TOLERANCE)
+            log.info("Sondeo: tesis encontrada en %d (offset +%d) → scan desde %d",
+                     reg, off, start + 1)
+            return start
+        log.info("Sondeo: %d → 404, probando offset +%d …", reg,
+                 PROBE_OFFSETS[PROBE_OFFSETS.index(off) + 1]
+                 if off != PROBE_OFFSETS[-1] else off)
+        time.sleep(THROTTLE_MS / 1000)
+    log.info("Sondeo: sin tesis hasta offset +%d — BD al día o SCJN en receso",
+             PROBE_OFFSETS[-1])
+    return max_reg
+
+
 def main() -> int:
     sjf = _load_scraper()
     _prime()
-    # IMPORTANTE: abrimos NUESTRA conexión a la BD que Louis lee (DB_PATH), en vez de
+    # IMPORTANTE: abrimos NUESTRA conexión a la BD que Donna lee (DB_PATH), en vez de
     # usar sjf.db_connect(). El scraper sincronizado desde la Mac tiene su DB_PATH
     # apuntando a ~/sjf_biblioteca/biblioteca.db (y el sync revierte cualquier parche),
     # así que escribir vía su db_connect mandaba los datos al archivo equivocado.
@@ -163,6 +194,9 @@ def main() -> int:
         conn.executescript(sjf.SCHEMA)  # asegura tablas (idempotente; ya existen)
     max_reg = conn.execute("SELECT COALESCE(MAX(registro_digital),0) FROM tesis").fetchone()[0]
     log.info("Update SJF en %s: desde registro %d", DB_PATH, max_reg + 1)
+
+    # Sondeo previo: brinca huecos grandes (vacaciones SCJN, lotes no-contiguos)
+    max_reg = _probe_for_anchor(max_reg)
 
     ok = miss = consec_404 = consec_403 = 0
     blocked = False

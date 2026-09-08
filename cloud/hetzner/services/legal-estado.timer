@@ -1,13 +1,11 @@
 [Unit]
-Description=Dispara el reporte de avance de descargas legales (lunes y viernes, mañana CDMX)
+Description=Dispara el reporte de avance de descargas legales (cada 4h, el script decide si enviar)
 
 [Timer]
-# Lunes y viernes: cuánto llevamos, si vamos al día con el presente, y cuánto
-# del histórico (backfill) llevamos almacenado de SJF y DOF.
-OnCalendar=Mon,Fri *-*-* 09:15:00 America/Mexico_City
-# Sin Persistent: este timer manda reporte de avance de descargas por Telegram. Con Persistent, un run
-# perdido (server caído/reiniciado) se disparaba al arrancar a cualquier hora.
-# Si se pierde una corrida, se espera a la siguiente ventana normal.
+# Corre cada 4h; estado_legal.py decide si es hora según schedule adaptativo:
+#   semanas 1-2 → diario · días 15-35 → cada 3 días · día 36+ → semanal
+OnCalendar=*-*-* 00/4:20:00 America/Mexico_City
+Persistent=true
 
 [Install]
 WantedBy=timers.target

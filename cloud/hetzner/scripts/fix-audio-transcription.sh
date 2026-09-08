@@ -130,9 +130,9 @@ TMP_DIR=$(mktemp -d)
 TEST_WAV="$TMP_DIR/test.wav"
 
 if command -v espeak-ng >/dev/null 2>&1; then
-  espeak-ng -v es -w "$TEST_WAV" "Hola Louis, prueba de transcripción audio." 2>/dev/null
+  espeak-ng -v es -w "$TEST_WAV" "Hola Donna, prueba de transcripción audio." 2>/dev/null
 elif apt-get install -yq espeak-ng >/dev/null 2>&1 && command -v espeak-ng >/dev/null 2>&1; then
-  espeak-ng -v es -w "$TEST_WAV" "Hola Louis, prueba de transcripción audio." 2>/dev/null
+  espeak-ng -v es -w "$TEST_WAV" "Hola Donna, prueba de transcripción audio." 2>/dev/null
 else
   # Fallback: tono de 1s para verificar que el binario corre (no producirá texto válido)
   warn "espeak-ng no disponible; usando tono puro (no producirá texto pero verifica pipeline)"

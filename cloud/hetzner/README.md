@@ -1,6 +1,6 @@
-# Louis en Hetzner — paquete `clone & run`
+# Donna en Hetzner — paquete `clone & run`
 
-Deploy de Louis (Nexo Personal de Polo) en un VPS de Hetzner. Objetivo: que Louis siga
+Deploy de Donna (Nexo Personal de Polo) en un VPS de Hetzner. Objetivo: que Donna siga
 respondiendo Telegram/Slack/iMessage **aunque la Mac esté apagada**, con la Mac
 empujando memoria (`AGENDA.md`, prompts, recuerdos) hacia el cloud cada 5 minutos.
 
@@ -12,7 +12,7 @@ empujando memoria (`AGENDA.md`, prompts, recuerdos) hacia el cloud cada 5 minuto
                           ▼
                 ┌──────────────────┐
                 │  Caddy (host:443)│  ← auto-TLS Let's Encrypt
-                │  louis.kawiil.mx │
+                │  donna.kawiil.mx │
                 │  agents.kawiil.mx│
                 └────────┬─────────┘
                          │
@@ -76,16 +76,16 @@ nano .env          # pega tokens; guarda con Ctrl+O, salir Ctrl+X
 ./verify.sh
 ```
 
-Cuando `verify.sh` reporte todo OK, mándale un mensaje a Louis por Telegram —
+Cuando `verify.sh` reporte todo OK, mándale un mensaje a Donna por Telegram —
 debe responder desde Hetzner sin que la Mac esté encendida.
 
 ## Sincronización Mac → Hetzner
 
-Una vez Louis está vivo en Hetzner, en tu **Mac** corres:
+Una vez Donna está vivo en Hetzner, en tu **Mac** corres:
 
 ```bash
 cd ~/Documents/Claude/Projects/Yoltik\ Desarrollos/yoltik-ai-setup/cloud/hetzner/sync
-./mac-install.sh louis.kawiil.mx polo
+./mac-install.sh donna.kawiil.mx polo
 ```
 
 Eso registra un `launchd` job que cada 5 minutos empuja:
@@ -99,7 +99,7 @@ a `/opt/openclaw-sync/` en Hetzner. Un cron en Hetzner aplica el delta a
 
 Los **secretos no se sincronizan**: viven solo en `.env` del VPS. La Mac queda
 como fuente de verdad del contenido (memoria), Hetzner queda como fuente de
-verdad de los tokens y de Louis vivo.
+verdad de los tokens y de Donna vivo.
 
 ## Capas de seguridad
 

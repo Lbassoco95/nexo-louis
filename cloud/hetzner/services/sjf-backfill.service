@@ -1,0 +1,31 @@
+[Unit]
+Description=Donna SJF — backfill histórico del acervo (rellena hacia atrás, ~3000 tesis/run)
+Documentation=https://github.com/Lbassoco95/nexo-louis
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@@SYSTEM_USER@@
+Group=@@SYSTEM_USER@@
+WorkingDirectory=@@OPENCLAW_HOME@@/legal/sjf
+Environment=SJF_DB_PATH=@@OPENCLAW_HOME@@/legal/sjf/biblioteca.db
+Environment=SJF_HARVEST=@@OPENCLAW_HOME@@/legal/sjf/sjf_harvest.py
+Environment=SJF_SCRAPER=@@OPENCLAW_HOME@@/legal/sjf/sjf_biblioteca.py
+Environment=BACKFILL_BATCH=3000
+Environment=BACKFILL_THROTTLE_MS=150
+Environment=BACKFILL_404_THRESHOLD=50
+Environment=BACKFILL_404_JUMP=50000
+Environment=SJF_BACKFILL_FLOOR=0
+ExecStart=/usr/bin/python3 @@OPENCLAW_HOME@@/legal/sjf/sjf_backfill.py
+StandardOutput=append:@@OPENCLAW_HOME@@/logs/sjf-backfill.log
+StandardError=append:@@OPENCLAW_HOME@@/logs/sjf-backfill.log
+SyslogIdentifier=louis-sjf-backfill
+
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+ReadWritePaths=@@OPENCLAW_HOME@@
+MemoryMax=512M
+TasksMax=64
+TimeoutStartSec=7200

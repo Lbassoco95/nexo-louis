@@ -1,7 +1,7 @@
 """
 self_update.py — capacidad de Donna para editarse a sí mismo (con guardrails).
 
-Tools expuestas vía louis_core:
+Tools expuestas vía donna_core:
   • leer_mi_codigo(archivo)              — lee un archivo del runtime
   • editar_mi_codigo(archivo, old, new)  — replace con validación + backup
   • reiniciar_mi_servicio(servicio)      — systemctl restart con auto-rollback
@@ -40,7 +40,7 @@ LOG_PREFIX = "[self_update]"
 
 # Archivos editables (whitelist)
 EDITABLE_FILES = {
-    "louis_core.py", "telegram-bridge.py", "slack-bridge.py",
+    "donna_core.py", "telegram-bridge.py", "slack-bridge.py",
     "scheduler.py", "m365.py", "import-legal-agents.sh",
 }
 # Subcarpetas permitidas (relativas a SCRIPTS_DIR)
@@ -52,7 +52,7 @@ RESTARTABLE_SERVICES = {"telegram-bridge", "slack-bridge", "scheduler"}
 
 def _resolve_file(archivo: str) -> Path:
     """Resuelve y valida que el archivo esté en la whitelist."""
-    # Permite tanto 'louis_core.py' como 'm365/m365.py'
+    # Permite tanto 'donna_core.py' como 'm365/m365.py'
     archivo = archivo.strip().lstrip("/")
     if archivo in EDITABLE_FILES:
         return SCRIPTS_DIR / archivo

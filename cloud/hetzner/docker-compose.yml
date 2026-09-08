@@ -12,13 +12,15 @@ services:
       - /opt/louis-data/caddy/data:/data
       - /opt/louis-data/caddy/config:/config
     environment:
-      LOUIS_DOMAIN: ${LOUIS_DOMAIN}
+      DONNA_DOMAIN: ${DONNA_DOMAIN}
       AGENTS_DOMAIN: ${AGENTS_DOMAIN}
       CEREBRO_DOMAIN: ${CEREBRO_DOMAIN:-cerebro.kawiil.mx}
       CEREBRO_PORT: ${CEREBRO_PORT:-4040}
       ACME_EMAIL: ${ACME_EMAIL}
       OPENCLAW_PORT: ${OPENCLAW_PORT:-3000}
       # Basic-auth del tablero/dashboards (genera el hash con 'caddy hash-password')
+      # ⚠️ El bcrypt trae `$`; en .env escápalos como `$$` o compose se los come y
+      # Caddy entra en bucle de reinicio ("illegal base64 data"). Ver .env.example.
       TABLERO_USER: ${TABLERO_USER:-polo}
       TABLERO_HASH: ${TABLERO_HASH:-}
     healthcheck:

@@ -3,7 +3,7 @@
 # Empuja ~/.openclaw/spaces/ → polo@HETZNER:/opt/openclaw-sync/spaces/
 #
 # Variables de entorno requeridas (las pone el plist):
-#   LOUIS_REMOTE_HOST   ej: louis.kawiil.mx
+#   LOUIS_REMOTE_HOST   ej: donna.kawiil.mx
 #   LOUIS_REMOTE_USER   ej: polo
 #   LOUIS_SSH_KEY       ej: ~/.ssh/louis_sync
 #

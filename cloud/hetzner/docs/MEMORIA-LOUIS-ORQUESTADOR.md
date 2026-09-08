@@ -1,4 +1,4 @@
-# Memoria — Louis como Orquestador del ecosistema Kawiil
+# Memoria — Donna como Orquestador del ecosistema Kawiil
 > Punto de consulta. Última actualización: 7-jun-2026 (sesión intensiva).
 > Rama: `claude/affectionate-dijkstra-KSoqy`
 
@@ -6,9 +6,9 @@
 
 ## 1. La visión (el enfoque correcto)
 
-**Louis NO hace todo él mismo. Louis ORQUESTA.** Es el cerebro que decide, recuerda y
-**despacha**; las piezas especializadas ejecutan. El usuario (Polo) habla con Louis por
-Telegram (o con Cowork en la app), y Louis coordina:
+**Donna NO hace todo él mismo. Donna ORQUESTA.** Es el cerebro que decide, recuerda y
+**despacha**; las piezas especializadas ejecutan. El usuario (Polo) habla con Donna por
+Telegram (o con Cowork en la app), y Donna coordina:
 
 ```
                         ┌──────────────────────────────┐
@@ -28,12 +28,12 @@ Telegram (o con Cowork en la app), y Louis coordina:
         └─────────────────────────────┘
 ```
 
-**Regla de oro de todo el proyecto:** datos duros, sin inventar. Louis cita fuentes
+**Regla de oro de todo el proyecto:** datos duros, sin inventar. Donna cita fuentes
 reales (DOF/SJF/normas); nunca fabrica salidas de comandos, juntas, ni confirmaciones.
 
 ---
 
-## 2. Cómo Louis usa cada herramienta
+## 2. Cómo Donna usa cada herramienta
 
 **Cerebro Kawiil (lo usa directo).** Es su memoria + acervo legal + entregables.
 Tools: `cerebro_estado`, `cerebro_listar`, `cerebro_proyecto_estado`,
@@ -44,27 +44,27 @@ Cowork lo lee por el connector (`https://cerebro.kawiil-central.mx/sse`).
 - *Borrador rápido (automático):* `generar_visual_gamma` → API v1.0 (`gamma_gen.py`),
   formato social/presentación, entrega el PNG real como archivo. Más plano.
 - *Diseño bueno (el que rompe molde):* el modo **"Gráfico" de Gamma es solo UI** (no API)
-  y es el único que acepta **referencia del Kawiilito**. Aquí Louis es **arquitecto del
+  y es el único que acepta **referencia del Kawiilito**. Aquí Donna es **arquitecto del
   prompt**: arma un prompt art-directed A LA MEDIDA de cada post (escena, mensaje, mood
   cambian; marca fija: Kawiilito, paleta navy/azul/verde/naranja, logo) y Cowork lo pega
   en el modo Gráfico con la referencia.
 
 **Canva (diseño con Brand Kit).** Vía connector de Canva en Cowork. Cowork ve imágenes
-y usa el Brand Kit. Louis despacha el encargo; Cowork diseña.
+y usa el Brand Kit. Donna despacha el encargo; Cowork diseña.
 
 **Cowork (capa de ejecución creativa/visual).** Lo que necesita visión, navegador o
-diseño. Flujo: Louis art-dirige + despacha (brief en el Cerebro) → Cowork genera (Gamma/
+diseño. Flujo: Donna art-dirige + despacha (brief en el Cerebro) → Cowork genera (Gamma/
 Canva) y hace **QA visual** comparando contra los posts de oro de Kawiil → valida o ajusta.
 
 **Restricción honesta:** no hay API para inyectar tareas a Cowork automáticamente; el
-puente es el Cerebro (Louis deja el brief, Cowork lo lee). El modo Gráfico de Gamma y la
+puente es el Cerebro (Donna deja el brief, Cowork lo lee). El modo Gráfico de Gamma y la
 referencia del Kawiilito son UI, no API.
 
 ---
 
 ## 3. Estado actual — qué FUNCIONA (al 7-jun-2026)
 
-- ✅ **Louis vivo** (recuperado del rompimiento por patch script), memoria confiable
+- ✅ **Donna vivo** (recuperado del rompimiento por patch script), memoria confiable
   (`reemplazar_pendiente` sin duplicar checkbox; sin falsas confirmaciones).
 - ✅ **Cerebro Kawiil MCP** en producción: HTTPS + OAuth + DNS-rebinding resuelto.
   **Connector conectado en Cowork** — Cowork lee el cerebro real del servidor. 🎉
@@ -75,7 +75,7 @@ referencia del Kawiilito son UI, no API.
   indexación/deep-learning. SJF 30,606 (98% texto/99% PDF → listo DL); DOF ~210k (5%
   texto/1% PDF → falta extraer histórico).
 - ✅ **Gamma funcional** desde el servidor (API v1.0; UA de navegador evita Cloudflare;
-  entrega el PNG real). Tool `generar_visual_gamma`. Louis = arquitecto de prompts.
+  entrega el PNG real). Tool `generar_visual_gamma`. Donna = arquitecto de prompts.
 - ✅ **Documentos**: PDF cuando pides PDF; **HTML interactivo** (colapsables + buscador +
   expandir/colapsar) cuando pides HTML. Sin duplicados, un solo doc consolidado, sin
   filtrar prompts de agentes. Saneador de `tool_use/tool_result` (mató el error 400).

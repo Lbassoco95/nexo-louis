@@ -2,7 +2,7 @@
 # mac-heartbeat.sh — Reporta a Hetzner el estado de la Mac cada 30s.
 # Envía: timestamp, batería (%), AC power, SSID, hostname, uptime.
 # Sube un JSON tiny vía SSH a /opt/openclaw/state/mac_heartbeat.json
-# para que Louis sepa si la Mac está prendida y con qué autonomía.
+# para que Donna sepa si la Mac está prendida y con qué autonomía.
 #
 # Variables (las pone el plist mac-install-louis-sync.sh):
 #   LOUIS_REMOTE_HOST  ej: 204.168.131.21

@@ -9,7 +9,7 @@
 ```bash
 # En el VPS (como root o polo con sudo)
 python3 --version   # necesitas 3.10+
-systemctl status telegram-bridge   # confirma que Louis ya corre
+systemctl status telegram-bridge   # confirma que Donna ya corre
 ```
 
 ---
@@ -140,13 +140,13 @@ Entregables: ✅listo:1 | briefs_pendientes:0
 
 ---
 
-## Paso 9 (opcional) — Conectar Louis al MCP
+## Paso 9 (opcional) — Conectar Donna al MCP
 
-Para que Louis pueda escribir entregables y briefs desde Telegram/Slack,
-agrega en `louis_core.py` las tool definitions del MCP. Esto va en una
+Para que Donna pueda escribir entregables y briefs desde Telegram/Slack,
+agrega en `donna_core.py` las tool definitions del MCP. Esto va en una
 segunda iteración cuando el almacén esté maduro.
 
-Por ahora Louis **lee** directamente de disco (ya lo hace con `build_operational_snapshot()`),
+Por ahora Donna **lee** directamente de disco (ya lo hace con `build_operational_snapshot()`),
 y Cowork es quien **escribe** en el almacén compartido.
 
 ---

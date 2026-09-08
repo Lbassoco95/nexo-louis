@@ -2,7 +2,7 @@
 # mac-update-bridges.sh — Hot-update de los bridges en Hetzner SIN re-bootstrap.
 #
 # Sube:
-#   - services/louis_core.py         → /opt/openclaw/scripts/
+#   - services/donna_core.py         → /opt/openclaw/scripts/
 #   - services/telegram-bridge.py    → /opt/openclaw/scripts/
 #   - services/slack-bridge.py       → /opt/openclaw/scripts/
 #   - services/m365.py               → /opt/openclaw/scripts/m365/
@@ -14,7 +14,7 @@
 #
 # Uso:
 #   ./mac-update-bridges.sh                       # default 204.168.131.21
-#   ./mac-update-bridges.sh louis.kawiil.mx       # con dominio o IP
+#   ./mac-update-bridges.sh donna.kawiil.mx       # con dominio o IP
 
 set -euo pipefail
 
@@ -34,7 +34,7 @@ fail() { printf "\033[1;31m✗ %s\033[0m\n" "$*" >&2; exit 1; }
 
 # Pre-flight
 [[ -d "$SERVICES" ]] || fail "No encontré $SERVICES"
-for f in louis_core.py telegram-bridge.py slack-bridge.py m365.py scheduler.py self_update.py openclaw_gateway.py browser_runner.py slack-bridge.service telegram-bridge.service scheduler.service openclaw-gateway.service; do
+for f in donna_core.py telegram-bridge.py slack-bridge.py m365.py scheduler.py self_update.py openclaw_gateway.py browser_runner.py slack-bridge.service telegram-bridge.service scheduler.service openclaw-gateway.service; do
   [[ -f "$SERVICES/$f" ]] || fail "Falta $SERVICES/$f"
 done
 
@@ -54,9 +54,9 @@ ok "SSH a $REMOTE OK"
 
 # ── 1) Subir archivos a /tmp ──────────────────────────────────
 log "[1/5] Subiendo .py + .service a /tmp en $HOST"
-ssh $SSH_OPTS "$REMOTE" "rm -f /tmp/louis_core.py /tmp/telegram-bridge.py /tmp/slack-bridge.py /tmp/m365.py /tmp/scheduler.py /tmp/openclaw_gateway.py /tmp/browser_runner.py /tmp/telegram-bridge.service /tmp/slack-bridge.service /tmp/scheduler.service /tmp/openclaw-gateway.service /tmp/import-legal-agents.sh /tmp/slack.env 2>/dev/null || true"
+ssh $SSH_OPTS "$REMOTE" "rm -f /tmp/donna_core.py /tmp/telegram-bridge.py /tmp/slack-bridge.py /tmp/m365.py /tmp/scheduler.py /tmp/openclaw_gateway.py /tmp/browser_runner.py /tmp/telegram-bridge.service /tmp/slack-bridge.service /tmp/scheduler.service /tmp/openclaw-gateway.service /tmp/import-legal-agents.sh /tmp/slack.env 2>/dev/null || true"
 scp $SCP_OPTS -q \
-  "$SERVICES/louis_core.py" \
+  "$SERVICES/donna_core.py" \
   "$SERVICES/telegram-bridge.py" \
   "$SERVICES/slack-bridge.py" \
   "$SERVICES/m365.py" \
@@ -101,7 +101,7 @@ for logf in telegram-bridge.log slack-bridge.log scheduler.log openclaw-gateway.
   touch /opt/openclaw/logs/$logf
   chown $SYSTEM_USER:$SYSTEM_USER /opt/openclaw/logs/$logf
 done
-install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" /tmp/louis_core.py       /opt/openclaw/scripts/louis_core.py
+install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" /tmp/donna_core.py       /opt/openclaw/scripts/donna_core.py
 install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" /tmp/telegram-bridge.py  /opt/openclaw/scripts/telegram-bridge.py
 install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" /tmp/slack-bridge.py     /opt/openclaw/scripts/slack-bridge.py
 install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" /tmp/m365.py             /opt/openclaw/scripts/m365/m365.py
@@ -118,10 +118,10 @@ done
 # Limpia el script viejo si quedó del deploy previo
 rm -f /opt/openclaw/scripts/clone-kawiil-central.sh 2>/dev/null || true
 
-# Sudoers para que el user pueda reiniciar SOLO los 3 servicios de Louis sin password
+# Sudoers para que el user pueda reiniciar SOLO los 3 servicios de Donna sin password
 # (necesario para reiniciar_mi_servicio del self-update)
 cat > /etc/sudoers.d/louis-self-update <<EOF
-# Permite a $SYSTEM_USER reiniciar servicios de Louis sin password (self-update)
+# Permite a $SYSTEM_USER reiniciar servicios de Donna sin password (self-update)
 $SYSTEM_USER ALL=(root) NOPASSWD: /bin/systemctl restart telegram-bridge
 $SYSTEM_USER ALL=(root) NOPASSWD: /bin/systemctl restart slack-bridge
 $SYSTEM_USER ALL=(root) NOPASSWD: /bin/systemctl restart scheduler
@@ -191,7 +191,7 @@ systemctl restart scheduler
 sleep 2
 echo "  scheduler:       $(systemctl is-active scheduler)"
 
-# OpenClaw Gateway — siempre arranca (envuelve louis_core)
+# OpenClaw Gateway — siempre arranca (envuelve donna_core)
 # Apaga el legacy openclaw.service si quedó dando lata
 if systemctl list-unit-files openclaw.service >/dev/null 2>&1; then
   systemctl disable openclaw >/dev/null 2>&1 || true
@@ -219,13 +219,13 @@ curl -fsS --max-time 5 http://127.0.0.1:3000/v1/status 2>/dev/null | python3 -c 
 python3 -c \"
 import sys
 sys.path.insert(0,'/opt/openclaw/scripts')
-import louis_core as c
+import donna_core as c
 assert c.should_deterministic_operational_response('hola')
 h=[{'role':'assistant','content':'¿Por dónde empezamos?'}]
 assert not c.should_deterministic_operational_response('hola', h)
 assert c._is_ollama_chat_mode('empecemos por Vizum', h)
 print('routing smoke OK')
-\" 2>/dev/null || echo '(louis_core smoke falló)'
+\" 2>/dev/null || echo '(donna_core smoke falló)'
 echo ''
 echo '--- Últimas 10 líneas del log de telegram-bridge ---'
 ${SUDO}tail -n 10 /opt/openclaw/logs/telegram-bridge.log 2>/dev/null || echo '(sin log todavía)'
@@ -246,7 +246,7 @@ Pruébalo:
   2. Slack DM: pega imagen o nota de voz — debe procesarla
   3. Recordatorio proactivo:
        'recuérdame en 2 minutos que esto funcionó'
-     Espera 2 min — Louis te lo debe mandar solo.
+     Espera 2 min — Donna te lo debe mandar solo.
   4. Telegram rápido: 'hola' o '¿qué tengo urgente?' → briefing <3s (determinístico)
   5. Telegram status: '/status' → servicios + agentes sin LLM
   6. Agentes: 'lista mis agentes' (/sonnet) o POST /v1/agents/{name}

@@ -1,12 +1,12 @@
-# Plan: deploy de Louis + kawiil-agents en cloud (no depender de Mac)
+# Plan: deploy de Donna + kawiil-agents en cloud (no depender de Mac)
 
-Objetivo: Louis y el server kawiil-agents corren en cloud 24/7. Mac apagada, dormida o sin internet → Louis sigue respondiendo Telegram/Slack.
+Objetivo: Donna y el server kawiil-agents corren en cloud 24/7. Mac apagada, dormida o sin internet → Donna sigue respondiendo Telegram/Slack.
 
 ## Inventario actual (qué corre dónde)
 
 | Componente | Hoy | Próximo |
 |---|---|---|
-| **OpenClaw gateway** (Louis core) | Mac LaunchAgent localhost:3000 | VPS Linux con auto-restart |
+| **OpenClaw gateway** (Donna core) | Mac LaunchAgent localhost:3000 | VPS Linux con auto-restart |
 | **kawiil-agents FastAPI** | Mac LaunchAgent localhost:8000 | Render.com / Fly.io |
 | **Supabase qppfampapbxdgednkofc** | Ya en cloud (Supabase managed) | Sin cambio |
 | **Telegram bot** | Polling vía gateway en Mac | Polling vía gateway en VPS |
@@ -32,14 +32,14 @@ Objetivo: Louis y el server kawiil-agents corren en cloud 24/7. Mac apagada, dor
 - Free tier suficiente para empezar.
 - Push a GitHub → Render auto-build → URL pública `kawiil-agents.onrender.com`.
 - Variables de entorno se cargan desde dashboard Render.
-- Louis (gateway en Mac) llama a esa URL en lugar de localhost:8000.
-- **Ventaja**: si Mac se apaga, los 7 agentes siguen disponibles. Louis los puede invocar cuando Mac vuelva.
+- Donna (gateway en Mac) llama a esa URL en lugar de localhost:8000.
+- **Ventaja**: si Mac se apaga, los 7 agentes siguen disponibles. Donna los puede invocar cuando Mac vuelva.
 
 **Fase B — próxima semana**: Migrar OpenClaw gateway a VPS (DigitalOcean o Hetzner $4-5 USD/mes).
 - OpenClaw soporta install en Linux.
 - Misma config + tokens + canales (Telegram, Slack, M365) — solo cambiar paths y reinstalar.
 - Mac queda como cliente que se conecta al gateway en VPS (similar a como hoy iPad se conecta).
-- Louis vive en cloud, Mac es solo un canal más (WebChat).
+- Donna vive en cloud, Mac es solo un canal más (WebChat).
 
 **Fase C — futuro**: Considerar VPS dedicado para Whisper (si seguimos audio) y Mac Mini headless para iCloud Reminders + tareas que requieren macOS APIs.
 
@@ -66,7 +66,7 @@ Objetivo: Louis y el server kawiil-agents corren en cloud 24/7. Mac apagada, dor
 5. Start command: `uvicorn app:app --host 0.0.0.0 --port $PORT`
 6. Environment vars: las mismas del `.env` local (SUPABASE_URL, SERVICE_KEY, ANTHROPIC_API_KEY, ORG IDs, DISPATCH_TOKEN)
 7. Deploy. Render asigna URL pública.
-8. Actualizar Louis tool para apuntar a esa URL en lugar de localhost:8000
+8. Actualizar Donna tool para apuntar a esa URL en lugar de localhost:8000
 
 ### VPS OpenClaw gateway (2-3 horas)
 
@@ -82,7 +82,7 @@ Objetivo: Louis y el server kawiil-agents corren en cloud 24/7. Mac apagada, dor
 ## Trade-offs honestos
 
 **Pro de migrar a cloud:**
-- Louis nunca duerme
+- Donna nunca duerme
 - No depende de Mac, energía eléctrica, internet de casa
 - Puede agregar más usuarios fácilmente (futuro Nexo Equipo)
 
@@ -96,4 +96,4 @@ Objetivo: Louis y el server kawiil-agents corren en cloud 24/7. Mac apagada, dor
 
 Decisión más simple: **mantén Mac corriendo por ahora**, agendamos Render kawiil-agents para esta semana, y VPS gateway la próxima.
 
-Si quieres acelerar, lo más impactante primero es subir kawiil-agents a Render (1-2h) — eso ya libera 50% de la dependencia de Mac, porque los agentes especialistas viven en cloud y Louis los invoca desde cualquier lugar.
+Si quieres acelerar, lo más impactante primero es subir kawiil-agents a Render (1-2h) — eso ya libera 50% de la dependencia de Mac, porque los agentes especialistas viven en cloud y Donna los invoca desde cualquier lugar.

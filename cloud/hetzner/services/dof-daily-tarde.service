@@ -8,6 +8,7 @@ Type=oneshot
 User=@@SYSTEM_USER@@
 Group=@@SYSTEM_USER@@
 WorkingDirectory=@@OPENCLAW_HOME@@/legal/dof
+EnvironmentFile=@@ENV_FILE@@
 ExecStart=/usr/bin/python3 @@OPENCLAW_HOME@@/legal/dof/dof_daily_summary.py --ves
 StandardOutput=append:@@OPENCLAW_HOME@@/logs/dof-daily.log
 StandardError=append:@@OPENCLAW_HOME@@/logs/dof-daily.log

@@ -3,7 +3,7 @@
 Slack bridge para Donna (Nexo) — Hetzner.
 
 Usa Socket Mode (slack_bolt) — sin webhooks públicos.
-Toda la lógica de routing, tools y M365 está en louis_core.py.
+Toda la lógica de routing, tools y M365 está en donna_core.py.
 
 Reacciona a:
   - app_mention en cualquier canal donde esté el bot
@@ -39,10 +39,10 @@ except ImportError:
 
 # Importa lógica común
 sys.path.insert(0, str(Path(__file__).parent))
-import louis_core as core
+import donna_core as core
 
 # ===== Paths =====
-# Igual que en louis_core: usar /opt/openclaw cuando exista (Hetzner runtime).
+# Igual que en donna_core: usar /opt/openclaw cuando exista (Hetzner runtime).
 HOME = Path.home()
 if Path("/opt/openclaw").exists():
     HOME_OC = Path("/opt/openclaw")
@@ -92,7 +92,7 @@ def load_credentials():
 
 
 def main():
-    log.info("=== Slack bridge v1 arrancando (Socket Mode + louis_core) ===")
+    log.info("=== Slack bridge v1 arrancando (Socket Mode + donna_core) ===")
     bot_token, app_token, allowed_users = load_credentials()
     api_key = core.load_anthropic_key()
     log.info(f"Ollama: {core.OLLAMA_BASE} ({core.OLLAMA_MODEL})  |  Claude: {core.CLAUDE_MODEL}")

@@ -13,12 +13,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Varios paths se hardcodean a /opt/louis (cron, Caddy mount, docs). Validamos
-# que el paquete esté ahí para no introducir bugs sutiles después.
-if [[ "$SCRIPT_DIR" != "/opt/louis" ]]; then
-  echo "ERROR: este paquete debe vivir en /opt/louis (estás en $SCRIPT_DIR)"
-  echo "Mueve la carpeta:  sudo mv \"$SCRIPT_DIR\" /opt/louis  &&  cd /opt/louis"
-  exit 1
+# Rutas válidas para el repo (legacy /opt/louis o ubicación actual /opt/nexo-louis/cloud/hetzner).
+# El runtime usa @@OPENCLAW_HOME@@ → /opt/openclaw, no depende de dónde vive el repo.
+_VALID_DIRS=("/opt/louis" "/opt/nexo-louis/cloud/hetzner")
+_ok_dir=false
+for _d in "${_VALID_DIRS[@]}"; do [[ "$SCRIPT_DIR" == "$_d" ]] && _ok_dir=true; done
+if ! $_ok_dir; then
+  echo "WARN: directorio inesperado ($SCRIPT_DIR) — continuando de todas formas."
 fi
 
 # ── Helpers ────────────────────────────────────────────────────
@@ -37,7 +38,7 @@ require_env() {
   # shellcheck disable=SC1091
   source .env
   set +a
-  for var in LOUIS_DOMAIN AGENTS_DOMAIN ACME_EMAIL SYSTEM_USER ANTHROPIC_API_KEY; do
+  for var in DONNA_DOMAIN AGENTS_DOMAIN ACME_EMAIL SYSTEM_USER ANTHROPIC_API_KEY; do
     [[ -n "${!var:-}" ]] || fail ".env: variable $var está vacía"
   done
 }
@@ -70,7 +71,7 @@ require_env
 OS_ID=$(. /etc/os-release; echo "$ID")
 [[ "$OS_ID" == "ubuntu" ]] || warn "OS detectado: $OS_ID (se probó en ubuntu, puede funcionar)"
 
-log "Empezando deploy de Louis en $(hostname) ($(hostname -I | awk '{print $1}'))"
+log "Empezando deploy de Donna en $(hostname) ($(hostname -I | awk '{print $1}'))"
 
 # ── 1) Bootstrap ──────────────────────────────────────────────
 if ! $SKIP_BOOTSTRAP; then
@@ -157,7 +158,7 @@ log "[6b] Copiando servicios (core + bridges + scheduler + gateway + self-update
 mkdir -p /opt/openclaw/scripts /opt/openclaw/scripts/m365 /opt/openclaw/logs
 # TODOS los .py que el runtime importa o ejecuta. Si falta alguno, las tools que
 # dependen de él fallan en silencio (self_update → ImportError; browser_* → error).
-for svc in louis_core.py telegram-bridge.py slack-bridge.py scheduler.py \
+for svc in donna_core.py telegram-bridge.py slack-bridge.py scheduler.py \
            openclaw_gateway.py self_update.py browser_runner.py cerebro_kawiil_mcp.py; do
   if [[ -f "services/${svc}" ]]; then
     install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" "services/${svc}" "/opt/openclaw/scripts/${svc}"
@@ -188,7 +189,7 @@ for unit in telegram-bridge slack-bridge scheduler openclaw-gateway cerebro-kawi
   fi
 done
 
-# Cerebro Kawiil: almacén compartido de entregables (Cowork ↔ Louis)
+# Cerebro Kawiil: almacén compartido de entregables (Cowork ↔ Donna)
 if [[ ! -d /opt/openclaw/entregables ]]; then
   mkdir -p /opt/openclaw/entregables/_briefs
   [[ -f "entregables/README.md" ]] && \
@@ -228,12 +229,12 @@ else
   warn "slack-bridge.py aún no copiado al seed — sin arrancar"
 fi
 
-# Gateway HTTP de Louis — la cara de louis.kawiil.mx (Caddy → 127.0.0.1:3000).
+# Gateway HTTP de Donna — la cara de donna.kawiil.mx (Caddy → 127.0.0.1:3000).
 # Reemplaza al binario oficial de OpenClaw (openclaw.ai responde 403).
 if [[ -f /opt/openclaw/scripts/openclaw_gateway.py ]]; then
   systemctl enable --now openclaw-gateway
   if systemctl is-active --quiet openclaw-gateway; then
-    ok "openclaw-gateway activo (louis.kawiil.mx → :${OPENCLAW_PORT:-3000})"
+    ok "openclaw-gateway activo (donna.kawiil.mx → :${OPENCLAW_PORT:-3000})"
   else
     warn "openclaw-gateway no levantó — journalctl -u openclaw-gateway -n 50"
   fi
@@ -242,7 +243,7 @@ if [[ -f /opt/openclaw/scripts/openclaw_gateway.py ]]; then
   grep -q '^OPENCLAW_GATEWAY_TOKEN=' "$ENV_OUT" 2>/dev/null \
     || warn "openclaw-gateway SIN token — protégelo con Cloudflare Access antes de exponer DNS"
 else
-  warn "openclaw_gateway.py no copiado — louis.kawiil.mx devolverá 502"
+  warn "openclaw_gateway.py no copiado — donna.kawiil.mx devolverá 502"
 fi
 
 # Scheduler — motor de tareas repetitivas (recordatorios recurrentes + briefing matutino).
@@ -262,13 +263,13 @@ fi
 # el parámetro ?isSemanal=true. Aquí instalamos el harvester corregido + su timer.
 log "[7b] Instalando harvester SJF + timer diario"
 mkdir -p /opt/openclaw/legal/sjf
-for f in sjf_harvest.py sjf_weekly_summary.py sjf_biblioteca.py; do
+for f in sjf_harvest.py sjf_weekly_summary.py sjf_biblioteca.py sjf_backfill.py; do
   if [[ -f "legal-scrapers/${f}" ]]; then
     install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" "legal-scrapers/${f}" "/opt/openclaw/legal/sjf/${f}"
   fi
 done
-# update diario + resumen semanal (lunes)
-for unit in sjf-update sjf-weekly; do
+# update diario + resumen semanal (lunes) + backfill histórico (cada 2h)
+for unit in sjf-update sjf-weekly sjf-backfill; do
   if [[ -f "services/${unit}.service" && -f "services/${unit}.timer" ]]; then
     sed -e "s|@@SYSTEM_USER@@|${SYSTEM_USER}|g" -e "s|@@OPENCLAW_HOME@@|/opt/openclaw|g" \
         "services/${unit}.service" > "/etc/systemd/system/${unit}.service"
@@ -277,13 +278,13 @@ for unit in sjf-update sjf-weekly; do
   fi
 done
 systemctl daemon-reload
-for t in sjf-update.timer sjf-weekly.timer; do
+for t in sjf-update.timer sjf-weekly.timer sjf-backfill.timer; do
   if [[ -f "/etc/systemd/system/${t}" ]]; then
     systemctl enable --now "$t"
     systemctl is-active --quiet "$t" && ok "${t} activo" || warn "${t} no levantó — systemctl status ${t}"
   fi
 done
-ok "SJF: harvester diario (13:30) + resumen semanal (lun 8:00) en /opt/openclaw/legal/sjf/"
+ok "SJF: harvester diario (13:30) + backfill histórico (c/2h) + resumen semanal (lun 8:00)"
 
 # ── 8) Seeds: agentes + briefing matutino (idempotentes) ──────
 log "[8/8] Sembrando agentes y briefing matutino"
@@ -297,6 +298,17 @@ fi
 if [[ -f scripts/import-legal-agents.sh ]]; then
   bash scripts/import-legal-agents.sh && ok "Agentes legales importados" \
     || warn "import-legal-agents falló (¿sin acceso a github? continúo)"
+fi
+# Control de alimentación — semilla idempotente de ALIMENTACION.md (no pisa el historial)
+if [[ -f "spaces/general/ALIMENTACION.md" ]]; then
+  mkdir -p /opt/openclaw/spaces/general
+  if [[ ! -f /opt/openclaw/spaces/general/ALIMENTACION.md ]]; then
+    install -m 0644 -o "$SYSTEM_USER" -g "$SYSTEM_USER" \
+      "spaces/general/ALIMENTACION.md" /opt/openclaw/spaces/general/ALIMENTACION.md
+    ok "ALIMENTACION.md sembrado (control de alimentación listo)"
+  else
+    log "ALIMENTACION.md ya existe — conservo el historial"
+  fi
 fi
 # Briefing matutino 7:00 CDMX recurrente (lo consume el scheduler)
 if [[ -f scripts/seed-morning-briefing.sh ]]; then
@@ -313,7 +325,7 @@ echo ""
 ok "Deploy completo."
 echo ""
 echo "Próximos pasos:"
-echo "  1. Apunta DNS de $LOUIS_DOMAIN y $AGENTS_DOMAIN a $(hostname -I | awk '{print $1}')"
+echo "  1. Apunta DNS de $DONNA_DOMAIN y $AGENTS_DOMAIN a $(hostname -I | awk '{print $1}')"
 echo "  2. Espera ~60s a que Caddy obtenga el certificado TLS"
 echo "  3. Corre: ./verify.sh"
-echo "  4. Desde tu Mac: cd .../yoltik-ai-setup/cloud/hetzner/sync && ./mac-install.sh $LOUIS_DOMAIN $SYSTEM_USER"
+echo "  4. Desde tu Mac: cd .../yoltik-ai-setup/cloud/hetzner/sync && ./mac-install.sh $DONNA_DOMAIN $SYSTEM_USER"

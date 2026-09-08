@@ -47,7 +47,9 @@ SCRAPER_PATH = os.environ.get("SJF_SCRAPER") or next(
 DB_PATH = os.environ.get("SJF_DB_PATH", "/opt/openclaw/legal/sjf/biblioteca.db")
 BATCH = int(os.environ.get("BACKFILL_BATCH", "800"))
 FLOOR = int(os.environ.get("SJF_BACKFILL_FLOOR", "0"))
-THROTTLE_MS = 400
+THROTTLE_MS = int(os.environ.get("BACKFILL_THROTTLE_MS", "150"))
+CONSECUTIVE_404_THRESHOLD = int(os.environ.get("BACKFILL_404_THRESHOLD", "50"))
+CONSECUTIVE_404_JUMP = int(os.environ.get("BACKFILL_404_JUMP", "50000"))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("sjf_backfill")
@@ -102,6 +104,7 @@ def main() -> int:
 
     ok = miss = 0
     done = 0
+    consecutive_404s = 0
     while done < BATCH and cursor > FLOOR:
         cursor -= 1
         if cursor in present or cursor in known404:
@@ -113,6 +116,7 @@ def main() -> int:
             sjf.upsert_tesis(conn, t)
             present.add(cursor)
             ok += 1
+            consecutive_404s = 0
             conn.commit()  # commit por registro → crash-safe
             log.info("[+%d] %d %s | %s", ok, cursor, raw.get("fechaPublicacion", ""),
                      (t.get("rubro") or "")[:55])
@@ -124,6 +128,14 @@ def main() -> int:
                              (cursor, time.strftime("%Y-%m-%dT%H:%M:%S")))
             known404.add(cursor)
             miss += 1
+            consecutive_404s += 1
+            if consecutive_404s >= CONSECUTIVE_404_THRESHOLD:
+                cursor -= CONSECUTIVE_404_JUMP
+                if cursor < FLOOR:
+                    cursor = FLOOR
+                log.info("Zona muerta detectada: saltando %d IDs, cursor → %d",
+                         CONSECUTIVE_404_JUMP, cursor)
+                consecutive_404s = 0
             if miss % 50 == 0:
                 conn.commit()
         # 403/otros: no marcar, reintentar en otra corrida

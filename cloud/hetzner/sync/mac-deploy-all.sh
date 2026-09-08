@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# mac-deploy-all.sh — UN solo comando para deployar Louis en Hetzner desde la Mac.
+# mac-deploy-all.sh — UN solo comando para deployar Donna en Hetzner desde la Mac.
 #
 # Hace todo en orden:
 #   1) Genera /tmp/louis.env desde ~/.openclaw/credentials/
@@ -126,18 +126,18 @@ ok "Temporales borrados"
 cat <<EOF
 
 ══════════════════════════════════════════════════════════
-  Louis está vivo en https://louis.kawiil.mx
+  Donna está vivo en https://donna.kawiil.mx
 ══════════════════════════════════════════════════════════
 
 Pruébalo:
   - Manda un mensaje a tu bot de Telegram desde el iPhone
-  - O abre https://louis.kawiil.mx en el navegador
+  - O abre https://donna.kawiil.mx en el navegador
 
 Si algo falla:
   - Logs:  ssh $REMOTE 'journalctl -u openclaw -u telegram-bridge -f'
   - Re-deploy idempotente:  ./mac-deploy-all.sh $HETZNER_IP
 
 Próximo paso opcional: instalar sync continuo Mac→Hetzner cada 5 min
-  cd $SCRIPT_DIR && ./mac-install.sh louis.kawiil.mx polo
+  cd $SCRIPT_DIR && ./mac-install.sh donna.kawiil.mx polo
 
 EOF

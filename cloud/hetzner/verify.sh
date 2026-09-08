@@ -19,7 +19,7 @@ if [[ -f .env ]]; then
 fi
 
 echo "══════════════════════════════════════════"
-echo " Louis health check — $(date -Iseconds)"
+echo " Donna health check — $(date -Iseconds)"
 echo "══════════════════════════════════════════"
 
 # 1) ufw
@@ -92,15 +92,15 @@ for port in 80 443; do
 done
 
 # 9) TLS público (si DNS ya propagó)
-if [[ -n "${LOUIS_DOMAIN:-}" ]]; then
-  if curl -fsS -m 10 -I "https://${LOUIS_DOMAIN}" 2>/dev/null | head -1 | grep -qE "HTTP/[12]"; then
-    ok "https://${LOUIS_DOMAIN} responde"
+if [[ -n "${DONNA_DOMAIN:-}" ]]; then
+  if curl -fsS -m 10 -I "https://${DONNA_DOMAIN}" 2>/dev/null | head -1 | grep -qE "HTTP/[12]"; then
+    ok "https://${DONNA_DOMAIN} responde"
   else
-    warn "https://${LOUIS_DOMAIN} aún no responde (DNS o ACME en curso)"
+    warn "https://${DONNA_DOMAIN} aún no responde (DNS o ACME en curso)"
   fi
 fi
 
-# 9b) Louis bridges + gateway (systemd nativo)
+# 9b) Donna bridges + gateway (systemd nativo)
 for unit in telegram-bridge slack-bridge scheduler openclaw-gateway; do
   if systemctl is-active --quiet "$unit" 2>/dev/null; then
     ok "$unit activo"
@@ -144,18 +144,18 @@ else
   warn "Ollama NO activo (¿VPS sin 16GB+ RAM? bootstrap/06 lo skipea si <14GB)"
 fi
 
-# 9d) louis_core smoke (routing)
+# 9d) donna_core smoke (routing)
 if python3 -c "
 import sys
 sys.path.insert(0, '/opt/openclaw/scripts')
-import louis_core as c
+import donna_core as c
 assert c.should_deterministic_operational_response('hola')
 assert c.needs_memory_write('anota en agenda: x')
-print('louis_core routing OK')
+print('donna_core routing OK')
 " 2>/dev/null; then
-  ok "louis_core routing smoke OK"
+  ok "donna_core routing smoke OK"
 else
-  warn "louis_core smoke falló (¿scripts desactualizados?)"
+  warn "donna_core smoke falló (¿scripts desactualizados?)"
 fi
 
 # 10) Sync infra
