@@ -23,7 +23,16 @@ Uso:  python3 cloud/hetzner/scripts/test-comprension.py
 import sys
 from pathlib import Path
 
-SERVICES = Path(__file__).resolve().parents[1] / "services"
+# Se prueba el RUNTIME, no el paquete. /opt/openclaw/scripts/ es lo que systemd
+# ejecuta; /opt/louis/services/ es solo el destino del rsync. Probar el paquete ya
+# dio un reporte verde falso una vez: la lista de instalación decía `louis_core.py`
+# tras el renombre, el runtime se quedó con el core viejo y las pruebas pasaron
+# igual porque leían el paquete recién copiado. Fuera del server no existe el
+# runtime, así que ahí se cae al repo.
+_RUNTIME = Path("/opt/openclaw/scripts")
+_REPO = Path(__file__).resolve().parents[1] / "services"
+SERVICES = _RUNTIME if (_RUNTIME / "donna_core.py").is_file() else _REPO
+print(f"· probando {SERVICES}")
 sys.path.insert(0, str(SERVICES))
 import donna_core as core  # noqa: E402
 
