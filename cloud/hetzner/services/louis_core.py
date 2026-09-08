@@ -6721,9 +6721,49 @@ def _avisos_programados() -> str:
            f"DONNA_QUIET_END en el env del scheduler.\n"
            f"Además hay chequeos fijos: 13:00 y 18:00 (solo si hay algo abierto) y review "
            f"semanal lunes 08:00.\n")
-    if not filas:
-        return cab + "\nCola de avisos: vacía."
-    return cab + f"\nCola de avisos ({len(filas)}):\n" + "\n".join(filas[:25])
+    cuerpo = (f"\nCola de avisos ({len(filas)}):\n" + "\n".join(filas[:25])) if filas \
+        else "\nCola de avisos: vacía."
+    return cab + cuerpo + "\n" + _historial_avisos()
+
+
+def _historial_avisos(n: int = 40) -> str:
+    """Resumen de los últimos avisos ENVIADOS, agrupado por hora del día.
+
+    Es la evidencia dura para el '¿por qué me llegan mensajes a todas horas?': en vez
+    de suponer la causa, se lee sent.jsonl y se ve el patrón real. Un disparo muy
+    fuera del horario de su timer/cola delata un catch-up (systemd Persistent) o un
+    fire_at mal calculado."""
+    f = HOME_OC / "reminders" / "sent.jsonl"
+    if not f.exists():
+        return "\nHistorial de envíos: (no existe sent.jsonl todavía)"
+    lineas = [l for l in f.read_text(errors="ignore").splitlines() if l.strip()]
+    if not lineas:
+        return "\nHistorial de envíos: vacío"
+    por_hora: dict = {}
+    ultimos = []
+    for l in lineas[-n:]:
+        try:
+            e = json.loads(l)
+        except Exception:
+            continue
+        fa = str(e.get("fire_at", ""))
+        try:
+            h = datetime.fromisoformat(fa).hour
+        except Exception:
+            continue
+        por_hora[h] = por_hora.get(h, 0) + 1
+        marca = "" if 7 <= h < 22 else "  ← fuera de horario"
+        ultimos.append(f"  • {fa[:16].replace('T', ' ')} "
+                       f"{str(e.get('message', ''))[:52]}{marca}")
+    if not por_hora:
+        return "\nHistorial de envíos: sin fechas legibles"
+    franjas = ", ".join(f"{h:02d}h×{c}" for h, c in sorted(por_hora.items()))
+    fuera = sum(c for h, c in por_hora.items() if not (7 <= h < 22))
+    out = [f"\nÚltimos {len(ultimos)} avisos enviados, por hora: {franjas}"]
+    if fuera:
+        out.append(f"⚠ {fuera} cayeron fuera de 07:00–22:00 — ésos son los que molestan.")
+    out += ultimos[-10:]
+    return "\n".join(out)
 
 
 def _hetzner_estado(que: str = "") -> str:

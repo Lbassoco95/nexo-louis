@@ -170,13 +170,24 @@ texto plano, así que un mensaje largo salía mitad con formato y mitad en crudo
 
 Cuatro causas distintas:
 
-1. **`sjf-weekly.timer` sin zona horaria**: `OnCalendar=Mon 08:00` se interpreta en hora
-   del server (UTC) = **2:00am CDMX**, y ese timer manda resumen por Telegram. Ahora
-   `America/Mexico_City` explícito. Igual `sjf-update.timer` (13:30 UTC → 13:30 CDMX).
-2. **`Persistent=true` en los timers que notifican**: si el server estaba caído a la hora
-   del boletín, systemd lo disparaba al arrancar, a cualquier hora. Quitado de
-   `dof-daily`, `dof-daily-tarde`, `legal-digest`, `legal-estado`, `sjf-weekly`. Se
-   mantiene en los jobs silenciosos (harvest/index).
+1. ~~**`sjf-weekly.timer` sin zona horaria** disparaba a las 2:00am.~~
+   **CORRECCIÓN (verificado en el server):** era falso. `louis-prod` ya tiene su hora
+   local en **CST** (`America/Mexico_City`), así que un `OnCalendar` sin zona ya
+   disparaba en hora CDMX — `systemctl list-timers` lo confirma:
+   `sjf-weekly LAST Mon 2026-09-07 08:00:00 CST`. Poner la zona explícita **sigue
+   valiendo** (así el horario no depende de la zona del server: un
+   `timedatectl set-timezone UTC` movería todos los avisos 6 horas en silencio), pero
+   NO era una causa de los mensajes a deshoras.
+2. **`Persistent=true` en los timers que notifican** — **ésta sí, y quedó comprobada.**
+   Si el server estaba caído (o el timer se reinicia) a la hora del boletín, systemd
+   dispara la corrida perdida de inmediato, a cualquier hora. La prueba salió en el
+   propio `list-timers` del deploy: `legal-estado.timer` está programado
+   `Mon,Fri 09:15` y su última corrida fue **`Mon 2026-09-07 20:20:00 CST`** — 11 horas
+   fuera de horario, y ese servicio manda "reporte de avance de descargas legales" por
+   Telegram. Quitado de `dof-daily`, `dof-daily-tarde`, `legal-digest`, `legal-estado`
+   y `sjf-weekly`. Se mantiene en los jobs silenciosos (harvest/index), que no molestan.
+   El server además tiene `*** System restart required ***` pendiente, así que los
+   reinicios —y sus catch-ups— pasan de verdad.
 3. **Sin horas de silencio en el scheduler**: un `fire_at` de madrugada (o mal calculado
    por el modelo) disparaba a esa hora. Ahora ventana **22:00 → 07:00 CDMX**; los avisos
    de esa franja **no se pierden**, se reprograman a las 07:00. `"urgente": true` en la
@@ -472,3 +483,25 @@ Dos trampas:
    el mismo `xapp-`, Slack desconecta al más viejo y los dos se pelean
    (`docs/secrets.md`). Apaga el de la Mac:
    `launchctl unload ~/Library/LaunchAgents/ai.openclaw.gateway.plist`.
+
+
+## Diagnóstico en vez de suposición: historial de avisos
+
+Las dos primeras hipótesis sobre los mensajes a deshoras fueron una acertada
+(`Persistent`) y una falsa (la zona horaria). Para no volver a adivinar,
+`hetzner_estado(que="avisos_programados")` ahora también lee `reminders/sent.jsonl` y
+muestra **a qué horas te ha escrito de verdad**, marcando lo que cae fuera de
+07:00–22:00:
+
+```
+Últimos 40 avisos enviados, por hora: 03h×1, 09h×1, 13h×1, 20h×1
+⚠ 1 cayeron fuera de 07:00–22:00 — ésos son los que molestan.
+  • 2026-09-07 09:15 Reporte de avance de descargas legales
+  • 2026-09-07 20:20 Reporte de avance de descargas legales (catch-up)
+  • 2026-09-07 03:40 Recordatorio: enviar oficio CNBV  ← fuera de horario
+```
+
+Un disparo muy lejos del horario de su timer delata un catch-up de systemd; un
+`fire_at` de madrugada en la cola delata una hora mal calculada al crear el
+recordatorio. Son causas distintas con arreglos distintos, y ahora se distinguen
+leyendo, no suponiendo.

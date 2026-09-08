@@ -4,8 +4,11 @@ Description=Resumen semanal SJF de Donna (lunes por la mañana)
 [Timer]
 # Lunes 8:00 CDMX (el harvester diario ya corrió el jueves/viernes anteriores, así
 # que el lunes la edición de la semana pasada ya está en la BD).
-# La zona es EXPLÍCITA: sin ella systemd usa la hora del server (UTC) y este resumen
-# —que se manda por Telegram— salía a las 2:00am CDMX.
+# La zona es EXPLÍCITA a propósito. OJO: en louis-prod la hora del server YA es CST
+# (America/Mexico_City), así que sin la zona este timer igual disparaba a las 8:00
+# CDMX — no estaba saliendo a las 2am, como se supuso al principio. Se deja explícita
+# porque así el horario NO depende de la zona del server: un
+# `timedatectl set-timezone UTC` movería los avisos 6 horas en silencio.
 # Sin Persistent: si el server estuvo caído el lunes, NO queremos que el resumen
 # semanal se dispare al arrancar a cualquier hora; que espere al lunes siguiente.
 OnCalendar=Mon *-*-* 08:00:00 America/Mexico_City

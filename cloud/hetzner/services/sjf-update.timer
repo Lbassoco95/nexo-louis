@@ -3,8 +3,9 @@ Description=Dispara el harvester SJF de Donna (diario)
 Documentation=https://github.com/Lbassoco95/kawiil-agents
 
 [Timer]
-# El Semanario publica los jueves; corremos diario a las 13:30 CDMX (zona explícita,
-# antes era hora del server = UTC) con margen aleatorio para no pegarle al API
+# El Semanario publica los jueves; corremos diario a las 13:30 CDMX (zona explícita:
+# antes dependía de la zona del server, que hoy es CST pero podría cambiar) con
+# margen aleatorio para no pegarle al API
 # siempre al mismo segundo. Job SILENCIOSO: Persistent sí, no molesta a Polo.
 OnCalendar=*-*-* 13:30:00 America/Mexico_City
 RandomizedDelaySec=900
