@@ -102,7 +102,14 @@ _STALL_RE = re.compile(
     r"|procedo\s+a|paso\s+a\s+\w+|sigo\s+con|contin[uú]o\s+con|enseguida"
     r"|cre[oa]r?[eé]?\s+(la|el|las|los)\s+(tarea|subtarea|sub-tarea|proyecto|cliente)"
     r"|registr[oa]r?[eé]?\s+(la|el|en|ahora)"
-    r"|dame\s+un\s+momento|perm[ií]teme|un\s+momento)",
+    r"|dame\s+un\s+momento|perm[ií]teme|un\s+momento"
+    # Gerundio de acción: "Agendando los 4 eventos…", "Creando el proyecto…". Suena
+    # a trabajo en curso, pero el turno termina ahí y la tool nunca se llamó.
+    r"|\b(agendando|creando|registrando|guardando|anotando|program[aá]ndolo\w*|"
+    r"metiendo|bloqueando|dando\s+de\s+alta|subiendo|mandando|enviando)\b"
+    # Bucle de confirmación: Polo ya dio los datos y aun así pregunta permiso.
+    r"|¿\s*(confirmo|procedo|lo\s+hago|los?\s+(meto|creo|agendo|registro|guardo)|"
+    r"quieres\s+que\s+(lo|los|las)\s+\w+))",
     re.IGNORECASE)
 
 
@@ -122,6 +129,131 @@ def _strip_tool_leak(text: str) -> str:
 
 # Frases con que el modelo AFIRMA haber creado un recordatorio. Si aparecen pero no
 # llamó agendar_recordatorio, fabricó la confirmación → se le obliga a crearlo.
+# ── Anti-fabricación de ACCIONES ────────────────────────────────────────────
+# Donna decía "✅ Agendando los 4 eventos en Microsoft Calendar" / "✅ Guardado como
+# nota" y NO llamaba ninguna tool: el calendario quedaba vacío y la nota no existía.
+# Cada familia declara cómo suena la afirmación y qué tools la hacen verdad.
+_EVENTO_CLAIM_RE = re.compile(
+    r"(agend(?:ado|ada|ados|adas|ando|é|o)\b|"
+    r"(?:evento|eventos|junta|juntas|cita|citas)\s+(?:creado|creados|agendad\w+|bloquead\w+|"
+    r"registrad\w+|en\s+(?:el\s+|tu\s+|mi\s+)?(?:calendario|microsoft|outlook))|"
+    r"(?:lo|los|las|la)\s+(?:met[íi]|puse|bloque[eé])\s+en\s+(?:el\s+|tu\s+|su\s+)?calendario|"
+    r"bloque\w*\s+en\s+(?:tu\s+|el\s+|mi\s+)?(?:agenda|calendario)|"
+    r"(?:creado|creados|a[ñn]adid\w+)\s+en\s+(?:microsoft|outlook|el\s+calendario))",
+    re.IGNORECASE)
+_EVENTO_TOOLS = ("m365_crear_evento", "m365_actualizar_evento")
+
+_NOTA_CLAIM_RE = re.compile(
+    r"(guardad\w*\s+(?:como\s+)?(?:nota|en\s+(?:la\s+)?(?:memoria|agenda|nota))|"
+    r"(?:lo\s+|la\s+|los\s+)?(?:guard[eé]|anot[eé]|registr[eé]|apunt[eé])\b|"
+    r"qued[oó]\s+(?:guardad\w*|anotad\w*|registrad\w*)|"
+    r"(?:nota|memoria|agenda)\s+actualizad\w*)",
+    re.IGNORECASE)
+_NOTA_TOOLS = ("append_to_memory", "write_memory", "agendar_recordatorio")
+
+# (regex de afirmación, tools que la vuelven verdad, instrucción correctiva)
+_CLAIM_NETS = [
+    (_EVENTO_CLAIM_RE, _EVENTO_TOOLS,
+     "NO llamaste `m365_crear_evento`, así que esos eventos NO existen en el calendario "
+     "de Polo. NO inventes que los agendaste. Créalos AHORA, UNO POR UNO con "
+     "`m365_crear_evento` (tenant 'kawiil' si Polo no dijo otro; usa la fecha y hora que "
+     "ya te dio; 30 min si no especificó fin). Después dime SOLO los que la tool "
+     "confirmó, con su hora real. Si falta un dato indispensable, pregunta solo por ese "
+     "dato y no afirmes nada."),
+    (_NOTA_CLAIM_RE, _NOTA_TOOLS,
+     "NO llamaste ninguna tool de memoria, así que esa nota NO se guardó. NO inventes que "
+     "la guardaste. Guárdala AHORA con `append_to_memory` (AGENDA.md para pendientes, "
+     "IMPORTANT.md para contexto que no se puede perder) y confírmame solo si devolvió OK."),
+]
+
+
+# Orden INEQUÍVOCA de escribir algo. Con Haiku —el modelo de los turnos con tools,
+# por costo— el fallo típico es narrar la acción en vez de llamar la tool: tiene que
+# elegir entre ~110 tools parecidas. En estos casos se le fuerza `tool_choice` en el
+# primer turno: no puede contestar de memoria, tiene que ejecutar. Costo cero (misma
+# llamada, mismo modelo), en vez de subir esos turnos a Sonnet.
+_WRITE_INTENT_RE = re.compile(
+    r"\b(ag[eé]nda\w*|agendar\w*|agendes|agendaras|bloqu[eé]a\w*|bloquear\w*|"
+    r"met[eé]\w*\s+(?:al|en\s+(?:el|mi))\s+calendario|"
+    r"crea\w*\s+(?:el\s+|un\s+|los\s+)?(?:evento|eventos|junta|cita|proyecto|tarea|cliente)|"
+    r"registra\w*|da\s+de\s+alta|anot[aá]\w*|ap[uú]nta\w*|gu[aá]rda\w*|"
+    r"recu[eé]rdame|recordame|av[ií]same)\b",
+    re.IGNORECASE)
+_WRITE_INTENT_NEG_RE = re.compile(
+    r"^\s*¿|\?\s*$|\b(qu[eé]\s+tengo|qu[eé]\s+hay|mu[eé]stra\w*|ens[eé]ña\w*|"
+    r"lista\w*|list[aá]me|c[oó]mo\s+va|revisa\w*|checa\w*)\b",
+    re.IGNORECASE)
+
+
+def tiene_intencion_de_escritura(user_message: str) -> bool:
+    """True si el mensaje ORDENA escribir algo (evento/recordatorio/nota/tarea)."""
+    msg = (user_message or "").strip()
+    if not msg:
+        return False
+    if _WRITE_INTENT_NEG_RE.search(msg):
+        return False
+    return bool(_WRITE_INTENT_RE.search(msg))
+
+
+# Cuando la orden es de UNA sola familia se le quita la elección entre ~110 tools:
+# de 110 opciones a 1. Mismo precedente que ya existía para Slack (slack_resumen).
+_CAL_VERB_RE = re.compile(
+    r"\b(ag[eé]nda\w*|agendar\w*|agendes|agendaras|bloqu[eé]a\w*|bloquear\w*|"
+    r"met[eé]\w*\s+(?:al|en\s+(?:el|mi))\s+calendario|"
+    r"crea\w*\s+(?:el\s+|un\s+|los\s+)?(?:evento|eventos|junta|cita))\b",
+    re.IGNORECASE)
+_REM_VERB_RE = re.compile(r"\b(recu[eé]rdame|recordame|av[ií]same|recordatorio)\b", re.IGNORECASE)
+_NOTA_VERB_RE = re.compile(
+    r"\b(anot[aá]\w*|ap[uú]nta\w*|gu[aá]rda\w*\s+(?:en\s+)?(?:la\s+)?"
+    r"(?:memoria|nota|agenda)|gu[aá]rdalo\s+como\s+(?:una\s+)?nota)\b",
+    re.IGNORECASE)
+_HORA_RE = re.compile(
+    r"\b(\d{1,2}:\d{2}|\d{1,2}\s*(?:am|pm|hrs?|horas?)|mediod[ií]a|medianoche)\b",
+    re.IGNORECASE)
+
+
+def tool_forzada_por_intencion(user_message: str) -> str | None:
+    """Tool a forzar en el primer turno, o None para no forzar una específica.
+    Si el mensaje MEZCLA familias ('guárdalo como nota y recuérdame…'), forzar una
+    sola sería peor que dejarlo elegir."""
+    msg = (user_message or "").strip()
+    if not msg or not tiene_intencion_de_escritura(msg):
+        return None
+    familias = []
+    if _CAL_VERB_RE.search(msg):
+        familias.append("cal")
+    if _REM_VERB_RE.search(msg):
+        familias.append("rem")
+    if _NOTA_VERB_RE.search(msg):
+        familias.append("nota")
+    if len(familias) != 1:
+        return None
+    fam = familias[0]
+    if fam == "cal":
+        # Sin hora en el mensaje no se puede crear el evento sin inventarla.
+        return "m365_crear_evento" if _HORA_RE.search(msg) else None
+    if fam == "rem":
+        return "agendar_recordatorio"
+    return "append_to_memory"
+
+
+def _accion_fabricada(turn_text: str, tools_executed: list, ya_empujadas: dict):
+    """Devuelve (indice_familia, instrucción) si el turno AFIRMA una acción de
+    escritura que ninguna tool ejecutada respalda. Empuja UNA vez por familia."""
+    txt = turn_text or ""
+    if not txt.strip():
+        return None
+    for i, (claim_re, tools, instruccion) in enumerate(_CLAIM_NETS):
+        if ya_empujadas.get(i, 0) >= 1:
+            continue
+        if not claim_re.search(txt):
+            continue
+        if any(t in tools_executed for t in tools):
+            continue
+        return i, instruccion
+    return None
+
+
 _REMINDER_CLAIM_RE = re.compile(
     r"(recordatorio\s+(creado|agendado|programado|configurado|listo)|"
     r"agend[eé]\s+(el|tu|un)\s+recordatorio|te\s+(llegar[aá]|recordar[eé]|aviso|avisar[eé])\b|"
@@ -564,7 +696,38 @@ def load_system_prompt(channel: str = "telegram") -> str:
     )
     parts.append(
         "\n\n# IDENTIDAD Y TONO (Ollama / chat normal)\n"
-        "Eres Donna (Nexo), asistente ejecutivo DE Polo Bassoco (CEO Kawiil/Yoltik). "
+        "Eres Donna (Nexo), asistente ejecutiva DE Polo Bassoco (CEO Kawiil/Yoltik). "
+        "\n# COMPRENSIÓN DEL MENSAJE (antes de responder)\n"
+        "Polo suele PEGAR contexto (un recordatorio tuyo, un oficio, un correo, "
+        "instrucciones de un trámite) y cerrar con lo que realmente quiere. Separa las "
+        "dos partes:\n"
+        "1. **Contexto pegado** — es información, NO una orden. Los verbos que trae "
+        "('Enviar el correo a…', 'Guardar el acuse…') son parte del trámite citado, no "
+        "de lo que Polo te pide a ti.\n"
+        "2. **La petición real** — normalmente la última frase. Si es una PREGUNTA "
+        "('¿lo agregaste a kawiil central?', '¿ya quedó registrado?'), CONTÉSTALA con el "
+        "hecho: verifica y di sí o no, y si no, ofrece hacerlo. NO produzcas un "
+        "documento, análisis ni presentación salvo que lo pida explícitamente.\n"
+        "Si el contexto pegado trae un vencimiento (HOY VENCE, fecha límite), acúsalo en "
+        "una línea y sigue con la respuesta — sin convertirlo en un entregable.\n"
+        "Si no distingues si quiere documento o respuesta, PREGÚNTALE en una línea.\n"
+        "\n# ACCIONES: EJECUTA, NO ANUNCIES\n"
+        "Regla dura: **nunca digas que hiciste algo si no llamaste la tool y te devolvió "
+        "OK.** Ni 'agendado', ni 'guardado', ni 'registrado', ni 'Agendando…'. Si no "
+        "ejecutaste, no pasó — y decir que pasó es el peor error posible, porque Polo se "
+        "confía y el evento nunca aparece en su calendario.\n"
+        "1. **No pidas permiso dos veces.** Si Polo ya dio el dato (día, hora, nombre), "
+        "eso ES la confirmación: ejecuta. Nada de '¿confirmo que los meto al "
+        "calendario?'. Solo pregunta si falta un dato indispensable, y solo por ése.\n"
+        "2. **Un ítem = una llamada.** Cuatro horarios son cuatro `m365_crear_evento`.\n"
+        "3. **Reporta lo que devolvió la tool**, con la hora real. Si una falló, dilo: "
+        "'3 de 4 quedaron; la de 4:00pm falló por X'. Nunca un ✅ parejo.\n"
+        "4. **Recordatorio ≠ evento.** 'Recordatorio'/'recuérdame'/'avísame' → "
+        "`agendar_recordatorio` (Telegram). 'Evento'/'junta'/'cita'/'bloquea en el "
+        "calendario' → `m365_crear_evento`. Si Polo te corrige el tipo, corrige la "
+        "herramienta, no solo el texto.\n"
+        "5. **'Anótalo en la memoria'** → `append_to_memory` de verdad. Un '📝 Guardado' "
+        "sin tool es una mentira que además pierde la información.\n"
         "Hablas A Polo en segunda persona — NUNCA te llames Donna ni le digas 'Hola Donna'.\n"
         "Español mexicano profesional. Conciso: máx. 3 párrafos salvo que pida detalle.\n"
         "NO describas tu pipeline interno (no digas 'revisando snapshot', 'según instrucción', etc.).\n"
@@ -594,14 +757,19 @@ def load_system_prompt(channel: str = "telegram") -> str:
             "Estás respondiendo por Telegram. Responde como asistente ejecutivo humano: "
             "directo, breve, máx 2-3 oraciones para respuestas simples. "
             "Sin headers (#). Si necesitas info, haz UNA pregunta a la vez, no listas. "
-            "**FORMATO TELEGRAM:** usa Markdown legacy de Telegram:\n"
-            "- Negrita: `*una sola*` (NO `**dos**`, eso aparece literal)\n"
+            "**FORMATO TELEGRAM:** escribe Markdown ESTÁNDAR y ya. El servidor lo "
+            "convierte a HTML de Telegram antes de enviarlo (`format_for_telegram`), así "
+            "que no adaptes nada al 'Markdown legacy':\n"
+            "- Negrita: `**dos asteriscos**` (UN solo asterisco `*así*` sale en CURSIVA)\n"
             "- Cursiva: `_texto_`\n"
-            "- Código: `` `texto` ``\n"
+            "- Código: `` `texto` `` y bloques con ```\n"
             "- Links: `[texto](url)`\n"
-            "- NO uses headers `#`, `##`, `###` (aparecen como texto plano)\n"
-            "- Emojis sí, son nativos\n"
-            "- Para 'títulos' de secciones usa `*Título:*` en negrita.\n"
+            "- Títulos de sección: `## Título` (se renderizan en negrita) o `**Título:**`\n"
+            "- Viñetas con `-` (se convierten a •). Emojis nativos, sí.\n"
+            "- NO uses tablas `| a | b |`: Telegram no las renderiza y se aplastan a "
+            "viñetas. Si necesitas comparar, usa viñetas con `campo — valor`.\n"
+            "Usa UN SOLO estilo en todo el mensaje: mezclar `*x*` con `**x**` es lo que "
+            "hace que unos mensajes se vean en negrita y otros en cursiva.\n"
             "Si recibes un audio transcrito, considera que puede tener errores de transcripción "
             "(palabras técnicas como 'FIATCOIN', 'LFPIORPI', 'Kawiil', 'Yoltik' pueden venir mal escritas).\n"
             "LÍMITE DURO: máx 4-5 líneas de texto en TOTAL por respuesta. "
@@ -3633,9 +3801,14 @@ _DOC_TYPE_RE = re.compile(
     r"\b(pdf|html|interactiv\w+|p[aá]gina\s+web|micrositio|pptx|powerpoint|presentaci[oó]n|"
     r"deck|excel|xlsx|hoja\s+de\s+c[aá]lculo|"
     r"documento|dictamen|informe|reporte|an[aá]lisis|acta\s+constitutiva)\b", re.IGNORECASE)
+# Los imperativos con pronombre enclítico llevan acento ("prepárame", "ármame",
+# "conviérteme"), así que cada verbo acepta su variante acentuada. Antes
+# `prepara\w*` no cubría `prepárame` y se caían pedidos legítimos.
 _DOC_VERB_RE = re.compile(
-    r"\b(gen[eé]ra\w*|elabora\w*|prepara\w*|arma\w*|haz\w*|hag\w*|conviert\w*|crea\w*|"
-    r"entr[eé]ga\w*|p[aá]sa\w*|m[aá]nda\w*|env[ií]a\w*|comp[aá]rt\w*|dame|necesito|quiero)\b",
+    r"\b(gen[eé]ra\w*|el[aá]bora\w*|prep[aá]ra\w*|[aá]rma\w*|haz\w*|hag\w*|"
+    r"convi[eé]rt\w*|cr[eé]a\w*|redact\w*|"
+    r"entr[eé]ga\w*|p[aá]sa\w*|m[aá]nda\w*|env[ií]a\w*|comp[aá]rt\w*|"
+    r"dame|d[eé]jame|necesito|quiero|ocupo)\b",
     re.IGNORECASE)
 # Señales de que NO es un pedido de documento sino una consulta de estado/conteo
 # (ej: "cuántas tesis con su PDF", "números totales del DOF", "cómo vamos").
@@ -3644,6 +3817,42 @@ _DOC_NEGATIVE_RE = re.compile(
     r"\b(cu[aá]nt\w*|n[uú]mero?s?|total\w*|c[oó]mo\s+(vamos|va|van|est[aá]\w*)|"
     r"estad[oí]stic\w*|estado\s+(del?|de\s+la)|descargad\w*|indexad\w*|organizad\w*|"
     r"avance|conteo|resumen\s+de\s+(estado|n[uú]meros))\b",
+    re.IGNORECASE)
+
+# ── Comprensión: distinguir PEDIDO de documento vs. PREGUNTA / contexto pegado ──
+# Polo pega un recordatorio, un oficio o un correo COMPLETO y cierra con una
+# pregunta ("…lo agregaste a kawiil central?"). Ese texto pegado trae palabras que
+# parecen pedido de documento ("enviar", "presentación") aunque son del CONTEXTO
+# citado. Caso real: el Oficio CNBV 411-2/1364/2026 devolvió un PPTX de "Análisis
+# legal" en vez de contestar la pregunta.
+
+# 1) Sentidos NO documentales: "constancia de presentación en tiempo" es un trámite,
+#    no un PowerPoint. Se borran ANTES de buscar el tipo de documento.
+_DOC_TYPE_SENTIDO_LEGAL_RE = re.compile(
+    r"\b(constancia|acuse|fecha|plazo|t[eé]rmino|d[ií]a|hora|forma|v[ií]a|prueba|"
+    r"comprobante|sello)\s+(de\s+)?presentaci[oó]n\w*"
+    r"|\bpresentaci[oó]n\s+(en\s+tiempo|extempor[aá]nea|del?\s+(escrito|aviso|"
+    r"promoci[oó]n|demanda|informe\s+legal|documentaci[oó]n|solicitud|recurso))"
+    r"|\bde\s+presentaci[oó]n\s+en\s+tiempo\b",
+    re.IGNORECASE)
+
+# 2) Preguntas de SEGUIMIENTO: hay que CONTESTARLAS, no producir un documento.
+#    Se prefiere el PASADO (inequívocamente estatus). Del presente solo verbos de
+#    REGISTRO; fuera 'pones/metes/cargas' porque admiten "…en un PDF".
+_DOC_PREGUNTA_SEGUIMIENTO_RE = re.compile(
+    r"\b(lo|la|los|las|le|eso|esto|ya)\s+(lo\s+|la\s+|los\s+|las\s+|le\s+)?"
+    r"(agregaste|agregas|guardaste|guardas|registraste|registras|subiste|subes|"
+    r"anotaste|anotas|cargaste|metiste|pusiste|capturaste|"
+    r"diste\s+de\s+alta|checaste|revisaste|viste|tienes|tomaste\s+nota|"
+    r"mandaste|enviaste|hiciste|hicimos|qued[oó])\b"
+    r"|\bqu[eé]\s+(sabes|tienes|hay)\s+de\b"
+    r"|\b(est[aá]|qued[oó]|lo\s+tienes)\s+registrad\w*\b",
+    re.IGNORECASE)
+
+#    Válvula de escape: un FORMATO explícito ("¿me lo pasas en PDF?") sí es pedido.
+_DOC_FORMATO_EXPLICITO_RE = re.compile(
+    r"\b(en|como)\s+(un\s+|una\s+|el\s+|la\s+)?"
+    r"(pdf|word|docx|pptx|power\s?point|excel|xlsx|html|deck)\b",
     re.IGNORECASE)
 
 # Señales de ACCIÓN YA REALIZADA (pasado/completado) — un REPORTE de estatus, no una
@@ -3675,6 +3884,55 @@ _DOC_NO_INTENT_RE = re.compile(
     re.IGNORECASE)
 
 
+# 3) Cercanía verbo↔tipo. Antes bastaba que aparecieran EN CUALQUIER PARTE del
+#    mensaje: en un recordatorio pegado de 600 caracteres, "Enviar el correo…"
+#    (línea 2) y "…presentación en tiempo" (línea 8) se leían como "envíame una
+#    presentación". Ahora el verbo tiene que estar PEGADO al tipo.
+_DOC_PROXIMIDAD = 45
+
+
+def _doc_verbo_pegado_al_tipo(msg: str, ventana: int = _DOC_PROXIMIDAD) -> bool:
+    """True si algún verbo de pedido cae a menos de `ventana` caracteres de algún
+    tipo de documento ("hazme un informe", "necesito el PDF")."""
+    tipos = [m.span() for m in _DOC_TYPE_RE.finditer(msg)]
+    if not tipos:
+        return False
+    verbos = [m.span() for m in _DOC_VERB_RE.finditer(msg)]
+    if not verbos:
+        return False
+    for ti, tf in tipos:
+        for vi, vf in verbos:
+            if vi >= tf:
+                dist = vi - tf
+            elif vf <= ti:
+                dist = ti - vf
+            else:
+                dist = 0
+            if dist <= ventana:
+                return True
+    return False
+
+
+def _limpiar_sentidos_no_documentales(msg: str) -> str:
+    """Quita las frases donde una palabra-tipo NO significa documento (ej.
+    'constancia de presentación en tiempo' = trámite, no un PowerPoint)."""
+    return _DOC_TYPE_SENTIDO_LEGAL_RE.sub(" ", msg or "")
+
+
+def es_pregunta_de_seguimiento(user_message: str) -> bool:
+    """True si Polo PREGUNTA por el estatus de algo, no pide trabajo nuevo. Exige
+    signo de interrogación para no confundir la orden ('agrégalo a kawiil central')
+    con la pregunta ('¿lo agregaste a kawiil central?')."""
+    msg = (user_message or "").strip()
+    if not msg:
+        return False
+    if "?" not in msg and "¿" not in msg:
+        return False
+    if _DOC_FORMATO_EXPLICITO_RE.search(msg):
+        return False
+    return bool(_DOC_PREGUNTA_SEGUIMIENTO_RE.search(msg))
+
+
 def needs_doc_sonnet(user_message: str) -> bool:
     """True si Polo pide GENERAR un documento (PDF/PPTX/XLSX). Usa Sonnet — sigue
     instrucciones de tool-calling mucho mejor que Haiku para generar_documento.
@@ -3697,7 +3955,10 @@ def needs_doc_sonnet(user_message: str) -> bool:
     # Negación explícita: 'no había que generar', 'no quiero documento', 'no era un doc'.
     if _DOC_NO_INTENT_RE.search(msg):
         return False
-    return bool(_DOC_TYPE_RE.search(msg) and _DOC_VERB_RE.search(msg))
+    # Pregunta de seguimiento → hay que CONTESTARLA, no generar un archivo.
+    if es_pregunta_de_seguimiento(msg):
+        return False
+    return _doc_verbo_pegado_al_tipo(_limpiar_sentidos_no_documentales(msg))
 
 
 def needs_sonnet_auto(user_message: str) -> bool:
@@ -5485,7 +5746,18 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "m365_crear_evento",
-        "description": "Crea evento en calendario. Confirma fecha/hora con Polo antes.",
+        "description": (
+            "Crea un evento REAL en el calendario de Polo. ÚSALA en cuanto Polo te dé día y hora "
+            "('agéndame X mañana 11:00', 'bloquea la llamada LCA 12:30'): NO le pidas confirmación "
+            "— el dato ya es la confirmación. Un evento por llamada: si te dio 4 horarios, son 4 "
+            "llamadas. `tenant` = 'kawiil' salvo que Polo diga que es de Yoltik. Si no dio hora de "
+            "fin, usa 30 min (o lo que él haya dicho). Solo pregunta si falta un dato "
+            "indispensable (no hay día u hora), y entonces NO afirmes que agendaste nada. "
+            "PROHIBIDO decir 'agendado/bloqueado en el calendario' sin haber llamado esta tool y "
+            "recibido OK: reporta únicamente los eventos que la tool confirmó. "
+            "OJO recordatorio ≠ evento: si Polo dice 'recordatorio'/'recuérdame', eso va con "
+            "`agendar_recordatorio` (push de Telegram), NO al calendario."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -5864,6 +6136,44 @@ def _run_m365_tool(name: str, args: dict) -> str:
         return f"ERROR ejecutando m365.py: {e}"
 
 
+def _n_reinicios(svc: str) -> int:
+    """Cuántas veces systemd ha reiniciado el servicio (NRestarts). -1 si falla."""
+    try:
+        r = subprocess.run(["systemctl", "show", "-p", "NRestarts", "--value", svc],
+                           capture_output=True, text=True, timeout=3)
+        return int((r.stdout or "").strip() or -1)
+    except Exception:
+        return -1
+
+
+# Con RestartSec=10 un servicio sano no pasa de un puñado de reinicios; cientos
+# significan que se está cayendo y volviendo a arrancar.
+_REINICIOS_BUCLE = 20
+
+
+def _formato_estado_servicio(svc: str, state: str, nrestarts: int) -> str:
+    """Una línea por servicio. Distingue 'arrancando' de 'lleva 268,148 reinicios',
+    que es la razón por la que slack-bridge estuvo ~34 días caído sin que nadie lo
+    notara: `is-active` decía 'activating' y se leía como que apenas iniciaba."""
+    if state == "active":
+        if nrestarts > _REINICIOS_BUCLE:
+            return (f"✓ {svc}: active (⚠ {nrestarts:,} reinicios acumulados — "
+                    f"se ha estado cayendo)")
+        return f"✓ {svc}: active"
+    if state == "inactive":
+        return f"· {svc}: inactive (apagado a propósito)"
+    if state == "failed":
+        return (f"✗ {svc}: FAILED — no va a reintentar solo. "
+                f"Revisa: journalctl -u {svc} -n 30")
+    if state == "activating" and nrestarts > _REINICIOS_BUCLE:
+        return (f"✗ {svc}: EN BUCLE DE CAÍDA — {nrestarts:,} reinicios. "
+                f"NO está arrancando, se cae y vuelve a intentar. "
+                f"Revisa: journalctl -u {svc} -n 30")
+    if state == "activating":
+        return f"~ {svc}: activating (arrancando)"
+    return f"? {svc}: {state}" + (f" ({nrestarts:,} reinicios)" if nrestarts > 0 else "")
+
+
 def _verificar_conexiones(incluir_m365: bool = True) -> str:
     out = ["=== Verificación EN VIVO de Donna ===\n"]
     try:
@@ -5893,8 +6203,7 @@ def _verificar_conexiones(incluir_m365: bool = True) -> str:
         try:
             r = subprocess.run(["systemctl", "is-active", svc], capture_output=True, text=True, timeout=3)
             state = r.stdout.strip() or r.stderr.strip()
-            mark = "✓" if state == "active" else ("·" if state == "inactive" else "?")
-            out.append(f"  {mark} {svc}: {state}")
+            out.append("  " + _formato_estado_servicio(svc, state, _n_reinicios(svc)))
         except Exception as e:
             out.append(f"  ? {svc}: error ({e})")
     out.append("\n--- Credenciales en /opt/openclaw/credentials/ ---")
@@ -7716,7 +8025,9 @@ def _doc_tipo_de_mensaje(user_message: str) -> str:
     """Infiere el formato del documento pedido. Default = HTML interactivo
     (el estándar de Kawiil). Polo puede pedir otro formato explícito por Telegram
     (word/pdf/excel/powerpoint) y se respeta."""
-    m = (user_message or "").lower()
+    # Limpia sentidos NO documentales antes de inferir el formato: "constancia de
+    # presentación en tiempo" no debe elegir PPTX.
+    m = _limpiar_sentidos_no_documentales(user_message or "").lower()
     if re.search(r"\b(word|docx|documento\s+de\s+word|editable|en\s+word)\b", m):
         return "docx"
     if re.search(r"\b(pptx|powerpoint|presentaci[oó]n|deck|diapositiva)\b", m):
@@ -7740,9 +8051,17 @@ _LEGAL_FUERTE_RE = re.compile(
 
 def _es_analisis_legal(msg: str) -> bool:
     """True si el pedido es un ANÁLISIS/dictamen legal (para armarlo con el flujo
-    multi-agente, no de un solo tiro). No matchea 'redacta un contrato' (eso es plantilla)."""
-    m = (msg or "")
-    return bool(_LEGAL_ANALISIS_RE.search(m) or _LEGAL_FUERTE_RE.search(m))
+    multi-agente, no de un solo tiro). No matchea 'redacta un contrato' (eso es plantilla).
+
+    La señal FUERTE (CNBV, IMPI, amparo, jurisprudencia…) por sí sola NO alcanza:
+    Polo menciona esas autoridades todo el tiempo al hablar de un trámite ("Oficio
+    CNBV 411-2/1364/2026, hay que enviarlo hoy"), y eso no es un pedido de dictamen.
+    Se exige además que el mensaje pida un ENTREGABLE.
+    """
+    m = _limpiar_sentidos_no_documentales(msg or "")
+    if _LEGAL_ANALISIS_RE.search(m):
+        return True
+    return bool(_LEGAL_FUERTE_RE.search(m) and _DOC_TYPE_RE.search(m))
 
 
 def generar_documento_directo(api_key: str, system_prompt: str, history: list,
@@ -8202,7 +8521,11 @@ def _hetzner_estado(que: str = "") -> str:
         "heartbeat": "Último heartbeat de la Mac (online/batería/uptime).",
         "log_telegram": "Últimas líneas del log del bridge de Telegram.",
         "log_scheduler": "Últimas líneas del log del scheduler.",
-        "legal_conteo": "Conteo de publicaciones DOF/SJF en la BD (total y mayo 2026).",
+        "legal_conteo": "Conteo REAL del acervo legal: cuántas tesis del SJF y cuántas "
+                        "notas/leyes del DOF hay, cuántas traen texto completo, rango de "
+                        "fechas y cuántas entraron en los últimos 30 días.",
+        "aprendizaje_legal": "Cuánto de ese acervo ya DIGIRIÓ cada agente kawiil-* "
+                             "(docs indexados y cuándo fue la última vez).",
     }
     if not que or que not in opciones:
         listado = "\n".join(f"  • {k}: {v}" for k, v in opciones.items())
@@ -8225,36 +8548,143 @@ def _hetzner_estado(que: str = "") -> str:
     if que == "log_scheduler":
         return f"Log scheduler (real):\n```\n{_tail(logs_dir / 'scheduler.log', 30)}\n```"
     if que == "legal_conteo":
-        out = []
-        for nombre, db, col, tabla in (
-            ("DOF", DOF_DB, "fecha", "notas"),
-            ("SJF", SJF_DB, "fecha", None),
-        ):
-            if not db.exists():
-                out.append(f"{nombre}: BD no encontrada en {db}")
-                continue
-            try:
-                conn = _legal_open(db)
-                if nombre == "DOF":
-                    total = conn.execute("SELECT COUNT(*) FROM notas").fetchone()[0]
-                    con_txt = conn.execute(
-                        "SELECT COUNT(*) FROM notas WHERE texto_plano IS NOT NULL").fetchone()[0]
-                    may = conn.execute(
-                        "SELECT COUNT(*) FROM notas WHERE fecha LIKE '2026-05%' "
-                        "AND texto_plano IS NOT NULL").fetchone()[0]
-                    ult = conn.execute("SELECT MAX(fecha) FROM notas").fetchone()[0]
-                    out.append(f"DOF: total={total}, con texto={con_txt}, "
-                               f"mayo-2026 con texto={may}, última fecha={ult}")
-                else:
-                    # SJF: detectar tabla principal
-                    tablas = [r[0] for r in conn.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
-                    out.append(f"SJF: tablas={tablas}")
-                conn.close()
-            except Exception as e:
-                out.append(f"{nombre}: error leyendo BD — {e}")
-        return "Conteo legal (real):\n" + "\n".join(out)
+        return _legal_conteo()
+    if que == "aprendizaje_legal":
+        return _aprendizaje_legal()
     return f"opción no reconocida: {que}"
+
+
+def _tabla_existe(conn, tabla: str) -> bool:
+    try:
+        return bool(conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (tabla,)).fetchone())
+    except Exception:
+        return False
+
+
+def _columnas(conn, tabla: str) -> set:
+    try:
+        return {r[1] for r in conn.execute(f"PRAGMA table_info({tabla})").fetchall()}
+    except Exception:
+        return set()
+
+
+def _conteo_tabla(conn, tabla: str, col_fecha: str = "fecha", col_texto: str = "") -> str:
+    """Una línea con total, cuántos traen texto y el rango de fechas de una tabla.
+    El esquema se descubre en vivo (PRAGMA) en vez de asumir nombres de columna: las
+    BD las escriben los scrapers y sus columnas han cambiado."""
+    if not _tabla_existe(conn, tabla):
+        return f"  {tabla}: (no existe la tabla)"
+    cols = _columnas(conn, tabla)
+    total = conn.execute(f"SELECT COUNT(*) FROM {tabla}").fetchone()[0]
+    partes = [f"{total:,} registros"]
+    texto = col_texto if col_texto in cols else next(
+        (c for c in ("texto_plano", "texto", "contenido", "cuerpo") if c in cols), "")
+    if texto:
+        con_txt = conn.execute(
+            f"SELECT COUNT(*) FROM {tabla} WHERE {texto} IS NOT NULL AND {texto} != ''"
+        ).fetchone()[0]
+        pct = (100 * con_txt // total) if total else 0
+        partes.append(f"{con_txt:,} con texto ({pct}%)")
+    fecha = col_fecha if col_fecha in cols else next(
+        (c for c in ("fecha", "fecha_publicacion", "fecha_pub") if c in cols), "")
+    if fecha:
+        con_f = conn.execute(
+            f"SELECT COUNT(*) FROM {tabla} WHERE {fecha} IS NOT NULL AND {fecha} != ''"
+        ).fetchone()[0]
+        if con_f == 0:
+            partes.append(f"⚠ SIN FECHA en ningún registro (columna {fecha} vacía)")
+        else:
+            r = conn.execute(f"SELECT MIN({fecha}), MAX({fecha}) FROM {tabla} "
+                             f"WHERE {fecha} IS NOT NULL AND {fecha} != ''").fetchone()
+            partes.append(f"del {str(r[0])[:10]} al {str(r[1])[:10]}")
+            if con_f < total:
+                partes.append(f"⚠ {total - con_f:,} sin fecha")
+            hace30 = (datetime.now(TZ_CDMX) - timedelta(days=30)).strftime("%Y-%m-%d")
+            nuevos = conn.execute(
+                f"SELECT COUNT(*) FROM {tabla} WHERE {fecha} >= ?", (hace30,)).fetchone()[0]
+            partes.append(f"{nuevos:,} en los últimos 30 días")
+    return f"  {tabla}: " + " · ".join(partes)
+
+
+def _legal_conteo() -> str:
+    """Conteo REAL del acervo legal. La rama de SJF solo imprimía los NOMBRES de las
+    tablas —nunca cuántas tesis había, que es justo el dato que importa— y la de DOF
+    traía 'mayo-2026' clavado a mano."""
+    out = ["=== Acervo legal (conteo real) ==="]
+    for nombre, db, tablas in (
+        ("SJF (Semanario Judicial — tesis y jurisprudencias)", SJF_DB,
+         [("tesis", "fecha_publicacion", "")]),
+        ("DOF (Diario Oficial)", DOF_DB,
+         [("notas", "fecha", "texto_plano"), ("leyes", "fecha", ""),
+          ("reformas", "fecha", ""), ("ediciones", "fecha", "")]),
+    ):
+        out.append(f"\n{nombre}")
+        if not db.exists():
+            out.append(f"  ✗ BD no encontrada en {db}")
+            continue
+        mb = db.stat().st_size / (1024 * 1024)
+        out.append(f"  archivo: {db} ({mb:,.0f} MB)")
+        conn = None
+        try:
+            conn = _legal_open(db)
+            for tabla, cf, ct in tablas:
+                out.append(_conteo_tabla(conn, tabla, cf, ct))
+            if _tabla_existe(conn, "runs"):
+                cols = _columnas(conn, "runs")
+                oc = next((c for c in ("ts", "fecha", "inicio", "started_at") if c in cols), "")
+                if oc:
+                    r = conn.execute(f"SELECT MAX({oc}) FROM runs").fetchone()
+                    if r and r[0]:
+                        out.append(f"  última corrida del scraper: {r[0]}")
+        except Exception as e:
+            out.append(f"  ✗ error leyendo la BD — {e}")
+        finally:
+            if conn:
+                conn.close()
+    out.append("\nPara ver cuánto de esto ya digirió cada agente: "
+               "hetzner_estado(que=\"aprendizaje_legal\")")
+    return "\n".join(out)
+
+
+def _aprendizaje_legal() -> str:
+    """Cuánto del acervo ya está indexado por cada agente kawiil-*.
+    Descargar ≠ aprender: el acervo son GB de SQLite, pero lo que un agente puede
+    usar es lo que su indexador ya digirió a knowledge/<agente>/."""
+    out = ["=== Aprendizaje legal por agente ===",
+           f"(base de conocimiento: {KNOWLEDGE_BASE})"]
+    if not KNOWLEDGE_BASE.exists():
+        return "\n".join(out + ["✗ no existe la carpeta — ningún agente ha indexado nada."])
+    ahora = datetime.now()
+    filas, total_docs, sin_indexar = [], 0, []
+    for agente in sorted(KAWIIL_KNOWLEDGE_MAP):
+        idx = _knowledge_index(agente)
+        n = len(idx.get("docs") or [])
+        total_docs += n
+        li = idx.get("last_indexed")
+        if not n:
+            sin_indexar.append(agente)
+            continue
+        cuando = "?"
+        if li:
+            try:
+                h = (ahora - datetime.fromisoformat(li)).total_seconds() / 3600
+                cuando = (f"hace {int(h)}h" if h < 48 else f"hace {int(h / 24)} días")
+                if h > 72:
+                    cuando += " ⚠"
+            except Exception:
+                cuando = str(li)[:16]
+        etiqueta = (KAWIIL_KNOWLEDGE_MAP.get(agente) or {}).get("label", "")
+        filas.append(f"  • {agente}: {n:,} docs · última {cuando}"
+                     + (f" · {etiqueta[:40]}" if etiqueta else ""))
+    out.append(f"\nTotal digerido: {total_docs:,} documentos en "
+               f"{len(filas)} de {len(KAWIIL_KNOWLEDGE_MAP)} agentes")
+    out += filas or ["  (ninguno ha indexado todavía)"]
+    if sin_indexar:
+        out.append(f"\n⚠ Sin indexar nada aún: {', '.join(sin_indexar)}")
+    out.append("\nEl indexador corre solo cada ~10 min (scheduler, 10 docs por tick, "
+               "rotando entre agentes).")
+    return "\n".join(out)
 
 
 def _mac_comando_estado(cmd_id: str = "") -> str:
@@ -9932,6 +10362,11 @@ _DISTILL_TARGETS = {
     "CLIENTES": "CLIENTES.md",
     "SEGUIMIENTOS": "SEGUIMIENTOS.md",
     "IMPORTANT": "IMPORTANT.md",
+    # Correcciones de Polo a Donna → LEARNINGS.md, que SÍ se inyecta al system prompt
+    # (está en MEMORY_FILES). Antes la destilación tenía PROHIBIDO guardar "hechos
+    # sobre Donna misma", así que cada "no es un evento, es un recordatorio" se tiraba
+    # a la basura y el mismo error volvía a la semana.
+    "CORRECCIONES": "LEARNINGS.md",
 }
 
 _DISTILL_SYSTEM = (
@@ -9940,7 +10375,7 @@ _DISTILL_SYSTEM = (
     "hechos DURABLES y ESPECÍFICOS que valga la pena recordar a largo plazo y clasifícalos. "
     "Devuelve EXCLUSIVAMENTE un JSON válido con estas llaves (arrays de strings, una frase "
     'corta por hecho; usa [] si no hay nada):\n'
-    '{"PEOPLE": [], "CLIENTES": [], "SEGUIMIENTOS": [], "IMPORTANT": []}\n\n'
+    '{"PEOPLE": [], "CLIENTES": [], "SEGUIMIENTOS": [], "IMPORTANT": [], "CORRECCIONES": []}\n\n'
     "Reglas:\n"
     "- PEOPLE: datos durables de personas (rol, empresa, relación, junta recurrente, preferencias).\n"
     "- CLIENTES: datos de clientes/prospectos (razón social, RFC, contacto, estatus, servicio).\n"
@@ -9948,9 +10383,21 @@ _DISTILL_SYSTEM = (
     "- IMPORTANT: decisiones, hechos clave o instrucciones permanentes de Polo.\n"
     "- Cada hecho debe ser ESPECÍFICO: con nombre propio, empresa, fecha, monto o dato concreto. "
     "Si es vago o genérico, OMÍTELO.\n"
-    "- NO guardes hechos sobre Donna mismo, el sistema, el bot, la memoria, los archivos .md, ni "
-    "tareas de mantenimiento ('actualizar SEGUIMIENTOS', 'consolidar memoria', 'Donna es asistente…'). "
-    "Solo el MUNDO de Polo: personas, clientes, casos, compromisos, decisiones.\n"
+    "- CORRECCIONES: reglas de comportamiento que Polo le CORRIGIÓ a Donna en esta "
+    "conversación — cómo quiere que actúe la próxima vez. Es la categoría más valiosa: "
+    "cada corrección que no se guarda, se repite. Escríbelas como REGLA en imperativo, "
+    "no como anécdota. Ejemplos del formato correcto:\n"
+    "    · 'Si Polo dice \'recordatorio\', usar agendar_recordatorio (push de Telegram), "
+    "NO crear evento de calendario.'\n"
+    "    · 'No pedir confirmación cuando Polo ya dio día y hora: ejecutar y reportar.'\n"
+    "    · 'Patio es el sistema operativo de Yoltik; no crear proyectos de Yoltik en "
+    "Kawiil Central sin acceso a Patio.'\n"
+    "  Cuenta como corrección todo lo que empiece con 'no', 'no es', 'ese no era', 'te "
+    "equivocaste', 'ya te dije', o donde Polo repite una instrucción que no se siguió.\n"
+    "- Fuera de CORRECCIONES, NO guardes hechos sobre Donna misma, el sistema, el bot, la "
+    "memoria, los archivos .md, ni tareas de mantenimiento ('actualizar SEGUIMIENTOS', "
+    "'consolidar memoria'). Para las otras llaves, solo el MUNDO de Polo: personas, "
+    "clientes, casos, compromisos, decisiones.\n"
     "- NO incluyas charla trivial, saludos, briefings, ni cosas efímeras (clima, '¿qué hay hoy?').\n"
     "- NO inventes: solo lo explícito en la conversación. Usa nombres correctos y completos.\n"
     "- Ante la duda, NO lo guardes. Mejor pocos hechos sólidos que muchos genéricos.\n"
@@ -11471,6 +11918,10 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
     # Solo con Sonnet (con Haiku el tool_choice forzado devolvía contenido vacío).
     # Evita que Sonnet diga 'genero el dictamen ahora' sin llamar la tool.
     _force_doc = needs_doc_sonnet(user_message or "") and model == CLAUDE_SONNET
+    # A diferencia de _force_doc, esto SÍ aplica con Haiku: el texto final lo escribe
+    # el turno siguiente con los tool_results en mano, así que un primer turno sin
+    # texto no se pierde (era la objeción que tenía el forzado en el flujo de docs).
+    _force_write = tiene_intencion_de_escritura(user_message or "")
     # PROMPT CACHING: tools + system son idénticos entre llamadas y entre las 8
     # vueltas del loop. Cachearlos reduce el input ~90% (cache_read ≈ 10% del
     # precio normal). Sin esto, cada vuelta re-paga el system prompt gigante +
@@ -11509,6 +11960,7 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
         pass
     _stall_retries = 0
     _reminder_retries = 0
+    _claim_retries: dict = {}  # familia de acción afirmada → veces empujada
     for _loop_i in range(max_loops):  # noqa: B007
         body = {
             "model": model,
@@ -11524,6 +11976,13 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
         # El modelo debe llamar invocar_agente (para contenido) o generar_documento.
         elif _force_doc and _loop_i == 0:
             body["tool_choice"] = {"type": "any"}
+        elif _force_write and _loop_i == 0:
+            # Orden de escritura: se le fuerza la tool exacta si la familia es única,
+            # o cualquiera si mezcla. Evita que narre en vez de ejecutar, sin subir
+            # el turno a Sonnet.
+            _tool_exacta = tool_forzada_por_intencion(user_message or "")
+            body["tool_choice"] = ({"type": "tool", "name": _tool_exacta}
+                                   if _tool_exacta else {"type": "any"})
         try:
             resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=180)
         except Exception as e:
@@ -11574,6 +12033,16 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
                     "NO llamaste `agendar_recordatorio`, así que ese recordatorio NO existe. NO "
                     "inventes que lo creaste. Llama `agendar_recordatorio` AHORA (usa en_minutos "
                     "para tiempo relativo) y confírmame SOLO si la tool devolvió OK con su id."})
+                continue
+            # Acción FABRICADA (eventos de calendario, notas): afirmó haberla hecho sin
+            # llamar ninguna tool que la vuelva verdad. Mismo criterio que el
+            # recordatorio: no dejar pasar la mentira, obligarlo a ejecutar de verdad.
+            _fab = _accion_fabricada(turn_text, tools_executed, _claim_retries)
+            if _fab:
+                _idx, _instruccion = _fab
+                _claim_retries[_idx] = _claim_retries.get(_idx, 0) + 1
+                log.info("anti-fabricación: afirmó acción #%d sin llamar su tool; forzando", _idx)
+                messages.append({"role": "user", "content": _instruccion})
                 continue
             break
         tool_results = []

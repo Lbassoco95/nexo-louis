@@ -35,7 +35,9 @@ except ImportError:
         "ERROR: slack_bolt no está instalado. Instala con:\n"
         "  pip install --break-system-packages slack-bolt slack-sdk\n"
     )
-    sys.exit(1)
+    # Librería faltante = error de configuración permanente. 78 para que la unit
+    # (RestartPreventExitStatus=78) NO lo reintente cada 10s para siempre.
+    sys.exit(78)
 
 # Importa lógica común
 sys.path.insert(0, str(Path(__file__).parent))

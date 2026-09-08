@@ -99,6 +99,13 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 log = logging.getLogger("telegram-bridge")
+
+# Código de salida para ERROR DE CONFIGURACIÓN (convención EX_CONFIG de
+# sysexits.h). Faltar un token no se arregla reintentando: la unit lleva
+# RestartPreventExitStatus=78 para que el servicio quede en `failed` (visible)
+# en vez de reiniciarse para siempre — slack-bridge llevaba 268,148 reinicios
+# (~34 días) sin que nadie lo notara.
+EX_CONFIG = 78
 core.log = log  # comparte logger con el core
 
 
@@ -116,7 +123,7 @@ def load_credentials():
     chat_id = creds.get("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
         log.error(f"Faltan credenciales en {CREDS_TELEGRAM}")
-        sys.exit(1)
+        sys.exit(EX_CONFIG)
     return token, chat_id
 
 

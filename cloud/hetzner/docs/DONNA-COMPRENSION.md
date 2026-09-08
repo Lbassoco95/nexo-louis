@@ -736,3 +736,55 @@ Lo único que sobrevive de este hilo es la **capacidad de medir**:
 `hetzner_estado(que="avisos_programados")` con el historial por hora. Si algún día
 vuelven los mensajes a deshoras, ese comando lo contesta en un minuto en vez de en tres
 hipótesis falsas.
+
+
+---
+
+# Lo verificado, reaplicado sobre la base correcta
+
+Base: `claude/affectionate-dijkstra-KSoqy` (6-ago), el código realmente desplegado.
+Se descartó todo lo que no tenía causa comprobada. Cambios sobre `donna_core.py` y dos
+bridges:
+
+| # | Cambio | Evidencia que lo justifica |
+|---|---|---|
+| 1 | Comprensión: sentidos no documentales, preguntas de seguimiento, cercanía verbo↔tipo, `_es_analisis_legal` más estricto, verbos acentuados | El PPTX de "Análisis legal" ante el Oficio CNBV 411-2/1364/2026 |
+| 2 | `m365_crear_evento`: ejecutar sin pedir confirmación; redes anti-fabricación para eventos y notas; gerundios y "¿confirmo?" como stall; reglas "ACCIONES: EJECUTA, NO ANUNCIES" | 4 eventos anunciados como agendados que nunca existieron; **Polo confirmó que ya los crea** |
+| 3 | `FORMATO TELEGRAM`: Markdown estándar en vez de legacy | El prompt pedía `*una sola*` = negrita; el conversor lo vuelve *cursiva* |
+| 4 | `EX_CONFIG=78` + `RestartPreventExitStatus` + backoff; `/status` distingue arranque de bucle (`NRestarts`) | 268,148 reinicios de `slack-bridge` invisibles ~34 días |
+| 5 | `legal_conteo` reescrito + `aprendizaje_legal` nuevo | La rama de SJF nunca contaba las tesis; el DOF traía "mayo-2026" a mano |
+| 6 | `CORRECCIONES` → `LEARNINGS.md` en la destilación nocturna | La regla prohibía aprender de las correcciones de Polo |
+| 7 | `tool_choice` forzado en órdenes de escritura (tool exacta si la familia es única) | Decisión de Polo: mantener Haiku, no subir a Sonnet |
+
+Descartado: el renombre a Donna (esta rama ya lo hizo mejor), las horas de silencio y
+el tope de ráfaga del scheduler (los datos dicen que no hay problema de horarios), y
+cualquier cambio a los timers de agosto.
+
+Verificación: 87 casos en `scripts/test-comprension.py`, más el caso del CNBV y el del
+calendario comprobados a mano contra `donna_core`.
+
+# Qué le falta al acervo legal (lo que salió al probarlo)
+
+`legal_buscar("fe pública")` **funciona** — devuelve tesis del SJF y notas del DOF con
+texto. Pero la misma salida delata tres cosas:
+
+1. **La búsqueda usa `LIKE`, no los índices FTS5 que las BD ya tienen.** Las BD traen
+   `tesis_fts`, `notas_fts` y `leyes_fts` (búsqueda de texto completo con ranking bm25),
+   y las consultas hacen `texto LIKE '%término%'` con un `LIMIT` y sin `ORDER BY`.
+   Resultado: devuelve *las primeras filas que encuentra*, no las más relevantes ni las
+   más recientes — por eso al buscar "fe pública" salieron tres convenios de registro
+   civil de 2016. Es el arreglo de mayor impacto y menor riesgo del acervo.
+2. **Las tesis no tienen fecha:** todos los resultados salen como `[SJF/None]`. La
+   columna `fecha_publicacion` existe pero está vacía. Sin fecha no se puede ordenar por
+   vigencia ni distinguir una tesis de 1995 de una de 2026 — para análisis legal eso es
+   riesgo profesional. (El `legal_conteo` nuevo ya lo marca con
+   `⚠ SIN FECHA en ningún registro`.)
+3. **El sistema de embeddings está construido pero no conectado.** Los siete `nexo_*`
+   (`nexo_embeddings.py`, `nexo_retrieve.py`, `nexo_kb_audit.py`, tres `nexo_backfill*`)
+   son "Capa 1 · Bloque 2a — standalone, sin OpenClaw todavía": `donna_core.py` los
+   menciona 8 veces, pero `cerebro_kawiil_mcp.py` —lo que Donna y Cowork usan de verdad
+   para buscar— no los usa, y no tienen unit de systemd. La búsqueda semántica existe en
+   el repo y no está en el circuito.
+
+Orden sugerido: (1) FTS5 + bm25 + orden por fecha, (2) poblar `fecha_publicacion`,
+(3) conectar `nexo_retrieve`. Los tres son trabajo aparte, con su propia verificación.

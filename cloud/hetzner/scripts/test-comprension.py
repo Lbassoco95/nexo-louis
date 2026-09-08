@@ -25,7 +25,7 @@ from pathlib import Path
 
 SERVICES = Path(__file__).resolve().parents[1] / "services"
 sys.path.insert(0, str(SERVICES))
-import louis_core as core  # noqa: E402  (el módulo sigue llamándose louis_core)
+import donna_core as core  # noqa: E402
 
 CNBV = (
     "de este vencimiento ⏰ \U0001f534 HOY VENCE — Oficio CNBV 411-2/1364/2026 "
