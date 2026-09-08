@@ -339,3 +339,34 @@ sudo git clone -b <rama> git@github.com:Lbassoco95/nexo-louis.git /opt/louis-src
 ```
 
 De ahí en adelante todo deploy es un solo comando: `/opt/louis/scripts/actualizar.sh <rama>`.
+
+## `--solo-servicios`: actualizar la lógica sin correr todo el deploy
+
+En `louis-prod`, `deploy.sh --skip-bootstrap` aborta con
+`.env: variable LOUIS_DOMAIN está vacía`. `require_env()` exige
+`LOUIS_DOMAIN AGENTS_DOMAIN ACME_EMAIL SYSTEM_USER ANTHROPIC_API_KEY`, y las tres
+primeras solo sirven para **Caddy y el TLS** — no para el bot. Aparte de eso, un
+`deploy.sh` completo toca Caddy, docker-compose, cron y los seeds: mucho riesgo en un
+server en producción para actualizar tres archivos de Python.
+
+```bash
+/opt/louis/scripts/actualizar.sh <rama> --solo-servicios
+```
+
+Hace nada más lo que cambia al actualizar la lógica:
+
+- copia los `.py` de `services/` a `/opt/openclaw/scripts/` (la misma lista que
+  deploy.sh: si falta uno, las tools que lo importan fallan en silencio);
+- instala los `.service` y `.timer` sustituyendo los `@@PLACEHOLDER@@`, tomando los
+  valores de **la unit ya instalada y funcionando** (`User=`, `EnvironmentFile=`) en vez
+  del `.env` — así no depende de variables que solo le importan a Caddy;
+- respalda el `scripts/` anterior y las units en `/opt/openclaw/.respaldo-<fecha>/`
+  antes de sobrescribir;
+- `daemon-reload`, reinicia los 4 servicios y **reinicia los timers** (un
+  `daemon-reload` no recalcula el próximo disparo, y los `.timer` cambiaron de zona
+  horaria), y muestra los próximos disparos para confirmar que ya salen en hora CDMX;
+- corre las pruebas y aborta si fallan.
+
+Nota aparte: que `LOUIS_DOMAIN` esté vacía en `.env` vale la pena revisarla en frío
+—Caddy y el TLS de `louis.kawiil.mx` dependen de ella— pero no bloquea al bot y no es
+algo que convenga tocar en el mismo movimiento que un hotfix.

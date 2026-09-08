@@ -15,6 +15,21 @@
 
 set -euo pipefail
 
+# --solo-servicios: NO corre deploy.sh. Instala nada más los .py y las units, que
+# es lo único que cambia al actualizar la lógica del bot. Útil (y más seguro) en un
+# server que ya está en producción: deploy.sh exige LOUIS_DOMAIN/AGENTS_DOMAIN/
+# ACME_EMAIL —que solo sirven para Caddy y el TLS— y además toca Caddy, docker,
+# cron y los seeds. Nada de eso cambia por actualizar tres archivos de Python.
+SOLO_SERVICIOS=false
+ARGS=()
+for a in "$@"; do
+  case "$a" in
+    --solo-servicios) SOLO_SERVICIOS=true ;;
+    *) ARGS+=("$a") ;;
+  esac
+done
+set -- "${ARGS[@]+"${ARGS[@]}"}"
+
 RAMA="${1:-main}"
 # El repo es PRIVADO: por HTTPS pediría token. Se intenta SSH (deploy key del
 # server) y solo si eso falla se prueba HTTPS.
@@ -74,9 +89,75 @@ sudo rsync -a --exclude='.git' --exclude='.env' \
 [[ -f "$PAQUETE/.env" ]] || fail "Se perdió $PAQUETE/.env — restáuralo antes de seguir (deploy.sh lo exige)."
 ok "Paquete sincronizado, .env intacto"
 
-# ── 3) Deploy (instala scripts + units, hace daemon-reload) ─────────────────
-log "Corriendo deploy.sh --skip-bootstrap"
-( cd "$PAQUETE" && sudo ./deploy.sh --skip-bootstrap )
+# ── 3) Instalar al runtime ──────────────────────────────────────────────────
+instalar_solo_servicios() {
+  # Los valores de sustitución se sacan de la unit YA INSTALADA y funcionando, no
+  # del .env: así no dependemos de variables que solo le importan a Caddy.
+  local unit_viva="/etc/systemd/system/telegram-bridge.service"
+  local su oc envf
+  su="$(sudo sed -n 's/^User=//p' "$unit_viva" 2>/dev/null | head -1)"
+  envf="$(sudo sed -n 's/^EnvironmentFile=//p' "$unit_viva" 2>/dev/null | head -1)"
+  su="${su:-polo}"
+  oc="/opt/openclaw"                      # deploy.sh lo tiene hardcodeado igual
+  envf="${envf:-$oc/openclaw.env}"
+  log "Instalando como usuario '$su' (env: $envf)"
+
+  # Respaldo de lo que vamos a sobrescribir — para volver atrás en un comando.
+  local bkp="/opt/openclaw/.respaldo-$(date +%Y%m%d%H%M%S)"
+  sudo mkdir -p "$bkp"
+  sudo cp -a "$oc/scripts" "$bkp/scripts" 2>/dev/null || true
+  ok "Respaldo del runtime anterior en $bkp"
+
+  sudo mkdir -p "$oc/scripts/m365" "$oc/logs"
+  local n=0
+  for svc in louis_core.py telegram-bridge.py slack-bridge.py scheduler.py \
+             openclaw_gateway.py self_update.py browser_runner.py cerebro_kawiil_mcp.py; do
+    if [[ -f "$PAQUETE/services/$svc" ]]; then
+      sudo install -m 0755 -o "$su" -g "$su" "$PAQUETE/services/$svc" "$oc/scripts/$svc"
+      n=$((n+1))
+    fi
+  done
+  [[ -f "$PAQUETE/services/m365.py" ]] && \
+    sudo install -m 0755 -o "$su" -g "$su" "$PAQUETE/services/m365.py" "$oc/scripts/m365/m365.py"
+  for sc in seed-kawiil-agents.sh import-legal-agents.sh seed-morning-briefing.sh; do
+    [[ -f "$PAQUETE/scripts/$sc" ]] && \
+      sudo install -m 0755 -o "$su" -g "$su" "$PAQUETE/scripts/$sc" "$oc/scripts/$sc"
+  done
+  sudo chown -R "$su":"$su" "$oc/scripts" "$oc/logs"
+  ok "$n scripts instalados en $oc/scripts/"
+
+  # Units (.service y .timer) con los placeholders sustituidos, igual que deploy.sh
+  local u=0
+  for unit in telegram-bridge slack-bridge scheduler openclaw-gateway cerebro-kawiil \
+              dof-daily dof-daily-tarde dof-harvest dof-contents dof-pdfs \
+              legal-digest legal-estado sjf-update sjf-weekly; do
+    for ext in service timer; do
+      if [[ -f "$PAQUETE/services/${unit}.${ext}" ]]; then
+        sudo cp -a "/etc/systemd/system/${unit}.${ext}" "$bkp/" 2>/dev/null || true
+        sudo sed -e "s|@@SYSTEM_USER@@|${su}|g" \
+                 -e "s|@@OPENCLAW_HOME@@|${oc}|g" \
+                 -e "s|@@ENV_FILE@@|${envf}|g" \
+                 "$PAQUETE/services/${unit}.${ext}" \
+          | sudo tee "/etc/systemd/system/${unit}.${ext}" >/dev/null
+        u=$((u+1))
+      fi
+    done
+  done
+  ok "$u units actualizadas en /etc/systemd/system/"
+}
+
+if $SOLO_SERVICIOS; then
+  instalar_solo_servicios
+else
+  log "Corriendo deploy.sh --skip-bootstrap"
+  if ! ( cd "$PAQUETE" && sudo ./deploy.sh --skip-bootstrap ); then
+    printf "\n"
+    fail "deploy.sh falló (típicamente por una variable de .env que solo usa Caddy).
+ Si el server YA está en producción y solo quieres actualizar la lógica del bot,
+ corre esto — instala los .py y las units sin tocar Caddy/docker/cron/seeds:
+   $0 $RAMA --solo-servicios"
+  fi
+fi
 
 # ── 4) Reiniciar de verdad ──────────────────────────────────────────────────
 # deploy.sh usa `enable --now`, que NO reinicia lo que ya está corriendo.
@@ -87,12 +168,25 @@ for s in "${SERVICIOS[@]}"; do
     sudo systemctl restart "$s" && ok "$s reiniciado" || printf "  ! %s no reinició\n" "$s"
   fi
 done
+# Los .timer cambiaron (zona horaria explícita y se quitó Persistent de los que
+# notifican). Un daemon-reload no recalcula el próximo disparo: hay que reiniciarlos.
+for t in dof-daily dof-daily-tarde legal-digest legal-estado sjf-update sjf-weekly \
+         dof-harvest dof-contents dof-pdfs; do
+  if systemctl list-unit-files | grep -q "^${t}.timer"; then
+    sudo systemctl restart "${t}.timer" 2>/dev/null && ok "${t}.timer reprogramado" \
+      || printf "  ! %s.timer no reinició\n" "$t"
+  fi
+done
 
 # ── 5) Verificar ────────────────────────────────────────────────────────────
 log "Estado"
 for s in "${SERVICIOS[@]}"; do
   printf "  %-20s %s\n" "$s" "$(systemctl is-active "$s" 2>/dev/null || echo '?')"
 done
+
+log "Próximos disparos (deben verse en hora CDMX, no UTC)"
+systemctl list-timers --all 2>/dev/null \
+  | grep -E "dof-|legal-|sjf-" | awk '{printf "  %-22s %s %s\n", $NF, $1, $2}' || true
 
 if [[ -f "$PAQUETE/scripts/test-comprension.py" ]]; then
   log "Pruebas de comprensión"
