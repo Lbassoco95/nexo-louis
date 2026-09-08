@@ -64,12 +64,35 @@ REMINDERS_DIR.mkdir(parents=True, exist_ok=True)
 QUEUE_FILE.touch(exist_ok=True)
 SENT_FILE.touch(exist_ok=True)
 
+# Solo stdout: la unit systemd ya hace StandardOutput=append:logs/scheduler.log.
+# Con un FileHandler además, CADA línea del log salía DOS veces en el archivo
+# (telegram-bridge.py ya tenía este arreglo; scheduler no).
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
-    handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler(sys.stdout)],
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
 log = logging.getLogger("scheduler")
+
+
+# ===== Canal del briefing matutino =====
+# Polo recibía DOS briefings a las 07:00: el texto sintetizado por Haiku
+# (send_telegram) y el dashboard HTML (briefing_doc.py). Mismo contenido, doble
+# trabajo. DONNA_BRIEFING elige cuál se manda:
+#   texto  (default) → solo el texto de Telegram; el HTML queda bajo demanda
+#   html            → solo el dashboard HTML
+#   ambos           → los dos (comportamiento anterior)
+_BRIEFING_MODOS = ("texto", "html", "ambos")
+
+
+def briefing_modo() -> str:
+    """Lee DONNA_BRIEFING del entorno. Valor inválido → 'texto' con warning."""
+    m = (os.environ.get("DONNA_BRIEFING") or "texto").strip().lower()
+    if m not in _BRIEFING_MODOS:
+        log.warning("DONNA_BRIEFING=%r inválido (usa %s) → uso 'texto'",
+                    m, "/".join(_BRIEFING_MODOS))
+        return "texto"
+    return m
 
 
 # ===== Send helpers =====
@@ -446,31 +469,38 @@ def tick():
             raw = entry.get("message", "(recordatorio sin mensaje)")
             mode = entry.get("mode", "enrich")
             channel = entry.get("channel", "telegram")
+            _modo = briefing_modo()
             if mode == "briefing" or raw == MORNING_BRIEFING_MARKER:
                 text = core.generate_morning_briefing()
                 try:
                     core.save_last_briefing(text, core.build_operational_snapshot())
                 except Exception as e:
                     log.warning(f"No guardé last-briefing: {e}")
-                # HTML briefing dashboard — briefing_doc.py como subprocess async
-                try:
-                    import subprocess as _subp
-                    _bdoc = Path(__file__).parent / "briefing_doc.py"
-                    if _bdoc.exists():
-                        _subp.Popen([sys.executable, str(_bdoc), "hoy"])
-                        log.info("briefing_doc HTML lanzado (async)")
-                    else:
-                        log.warning("briefing_doc.py no encontrado en %s", Path(__file__).parent)
-                except Exception as e_bd:
-                    log.warning("briefing_doc HTML no lanzó: %s", e_bd)
+                # HTML briefing dashboard — briefing_doc.py como subprocess async.
+                # Solo si DONNA_BRIEFING lo pide; en 'texto' (default) NO se lanza,
+                # que era la causa del briefing duplicado.
+                if _modo in ("html", "ambos"):
+                    try:
+                        import subprocess as _subp
+                        _bdoc = Path(__file__).parent / "briefing_doc.py"
+                        if _bdoc.exists():
+                            _subp.Popen([sys.executable, str(_bdoc), "hoy"])
+                            log.info("briefing_doc HTML lanzado (async)")
+                        else:
+                            log.warning("briefing_doc.py no encontrado en %s", Path(__file__).parent)
+                    except Exception as e_bd:
+                        log.warning("briefing_doc HTML no lanzó: %s", e_bd)
             elif mode == "enrich":
                 text = enrich_with_ollama(raw)
             else:
                 text = raw
-            # Briefing: enviar texto Haiku sintetizado + HTML lanzado por briefing_doc.py
+            # Briefing: el texto solo si el modo lo incluye (el HTML ya se lanzó arriba).
             if mode == "briefing" or raw == MORNING_BRIEFING_MARKER:
-                ok = send_telegram(text) if text else True
-                log.info(f"Disparado {entry.get('id')} (briefing texto+HTML) → ok={ok}")
+                if _modo in ("texto", "ambos"):
+                    ok = send_telegram(text) if text else True
+                else:
+                    ok = True  # modo 'html': el dashboard es el único envío
+                log.info(f"Disparado {entry.get('id')} (briefing modo={_modo}) → ok={ok}")
             else:
                 prefix = "⏰ "
                 text = f"{prefix}{text}"

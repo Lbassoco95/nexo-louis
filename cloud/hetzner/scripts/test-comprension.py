@@ -127,8 +127,145 @@ CASOS_STALL = [
 ]
 
 
+# ── Diagnósticos NEGATIVOS inventados ───────────────────────────────────────
+# Caso real: Donna dijo "❌ Slack desconectado — Token inactivo". El token era
+# válido (auth.test pasaba); el error real era `not_in_channel`. Si afirma que algo
+# está roto sin llamar la tool que lo comprueba, hay que forzarla a comprobarlo.
+# (texto, tools_ejecutadas, espera_empujon)
+CASOS_DIAGNOSTICO = [
+    ("❌ Slack desconectado — Token inactivo", [], True),
+    ("Slack está caído, no tengo credenciales.", [], True),
+    # Sí verificó → el diagnóstico es legítimo, no se empuja
+    ("❌ Slack desconectado — Token inactivo", ["slack_canales"], False),
+    ("Slack está caído.", ["verificar_conexiones"], False),
+    # El diagnóstico REAL y accionable no se re-verifica
+    ("Slack sí funciona; la app no está invitada al canal. Corre `/invite @louis`.",
+     [], False),
+    ("Slack devolvió not_in_channel: falta invitar la app. El token está bien.",
+     [], False),
+    # Otros servicios
+    ("No tengo acceso al calendario de Microsoft, la integración está caída.", [], True),
+    ("El calendario está caído.", ["m365_calendario"], False),
+    ("El acervo del DOF está desconectado.", [], True),
+    ("El acervo del DOF está desconectado.", ["legal_estado"], False),
+    ("La Mac está fuera de línea.", ["mac_estado"], False),
+    ("El servicio scheduler está caído.", [], True),
+    ("El servicio scheduler está caído.", ["verificar_conexiones"], False),
+    # Sin diagnóstico negativo → nunca empujar
+    ("Slack tiene 2 canales: capacitaciones y contabilidad.", [], False),
+    ("Tienes 3 pendientes hoy.", [], False),
+    ("El oficio CNBV vence hoy a las 15:00.", [], False),
+]
+
+
 def main() -> int:
     fallas = []
+
+    for texto, tools, esperado in CASOS_DIAGNOSTICO:
+        got = core._diagnostico_fabricado(texto, tools, {}) is not None
+        if got != esperado:
+            fallas.append(f"_diagnostico_fabricado={got} (esperaba {esperado}) "
+                          f"tools={tools}: «{texto[:60]}…»")
+    # No debe empujar dos veces el mismo servicio (evita ciclar el loop)
+    if core._diagnostico_fabricado("Slack desconectado", [], {"diag:slack": 1}) is not None:
+        fallas.append("_diagnostico_fabricado empujó dos veces el mismo servicio")
+    # Toda tool citada en las redes de diagnóstico debe EXISTIR de verdad
+    _nombres_tools = {t["name"] for t in core.TOOLS_DEFINITION}
+    for clave, _re, _tools, _txt in core._DIAG_SERVICIOS:
+        for t in _tools:
+            if t not in _nombres_tools:
+                fallas.append(f"_DIAG_SERVICIOS[{clave}] cita tool inexistente: {t}")
+
+    # ── Traducción de errores de Slack ──────────────────────────────────────
+    # `not_in_channel` NO es un problema de credenciales; decirle "token inactivo"
+    # a Polo lo manda a regenerar un token que estaba bien.
+    class _FakeResp(dict):
+        pass
+
+    class _FakeSlackErr(Exception):
+        def __init__(self, code):
+            super().__init__(f"The request to the Slack API failed. {{'ok': False, 'error': '{code}'}}")
+            self.response = _FakeResp({"ok": False, "error": code})
+
+    # (código, debe_mencionar, NO_debe_mencionar)
+    # NOTA: los mensajes de los errores NO-de-token mencionan "token" y "credenciales"
+    # a propósito, para NEGARLO ("el token SÍ es válido"). Por eso lo que se prohíbe
+    # aquí es la afirmación de que hay que regenerar/recargar el token.
+    CASOS_SLACK_ERR = [
+        ("not_in_channel", "/invite", "regenerarlo"),
+        ("channel_not_found", "/invite", "regenerarlo"),
+        ("missing_scope", "scope", "regenerarlo"),
+        ("ratelimited", "tasa", "regenerarlo"),
+        ("invalid_auth", "regenerarlo", "invite"),
+        ("token_revoked", "revocado", "invite"),
+        ("account_inactive", "desactivada", "invite"),
+    ]
+    for code, debe, no_debe in CASOS_SLACK_ERR:
+        msg = core._slack_error_humano(_FakeSlackErr(code), "leyendo #contabilidad")
+        if core._slack_error_codigo(_FakeSlackErr(code)) != code:
+            fallas.append(f"_slack_error_codigo no extrajo '{code}'")
+        if debe.lower() not in msg.lower():
+            fallas.append(f"_slack_error_humano({code}) no menciona '{debe}': {msg}")
+        if no_debe.lower() in msg.lower():
+            fallas.append(f"_slack_error_humano({code}) menciona '{no_debe}' y no debería: {msg}")
+    # Solo los códigos de credencial muerta se marcan como problema de token
+    for code in ("not_in_channel", "channel_not_found", "missing_scope", "ratelimited"):
+        msg = core._slack_error_humano(_FakeSlackErr(code))
+        if "NO es un problema de credenciales" not in msg:
+            fallas.append(f"_slack_error_humano({code}) debería aclarar que no son credenciales: {msg}")
+    for code in ("invalid_auth", "token_revoked", "token_expired", "account_inactive"):
+        if code not in core._SLACK_ERRORES_DE_TOKEN:
+            fallas.append(f"{code} debería contar como error de token")
+    # Un error desconocido se reporta crudo, sin inventar diagnóstico
+    desconocido = core._slack_error_humano(_FakeSlackErr("algo_raro_nuevo"), "leyendo #x")
+    if "algo_raro_nuevo" not in desconocido:
+        fallas.append(f"un error desconocido debe reportarse crudo: {desconocido}")
+    # El handle del /invite tiene que ser el nombre REAL de la app en Slack
+    if core._SLACK_APP_HANDLE != "@louis":
+        fallas.append(f"_SLACK_APP_HANDLE={core._SLACK_APP_HANDLE!r}: la app en Slack se "
+                      f"llama 'louis'; cambiarlo solo cuando se renombre en api.slack.com")
+
+    # ── Canal del briefing (briefing duplicado) ─────────────────────────────
+    # Polo recibía DOS briefings a las 07:00 (texto + dashboard HTML).
+    import importlib
+    import os as _os
+    _prev = _os.environ.get("DONNA_BRIEFING")
+    try:
+        sched = importlib.import_module("scheduler")
+        for valor, esperado in (
+            (None, "texto"),        # default: solo texto
+            ("texto", "texto"),
+            ("html", "html"),
+            ("ambos", "ambos"),
+            ("AMBOS", "ambos"),     # case-insensitive
+            (" html ", "html"),     # tolera espacios
+            ("cualquier_cosa", "texto"),  # inválido → default seguro
+            ("", "texto"),
+        ):
+            if valor is None:
+                _os.environ.pop("DONNA_BRIEFING", None)
+            else:
+                _os.environ["DONNA_BRIEFING"] = valor
+            got = sched.briefing_modo()
+            if got != esperado:
+                fallas.append(f"briefing_modo() con DONNA_BRIEFING={valor!r} = {got!r} "
+                              f"(esperaba {esperado!r})")
+        _casos_briefing = 8
+    except Exception as e:
+        fallas.append(f"no pude probar briefing_modo(): {e}")
+        _casos_briefing = 8
+    finally:
+        _os.environ.pop("DONNA_BRIEFING", None)
+        if _prev is not None:
+            _os.environ["DONNA_BRIEFING"] = _prev
+
+    # scheduler NO debe añadir un FileHandler: la unit ya hace
+    # StandardOutput=append:logs/scheduler.log → cada línea salía duplicada.
+    for mod_name in ("scheduler.py", "telegram-bridge.py"):
+        src = (SERVICES / mod_name).read_text()
+        if "logging.FileHandler(" in src:
+            fallas.append(f"{mod_name} añade un FileHandler; la unit systemd ya "
+                          f"redirige stdout al mismo archivo → log duplicado")
 
     for texto, tools, esperado in CASOS_FABRICACION:
         got = core._accion_fabricada(texto, tools, {}) is not None
@@ -294,7 +431,11 @@ def main() -> int:
 
     total = (len(CASOS_DOC) + len(CASOS_LEGAL) + len(CASOS_FORMATO) + 2
              + len(CASOS_FABRICACION) + len(CASOS_STALL) + 6 + 8
-             + len(CASOS_ESCRITURA) * 2 + 3 + len(CASOS_SERVICIO) + 1 + 6 - 8)
+             + len(CASOS_ESCRITURA) * 2 + 3 + len(CASOS_SERVICIO) + 1 + 6 - 8
+             # nuevos: diagnósticos negativos, errores de Slack, canal del briefing
+             + len(CASOS_DIAGNOSTICO) + 1 + len(core._DIAG_SERVICIOS)
+             + len(CASOS_SLACK_ERR) * 3 + 4 + 4 + 1 + 1
+             + _casos_briefing + 2)
     if fallas:
         print(f"❌ {len(fallas)} de {total} fallaron:\n")
         for f in fallas:

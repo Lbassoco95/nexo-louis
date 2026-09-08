@@ -254,6 +254,107 @@ def _accion_fabricada(turn_text: str, tools_executed: list, ya_empujadas: dict):
     return None
 
 
+# ── Anti-fabricación de DIAGNÓSTICOS NEGATIVOS ──────────────────────────────
+# El caso real: Polo preguntó por Slack y Donna contestó "❌ Slack desconectado —
+# Token inactivo". Ese texto no existe en el código: el token estaba VÁLIDO
+# (auth.test pasaba) y el error real era `not_in_channel`. O sea, inventó el
+# diagnóstico. Las redes de arriba solo cubren afirmar haber HECHO algo; esta cubre
+# afirmar que algo está ROTO. Regla: si afirma que un servicio está caído, sin
+# credenciales o desconectado y NO llamó ninguna tool que lo compruebe, se le fuerza
+# a comprobarlo antes de responder.
+
+# Vocabulario de "esto está roto/no disponible" (excluyendo diagnósticos que ya son
+# accionables y correctos, ver _DIAG_NEG_OK_RE).
+_DIAG_NEG_RE = re.compile(
+    r"(desconectad\w+|no\s+est[aá]\s+conectad\w+|sin\s+conexi[oó]n|"
+    r"est[aá]\s+ca[ií]d\w+|se\s+ca[yi][oó]|fuera\s+de\s+(?:l[ií]nea|servicio)|"
+    r"token\s+(?:inactivo|inv[aá]lido|vencid\w+|expirad\w+|revocad\w+|caducad\w+|muerto)|"
+    r"(?:sin|falta\w*|no\s+(?:hay|tengo|tiene))\s+(?:credenciales|token|acceso)|"
+    r"no\s+(?:est[aá]|estoy)\s+(?:configurad\w+|autenticad\w+)|"
+    r"no\s+tengo\s+(?:configurad\w+|integrad\w+|conectad\w+)|"
+    r"integraci[oó]n\s+(?:ca[ií]d\w+|rota|inactiva)|"
+    r"servicio\s+(?:ca[ií]d\w+|detenid\w+|inactivo|muerto))",
+    re.IGNORECASE)
+
+# Diagnósticos que YA son correctos y accionables (los devuelve el propio código, no
+# los inventa el modelo): no hay que forzar re-verificación de estos.
+_DIAG_NEG_OK_RE = re.compile(
+    r"(not_in_channel|no\s+est[aá]\s+invitad\w+|invitad\w+\s+al\s+canal|/invite|"
+    r"missing_scope|falta\s+(?:un\s+)?(?:permiso|scope)|ratelimited)",
+    re.IGNORECASE)
+
+# (clave, cómo se nombra el servicio, tools que comprueban su estado de verdad)
+_DIAG_SERVICIOS = [
+    ("slack", re.compile(r"\bslack\b", re.IGNORECASE),
+     ("slack_canales", "slack_leer", "slack_leer_thread", "slack_resumen",
+      "slack_buscar", "slack_dm_leer", "verificar_conexiones"),
+     "`slack_canales` (o `verificar_conexiones`)"),
+    ("m365", re.compile(
+        r"\b(microsoft\s*365|microsoft|m365|outlook|sharepoint|"
+        r"(?:el\s+|mi\s+|tu\s+)?(?:correo|calendario))\b", re.IGNORECASE),
+     ("m365_inbox", "m365_calendario", "m365_buscar", "m365_listar_folders",
+      "m365_ver_correo", "verificar_conexiones"),
+     "`m365_calendario` o `m365_inbox` (o `verificar_conexiones`)"),
+    ("dropbox", re.compile(r"\bdropbox\b", re.IGNORECASE),
+     ("dropbox_listar", "dropbox_buscar", "verificar_conexiones"),
+     "`dropbox_listar` (o `verificar_conexiones`)"),
+    ("cerebro", re.compile(r"\b(cerebro|kawiil[.\s-]*central)\b", re.IGNORECASE),
+     ("cerebro_leer", "cerebro_listar", "cerebro_proyecto_estado",
+      "kawiil_central_estado", "kawiil_central_proyectos", "verificar_conexiones"),
+     "`kawiil_central_estado` o `cerebro_listar` (o `verificar_conexiones`)"),
+    ("legal", re.compile(r"\b(sjf|semanario|tesis|jurisprudencia|dof|acervo\s+legal)\b",
+                         re.IGNORECASE),
+     ("legal_estado", "legal_buscar", "legal_ultimo", "legal_briefing",
+      "verificar_conexiones"),
+     "`legal_estado`"),
+    ("mac", re.compile(r"\b(mac|macbook|la\s+mac)\b", re.IGNORECASE),
+     ("mac_estado", "mac_comando_estado", "verificar_conexiones"),
+     "`mac_estado`"),
+    # Red final: "el servicio X está caído" sin nombrar ninguno de los anteriores.
+    ("servicios", re.compile(
+        r"\b(servicio|servicios|bridge|scheduler|systemd|gateway|ollama|"
+        r"servidor|hetzner|vps)\b", re.IGNORECASE),
+     ("verificar_conexiones", "hetzner_estado", "reiniciar_mi_servicio"),
+     "`verificar_conexiones`"),
+]
+
+
+def _diagnostico_fabricado(turn_text: str, tools_executed: list, ya_empujadas: dict):
+    """Devuelve (clave, instrucción) si el turno AFIRMA que algo está caído / sin
+    credenciales / desconectado sin haber llamado ninguna tool que lo compruebe.
+    Empuja UNA vez por servicio."""
+    txt = turn_text or ""
+    if not txt.strip():
+        return None
+    if not _DIAG_NEG_RE.search(txt):
+        return None
+    if _DIAG_NEG_OK_RE.search(txt):
+        # Ya viene con el diagnóstico real y accionable del propio código.
+        return None
+    for clave, servicio_re, tools, comprobar_con in _DIAG_SERVICIOS:
+        key = f"diag:{clave}"
+        if ya_empujadas.get(key, 0) >= 1:
+            continue
+        if not servicio_re.search(txt):
+            continue
+        if any(t in tools_executed for t in tools):
+            continue
+        return key, (
+            f"ALTO. Afirmaste que algo está caído / desconectado / sin credenciales, "
+            f"pero NO llamaste ninguna tool que lo compruebe. Eso es un diagnóstico "
+            f"INVENTADO, y a Polo le cuesta tiempo persiguiendo un problema que puede "
+            f"no existir (ya pasó: dijiste 'Slack desconectado — token inactivo' cuando "
+            f"el token estaba válido y solo faltaba invitar la app al canal). "
+            f"Compruébalo AHORA con {comprobar_con} y respóndele SOLO lo que la tool "
+            f"devolvió. Si la tool dice que sí funciona, dilo y no repitas el "
+            f"diagnóstico anterior. Si falla, cita el error EXACTO que devolvió y el "
+            f"arreglo concreto — nunca traduzcas un error a 'token inactivo' salvo que "
+            f"el error diga literalmente invalid_auth, token_revoked, token_expired o "
+            f"account_inactive."
+        )
+    return None
+
+
 _REMINDER_CLAIM_RE = re.compile(
     r"(recordatorio\s+(creado|agendado|programado|configurado|listo)|"
     r"agend[eé]\s+(el|tu|un)\s+recordatorio|te\s+(llegar[aá]|recordar[eé]|aviso|avisar[eé])\b|"
@@ -728,6 +829,18 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "herramienta, no solo el texto.\n"
         "5. **'Anótalo en la memoria'** → `append_to_memory` de verdad. Un '📝 Guardado' "
         "sin tool es una mentira que además pierde la información.\n"
+        "6. **Tampoco inventes MALAS noticias.** Nunca digas que un servicio está caído, "
+        "desconectado, sin credenciales o con el token inactivo si no llamaste la tool que "
+        "lo comprueba (`verificar_conexiones`, `slack_canales`, `m365_calendario`, "
+        "`legal_estado`, `mac_estado`, `dropbox_listar`, `kawiil_central_estado`). Un "
+        "diagnóstico inventado le cuesta a Polo horas persiguiendo un problema que no "
+        "existe. Ya pasó: dijiste 'Slack desconectado — token inactivo' cuando el token "
+        "era válido y solo faltaba invitar la app al canal.\n"
+        "7. **Cita el error, no lo traduzcas.** Reporta el error EXACTO que devolvió la "
+        "tool y su arreglo. 'Token inactivo' se dice SOLO si el error dice literalmente "
+        "`invalid_auth`, `token_revoked`, `token_expired` o `account_inactive`. "
+        "`not_in_channel` significa que falta `/invite @louis` en ese canal de Slack — el "
+        "token está bien. `missing_scope` es un permiso faltante — el token está bien.\n"
         "Hablas A Polo en segunda persona — NUNCA te llames Donna ni le digas 'Hola Donna'.\n"
         "Español mexicano profesional. Conciso: máx. 3 párrafos salvo que pida detalle.\n"
         "NO describas tu pipeline interno (no digas 'revisando snapshot', 'según instrucción', etc.).\n"
@@ -7222,6 +7335,79 @@ def _slack_client():
     return WebClient(token=token), None
 
 
+# El nombre de la app en Slack sigue siendo "louis" (el rename a Donna es del bot de
+# Telegram). Por eso el /invite se hace con @louis.
+_SLACK_APP_HANDLE = "@louis"
+
+# Traducción de los errores de la API de Slack a instrucciones accionables.
+# MOTIVO: con `not_in_channel` Donna respondía "❌ Slack desconectado — Token
+# inactivo", que es FALSO (el token estaba válido; auth.test pasaba). El error real
+# era que la app no estaba invitada al canal. Un error crudo de la API deja al
+# modelo adivinar el diagnóstico, y adivina mal. Aquí se traduce en el borde.
+_SLACK_ERRORES = {
+    "not_in_channel": (
+        "la app no está invitada a este canal. El token SÍ es válido — esto NO es "
+        "una desconexión ni un token inactivo. Arreglo: en Slack, dentro del canal, "
+        f"escribe `/invite {_SLACK_APP_HANDLE}`."
+    ),
+    "channel_not_found": (
+        "ese canal no existe o la app no lo puede ver. Si es privado, hay que "
+        f"invitarla con `/invite {_SLACK_APP_HANDLE}` desde dentro del canal."
+    ),
+    "is_archived": "el canal está archivado; no se puede leer historial nuevo.",
+    "missing_scope": (
+        "al token le falta un permiso (scope) para esta operación. Se agrega en "
+        "api.slack.com/apps → OAuth & Permissions y luego hay que reinstalar la app. "
+        "El token no está caído."
+    ),
+    "not_allowed_token_type": (
+        "esta operación no está permitida para un bot token. El token no está caído."
+    ),
+    "ratelimited": "Slack está limitando la tasa de llamadas; hay que reintentar en unos segundos.",
+    # Los ÚNICOS casos que sí son un token muerto:
+    "invalid_auth": "el token de Slack ya no es válido. Hay que regenerarlo y recargarlo con configurar-slack.sh.",
+    "token_revoked": "el token de Slack fue revocado. Hay que regenerarlo y recargarlo con configurar-slack.sh.",
+    "token_expired": "el token de Slack expiró. Hay que regenerarlo y recargarlo con configurar-slack.sh.",
+    "account_inactive": "la cuenta/app de Slack está desactivada en el workspace.",
+}
+
+# Códigos que sí significan credencial muerta (para que Donna no llame "desconectado"
+# a un canal sin invitación).
+_SLACK_ERRORES_DE_TOKEN = frozenset(
+    {"invalid_auth", "token_revoked", "token_expired", "account_inactive"}
+)
+
+
+def _slack_error_codigo(e) -> str:
+    """Extrae el código de error de Slack de una excepción de slack_sdk."""
+    resp = getattr(e, "response", None)
+    if resp is not None:
+        try:
+            code = resp.get("error")
+        except Exception:
+            code = getattr(resp, "data", {}).get("error") if hasattr(resp, "data") else None
+        if code:
+            return str(code)
+    # Fallback: el código suele venir dentro del texto de la excepción.
+    txt = str(e)
+    for code in _SLACK_ERRORES:
+        if code in txt:
+            return code
+    return ""
+
+
+def _slack_error_humano(e, contexto: str = "") -> str:
+    """Mensaje de error de Slack accionable. `contexto` es p.ej. 'leyendo #ventas'."""
+    code = _slack_error_codigo(e)
+    donde = f" {contexto}" if contexto else ""
+    explicacion = _SLACK_ERRORES.get(code)
+    if not explicacion:
+        return f"ERROR de Slack{donde}: {e}"
+    if code in _SLACK_ERRORES_DE_TOKEN:
+        return f"❌ Slack{donde}: {explicacion} (código: {code})"
+    return f"⚠️ Slack{donde}: {explicacion} (código: {code} — NO es un problema de credenciales)"
+
+
 def _slack_all_channels(client, types="public_channel,private_channel,im,mpim"):
     """Lista TODOS los canales PAGINANDO. Slack devuelve los canales por tandas con
     'next_cursor' aunque pidas limit alto; sin seguir el cursor se pierden canales
@@ -7255,7 +7441,7 @@ def _slack_canales() -> str:
             rows.append(f"  {cid}  {name}  [{ctype}]{miembro}")
         return f"Canales visibles para Donna ({len(rows)}):\n" + "\n".join(rows) if rows else "No hay canales."
     except Exception as e:
-        return f"ERROR al listar canales Slack: {e}"
+        return _slack_error_humano(e, "al listar canales")
 
 
 def _slack_leer(canal: str, limite: int = 20) -> str:
@@ -7273,7 +7459,8 @@ def _slack_leer(canal: str, limite: int = 20) -> str:
                     channel_id = ch["id"]
                     break
             if not channel_id:
-                return f"No encontré el canal '#{canal}'. Revisa el nombre o invítame con /invite @Donna."
+                return (f"No encontré el canal '#{canal}'. Revisa el nombre, o si es privado "
+                        f"invita la app desde dentro del canal con `/invite {_SLACK_APP_HANDLE}`.")
         history = client.conversations_history(channel=channel_id, limit=min(limite, 100))
         msgs = history.get("messages", [])
         if not msgs:
@@ -7303,7 +7490,7 @@ def _slack_leer(canal: str, limite: int = 20) -> str:
             lines.append(line)
         return "\n".join(lines)
     except Exception as e:
-        return f"ERROR leyendo Slack #{canal}: {e}"
+        return _slack_error_humano(e, f"leyendo #{canal}")
 
 
 def _slack_leer_thread(canal: str, thread_ts: str) -> str:
@@ -7345,7 +7532,7 @@ def _slack_leer_thread(canal: str, thread_ts: str) -> str:
             lines.append(f"[{dt}] {user}: {text}")
         return "\n".join(lines)
     except Exception as e:
-        return f"ERROR leyendo thread Slack: {e}"
+        return _slack_error_humano(e, f"leyendo el thread de #{canal}")
 
 
 def _slack_buscar(query: str, canal: str = "", limite: int = 10) -> str:
@@ -7386,11 +7573,11 @@ def _slack_buscar(query: str, canal: str = "", limite: int = 10) -> str:
         return "\n\n".join(lines)
     except Exception as e:
         # search:read scope puede no estar disponible en todos los tokens de bot
-        if "missing_scope" in str(e) or "not_allowed_token_type" in str(e):
+        if _slack_error_codigo(e) in ("missing_scope", "not_allowed_token_type"):
             return (f"⚠️ Búsqueda Slack no disponible (el bot necesita scope 'search:read'). "
                     f"Alternativa: usa slack_leer con limite=100 en el canal específico, "
                     f"o pide a Polo que te mande una captura del hilo.")
-        return f"ERROR buscando en Slack: {e}"
+        return _slack_error_humano(e, f"buscando '{query}'")
 
 
 def _slack_dm_leer(usuario: str, limite: int = 20) -> str:
@@ -7412,7 +7599,7 @@ def _slack_dm_leer(usuario: str, limite: int = 20) -> str:
         channel_id = dm["channel"]["id"]
         return _slack_leer(channel_id, limite)
     except Exception as e:
-        return f"ERROR leyendo DM con {usuario}: {e}"
+        return _slack_error_humano(e, f"leyendo el DM con {usuario}")
 
 
 def _slack_resumen(canales: list | None = None, msgs_por_canal: int = 10) -> str:
@@ -7446,7 +7633,9 @@ def _slack_resumen(canales: list | None = None, msgs_por_canal: int = 10) -> str
 
         if not target:
             names = [c.get("name", c["id"]) for c in all_channels[:20]]
-            return f"El bot no está en ningún canal público de los disponibles. Canales visibles: {names}"
+            return (f"La app de Slack ve estos canales pero no está invitada a ninguno: {names}. "
+                    f"El token es válido; falta el `/invite {_SLACK_APP_HANDLE}` dentro de cada canal "
+                    f"que quieras que lea.")
 
         sections = []
         for ch in target:
@@ -7467,11 +7656,11 @@ def _slack_resumen(canales: list | None = None, msgs_por_canal: int = 10) -> str
                     lines.append(f"  [{dt}] {user}: {text}")
                 sections.append("\n".join(lines))
             except Exception as e:
-                sections.append(f"#{cname}: ERROR — {e}")
+                sections.append(f"#{cname}: {_slack_error_humano(e)}")
 
         return "\n\n".join(sections) if sections else "No se encontraron mensajes."
     except Exception as e:
-        return f"ERROR en slack_resumen: {e}"
+        return _slack_error_humano(e, "en el resumen de canales")
 
 
 # ===== Cola de archivos para enviar por el canal (Telegram/Slack) =====
@@ -12043,6 +12232,15 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
                 _claim_retries[_idx] = _claim_retries.get(_idx, 0) + 1
                 log.info("anti-fabricación: afirmó acción #%d sin llamar su tool; forzando", _idx)
                 messages.append({"role": "user", "content": _instruccion})
+                continue
+            # Misma red, pero para diagnósticos NEGATIVOS: "está caído / sin
+            # credenciales / desconectado" afirmado sin llamar la tool que lo compruebe.
+            _diag = _diagnostico_fabricado(turn_text, tools_executed, _claim_retries)
+            if _diag:
+                _dkey, _dinstruccion = _diag
+                _claim_retries[_dkey] = _claim_retries.get(_dkey, 0) + 1
+                log.info("anti-fabricación: diagnosticó '%s' caído sin verificar; forzando", _dkey)
+                messages.append({"role": "user", "content": _dinstruccion})
                 continue
             break
         tool_results = []

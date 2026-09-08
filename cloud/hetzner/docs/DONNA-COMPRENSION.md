@@ -945,3 +945,114 @@ python3 /opt/louis/scripts/diagnostico-fechas-sjf.py --proxy      # cobertura po
 python3 /opt/louis/scripts/diagnostico-fechas-sjf.py --derivar    # ensayo
 python3 /opt/louis/scripts/diagnostico-fechas-sjf.py --derivar --aplicar
 ```
+
+---
+
+## Briefing duplicado (07:00)
+
+Polo recibía **dos** briefings cada mañana con el mismo contenido: el texto sintetizado
+por Haiku y el dashboard HTML. No era un cron doble ni un timer duplicado — el log del
+scheduler lo mostró en una sola entrada de la cola:
+
+```
+briefing_doc HTML lanzado (async)
+Disparado … (briefing texto+HTML) → ok=True
+```
+
+Un solo `__morning_briefing__` producía los dos envíos: `send_telegram(text)` y, además,
+`briefing_doc.py` como subprocess. Ahora el canal se elige con `DONNA_BRIEFING` en
+`/opt/openclaw/.env`:
+
+| valor | qué manda |
+|---|---|
+| `texto` (**default**) | solo el texto de Telegram; el HTML queda bajo demanda |
+| `html` | solo el dashboard HTML |
+| `ambos` | los dos (comportamiento anterior) |
+
+Un valor inválido cae a `texto` y deja un `WARNING` en el log. **Sin tocar nada, Polo
+recibe un solo briefing** — el de texto, que es el que lee.
+
+### Log duplicado en scheduler
+
+De paso: `scheduler.service` ya hace `StandardOutput=append:…/logs/scheduler.log`, y el
+código además añadía `logging.FileHandler(LOG_FILE)` al mismo archivo. Cada línea del
+log salía **dos veces**, lo que hace inútil cualquier conteo (`grep -c`) sobre ese
+archivo. `telegram-bridge.py` ya tenía el arreglo; `scheduler.py` no. Hay una prueba que
+falla si vuelve a aparecer un `FileHandler` en cualquiera de los dos.
+
+---
+
+## Slack: el token estaba bien
+
+Donna respondió **"❌ Slack desconectado — Token inactivo"**. Ese texto no existe en el
+código. Verificado con su propio camino de código:
+
+```
+auth.test    → ✓ VÁLIDO — equipo: Kawiil Mx · bot: louis
+canales      → ✓ 2: capacitaciones, contabilidad
+history      → {'ok': False, 'error': 'not_in_channel'}
+```
+
+El token era válido. El error real —`not_in_channel`— significa que **la app no está
+invitada al canal**. Donna recibió el error crudo de la API y tradujo por su cuenta un
+problema de permisos a un diagnóstico de credenciales. Eso manda a Polo a regenerar un
+token que estaba perfecto.
+
+**Arreglo para Polo:** dentro de cada canal que quieras que lea, en Slack:
+
+```
+/invite @louis
+```
+
+(la app en Slack sigue llamándose `louis`; el rename a Donna es del bot de Telegram).
+
+### Arreglo en el código
+
+Los errores de Slack ya no llegan crudos al modelo. `_slack_error_humano()` los traduce
+**en el borde**, donde se sabe qué significan, en vez de dejar que el modelo adivine:
+
+| código | mensaje | ¿es el token? |
+|---|---|---|
+| `not_in_channel` | falta `/invite @louis` en el canal | **no** |
+| `channel_not_found` | canal inexistente o invisible para la app | **no** |
+| `missing_scope` | falta un permiso; se agrega y se reinstala la app | **no** |
+| `ratelimited` | reintentar en unos segundos | **no** |
+| `invalid_auth`, `token_revoked`, `token_expired`, `account_inactive` | regenerar y recargar | **sí** |
+
+Los cuatro casos que no son de credenciales cierran con *"NO es un problema de
+credenciales"*, para que no haya nada que malinterpretar. Un código desconocido se
+reporta **crudo** — mejor un error sin traducir que una traducción inventada.
+
+---
+
+## Anti-fabricación de diagnósticos negativos
+
+Las redes que ya existían cubrían afirmar haber **hecho** algo (`✅ Agendado` sin llamar
+`m365_crear_evento`). El caso de Slack es el espejo: afirmar que algo está **roto** sin
+comprobarlo. Cuesta igual o más, porque manda a Polo a perseguir un problema inexistente.
+
+`_diagnostico_fabricado()` se ejecuta en el mismo loop de tools, junto a
+`_accion_fabricada()`. Si el turno dice *caído / desconectado / sin credenciales / token
+inactivo* y **no** se llamó ninguna tool que lo compruebe, se le devuelve la orden de
+comprobarlo antes de contestar. Una sola vez por servicio, así que no cicla:
+
+| servicio | tools que lo vuelven verdad |
+|---|---|
+| Slack | `slack_canales`, `slack_leer`, `slack_resumen`, … , `verificar_conexiones` |
+| Microsoft 365 | `m365_calendario`, `m365_inbox`, `m365_buscar`, … |
+| Dropbox | `dropbox_listar`, `dropbox_buscar` |
+| Cerebro / kawiil.central | `kawiil_central_estado`, `cerebro_listar`, … |
+| SJF / DOF | `legal_estado`, `legal_buscar`, … |
+| Mac | `mac_estado` |
+| servicios / systemd / VPS | `verificar_conexiones`, `hetzner_estado` |
+
+Un diagnóstico que **ya es correcto y accionable** (`not_in_channel`, "falta el
+`/invite`", `missing_scope`, `ratelimited`) no se re-verifica: viene del código, no del
+modelo. Y en el system prompt, dos reglas nuevas: no inventar malas noticias, y citar el
+error exacto en vez de traducirlo — *"token inactivo"* solo si el error dice literalmente
+`invalid_auth`, `token_revoked`, `token_expired` o `account_inactive`.
+
+Las pruebas (`test-comprension.py`, 152 casos) cubren los tres arreglos, incluyendo que
+toda tool citada en las redes de diagnóstico **exista de verdad** en `TOOLS_DEFINITION`
+—el modo en que una red anti-fabricación se rompe en silencio es citando una tool que
+alguien renombró.
