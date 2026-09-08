@@ -116,10 +116,21 @@ instalar_solo_servicios() {
   # antes de pisarlo (el respaldo de arriba lo hace recuperable).
   local manifiesto="$oc/.deploy-manifest.json"
   local nuevo_manifiesto=""
-  local n=0 drift=0 cambiados=0
-  for svc in louis_core.py telegram-bridge.py slack-bridge.py scheduler.py \
+  local n=0 drift=0 cambiados=0 faltantes=0
+  # Misma lista que deploy.sh, MÁS donna_html.py: `donna_core` lo importa para el
+  # HTML interactivo (el formato por defecto de Kawiil) y deploy.sh nunca lo copió,
+  # así que en el runtime podía quedar una versión vieja o ninguna.
+  for svc in donna_core.py donna_html.py telegram-bridge.py slack-bridge.py scheduler.py \
              openclaw_gateway.py self_update.py browser_runner.py cerebro_kawiil_mcp.py; do
-    [[ -f "$PAQUETE/services/$svc" ]] || continue
+    # Un archivo de la lista que NO está en el paquete es un ERROR, no algo que
+    # saltarse en silencio: así se ocultó que la lista decía `louis_core.py` después
+    # del renombre a `donna_core.py`. El script reportó "8 instalados" y dejó el core
+    # del runtime sin actualizar — los arreglos no llegaron a producción.
+    if [[ ! -f "$PAQUETE/services/$svc" ]]; then
+      printf "  \033[1;31m✗ %s no existe en %s/services — la lista está desfasada\033[0m\n" "$svc" "$PAQUETE"
+      faltantes=$((faltantes+1))
+      continue
+    fi
     local h_nuevo h_disco h_previo
     h_nuevo="$(sha256sum "$PAQUETE/services/$svc" | cut -c1-16)"
     h_disco="$(sudo sha256sum "$oc/scripts/$svc" 2>/dev/null | cut -c1-16 || echo '')"
@@ -140,6 +151,18 @@ instalar_solo_servicios() {
     | sudo tee "$manifiesto" >/dev/null
   [[ $drift -gt 0 ]] && printf "  \033[1;33m! %d archivo(s) con ediciones en vivo pisadas — respaldo en %s\033[0m\n" "$drift" "$bkp"
   printf "  (%d de %d archivos cambiaron respecto a lo que había en disco)\n" "$cambiados" "$n"
+  if [[ $faltantes -gt 0 ]]; then
+    fail "$faltantes archivo(s) de la lista no existen en el paquete. NO se instaló todo:
+ arregla la lista en este script antes de dar el deploy por bueno."
+  fi
+  # Huérfanos del renombre louis_*→donna_*: si quedan en el runtime confunden a
+  # cualquiera que audite, y un import equivocado los volvería a usar.
+  for viejo in louis_core.py louis_html.py; do
+    if sudo test -f "$oc/scripts/$viejo"; then
+      sudo mv "$oc/scripts/$viejo" "$bkp/$viejo"
+      printf "  · %s era un huérfano del renombre → movido al respaldo\n" "$viejo"
+    fi
+  done
   [[ -f "$PAQUETE/services/m365.py" ]] && \
     sudo install -m 0755 -o "$su" -g "$su" "$PAQUETE/services/m365.py" "$oc/scripts/m365/m365.py"
   for sc in seed-kawiil-agents.sh import-legal-agents.sh seed-morning-briefing.sh; do
