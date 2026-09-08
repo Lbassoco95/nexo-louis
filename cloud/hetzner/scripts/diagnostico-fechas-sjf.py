@@ -186,29 +186,35 @@ _MESES = {
 }
 _MES_ANIO_RE = re.compile(
     r"\b(" + "|".join(_MESES) + r")\s+de\s+(\d{4})\b", re.IGNORECASE)
-_ANIO_RE = re.compile(r"\b(1[89]\d{2}|20\d{2})\b")
+# El Semanario arranca con la Quinta Época (1917). Cualquier año fuera de
+# [1917, año actual] no es una fecha de tesis: es otro número que se colló.
+_ANIO_MIN = 1917
+_ANIO_MAX = __import__("datetime").date.today().year
 
 
 def fecha_desde_cita(*textos):
-    """Devuelve (fecha_iso, precision) a partir de la cita, o (None, None).
+    """Devuelve (fecha_iso, 'mes') a partir de la cita, o (None, None).
 
-    precision: 'mes' si se pudo ubicar mes y año, 'anio' si solo el año. Se marca a
-    propósito: una fecha derivada NO es lo mismo que la que publica la Corte, y
-    quien la lea tiene que poder distinguirlas.
+    SOLO acepta el patrón inequívoco «MES de AÑO» ("Tomo V, Mayo de 1997"), y valida
+    que el año caiga en [1917, año actual].
+
+    La primera versión tenía un respaldo "cualquier año de 4 dígitos" sobre
+    `localizacion`/`tomo`/`volumen` — que es donde vive el NÚMERO DE PÁGINA. Con eso,
+    "Pág. 1995" se convertía en el año 1995 y el rango derivado salió
+    1800-01-01 … 2099-01-01: 6,096 fechas basura que además PARECÍAN buenas. Un
+    `~1800-01` en un resultado legal es peor que no tener fecha, así que el respaldo
+    se eliminó: si la cita no trae mes, la fecha no es derivable y se dice.
     """
     for t in textos:
         if not t:
             continue
-        t = str(t)
-        m = _MES_ANIO_RE.search(t)
-        if m:
-            return f"{int(m.group(2)):04d}-{_MESES[m.group(1).lower()]:02d}-01", "mes"
-    for t in textos:
-        if not t:
+        m = _MES_ANIO_RE.search(str(t))
+        if not m:
             continue
-        m = _ANIO_RE.search(str(t))
-        if m:
-            return f"{int(m.group(1)):04d}-01-01", "anio"
+        anio = int(m.group(2))
+        if not (_ANIO_MIN <= anio <= _ANIO_MAX):
+            continue
+        return f"{anio:04d}-{_MESES[m.group(1).lower()]:02d}-01", "mes"
     return None, None
 
 
@@ -309,7 +315,7 @@ def integridad_fts(con) -> str:
         return str(e)
 
 
-def derivar_fechas(lote: int, aplicar: bool):
+def derivar_fechas(lote: int, aplicar: bool, rehacer: bool = False):
     """Llena la fecha aproximada derivándola de la cita del Semanario.
 
     Dos decisiones de diseño:
@@ -340,6 +346,14 @@ def derivar_fechas(lote: int, aplicar: bool):
         existe = bool(con.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tesis_fecha_aprox'"
         ).fetchone())
+        if existe and rehacer:
+            n = con.execute("SELECT COUNT(*) FROM tesis_fecha_aprox").fetchone()[0]
+            if aplicar:
+                con.execute("DELETE FROM tesis_fecha_aprox")
+                con.commit()
+                print(f"✓ Borradas {n:,} filas anteriores para recalcularlas")
+            else:
+                print(f"Se borrarían {n:,} filas para recalcularlas (con --aplicar)")
         if not existe:
             if not aplicar:
                 print("Se creará la tabla `tesis_fecha_aprox` (con --aplicar)")
@@ -416,6 +430,15 @@ def derivar_fechas(lote: int, aplicar: bool):
         for row in con.execute("SELECT fecha_origen, COUNT(*) n FROM tesis_fecha_aprox "
                                "GROUP BY fecha_origen ORDER BY n DESC"):
             print(f"  {row[0]}: {row[1]:,}")
+        # Histograma por década. Es lo que habría delatado de inmediato las fechas
+        # basura (1800, 2099) en lugar de tener que notarlas en el MIN/MAX.
+        print("\n  Distribución por década:")
+        for row in con.execute(
+            "SELECT substr(fecha_aprox,1,3) || '0s' d, COUNT(*) n FROM tesis_fecha_aprox "
+            "WHERE fecha_aprox IS NOT NULL GROUP BY d ORDER BY d"):
+            aviso = "  ⚠ fuera de rango" if not (
+                _ANIO_MIN - 10 <= int(row[0][:3]) * 10 <= _ANIO_MAX) else ""
+            print(f"    {row[0]}: {row[1]:,}{aviso}")
         print("\nPara revertir todo: DROP TABLE tesis_fecha_aprox;  (`tesis` nunca se tocó)")
     finally:
         con.close()
@@ -431,10 +454,12 @@ def main():
     ap.add_argument("--proxy", action="store_true",
                     help="analiza fuente/epoca/localizacion para derivar fecha aproximada")
     ap.add_argument("--derivar", action="store_true",
-                    help="llena fecha_aprox/fecha_origen desde la cita (columnas APARTE)")
+                    help="llena la fecha derivada en la tabla `tesis_fecha_aprox`")
+    ap.add_argument("--rehacer", action="store_true",
+                    help="borra lo ya derivado y lo recalcula (tras corregir el parser)")
     a = ap.parse_args()
     if a.derivar:
-        derivar_fechas(a.lote, a.aplicar)
+        derivar_fechas(a.lote, a.aplicar, a.rehacer)
     elif a.proxy:
         analizar_proxy(a.muestra)
     elif a.reparar:
