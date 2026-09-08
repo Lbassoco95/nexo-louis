@@ -119,6 +119,85 @@ _STALL_RE = re.compile(
     re.IGNORECASE)
 
 
+# Orden INEQUÍVOCA de escribir algo (crear evento, recordatorio, nota, tarea). Con
+# Haiku —que es el modelo de los turnos con tools, por costo— el fallo típico es
+# narrar la acción en vez de llamar la tool. En estos casos le forzamos
+# `tool_choice` en el primer turno: no puede contestar de memoria, tiene que
+# ejecutar. Sale gratis (misma llamada, mismo modelo) y quita el modo "narrador".
+_WRITE_INTENT_RE = re.compile(
+    r"\b(ag[eé]nda\w*|agendar\w*|agendes|agendaras|bloqu[eé]a\w*|bloquear\w*|"
+    r"met[eé]\w*\s+(?:al|en\s+(?:el|mi))\s+calendario|"
+    r"crea\w*\s+(?:el\s+|un\s+|los\s+)?(?:evento|eventos|junta|cita|proyecto|tarea|cliente)|"
+    r"registra\w*|da\s+de\s+alta|anot[aá]\w*|ap[uú]nta\w*|gu[aá]rda\w*|"
+    r"recu[eé]rdame|recordame|av[ií]same)\b",
+    re.IGNORECASE)
+# Negativos: preguntas de estatus y consultas de lectura no son órdenes de escribir.
+_WRITE_INTENT_NEG_RE = re.compile(
+    r"^\s*¿|\?\s*$|\b(qu[eé]\s+tengo|qu[eé]\s+hay|mu[eé]stra\w*|ens[eé]ña\w*|"
+    r"lista\w*|list[aá]me|c[oó]mo\s+va|revisa\w*|checa\w*)\b",
+    re.IGNORECASE)
+
+
+def tiene_intencion_de_escritura(user_message: str) -> bool:
+    """True si el mensaje ORDENA escribir algo (evento/recordatorio/nota/tarea).
+    Se usa para forzar `tool_choice` y que el modelo no narre en vez de ejecutar."""
+    msg = (user_message or "").strip()
+    if not msg:
+        return False
+    if _WRITE_INTENT_NEG_RE.search(msg):
+        return False
+    return bool(_WRITE_INTENT_RE.search(msg))
+
+
+# Verbos por familia + señal de hora, para forzar LA TOOL EXACTA en vez de "any".
+# Son 110 tools en el request: pedirle a Haiku que acierte entre 110 opciones
+# parecidas (hay ~20 m365_*) es parte de por qué narra en lugar de ejecutar. Cuando
+# la orden es inequívoca le quitamos la elección — el mismo truco que ya se usaba
+# para las queries de Slack (`slack_resumen`). Costo: cero.
+_CAL_VERB_RE = re.compile(
+    r"\b(ag[eé]nda\w*|agendar\w*|agendes|agendaras|bloqu[eé]a\w*|bloquear\w*|"
+    r"met[eé]\w*\s+(?:al|en\s+(?:el|mi))\s+calendario|"
+    r"crea\w*\s+(?:el\s+|un\s+|los\s+)?(?:evento|eventos|junta|cita))\b",
+    re.IGNORECASE)
+_REM_VERB_RE = re.compile(r"\b(recu[eé]rdame|recordame|av[ií]same|recordatorio)\b", re.IGNORECASE)
+_NOTA_VERB_RE = re.compile(
+    r"\b(anot[aá]\w*|ap[uú]nta\w*|gu[aá]rda\w*\s+(?:en\s+)?(?:la\s+)?"
+    r"(?:memoria|nota|agenda)|gu[aá]rdalo\s+como\s+(?:una\s+)?nota)\b",
+    re.IGNORECASE)
+_HORA_RE = re.compile(
+    r"\b(\d{1,2}:\d{2}|\d{1,2}\s*(?:am|pm|hrs?|horas?)|mediod[ií]a|medianoche)\b",
+    re.IGNORECASE)
+
+
+def tool_forzada_por_intencion(user_message: str) -> str | None:
+    """Nombre de la tool a forzar en el primer turno, o None para no forzar una
+    específica (el caller cae a `tool_choice: any`).
+
+    Solo devuelve una tool cuando la orden es de UNA familia: si el mensaje mezcla
+    recordatorio y eventos (el caso 'el de las 7 es recordatorio, los otros son
+    eventos'), forzar una sola sería peor que dejarlo elegir.
+    """
+    msg = (user_message or "").strip()
+    if not msg or not tiene_intencion_de_escritura(msg):
+        return None
+    familias = []
+    if _CAL_VERB_RE.search(msg):
+        familias.append("cal")
+    if _REM_VERB_RE.search(msg):
+        familias.append("rem")
+    if _NOTA_VERB_RE.search(msg):
+        familias.append("nota")
+    if len(familias) != 1:
+        return None
+    fam = familias[0]
+    if fam == "cal":
+        # Sin hora en el mensaje no se puede crear el evento sin inventarla.
+        return "m365_crear_evento" if _HORA_RE.search(msg) else None
+    if fam == "rem":
+        return "agendar_recordatorio"
+    return "append_to_memory"
+
+
 def _accion_fabricada(turn_text: str, tools_executed: list, ya_empujadas: dict):
     """Devuelve (indice_familia, instrucción correctiva) si el turno AFIRMA una acción
     de escritura que ninguna tool ejecutada respalda. None si todo cuadra.
@@ -9551,6 +9630,11 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
     # Solo con Sonnet (con Haiku el tool_choice forzado devolvía contenido vacío).
     # Evita que Sonnet diga 'genero el dictamen ahora' sin llamar la tool.
     _force_doc = needs_doc_sonnet(user_message or "") and model == CLAUDE_SONNET
+    # Orden de escritura (agenda/registra/anota) → forzar tool en el 1er turno. A
+    # diferencia de _force_doc, esto SÍ aplica con Haiku: aquí el turno siguiente lo
+    # escribe el modelo con los tool_results en mano, así que un primer turno sin
+    # texto no se pierde (era el problema que tenía el forzado en el flujo de docs).
+    _force_write = tiene_intencion_de_escritura(user_message or "")
     # PROMPT CACHING: tools + system son idénticos entre llamadas y entre las 8
     # vueltas del loop. Cachearlos reduce el input ~90% (cache_read ≈ 10% del
     # precio normal). Sin esto, cada vuelta re-paga el system prompt gigante +
@@ -9589,6 +9673,10 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
         # El modelo debe llamar invocar_agente (para contenido) o generar_documento.
         elif _force_doc and _loop_i == 0:
             body["tool_choice"] = {"type": "any"}
+        elif _force_write and _loop_i == 0:
+            _tool_exacta = tool_forzada_por_intencion(user_message or "")
+            body["tool_choice"] = ({"type": "tool", "name": _tool_exacta}
+                                   if _tool_exacta else {"type": "any"})
         try:
             resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=180)
         except Exception as e:

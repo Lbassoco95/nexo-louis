@@ -158,6 +158,34 @@ def main() -> int:
     if "LEARNINGS.md" not in core.MEMORY_FILES:
         fallas.append("LEARNINGS.md no se inyecta al system prompt")
 
+    # ── Palancas de costo: forzar tool en vez de subir a Sonnet ─────────────
+    # Haiku (el modelo de los turnos con tools, por costo) narra en vez de ejecutar
+    # cuando tiene que elegir entre 110 tools. Se le fuerza la tool exacta.
+    CASOS_ESCRITURA = [
+        ("agéndame la llamada con LCA mañana 12:30", True, "m365_crear_evento"),
+        ("bloquea la visita aduanal el martes 4pm", True, "m365_crear_evento"),
+        ("agenda la junta con Gonzalo", True, None),          # sin hora → no inventarla
+        ("recuérdame a las 7 pedir el poder del esposo de Lupita", True, "agendar_recordatorio"),
+        ("anota que Patio es el sistema operativo de Yoltik", True, "append_to_memory"),
+        # Mezcla de familias (nota + recordatorio): forzar una sola sería peor
+        ("guárdalo como una nota y recuérdame conectarme a Patio", True, None),
+        ("el de las 7 no es un evento es un recordatorio", False, None),
+        ("¿qué tengo mañana en el calendario?", False, None),
+        ("muéstrame los eventos de la semana", False, None),
+        ("¿lo agendaste ya?", False, None),
+    ]
+    for texto, esp_intencion, esp_tool in CASOS_ESCRITURA:
+        got_i = core.tiene_intencion_de_escritura(texto)
+        if got_i != esp_intencion:
+            fallas.append(f"tiene_intencion_de_escritura={got_i} (esperaba {esp_intencion}): «{texto[:55]}»")
+        got_t = core.tool_forzada_por_intencion(texto)
+        if got_t != esp_tool:
+            fallas.append(f"tool_forzada_por_intencion={got_t} (esperaba {esp_tool}): «{texto[:55]}»")
+    # Las tools que se fuerzan tienen que existir
+    for t in ("m365_crear_evento", "agendar_recordatorio", "append_to_memory"):
+        if t not in nombres:
+            fallas.append(f"se fuerza la tool inexistente '{t}'")
+
     # Horas de silencio del scheduler: un aviso de madrugada se DIFIERE (no se
     # pierde) a la hora de apertura, y de día se manda normal.
     try:
@@ -211,7 +239,8 @@ def main() -> int:
         fallas.append("una ORDEN no debe leerse como pregunta de seguimiento")
 
     total = (len(CASOS_DOC) + len(CASOS_LEGAL) + len(CASOS_FORMATO) + 2
-             + len(CASOS_FABRICACION) + len(CASOS_STALL) + 6 + 8)
+             + len(CASOS_FABRICACION) + len(CASOS_STALL) + 6 + 8
+             + len(CASOS_ESCRITURA) * 2 + 3)
     if fallas:
         print(f"❌ {len(fallas)} de {total} fallaron:\n")
         for f in fallas:

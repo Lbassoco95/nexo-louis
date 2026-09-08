@@ -208,3 +208,51 @@ tenía dos agujeros:
 Lo que **no** es el cuello de botella: la capacidad del modelo. Ninguna de estas fallas
 mejora con más GPU — eran una descripción de tool que ordenaba preguntar, un prompt que
 contradecía al conversor y un timer sin zona horaria.
+
+---
+
+# Mantener Haiku (sin subir a Sonnet): palancas de costo
+
+Decisión de Polo: no encarecer los turnos con tools. Se queda **Haiku** y se hace
+confiable con configuración. Ventana de silencio: **7:00am** (como quedó).
+
+El fallo de Haiku no es de comprensión, es de **selección**: van 110 tools en cada
+request (~15.4k tokens de definiciones; ~20 son `m365_*` casi idénticas). Pedirle que
+acierte entre 110 opciones parecidas es lo que lo empuja a narrar en vez de ejecutar.
+
+## Lo que se aplicó (costo cero)
+
+1. **`tool_choice` forzado en el primer turno** cuando el mensaje ORDENA escribir
+   (`tiene_intencion_de_escritura`). No puede contestar de memoria: tiene que ejecutar.
+   Es la misma llamada al mismo modelo — no cuesta un peso más.
+   El forzado con Haiku ya se había intentado en el flujo de documentos y se descartó
+   porque el primer turno salía sin texto; aquí no aplica esa objeción, porque el texto
+   final lo escribe el turno siguiente ya con los `tool_results` en mano.
+2. **Se le quita la elección cuando la orden es de una sola familia**
+   (`tool_forzada_por_intencion`): calendario → `m365_crear_evento`, recordatorio →
+   `agendar_recordatorio`, nota → `append_to_memory`. De 110 opciones a 1. Precedente en
+   el propio código: las queries de Slack ya forzaban `slack_resumen`.
+   Dos guardas: sin hora en el mensaje NO se fuerza `m365_crear_evento` (si no, inventa
+   la hora), y si el mensaje mezcla familias ("guárdalo como nota **y** recuérdame…") se
+   deja `any`, porque forzar una sola sería peor.
+3. **Las redes anti-fabricación** cuestan una llamada extra de Haiku *solo cuando se
+   porta mal* — no en el caso normal. Es el gasto correcto: se paga por el error, no por
+   la póliza.
+
+## Lo que NO se hizo, a propósito
+
+**Filtrar el bloque de tools por intención** (mandar 15 en vez de 110) suena a la
+optimización obvia y sería contraproducente: `tools` + `system` son idénticos entre
+llamadas y hoy viajan **cacheados** (`cache_read` ≈ 10% del precio). Filtrar por mensaje
+crearía una variante de caché por combinación y se pagaría input completo mucho más
+seguido — más caro, no más barato. Si algún día se quiere, tiene que ser con un número
+FIJO y pequeño de canastas (3–4), cada una con su propia entrada de caché.
+
+## Si aun así vuelve a narrar en vez de ejecutar
+
+En ese orden, de lo más barato a lo más caro:
+1. Revisar `LEARNINGS.md`: la corrección de Polo debería estar ahí como regla. Si no
+   está, el problema es la destilación nocturna (ver `/status` → Aprendizaje).
+2. Agregar el verbo que falló a `_WRITE_INTENT_RE` / `_CAL_VERB_RE` — es una línea y
+   cuesta cero.
+3. Solo entonces: subir a Sonnet los turnos multi-paso.
