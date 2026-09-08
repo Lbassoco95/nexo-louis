@@ -256,3 +256,54 @@ En ese orden, de lo más barato a lo más caro:
 2. Agregar el verbo que falló a `_WRITE_INTENT_RE` / `_CAL_VERB_RE` — es una línea y
    cuesta cero.
 3. Solo entonces: subir a Sonnet los turnos multi-paso.
+
+---
+
+# Deploy: cómo se pone vivo (y por qué el `git pull` falla)
+
+Dos errores en las instrucciones que se dieron primero, corregidos aquí:
+
+1. **`cd /opt/louis && git pull` → "not a git repository".** `/opt/louis` NO es un clon
+   de git: es el **destino de un rsync** desde la Mac (ver README, "Sincronización
+   Mac → Hetzner"). El código vivo tampoco está ahí, sino en `/opt/openclaw/scripts/`,
+   donde `deploy.sh` instala los `.py` de `cloud/hetzner/services/`.
+
+2. **`systemctl restart` sin `sudo` pide contraseña.** Al correrlo pelón, systemd pide
+   autenticación por polkit. Y **no hay contraseña que recordar**: `bootstrap/02-user.sh`
+   crea al usuario con `adduser --disabled-password`, así que la cuenta no tiene
+   contraseña — pero sí tiene `sudo` sin contraseña
+   (`/etc/sudoers.d/polo` → `polo ALL=(ALL) NOPASSWD: ALL`). La solución es prefijar
+   `sudo`, no adivinar contraseñas.
+
+Además `deploy.sh` usa `systemctl enable --now`, que **no reinicia** un servicio que ya
+está corriendo: sin un `restart` explícito, el `.py` nuevo no carga y parece que el
+deploy "no hizo nada".
+
+## `scripts/actualizar.sh`
+
+Hace la secuencia completa y es idempotente:
+
+1. clona o actualiza el repo en `/opt/louis-src` (SSH primero, porque el repo es
+   **privado** y por HTTPS pediría token);
+2. `rsync` de `cloud/hetzner/` → `/opt/louis`, **sin `--delete`** y excluyendo `.env`
+   (los secretos no están en el repo: `.gitignore` los excluye, y con `--delete` se
+   borrarían y `deploy.sh` dejaría de arrancar);
+3. `sudo ./deploy.sh --skip-bootstrap`;
+4. `daemon-reload` + `restart` real de los 4 servicios;
+5. corre `test-comprension.py` y aborta si falla.
+
+```bash
+# como polo (NO como root)
+/opt/louis/scripts/actualizar.sh claude/telegram-bot-comprehension-e6c6d2
+```
+
+Primera vez, cuando el script todavía no está en `/opt/louis`:
+
+```bash
+sudo git clone -b claude/telegram-bot-comprehension-e6c6d2 \
+  git@github.com:Lbassoco95/nexo-louis.git /opt/louis-src
+/opt/louis-src/cloud/hetzner/scripts/actualizar.sh claude/telegram-bot-comprehension-e6c6d2
+```
+
+Si el server no tiene credencial de GitHub, el script imprime las dos salidas: registrar
+una deploy key, o empujar desde la Mac con rsync (el flujo del README).
