@@ -788,3 +788,101 @@ texto. Pero la misma salida delata tres cosas:
 
 Orden sugerido: (1) FTS5 + bm25 + orden por fecha, (2) poblar `fecha_publicacion`,
 (3) conectar `nexo_retrieve`. Los tres son trabajo aparte, con su propia verificación.
+
+---
+
+# Búsqueda legal: FTS5 y las tesis sin fecha
+
+Los dos defectos que salieron al probar `legal_buscar("fe pública")`. Esta vez se
+empezó leyendo el código que ESCRIBE las BD (`legal-scrapers/sjf_biblioteca.py`,
+`dof_biblioteca.py`), no el que las lee.
+
+## Lo que ya existía y nadie usaba
+
+Los scrapers crean índices FTS5 **de contenido externo, con triggers de sincronía**:
+
+```sql
+CREATE VIRTUAL TABLE tesis_fts USING fts5(
+    rubro, texto, precedentes,
+    content='tesis', content_rowid='registro_digital',
+    tokenize="unicode61 remove_diacritics 2");
+-- + triggers tesis_ai / tesis_ad / tesis_au
+```
+
+Igual `notas_fts(titulo, texto_plano)` sobre `notas` y `leyes_fts` sobre `leyes`.
+Están bien hechos: `remove_diacritics 2` significa que "fe publica" encuentra
+"fe pública", y los triggers mantienen el índice al día.
+
+Y la búsqueda hacía `texto LIKE '%término%' LIMIT 5` **sin `ORDER BY`**: devolvía las
+primeras filas que encontraba. Por eso al buscar "fe pública" salían tres convenios de
+registro civil de 2016 en lugar de las tesis notariales.
+
+## El arreglo
+
+`legal_buscar` ahora consulta el FTS con ranking bm25:
+
+```sql
+SELECT t.rubro, t.texto, t.fecha_publicacion, t.epoca, t.instancia
+FROM tesis t
+JOIN (SELECT rowid, rank FROM tesis_fts WHERE tesis_fts MATCH ?
+      ORDER BY rank LIMIT ?) m ON t.registro_digital = m.rowid
+ORDER BY m.rank LIMIT ?
+```
+
+Cuatro decisiones que vale explicar:
+
+- **`_fts_query()` entrecomilla palabra por palabra y las une con AND.** Así ningún
+  carácter del usuario se interpreta como operador FTS5 (`-`, `*`, `:`, `NEAR`, `OR`)
+  ni rompe la sintaxis: `"LFPIORPI -algo"` → `"LFPIORPI" AND "algo"`. Si el usuario
+  entrecomilla todo, se respeta como frase exacta.
+- **El filtro (`incluido = 1`) se aplica DESPUÉS del ranking**, y por eso la subconsulta
+  pide `limite × 5` filas: con el filtro dentro del `LIMIT`, un filtro estricto vaciaría
+  el resultado.
+- **Respaldo a `LIKE`.** Si el FTS falla —índice sin construir, sintaxis, BD vieja— la
+  búsqueda responde igual. Y **la vía usada se reporta siempre**: si cayó a `LIKE` o el
+  índice está desfasado, sale `⚠ Búsqueda degradada` en la respuesta, no se descubre
+  semanas después. Cuando el FTS da 0 resultados pero `LIKE` sí encuentra, el índice
+  está desincronizado y la respuesta trae el comando para reconstruirlo
+  (`INSERT INTO tesis_fts(tesis_fts) VALUES('rebuild')`).
+- **`orden="reciente"`** como opción, para cuando importe la vigencia. Con la salvedad
+  de que en el SJF no sirve todavía — por lo de abajo.
+
+Como las tesis no traen fecha, la salida ahora muestra **época e instancia**, que es lo
+único que ubica una tesis en el tiempo mientras la fecha no exista.
+
+## Las tesis sin fecha
+
+`fecha_publicacion` existe, tiene índice (`idx_tesis_fecha`) y el scraper la mapea:
+
+```python
+"fecha_publicacion": raw.get("fechaPublicacion"),
+```
+
+…y llega vacía. Lo que salva el caso: `tesis.raw_json` guarda la respuesta **completa**
+del API, así que si el dato viene con otro nombre, se recupera **sin volver a
+descargar 1.5 GB**.
+
+`scripts/diagnostico-fechas-sjf.py` lo resuelve en dos pasos:
+
+```bash
+# 1) Diagnóstico — solo lectura
+python3 /opt/louis/scripts/diagnostico-fechas-sjf.py
+
+# 2) Reparación (ensayo primero, luego --aplicar)
+python3 /opt/louis/scripts/diagnostico-fechas-sjf.py --reparar --clave <la_que_diga>
+python3 /opt/louis/scripts/diagnostico-fechas-sjf.py --reparar --clave <la_que_diga> --aplicar
+```
+
+El diagnóstico inspecciona los campos reales del `raw_json` de las tesis sin fecha y
+distingue tres escenarios, probados los tres contra BD sintéticas con el esquema real:
+
+| Escenario | Qué reporta | Qué hacer |
+|---|---|---|
+| El API la trae con otro nombre | La clave candidata y ejemplos de valores | `--reparar --clave X --aplicar` |
+| El campo existe pero viene vacío | `⚠ vienen VACÍOS en el API` | No es bug del scraper; usar `epoca` como proxy |
+| Ya todas tienen fecha | `✓ nada que reparar` | Nada |
+
+Dos cuidados en la reparación: es **ensayo por default** (hay que pasar `--aplicar`), y
+va **por lotes de 5,000** porque el trigger `tesis_au` reindexa el FTS en cada `UPDATE`
+— un `UPDATE` masivo de una sola vez reescribiría el índice completo en una transacción
+gigante. Por lotes se ve el avance y se puede interrumpir.

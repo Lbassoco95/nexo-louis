@@ -494,30 +494,120 @@ def memoria_leer(archivo: str = "IMPORTANT", max_chars: int = 2000) -> str:
     return texto[:max_chars] + f"\n…[truncado — {len(texto)-max_chars} chars más; aumenta max_chars si se necesita]"
 
 
+# ── Búsqueda legal con FTS5 ────────────────────────────────────────────────
+# Las dos BD ya traen índices FTS5 de contenido externo con triggers de sincronía:
+#   tesis_fts(rubro, texto, precedentes)  content='tesis'  rowid=registro_digital
+#   notas_fts(titulo, texto_plano)        content='notas'  rowid=cod_nota
+# ambos con tokenize="unicode61 remove_diacritics 2" (así "fe publica" encuentra
+# "fe pública"). La búsqueda los ignoraba y hacía `texto LIKE '%término%'` con un
+# LIMIT y sin ORDER BY: devolvía las primeras filas que encontraba, no las más
+# relevantes — al buscar "fe pública" salían convenios de registro civil de 2016.
+
+def _fts_query(termino: str) -> str:
+    """Convierte el texto del usuario en una consulta FTS5 SEGURA.
+
+    Cada palabra se entrecomilla y se une con AND, así que ningún carácter del
+    usuario se interpreta como operador (`-`, `*`, `:`, `NEAR`, `OR`…) ni rompe la
+    sintaxis. Si el usuario entrecomilla todo, se respeta como frase exacta.
+    """
+    t = (termino or "").strip()
+    if len(t) >= 2 and t[0] == '"' and t[-1] == '"':
+        interior = t[1:-1].replace('"', "")
+        return f'"{interior}"' if interior.strip() else ""
+    palabras = re.findall(r"[0-9A-Za-zÀ-ÿ\u00f1\u00d1]+", t)
+    return " AND ".join(f'"{w}"' for w in palabras)
+
+
+def _buscar_fts(db_path, tabla, fts, rowid_col, campos, termino, limite,
+                filtro="", orden="relevancia", col_fecha="") -> tuple:
+    """Busca con FTS5 y devuelve (filas, via). `via` dice qué camino se usó, para
+    que no haya que adivinar si el índice está funcionando.
+
+    Si el FTS falla (índice sin construir, sintaxis, BD vieja) cae a LIKE: la
+    búsqueda nunca se queda sin responder por un problema del índice.
+    """
+    q = _fts_query(termino)
+    if q:
+        sel = ", ".join(f"t.{c}" for c in campos)
+        # Se piden más filas de las pedidas porque el filtro (ej. incluido=1) se
+        # aplica DESPUÉS del ranking; si no, un filtro estricto vaciaría el resultado.
+        holgura = max(int(limite) * 5, 25)
+        ordenar = (f"t.{col_fecha} DESC, m.rank"
+                   if orden == "reciente" and col_fecha else "m.rank")
+        sql = (f"SELECT {sel} FROM {tabla} t "
+               f"JOIN (SELECT rowid, rank FROM {fts} WHERE {fts} MATCH ? "
+               f"      ORDER BY rank LIMIT ?) m ON t.{rowid_col} = m.rowid "
+               f"{('WHERE ' + filtro) if filtro else ''} "
+               f"ORDER BY {ordenar} LIMIT ?")
+        try:
+            filas = _query_db(db_path, sql, (q, holgura, int(limite)))
+            if filas:
+                return filas, f"fts5/{orden}"
+            # 0 resultados con FTS: puede ser que no haya nada, o que el índice esté
+            # sin construir (pasa si la tabla se pobló antes de crear los triggers).
+            # Se distingue con LIKE: si LIKE sí encuentra, el índice está desfasado.
+            like, _ = _buscar_like(db_path, tabla, campos, termino, limite, filtro)
+            if like:
+                return like, ("like/ÍNDICE-FTS-DESFASADO — reconstruir con: "
+                              f"INSERT INTO {fts}({fts}) VALUES('rebuild')")
+            return [], f"fts5/{orden}"
+        except Exception as e:
+            filas, _ = _buscar_like(db_path, tabla, campos, termino, limite, filtro)
+            return filas, f"like (FTS falló: {str(e)[:60]})"
+    filas, _ = _buscar_like(db_path, tabla, campos, termino, limite, filtro)
+    return filas, "like (término sin palabras indexables)"
+
+
+def _buscar_like(db_path, tabla, campos, termino, limite, filtro="") -> tuple:
+    """Respaldo: el LIKE de siempre. Sin ranking, pero nunca deja de responder."""
+    sel = ", ".join(campos)
+    # Los dos primeros campos son el título y el cuerpo en ambas tablas.
+    a, b = campos[0], campos[1]
+    where = f"({b} LIKE ? OR {a} LIKE ?)" + (f" AND {filtro.replace('t.', '')}" if filtro else "")
+    sql = f"SELECT {sel} FROM {tabla} WHERE {where} LIMIT ?"
+    try:
+        return _query_db(db_path, sql, (f"%{termino}%", f"%{termino}%", int(limite))), "like"
+    except Exception:
+        return [], "error"
+
+
 @mcp.tool()
 def legal_buscar(termino: str, fuente: str = "ambas", limite: int = 5,
-                 excerpt_chars: int = 250) -> str:
+                 excerpt_chars: int = 250, orden: str = "relevancia") -> str:
     """
-    [DETALLE] Busca en el acervo legal (SJF y/o DOF).
+    [DETALLE] Busca en el acervo legal (SJF y/o DOF) usando los índices FTS5, con
+    ranking bm25 — los resultados vienen ordenados por relevancia real, no por el
+    orden en que están las filas.
     Defaults conservadores: 5 resultados, 250 chars por resultado.
-    Aumentar solo si el usuario necesita más contexto legal.
     fuente: 'sjf' | 'dof' | 'ambas'
+    orden: 'relevancia' (default) | 'reciente' — usa 'reciente' cuando importe la
+      vigencia ("¿qué se publicó últimamente sobre X?"). OJO: en el SJF la columna
+      fecha_publicacion está vacía, así que 'reciente' solo ordena bien el DOF.
+    El término se entrecomilla palabra por palabra, así que se puede escribir libre
+    (guiones, comillas, dos puntos) sin romper la sintaxis del índice. Para frase
+    exacta, entrecomilla todo: '"aviso de fe pública"'.
     """
     limite      = min(int(limite), 20)
     excerpt_chars = min(int(excerpt_chars), 1200)
     resultados  = []
 
+    vias = []
     if fuente in ("sjf", "ambas") and SJF_DB_PATH.exists():
         tablas = _tablas_db(SJF_DB_PATH)
         if "tesis" in tablas:
-            filas = _query_db(
-                SJF_DB_PATH,
-                "SELECT rubro, texto, fecha_publicacion FROM tesis WHERE texto LIKE ? OR rubro LIKE ? LIMIT ?",
-                (f"%{termino}%", f"%{termino}%", limite),
-            )
+            filas, via = _buscar_fts(
+                SJF_DB_PATH, "tesis", "tesis_fts", "registro_digital",
+                ["rubro", "texto", "fecha_publicacion", "epoca", "instancia"],
+                termino, limite, orden=orden, col_fecha="fecha_publicacion")
+            vias.append(f"SJF:{via}")
             for f in filas:
+                # Sin fecha, la ÉPOCA y la instancia son lo único que ubica la tesis
+                # en el tiempo — y saber si una tesis es vigente no es un adorno.
+                fecha = f.get("fecha_publicacion") or ""
+                sello = fecha or (f.get("epoca") or "época?")
+                inst = f.get("instancia") or ""
                 resultados.append(
-                    f"[SJF/{f.get('fecha_publicacion','')}] {f.get('rubro','')}\n"
+                    f"[SJF/{sello}{(' · ' + inst) if inst else ''}] {f.get('rubro','')}\n"
                     f"{(f.get('texto') or '')[:excerpt_chars]}…"
                 )
         elif tablas:
@@ -527,12 +617,12 @@ def legal_buscar(termino: str, fuente: str = "ambas", limite: int = 5,
     if fuente in ("dof", "ambas") and DOF_DB_PATH.exists():
         tablas = _tablas_db(DOF_DB_PATH)
         if "notas" in tablas:
-            filas = _query_db(
-                DOF_DB_PATH,
-                "SELECT titulo, texto_plano, fecha FROM notas "
-                "WHERE (texto_plano LIKE ? OR titulo LIKE ?) AND incluido=1 LIMIT ?",
-                (f"%{termino}%", f"%{termino}%", limite),
-            )
+            filas, via = _buscar_fts(
+                DOF_DB_PATH, "notas", "notas_fts", "cod_nota",
+                ["titulo", "texto_plano", "fecha"],
+                termino, limite, filtro="t.incluido = 1",
+                orden=orden, col_fecha="fecha")
+            vias.append(f"DOF:{via}")
             for f in filas:
                 resultados.append(
                     f"[DOF/{f.get('fecha','')}] {f.get('titulo','')}\n"
@@ -546,9 +636,16 @@ def legal_buscar(termino: str, fuente: str = "ambas", limite: int = 5,
         disp = [n for n, p in [("SJF", SJF_DB_PATH), ("DOF", DOF_DB_PATH)] if p.exists()]
         if not disp:
             return "Acervo legal no disponible aún. Usar legal_estado() para diagnóstico."
-        return f"Sin resultados para «{termino}» en {', '.join(disp)}."
+        via_txt = f" (vía {', '.join(vias)})" if vias else ""
+        return (f"Sin resultados para «{termino}» en {', '.join(disp)}{via_txt}.\n"
+                f"Consulta FTS5 usada: {_fts_query(termino) or '(ninguna)'}")
 
-    return f"\n{'─'*50}\n".join(resultados)
+    salida = f"\n{'─'*50}\n".join(resultados)
+    # La vía se reporta SIEMPRE: si un índice está desfasado o el FTS falló y cayó a
+    # LIKE, hay que verlo en la respuesta, no descubrirlo semanas después.
+    if any("DESFASADO" in v or "falló" in v or "like" in v for v in vias):
+        salida += f"\n\n⚠ Búsqueda degradada — {', '.join(vias)}"
+    return salida
 
 
 @mcp.tool()
