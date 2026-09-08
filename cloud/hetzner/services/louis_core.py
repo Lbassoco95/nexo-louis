@@ -3318,7 +3318,7 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "hetzner_estado",
-        "description": "Lee estado/archivos REALES de Hetzner (el servidor de Donna). ÚSALO en vez de inventar cuando Polo pida revisar la cola de la Mac, resultados de comandos, logs, heartbeat o conteos legales. NUNCA fabriques estas salidas — llama esta tool. Opciones de `que`: cola_mac, resultados_mac, heartbeat, log_telegram, log_scheduler, legal_conteo, avisos_programados (usa esta última si Polo pregunta por qué le llegan mensajes a ciertas horas o qué tiene programado). Sin `que` lista las opciones.",
+        "description": "Lee estado/archivos REALES de Hetzner (el servidor de Donna). ÚSALO en vez de inventar cuando Polo pida revisar la cola de la Mac, resultados de comandos, logs, heartbeat o conteos legales. NUNCA fabriques estas salidas — llama esta tool. Opciones de `que`: cola_mac, resultados_mac, heartbeat, log_telegram, log_scheduler, legal_conteo (cuántas tesis del SJF y notas/leyes del DOF hay en el acervo), aprendizaje_legal (cuánto de eso ya digirió cada agente kawiil-*), avisos_programados (por qué le llegan mensajes a ciertas horas y qué tiene programado). Si Polo pregunta 'cuánto hemos aprendido de tesis/DOF', son legal_conteo + aprendizaje_legal, en ese orden. Sin `que` lista las opciones.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -6777,7 +6777,12 @@ def _hetzner_estado(que: str = "") -> str:
         "heartbeat": "Último heartbeat de la Mac (online/batería/uptime).",
         "log_telegram": "Últimas líneas del log del bridge de Telegram.",
         "log_scheduler": "Últimas líneas del log del scheduler.",
-        "legal_conteo": "Conteo de publicaciones DOF/SJF en la BD (total y mayo 2026).",
+        "legal_conteo": "Conteo REAL del acervo legal: cuántas tesis del SJF y cuántas "
+                        "notas/leyes del DOF hay, cuántas traen texto completo, rango de "
+                        "fechas y cuántas entraron en los últimos 30 días.",
+        "aprendizaje_legal": "Cuánto de ese acervo ya está DIGERIDO por cada agente "
+                             "kawiil-* (docs indexados y cuándo fue la última vez). "
+                             "Descargar no es aprender: esto mide lo segundo.",
         "avisos_programados": "Qué avisos proactivos tiene Donna en cola (hora, mensaje, "
                               "recurrencia) + la ventana de horas de silencio. Úsalo cuando "
                               "Polo pregunte por qué le llegan mensajes a ciertas horas.",
@@ -6805,36 +6810,142 @@ def _hetzner_estado(que: str = "") -> str:
     if que == "log_scheduler":
         return f"Log scheduler (real):\n```\n{_tail(logs_dir / 'scheduler.log', 30)}\n```"
     if que == "legal_conteo":
-        out = []
-        for nombre, db, col, tabla in (
-            ("DOF", DOF_DB, "fecha", "notas"),
-            ("SJF", SJF_DB, "fecha", None),
-        ):
-            if not db.exists():
-                out.append(f"{nombre}: BD no encontrada en {db}")
-                continue
-            try:
-                conn = _legal_open(db)
-                if nombre == "DOF":
-                    total = conn.execute("SELECT COUNT(*) FROM notas").fetchone()[0]
-                    con_txt = conn.execute(
-                        "SELECT COUNT(*) FROM notas WHERE texto_plano IS NOT NULL").fetchone()[0]
-                    may = conn.execute(
-                        "SELECT COUNT(*) FROM notas WHERE fecha LIKE '2026-05%' "
-                        "AND texto_plano IS NOT NULL").fetchone()[0]
-                    ult = conn.execute("SELECT MAX(fecha) FROM notas").fetchone()[0]
-                    out.append(f"DOF: total={total}, con texto={con_txt}, "
-                               f"mayo-2026 con texto={may}, última fecha={ult}")
-                else:
-                    # SJF: detectar tabla principal
-                    tablas = [r[0] for r in conn.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
-                    out.append(f"SJF: tablas={tablas}")
-                conn.close()
-            except Exception as e:
-                out.append(f"{nombre}: error leyendo BD — {e}")
-        return "Conteo legal (real):\n" + "\n".join(out)
+        return _legal_conteo()
+    if que == "aprendizaje_legal":
+        return _aprendizaje_legal()
     return f"opción no reconocida: {que}"
+
+
+def _tabla_existe(conn, tabla: str) -> bool:
+    try:
+        return bool(conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (tabla,)).fetchone())
+    except Exception:
+        return False
+
+
+def _columnas(conn, tabla: str) -> set:
+    try:
+        return {r[1] for r in conn.execute(f"PRAGMA table_info({tabla})").fetchall()}
+    except Exception:
+        return set()
+
+
+def _conteo_tabla(conn, tabla: str, col_fecha: str = "fecha", col_texto: str = "") -> str:
+    """Una línea con total, cuántos traen texto y el rango de fechas de una tabla.
+
+    Se descubre el esquema en vivo (PRAGMA) en vez de asumir nombres de columna: las
+    BD las escriben los scrapers y sus columnas han cambiado."""
+    if not _tabla_existe(conn, tabla):
+        return f"  {tabla}: (no existe la tabla)"
+    cols = _columnas(conn, tabla)
+    total = conn.execute(f"SELECT COUNT(*) FROM {tabla}").fetchone()[0]
+    partes = [f"{total:,} registros"]
+    # ¿Cuántos traen el texto completo? (lo descargado ≠ lo aprovechable)
+    texto = col_texto if col_texto in cols else next(
+        (c for c in ("texto_plano", "texto", "contenido", "cuerpo") if c in cols), "")
+    if texto:
+        con_txt = conn.execute(
+            f"SELECT COUNT(*) FROM {tabla} WHERE {texto} IS NOT NULL AND {texto} != ''"
+        ).fetchone()[0]
+        pct = (100 * con_txt // total) if total else 0
+        partes.append(f"{con_txt:,} con texto ({pct}%)")
+    fecha = col_fecha if col_fecha in cols else next(
+        (c for c in ("fecha", "fecha_publicacion", "fecha_pub") if c in cols), "")
+    if fecha:
+        r = conn.execute(f"SELECT MIN({fecha}), MAX({fecha}) FROM {tabla} "
+                         f"WHERE {fecha} IS NOT NULL AND {fecha} != ''").fetchone()
+        if r and r[0]:
+            partes.append(f"del {str(r[0])[:10]} al {str(r[1])[:10]}")
+        # Movimiento reciente: ¿sigue creciendo o se quedó parado?
+        hace30 = (datetime.now(TZ_CDMX) - timedelta(days=30)).strftime("%Y-%m-%d")
+        nuevos = conn.execute(
+            f"SELECT COUNT(*) FROM {tabla} WHERE {fecha} >= ?", (hace30,)).fetchone()[0]
+        partes.append(f"{nuevos:,} en los últimos 30 días")
+    return f"  {tabla}: " + " · ".join(partes)
+
+
+def _legal_conteo() -> str:
+    """Conteo REAL del acervo legal. Antes, la rama de SJF solo imprimía los nombres
+    de las tablas —nunca cuántas tesis había, que es justo el dato que importa— y la
+    de DOF traía 'mayo-2026' clavado a mano."""
+    out = ["=== Acervo legal (conteo real) ==="]
+    for nombre, db, tablas in (
+        ("SJF (Semanario Judicial — tesis y jurisprudencias)", SJF_DB,
+         [("tesis", "fecha", "")]),
+        ("DOF (Diario Oficial)", DOF_DB,
+         [("notas", "fecha", "texto_plano"), ("leyes", "fecha", ""),
+          ("reformas", "fecha", ""), ("ediciones", "fecha", "")]),
+    ):
+        out.append(f"\n{nombre}")
+        if not db.exists():
+            out.append(f"  ✗ BD no encontrada en {db}")
+            continue
+        mb = db.stat().st_size / (1024 * 1024)
+        out.append(f"  archivo: {db} ({mb:,.0f} MB)")
+        conn = None
+        try:
+            conn = _legal_open(db)
+            for tabla, cf, ct in tablas:
+                out.append(_conteo_tabla(conn, tabla, cf, ct))
+            # Última corrida del scraper, si la BD la registra
+            if _tabla_existe(conn, "runs"):
+                cols = _columnas(conn, "runs")
+                oc = next((c for c in ("ts", "fecha", "inicio", "started_at") if c in cols), "")
+                if oc:
+                    r = conn.execute(f"SELECT MAX({oc}) FROM runs").fetchone()
+                    if r and r[0]:
+                        out.append(f"  última corrida del scraper: {r[0]}")
+        except Exception as e:
+            out.append(f"  ✗ error leyendo la BD — {e}")
+        finally:
+            if conn:
+                conn.close()
+    out.append("\nPara ver cuánto de esto ya está DIGERIDO por cada agente: "
+               "hetzner_estado(que=\"aprendizaje_legal\")")
+    return "\n".join(out)
+
+
+def _aprendizaje_legal() -> str:
+    """Cuánto del acervo ya está indexado por cada agente kawiil-*.
+
+    Descargar ≠ aprender: el acervo son GB de SQLite, pero lo que un agente puede
+    usar es lo que su indexador ya digirió a /opt/openclaw/knowledge/<agente>/.
+    Esta es la diferencia que no se veía en ninguna parte."""
+    out = ["=== Aprendizaje legal por agente ===",
+           f"(base de conocimiento: {KNOWLEDGE_BASE})"]
+    if not KNOWLEDGE_BASE.exists():
+        return "\n".join(out + ["✗ no existe la carpeta — ningún agente ha indexado nada."])
+    ahora = datetime.now()
+    filas, total_docs, sin_indexar = [], 0, []
+    for agente in sorted(KAWIIL_KNOWLEDGE_MAP):
+        idx = _knowledge_index(agente)
+        n = len(idx.get("docs") or [])
+        total_docs += n
+        li = idx.get("last_indexed")
+        if not n:
+            sin_indexar.append(agente)
+            continue
+        cuando = "?"
+        if li:
+            try:
+                h = (ahora - datetime.fromisoformat(li)).total_seconds() / 3600
+                cuando = (f"hace {int(h)}h" if h < 48 else f"hace {int(h / 24)} días")
+                if h > 72:
+                    cuando += " ⚠"
+            except Exception:
+                cuando = str(li)[:16]
+        etiqueta = (KAWIIL_KNOWLEDGE_MAP.get(agente) or {}).get("label", "")
+        filas.append(f"  • {agente}: {n:,} docs · última {cuando}"
+                     + (f" · {etiqueta[:40]}" if etiqueta else ""))
+    out.append(f"\nTotal digerido: {total_docs:,} documentos en "
+               f"{len(filas)} de {len(KAWIIL_KNOWLEDGE_MAP)} agentes")
+    out += filas or ["  (ninguno ha indexado todavía)"]
+    if sin_indexar:
+        out.append(f"\n⚠ Sin indexar nada aún: {', '.join(sin_indexar)}")
+    out.append("\nEl indexador corre solo cada ~10 min (scheduler, 10 docs por tick, "
+               "rotando entre agentes). Para empujar uno: invocar su indexación con forzar.")
+    return "\n".join(out)
 
 
 def _mac_comando_estado(cmd_id: str = "") -> str:

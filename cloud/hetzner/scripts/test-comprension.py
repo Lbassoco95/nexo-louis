@@ -186,6 +186,50 @@ def main() -> int:
         if t not in nombres:
             fallas.append(f"se fuerza la tool inexistente '{t}'")
 
+    # ── Conteo del acervo legal ─────────────────────────────────────────────
+    # legal_conteo antes NO contaba las tesis del SJF (solo listaba nombres de
+    # tablas) y traía "mayo-2026" clavado a mano. Se prueba contra BDs sintéticas
+    # con el esquema real, porque el descubrimiento de columnas es lo delicado.
+    import sqlite3 as _sq, tempfile as _tf, datetime as _dtm
+    _tmp = Path(_tf.mkdtemp())
+    _sjf, _dof = _tmp / "biblioteca.db", _tmp / "biblioteca_dof.db"
+    _hoy = _dtm.date.today()
+    _c = _sq.connect(_sjf)
+    _c.execute("CREATE TABLE tesis (id INTEGER PRIMARY KEY, fecha TEXT, texto TEXT)")
+    for _i in range(100):
+        _c.execute("INSERT INTO tesis (fecha,texto) VALUES (?,?)",
+                   ((_hoy - _dtm.timedelta(days=_i)).isoformat(),
+                    "considerando" if _i % 2 else None))
+    _c.commit(); _c.close()
+    _c = _sq.connect(_dof)
+    _c.execute("CREATE TABLE notas (id INTEGER PRIMARY KEY, fecha TEXT, texto_plano TEXT)")
+    _c.execute("INSERT INTO notas (fecha,texto_plano) VALUES (?,?)",
+               (_hoy.isoformat(), "texto"))
+    _c.commit(); _c.close()
+    _sjf_orig, _dof_orig = core.SJF_DB, core.DOF_DB
+    core.SJF_DB, core.DOF_DB = _sjf, _dof
+    try:
+        _rep = core._legal_conteo()
+        # Lo que ANTES faltaba: el número de tesis
+        if "100 registros" not in _rep:
+            fallas.append(f"_legal_conteo no cuenta las tesis del SJF: «{_rep[:120]}»")
+        if "50 con texto" not in _rep:
+            fallas.append("_legal_conteo no reporta cuántas tesis traen texto completo")
+        if "mayo-2026" in _rep or "2026-05" in _rep:
+            fallas.append("_legal_conteo volvió a traer la fecha clavada a mano")
+        # Una tabla ausente se reporta, no revienta
+        if "reformas: (no existe la tabla)" not in _rep:
+            fallas.append("_legal_conteo no avisa de una tabla ausente")
+        # El descubrimiento de columnas no debe asumir nombres
+        _cn = core._legal_open(_sjf)
+        if core._columnas(_cn, "tesis") != {"id", "fecha", "texto"}:
+            fallas.append("_columnas no descubre el esquema real")
+        if core._tabla_existe(_cn, "no_existe"):
+            fallas.append("_tabla_existe da falso positivo")
+        _cn.close()
+    finally:
+        core.SJF_DB, core.DOF_DB = _sjf_orig, _dof_orig
+
     # ── Visibilidad de servicios caídos ─────────────────────────────────────
     # slack-bridge estuvo ~34 días en bucle (268,148 reinicios) y /status lo
     # mostraba como "activating", indistinguible de un arranque normal.
@@ -261,7 +305,7 @@ def main() -> int:
 
     total = (len(CASOS_DOC) + len(CASOS_LEGAL) + len(CASOS_FORMATO) + 2
              + len(CASOS_FABRICACION) + len(CASOS_STALL) + 6 + 8
-             + len(CASOS_ESCRITURA) * 2 + 3 + len(CASOS_SERVICIO) + 1)
+             + len(CASOS_ESCRITURA) * 2 + 3 + len(CASOS_SERVICIO) + 1 + 6)
     if fallas:
         print(f"❌ {len(fallas)} de {total} fallaron:\n")
         for f in fallas:

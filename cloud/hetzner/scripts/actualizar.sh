@@ -109,14 +109,37 @@ instalar_solo_servicios() {
   ok "Respaldo del runtime anterior en $bkp"
 
   sudo mkdir -p "$oc/scripts/m365" "$oc/logs"
-  local n=0
+  # Manifiesto de hashes de lo que ESTE script instaló la última vez. Donna puede
+  # editar su propio código en caliente (self_update.py → editar_mi_codigo), y esas
+  # ediciones NO vuelven a git: si el archivo en disco no coincide con lo que dejamos
+  # la vez pasada, fue editado en vivo y sobrescribirlo pierde el cambio. Se avisa
+  # antes de pisarlo (el respaldo de arriba lo hace recuperable).
+  local manifiesto="$oc/.deploy-manifest.json"
+  local nuevo_manifiesto=""
+  local n=0 drift=0 cambiados=0
   for svc in louis_core.py telegram-bridge.py slack-bridge.py scheduler.py \
              openclaw_gateway.py self_update.py browser_runner.py cerebro_kawiil_mcp.py; do
-    if [[ -f "$PAQUETE/services/$svc" ]]; then
-      sudo install -m 0755 -o "$su" -g "$su" "$PAQUETE/services/$svc" "$oc/scripts/$svc"
-      n=$((n+1))
+    [[ -f "$PAQUETE/services/$svc" ]] || continue
+    local h_nuevo h_disco h_previo
+    h_nuevo="$(sha256sum "$PAQUETE/services/$svc" | cut -c1-16)"
+    h_disco="$(sudo sha256sum "$oc/scripts/$svc" 2>/dev/null | cut -c1-16 || echo '')"
+    h_previo="$(sudo grep -o "\"$svc\": *\"[0-9a-f]*\"" "$manifiesto" 2>/dev/null \
+                | grep -o '[0-9a-f]\{16\}' | head -1 || echo '')"
+    if [[ -n "$h_disco" && -n "$h_previo" && "$h_disco" != "$h_previo" ]]; then
+      printf "  \033[1;33m! %s fue EDITADO EN VIVO desde el último deploy\033[0m\n" "$svc"
+      printf "      el cambio no está en git; lo estás pisando. Compáralo con:\n"
+      printf "      sudo diff %s/scripts/%s %s/services/%s\n" "$bkp" "$svc" "$PAQUETE" "$svc"
+      drift=$((drift+1))
     fi
+    [[ "$h_disco" != "$h_nuevo" ]] && cambiados=$((cambiados+1))
+    sudo install -m 0755 -o "$su" -g "$su" "$PAQUETE/services/$svc" "$oc/scripts/$svc"
+    nuevo_manifiesto+="  \"$svc\": \"$h_nuevo\",\n"
+    n=$((n+1))
   done
+  printf '{\n%s  "_deploy": "%s"\n}\n' "$nuevo_manifiesto" "$(date -Iseconds)" \
+    | sudo tee "$manifiesto" >/dev/null
+  [[ $drift -gt 0 ]] && printf "  \033[1;33m! %d archivo(s) con ediciones en vivo pisadas — respaldo en %s\033[0m\n" "$drift" "$bkp"
+  printf "  (%d de %d archivos cambiaron respecto a lo que había en disco)\n" "$cambiados" "$n"
   [[ -f "$PAQUETE/services/m365.py" ]] && \
     sudo install -m 0755 -o "$su" -g "$su" "$PAQUETE/services/m365.py" "$oc/scripts/m365/m365.py"
   for sc in seed-kawiil-agents.sh import-legal-agents.sh seed-morning-briefing.sh; do
@@ -192,6 +215,15 @@ for s in "${SERVICIOS[@]}"; do
     printf "      ↳ revisa: sudo journalctl -u %s -n 30 --no-pager\n" "$s"
   fi
 done
+
+# cerebro-kawiil NO se reinicia automáticamente: es el MCP que comparte memoria con
+# Cowork, y reiniciarlo aplica la versión del repo. Si el archivo en disco cambió,
+# hay que decirlo — el servicio sigue corriendo el código anterior en memoria.
+if systemctl is-active --quiet cerebro-kawiil 2>/dev/null; then
+  printf "  %-20s %s\n" "cerebro-kawiil" "active (NO reiniciado)"
+  printf "      ↳ corre el código que tenía en memoria; el de disco ya es el del repo.\n"
+  printf "      ↳ para aplicarlo: sudo systemctl restart cerebro-kawiil\n"
+fi
 
 log "Próximos disparos (verifica la HORA: debe ser CDMX, no UTC)"
 systemctl list-timers --all --no-pager 2>/dev/null | head -1 || true

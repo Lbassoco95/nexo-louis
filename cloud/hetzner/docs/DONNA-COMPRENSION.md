@@ -505,3 +505,68 @@ Un disparo muy lejos del horario de su timer delata un catch-up de systemd; un
 `fire_at` de madrugada en la cola delata una hora mal calculada al crear el
 recordatorio. Son causas distintas con arreglos distintos, y ahora se distinguen
 leyendo, no suponiendo.
+
+---
+
+# Medir el aprendizaje: acervo legal y análisis
+
+Pregunta de Polo: *"cuánto se ha aprendido de tesis jurisprudencias, del DOF y cómo
+estamos almacenando estas investigaciones o análisis"*.
+
+Hay **tres capas distintas** y sirve no confundirlas:
+
+| Capa | Qué es | Dónde vive | Cómo se mide |
+|---|---|---|---|
+| **Acervo** | Lo descargado en bruto | `legal/sjf/biblioteca.db` (tesis + FTS5), `legal/dof/biblioteca_dof.db` (notas, leyes, reformas, ediciones + FTS5) | `hetzner_estado(que="legal_conteo")` |
+| **Digerido** | Lo que cada agente `kawiil-*` ya indexó para poder usarlo | `knowledge/<agente>/index.json` + `docs/` | `hetzner_estado(que="aprendizaje_legal")` |
+| **Producido** | Los análisis y entregables reales | Cerebro Kawiil (`entregables/`) | `entregables_listar()` |
+
+Al 7-sep-2026: SJF 1,538 MB, DOF 2,569 MB, y **203 entregables** (84 listo, 64
+archivado, 44 borrador, 10 en_vobo, 1 aprobado).
+
+## El hueco que había
+
+`legal_conteo` **nunca contaba las tesis del SJF**: su rama de SJF solo imprimía
+`SJF: tablas=[...]` — los nombres de las tablas, no cuántas tesis hay, que es justo el
+dato de la pregunta. Y la rama del DOF traía `'2026-05%'` clavado a mano, cuatro meses
+viejo, desde cuando se hacía el backfill.
+
+Reescrito para reportar, por tabla: registros totales, **cuántos traen el texto
+completo** (descargado ≠ aprovechable: sin texto no se puede analizar ni buscar), rango
+de fechas, cuántos entraron en los últimos 30 días (¿sigue creciendo o se paró?) y la
+última corrida del scraper. El esquema se descubre en vivo con `PRAGMA table_info` en
+lugar de asumir nombres de columna, porque las BD las escriben los scrapers y sus
+columnas han cambiado; una tabla ausente se reporta y no revienta.
+
+`aprendizaje_legal` es nuevo y mide la capa que no se veía en ninguna parte: de los GB
+de acervo, **cuánto ya digirió cada uno de los 10 agentes** mapeados en
+`KAWIIL_KNOWLEDGE_MAP`, con la fecha de su última indexación y un ⚠ si lleva más de 72h
+sin avanzar. El indexador corre solo cada ~10 min (scheduler, 10 docs por tick, rotando
+entre agentes), así que un agente parado varios días es señal de que algo falla.
+
+# Código editado en vivo que no está en git
+
+Al consultar el Cerebro salió que la versión VIVA reporta un archivo de memoria
+`SEGUIMIENTOS`, y la palabra `SEGUIMIENTOS` **no existe en el repo**. El server estaba
+corriendo un `cerebro_kawiil_mcp.py` que git no tiene.
+
+Explicación: `self_update.py` le permite a Donna editar su propio código en caliente
+(`editar_mi_codigo` sobre `/opt/openclaw/scripts/`). Esas ediciones **nunca vuelven al
+repo**, así que el siguiente deploy las pisa en silencio.
+
+`actualizar.sh` ahora lleva un manifiesto (`/opt/openclaw/.deploy-manifest.json`) con el
+hash de cada archivo que instaló. Si en el siguiente deploy el archivo en disco no
+coincide con lo que dejamos, fue editado en vivo: se avisa antes de pisarlo y se imprime
+el `diff` contra el respaldo. Y `cerebro-kawiil` **no** se reinicia automáticamente —
+sigue con su código en memoria— para no aplicar la versión del repo sin que sea una
+decisión consciente.
+
+**Lo perdido es recuperable** mientras exista el respaldo del primer deploy:
+
+```bash
+sudo diff /opt/openclaw/.respaldo-20260907202308/scripts/cerebro_kawiil_mcp.py \
+          /opt/louis/services/cerebro_kawiil_mcp.py
+```
+
+Si el cambio vale, hay que portarlo al repo — no volver a editar solo el server, o el
+siguiente deploy lo pisa otra vez.
