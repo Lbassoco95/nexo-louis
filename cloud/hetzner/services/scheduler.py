@@ -79,19 +79,22 @@ log = logging.getLogger("scheduler")
 # Polo recibía DOS briefings a las 07:00: el texto sintetizado por Haiku
 # (send_telegram) y el dashboard HTML (briefing_doc.py). Mismo contenido, doble
 # trabajo. DONNA_BRIEFING elige cuál se manda:
-#   texto  (default) → solo el texto de Telegram; el HTML queda bajo demanda
-#   html            → solo el dashboard HTML
-#   ambos           → los dos (comportamiento anterior)
+#   html   (default) → solo el dashboard interactivo, que es el que Polo usa
+#   texto            → solo el texto sintetizado de Telegram
+#   ambos            → los dos (el comportamiento que duplicaba el briefing)
+# El default fue 'texto' un día y estuvo mal: el dashboard ya existía y es el que
+# Polo abre. Además el texto arrastraba pendientes de hace meses.
 _BRIEFING_MODOS = ("texto", "html", "ambos")
+_BRIEFING_DEFAULT = "html"
 
 
 def briefing_modo() -> str:
-    """Lee DONNA_BRIEFING del entorno. Valor inválido → 'texto' con warning."""
-    m = (os.environ.get("DONNA_BRIEFING") or "texto").strip().lower()
+    """Lee DONNA_BRIEFING del entorno. Valor inválido → default con warning."""
+    m = (os.environ.get("DONNA_BRIEFING") or _BRIEFING_DEFAULT).strip().lower()
     if m not in _BRIEFING_MODOS:
-        log.warning("DONNA_BRIEFING=%r inválido (usa %s) → uso 'texto'",
-                    m, "/".join(_BRIEFING_MODOS))
-        return "texto"
+        log.warning("DONNA_BRIEFING=%r inválido (usa %s) → uso %r",
+                    m, "/".join(_BRIEFING_MODOS), _BRIEFING_DEFAULT)
+        return _BRIEFING_DEFAULT
     return m
 
 

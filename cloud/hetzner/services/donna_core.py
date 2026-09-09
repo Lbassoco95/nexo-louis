@@ -21,7 +21,7 @@ import subprocess
 import logging
 import re
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -836,7 +836,12 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "diagnóstico inventado le cuesta a Polo horas persiguiendo un problema que no "
         "existe. Ya pasó: dijiste 'Slack desconectado — token inactivo' cuando el token "
         "era válido y solo faltaba invitar la app al canal.\n"
-        "7. **Cita el error, no lo traduzcas.** Reporta el error EXACTO que devolvió la "
+        "7. **Un REZAGADO no es agenda de hoy.** Si el snapshot marca un pendiente con "
+        "⟨N días sin cerrar⟩, NO lo listes entre los asuntos del día ni lo revivas con "
+        "un «requiere reconfirmación hoy». O propones cerrarlo, o preguntas en UNA línea "
+        "si sigue vivo — al final, aparte. Arrastrar un desayuno de hace dos meses "
+        "dentro del briefing le hace perder el tiempo a Polo justo cuando arranca.\n"
+        "8. **Cita el error, no lo traduzcas.** Reporta el error EXACTO que devolvió la "
         "tool y su arreglo. 'Token inactivo' se dice SOLO si el error dice literalmente "
         "`invalid_auth`, `token_revoked`, `token_expired` o `account_inactive`. "
         "`not_in_channel` significa que falta `/invite @louis` en ese canal de Slack — el "
@@ -1594,6 +1599,79 @@ def _extract_markdown_section(text: str, section_title: str) -> str:
     return block.strip()
 
 
+# ── Edad de los pendientes ──────────────────────────────────────────────────
+# SEGUIMIENTOS.md acumula pendientes abiertos y NADA los envejecía: el briefing
+# volcaba un «desayuno con Francisco Romanelli, martes 23-jun» como si fuera
+# asunto de hoy, 78 días después. Un pendiente viejo presentado como pendiente de
+# hoy es peor que no mencionarlo: ensucia la lista con la que Polo arranca el día.
+#
+# La edad se saca, en orden: del sello «(alta: YYYY-MM-DD)» que ahora se pone al
+# escribir; si no lo trae, de una fecha suelta en el texto. Sin ninguna de las dos,
+# la edad es desconocida y el ítem NO se marca rezagado — nunca se esconde algo por
+# no poder fecharlo.
+_ALTA_RE = re.compile(r"\(alta:\s*(\d{4})-(\d{2})-(\d{2})\)")
+_MESES_ABR = {
+    "ene": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6,
+    "jul": 7, "ago": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dic": 12,
+}
+_FECHA_SUELTA_RE = re.compile(
+    r"\b(\d{1,2})[\s/-]+(ene|feb|mar|abr|may|jun|jul|ago|sept?|oct|nov|dic)\b",
+    re.IGNORECASE)
+_FECHA_ISO_RE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
+
+# Umbral: 21 días. Un pendiente que lleva tres semanas sin moverse ya no es del día.
+DIAS_REZAGADO = int(os.environ.get("DONNA_DIAS_REZAGADO", "21"))
+
+
+def edad_item(linea: str, hoy=None) -> int | None:
+    """Días de antigüedad del pendiente, o None si no se puede fechar."""
+    hoy = hoy or datetime.now(TZ_CDMX).date()
+    m = _ALTA_RE.search(linea or "")
+    if m:
+        try:
+            return (hoy - date(int(m.group(1)), int(m.group(2)), int(m.group(3)))).days
+        except ValueError:
+            pass
+    m = _FECHA_ISO_RE.search(linea or "")
+    if m:
+        try:
+            return (hoy - date(int(m.group(1)), int(m.group(2)), int(m.group(3)))).days
+        except ValueError:
+            pass
+    m = _FECHA_SUELTA_RE.search(linea or "")
+    if m:
+        dia, mes = int(m.group(1)), _MESES_ABR[m.group(2).lower().rstrip(".")]
+        # Sin año se toma la ocurrencia MÁS CERCANA a hoy, futura incluida. Tomar
+        # siempre la pasada enterraba lo que viene: un «10 sep» leído el 9 de
+        # septiembre salía como de hace 364 días y se marcaba rezagado, cuando es
+        # mañana. Y un «3 dic» en septiembre es el diciembre que viene, no el
+        # anterior. La edad de una fecha futura sale negativa, así que jamás cuenta
+        # como rezago.
+        candidatas = []
+        for anio in (hoy.year - 1, hoy.year, hoy.year + 1):
+            try:
+                candidatas.append(date(anio, mes, dia))
+            except ValueError:
+                continue
+        if candidatas:
+            f = min(candidatas, key=lambda d: abs((hoy - d).days))
+            return (hoy - f).days
+    return None
+
+
+def segmentar_por_edad(items: list[str], dias: int | None = None, hoy=None) -> tuple:
+    """(vigentes, rezagados) — cada rezagado con su edad anotada al final."""
+    limite = DIAS_REZAGADO if dias is None else dias
+    vigentes, rezagados = [], []
+    for it in items:
+        e = edad_item(it, hoy)
+        if e is not None and e > limite:
+            rezagados.append(f"{it}  ⟨{e} días sin cerrar⟩")
+        else:
+            vigentes.append(it)
+    return vigentes, rezagados
+
+
 def _open_checkbox_lines(text: str, max_items: int = 20) -> list[str]:
     items = []
     for line in text.splitlines():
@@ -1675,8 +1753,12 @@ def build_operational_snapshot(compact: bool = True) -> str:
     urgent_block = _extract_markdown_section(agenda, "URGENTE")
     open_all = _open_checkbox_lines(agenda, 15 if compact else 25)
 
-    # Encabeza con lo que VENCE / tiene hora / urge — para que el seguimiento salte primero.
-    deadlines = _extract_deadlines(agenda, 8 if compact else 12)
+    # Encabeza con lo que VENCE / tiene hora / urge — para que el seguimiento salte
+    # primero. Los rezagados se apartan: un pendiente de hace meses presentado como
+    # asunto de hoy ensucia la lista con la que Polo arranca el día.
+    deadlines, dl_rezagados = segmentar_por_edad(
+        _extract_deadlines(agenda, 8 if compact else 12))
+    open_all, open_rezagados = segmentar_por_edad(open_all)
     if deadlines:
         lines.append("*⏰ VENCE / CON HORA / URGENTE*")
         lines.extend(f"- {d}" for d in deadlines)
@@ -1689,6 +1771,22 @@ def build_operational_snapshot(compact: bool = True) -> str:
         lines.extend(open_all[:10 if compact else 12])
     else:
         lines.append("(sin pendientes abiertos en SEGUIMIENTOS)")
+
+    # Las dos fuentes (deadlines y casillas abiertas) traen el MISMO ítem con
+    # formato distinto: una limpia y otra con el «- [ ]» crudo, que al reimprimirse
+    # salía como «- - [ ]». Se normaliza el prefijo y se dedup por texto.
+    rezagados, _vistos = [], set()
+    for r in dl_rezagados + open_rezagados:
+        limpio = re.sub(r"^\s*-\s*\[\s*\]\s*", "", r).replace("**", "").strip()
+        clave = limpio.lower()[:60]
+        if clave and clave not in _vistos:
+            _vistos.add(clave)
+            rezagados.append(limpio)
+    if rezagados:
+        lines.append(f"\n*🕸 REZAGADOS (más de {DIAS_REZAGADO} días sin cerrar)*")
+        lines.append("NO son asuntos de hoy. Se cierran o se reconfirman; no se "
+                     "presentan como pendientes del día.")
+        lines.extend(f"- {r}" for r in rezagados[:6 if compact else 12])
 
     if urgent_block:
         lines.append("\n*URGENTE*")
@@ -11404,6 +11502,15 @@ def execute_tool(name: str, args: dict) -> str:
                             return f"(ya estaba en {args['filename']}, no dupliqué)"
             except Exception:
                 pass
+            # Sello de alta en los pendientes: sin él, la edad de un ítem solo se
+            # puede adivinar de una fecha suelta en el texto, y muchos no traen
+            # ninguna. Con el sello, el briefing sabe con exactitud qué lleva meses
+            # abierto. Solo en SEGUIMIENTOS y solo en casillas nuevas.
+            if (args["filename"] == "SEGUIMIENTOS.md"
+                    and re.match(r"^\s*-\s*\[\s*\]\s+", content)
+                    and not _ALTA_RE.search(content)):
+                content = (content.rstrip()
+                           + f"  (alta: {datetime.now(TZ_CDMX).strftime('%Y-%m-%d')})")
             with path.open("a") as f:
                 f.write("\n" + content + "\n")
             return f"OK agregado a {args['filename']}"

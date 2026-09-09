@@ -234,6 +234,69 @@ def main() -> int:
         fallas.append(f"_SLACK_APP_HANDLE={core._SLACK_APP_HANDLE!r}: la app en Slack se "
                       f"llama 'louis'; cambiarlo solo cuando se renombre en api.slack.com")
 
+    # ── Edad de los pendientes (el briefing arrastraba junio) ───────────────
+    # El caso real: el briefing del 9-sep traía «desayuno Francisco Romanelli,
+    # martes 23-jun» como asunto del día, 78 días después.
+    import datetime as _dt
+    HOY = _dt.date(2026, 9, 9)
+    CASOS_EDAD = [
+        ("- [ ] Desayuno Romanelli — martes 23-jun", 78),   # el rezago real
+        ("- [ ] Junta Vizum (alta: 2026-09-08)", 1),        # sello de alta
+        ("- [ ] Oficio CNBV 2026-06-23 vence", 78),         # fecha ISO
+        ("- [ ] Revisión 9 sep", 0),                        # hoy
+        # Sin año se toma la ocurrencia MÁS CERCANA, futura incluida: tomar siempre
+        # la pasada enterraba lo que viene (un «10 sep» leído el 9 salía a 364 días).
+        ("- [ ] Pago 10 sep", -1),
+        ("- [ ] Cierre anual 3 dic", -85),
+        ("- [ ] Junta 15 ago", 25),
+        ("- [ ] Sin fecha alguna", None),                   # no fechable
+        ("- [ ] Oficio 31 feb", None),                      # fecha imposible
+        ("- [ ] Nota (alta: 2026-13-45)", None),            # sello inválido
+    ]
+    for texto, esp in CASOS_EDAD:
+        got = core.edad_item(texto, HOY)
+        if got != esp:
+            fallas.append(f"edad_item={got} (esperaba {esp}): «{texto}»")
+    # Un ítem no fechable NUNCA se marca rezagado: mostrar de más es mejor que
+    # esconder un pendiente real.
+    vig, rez = core.segmentar_por_edad(
+        ["- [ ] Sin fecha", "- [ ] Viejo 23-jun", "- [ ] Futuro 3 dic"],
+        dias=21, hoy=HOY)
+    if "- [ ] Sin fecha" not in vig:
+        fallas.append("un pendiente sin fecha no debe marcarse rezagado")
+    if len(rez) != 1 or "23-jun" not in rez[0]:
+        fallas.append(f"segmentar_por_edad: rezagados={rez}")
+    if not any("días sin cerrar" in r for r in rez):
+        fallas.append("un rezagado debe traer su edad anotada")
+
+    # El snapshot los aparta, sin duplicar y sin el prefijo doble «- - [ ]».
+    import tempfile as _tmp
+    _prev_space = core.SPACE
+    try:
+        _d = Path(_tmp.mkdtemp())
+        (_d / "SEGUIMIENTOS.md").write_text(
+            "- [ ] Junta de hoy 16:00 (alta: 2026-09-09)\n"
+            "- [ ] Desayuno Romanelli — martes 23-jun\n"
+            "- [ ] Dazon REPUVE sin fecha\n", encoding="utf-8")
+        for _f in ("IMPORTANT.md", "JOURNAL.md", "CLIENTES.md"):
+            (_d / _f).write_text("", encoding="utf-8")
+        core.SPACE = _d
+        snap = core.build_operational_snapshot()
+        antes = snap.split("REZAGADOS")[0]
+        if "Romanelli" in antes:
+            fallas.append("el rezagado sale entre los asuntos de hoy")
+        if "REZAGADOS" not in snap or "días sin cerrar" not in snap:
+            fallas.append("falta la sección de rezagados con su edad")
+        if snap.count("Romanelli") != 1:
+            fallas.append(f"el rezagado sale {snap.count('Romanelli')} veces, debe ser 1")
+        if "- - [" in snap:
+            fallas.append("prefijo doble «- - [ ]» en la sección de rezagados")
+        if "Dazon" not in antes:
+            fallas.append("un pendiente sin fecha debe seguir entre los de hoy")
+    finally:
+        core.SPACE = _prev_space
+    _casos_edad = len(CASOS_EDAD) + 3 + 5
+
     # ── Canal del briefing (briefing duplicado) ─────────────────────────────
     # Polo recibía DOS briefings a las 07:00 (texto + dashboard HTML).
     import importlib
@@ -242,14 +305,16 @@ def main() -> int:
     try:
         sched = importlib.import_module("scheduler")
         for valor, esperado in (
-            (None, "texto"),        # default: solo texto
+            # Default = html: el dashboard es el que Polo abre. Fue 'texto' un día
+            # y estuvo mal.
+            (None, "html"),
             ("texto", "texto"),
             ("html", "html"),
             ("ambos", "ambos"),
             ("AMBOS", "ambos"),     # case-insensitive
             (" html ", "html"),     # tolera espacios
-            ("cualquier_cosa", "texto"),  # inválido → default seguro
-            ("", "texto"),
+            ("cualquier_cosa", "html"),  # inválido → default
+            ("", "html"),
         ):
             if valor is None:
                 _os.environ.pop("DONNA_BRIEFING", None)
@@ -464,7 +529,7 @@ def main() -> int:
              # nuevos: diagnósticos negativos, errores de Slack, canal del briefing
              + len(CASOS_DIAGNOSTICO) + 1 + len(core._DIAG_SERVICIOS)
              + len(CASOS_SLACK_ERR) * 3 + 4 + 4 + 1 + 1
-             + _casos_briefing + 2 + _n_units + 1)
+             + _casos_briefing + 2 + _n_units + 1 + _casos_edad)
     if fallas:
         print(f"❌ {len(fallas)} de {total} fallaron:\n")
         for f in fallas:

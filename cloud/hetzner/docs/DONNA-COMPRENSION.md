@@ -1258,3 +1258,60 @@ falso que rechaza todo, y con uno sano para confirmar que no grita de más.
 Nota de método: el reemplazo del mensaje final no aplicó la primera vez porque lo
 hice sin aserción. Es el mismo error que este documento lleva media sesión
 registrando — un cambio que no se verifica no es un cambio.
+
+---
+
+## El briefing: canal equivocado y pendientes de hace meses
+
+Dos cosas del briefing del 9-sep, y la primera fue **mi error de criterio**.
+
+### 1. El default debía ser el dashboard, no el texto
+
+Al arreglar el briefing duplicado puse `DONNA_BRIEFING=texto` por recomendación
+propia. Estuvo mal: el dashboard interactivo ya existía y es el que Polo abre. El
+default ahora es **`html`**. `texto` y `ambos` siguen disponibles.
+
+### 2. Nada envejecía los pendientes
+
+El briefing traía:
+
+> **Francisco Romanelli (Moffin) desayuno/reunión** — Pendiente confirmación de
+> hora/lugar (nota antigua sugería martes 23-jun, pero requiere reconfirmación hoy
+> si sigue vigente).
+
+78 días de antigüedad, presentado como asunto del día. `build_operational_snapshot`
+volcaba las casillas abiertas de `SEGUIMIENTOS.md` **sin ningún filtro de fecha**, y
+`briefing_doc.pendientes_abiertos()` hacía lo mismo — así que cambiar de canal no lo
+habría arreglado. El dashboard sí era más fresco en las otras dos fuentes: el
+calendario se lee en vivo y los avances ya tenían tope de 3 horas.
+
+Ahora hay una edad por ítem, y se calcula en este orden:
+
+1. **Sello `(alta: YYYY-MM-DD)`**, que `append_to_memory` pone al escribir una
+   casilla nueva en `SEGUIMIENTOS.md`. Es exacto y es el arreglo de fondo.
+2. Una fecha ISO en el texto.
+3. Una fecha suelta tipo «23-jun».
+4. Sin ninguna → **edad desconocida, y NO se marca rezagado**. Mostrar de más es
+   mejor que esconder un pendiente real por no poder fecharlo.
+
+Los que pasan de 21 días (`DONNA_DIAS_REZAGADO`) van a su propia sección, con la
+edad a la vista, y una regla nueva en el system prompt: *un rezagado no es agenda de
+hoy; se cierra o se pregunta en una línea, aparte*.
+
+### La trampa de la fecha sin año
+
+La primera versión resolvía «23-jun» a la ocurrencia **pasada** más reciente. Eso
+enterraba el futuro: un «10 sep» leído el 9 de septiembre salía como de hace **364
+días** y se marcaba rezagado, cuando es *mañana*. Y un «3 dic» en septiembre es el
+diciembre que viene, no el anterior.
+
+Se toma la ocurrencia **más cercana** a hoy, futura incluida. La edad de una fecha
+futura sale negativa, así que nunca cuenta como rezago. Lo destapó un caso de prueba
+cuyo valor esperado yo había puesto mal — el código estaba mal por otra razón, y sin
+ese caso habría enterrado los pendientes próximos sin que nadie lo notara.
+
+Cubierto por 18 casos en `test-comprension.py` (186 en total), incluidos el sello
+inválido, la fecha imposible («31 feb»), el ítem sin fecha que debe seguir visible, y
+que el rezagado no salga duplicado —las dos fuentes traían el mismo ítem con formato
+distinto y una se reimprimía como `- - [ ]`. Verificado que las pruebas **fallan** si
+se desactiva el filtro.

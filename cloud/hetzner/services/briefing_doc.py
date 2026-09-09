@@ -152,16 +152,30 @@ def parse_m365(text, tenant):
     return eventos
 
 
-def pendientes_abiertos(max_items=25):
+def pendientes_abiertos(max_items=25, con_rezagados=False):
+    """Pendientes abiertos de SEGUIMIENTOS.md, ya sin los rezagados.
+
+    El dashboard leía TODAS las casillas abiertas sin filtro de fecha, así que un
+    pendiente de hace meses salía junto a los del día. La edad la calcula
+    donna_core (misma lógica que el briefing de texto: sello «(alta: …)» primero,
+    fecha suelta después, y nunca se esconde lo que no se puede fechar).
+    """
     if not SEGUIMIENTOS.exists():
-        return []
+        return ([], []) if con_rezagados else []
     items = []
     for ln in SEGUIMIENTOS.read_text(encoding="utf-8").splitlines():
         if re.match(r"^\s*-\s*\[\s*\]\s+", ln):
             txt = re.sub(r"^\s*-\s*\[\s*\]\s+", "", ln).strip()
             if txt:
                 items.append(txt)
-    return items[:max_items]
+    try:
+        import donna_core as _c
+        vigentes, rezagados = _c.segmentar_por_edad(items)
+    except Exception:
+        # Sin core disponible no se filtra nada: mostrar de más es mejor que
+        # esconder un pendiente real por un import roto.
+        vigentes, rezagados = items, []
+    return (vigentes[:max_items], rezagados) if con_rezagados else vigentes[:max_items]
 
 
 def _build_agenda_table(eventos, err) -> str:
