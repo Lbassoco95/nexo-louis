@@ -26,6 +26,7 @@ Variables de entorno:
 """
 from __future__ import annotations
 
+import datetime as dt
 import http.cookiejar
 import importlib.util
 import json
@@ -53,13 +54,23 @@ DB_PATH = os.environ.get("SJF_DB_PATH", "/opt/openclaw/legal/sjf/biblioteca.db")
 API_BASE = "https://sjf2.scjn.gob.mx/services/sjftesismicroservice/api/public/tesis"
 SEMANAL_QS = "?isSemanal=true&hostName=https://sjf2.scjn.gob.mx"
 SJF_REFERER = "https://sjf2.scjn.gob.mx/"
-USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
-              "(KHTML, like Gecko) Version/17.0 Safari/605.1.15")
+# El default sigue siendo el UA de navegador que ya estaba, para no cambiar por mi
+# cuenta cómo se presenta Kawiil ante la SCJN. Pero conviene identificarse: un
+# cliente que da la cara y va despacio se desbloquea; uno que se disfraza, no.
+#   SJF_USER_AGENT="KawiilLegalBot/1.0 (+https://kawiil.mx) investigación jurídica"
+USER_AGENT = os.environ.get("SJF_USER_AGENT") or (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) Version/17.0 Safari/605.1.15")
 GAP_TOLERANCE = 800        # 404 consecutivos antes de rendirse (registros no contiguos)
 BLOCK_TOLERANCE_403 = 12   # 403 consecutivos = bloqueo WAF → abortar sin envenenar BD
 MAX_PULL = int(os.environ.get("SJF_MAX_PULL", "3000"))
-THROTTLE_MS = 400
-THROTTLE_JITTER_MS = 250
+# Ritmo. Estaba en 400 ms (≈7,000 peticiones/hora) y el backfill en 150 ms
+# (≈24,000/hora mientras corre) contra un servicio público de la SCJN. El 10-sep el
+# WAF nos bloqueó y el acervo dejó de crecer: la tesis más nueva quedó en 2026-08-28.
+# La salida no es evadir mejor, es pedir menos. A 1,500 ms son ~2,400 peticiones por
+# hora, que para un relleno histórico que corre solo da igual.
+THROTTLE_MS = int(os.environ.get("SJF_THROTTLE_MS", "1500"))
+THROTTLE_JITTER_MS = int(os.environ.get("SJF_THROTTLE_JITTER_MS", "600"))
 RETRY_ATTEMPTS = 3
 RETRY_BACKOFF = 3
 # Saltos para el sondeo pre-scan (brinca períodos vacacionales / huecos grandes)
@@ -72,6 +83,72 @@ log = logging.getLogger("sjf_harvest")
 _JAR = http.cookiejar.CookieJar()
 _OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_JAR))
 _primed = False
+
+
+# ── Interruptor de bloqueo del WAF ──────────────────────────────────────────
+# Al ser bloqueados, harvest y backfill seguían disparándose (diario y cada hora) y
+# cada corrida quemaba 12 peticiones más contra un WAF que ya había dicho que no.
+# Eso alarga el bloqueo y, desde el otro lado, se ve como insistencia deliberada.
+# Ahora el bloqueo se anota con una espera creciente (2h → 6h → 12h → 24h, tope) y
+# las corridas siguientes se saltan solas hasta que venza.
+WAF_ESPERAS_H = (2, 6, 12, 24)
+
+
+def waf_estado(conn) -> tuple[str, int]:
+    """(hasta_iso, veces) del bloqueo vigente. ('', 0) si no hay ninguno."""
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS progress "
+                     "(key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)")
+        r = conn.execute("SELECT value FROM progress WHERE key='waf_bloqueo'").fetchone()
+    except Exception:
+        return "", 0
+    if not r or not r[0]:
+        return "", 0
+    partes = str(r[0]).split("|")
+    return partes[0], int(partes[1]) if len(partes) > 1 and partes[1].isdigit() else 1
+
+
+def waf_bloqueado(conn) -> str:
+    """Devuelve el mensaje de espera si seguimos bloqueados, o '' si ya se puede."""
+    hasta, veces = waf_estado(conn)
+    if not hasta:
+        return ""
+    try:
+        falta = (dt.datetime.fromisoformat(hasta) - dt.datetime.now()).total_seconds()
+    except Exception:
+        return ""
+    if falta <= 0:
+        return ""
+    return (f"WAF del SJF nos bloqueó (bloqueo #{veces}). No se intenta nada hasta "
+            f"{hasta} — faltan {falta/3600:.1f} h. Insistir alarga el bloqueo.")
+
+
+def waf_marcar(conn) -> None:
+    """Anota un bloqueo nuevo, con espera más larga que la vez anterior."""
+    _, veces = waf_estado(conn)
+    veces += 1
+    horas = WAF_ESPERAS_H[min(veces - 1, len(WAF_ESPERAS_H) - 1)]
+    hasta = (dt.datetime.now() + dt.timedelta(hours=horas)).isoformat(timespec="seconds")
+    conn.execute("INSERT INTO progress(key,value,updated_at) VALUES('waf_bloqueo',?,?) "
+                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+                 "updated_at=excluded.updated_at",
+                 (f"{hasta}|{veces}", dt.datetime.now().isoformat(timespec="seconds")))
+    conn.commit()
+    log.error("WAF bloqueó (bloqueo #%d). Me aparto %d h, hasta %s. "
+              "Si se repite, baja el ritmo (SJF_THROTTLE_MS) o identifica al cliente "
+              "con SJF_USER_AGENT en vez de insistir.", veces, horas, hasta)
+
+
+def waf_liberar(conn) -> None:
+    """Se llama tras una descarga exitosa: el bloqueo quedó atrás."""
+    try:
+        hasta, veces = waf_estado(conn)
+        if hasta or veces:
+            conn.execute("DELETE FROM progress WHERE key='waf_bloqueo'")
+            conn.commit()
+            log.info("WAF desbloqueado: descarga exitosa, contador en cero")
+    except Exception:
+        pass
 
 
 def _prime() -> None:
@@ -181,6 +258,16 @@ def _probe_for_anchor(max_reg: int) -> int:
 
 def main() -> int:
     sjf = _load_scraper()
+    # Antes de primar la sesión siquiera: si el WAF nos bloqueó hace poco, la corrida
+    # se salta entera. Cada intento durante el bloqueo lo alarga.
+    _c = sqlite3.connect(DB_PATH)
+    try:
+        espera = waf_bloqueado(_c)
+    finally:
+        _c.close()
+    if espera:
+        log.warning(espera)
+        return 0
     _prime()
     # IMPORTANTE: abrimos NUESTRA conexión a la BD que Donna lee (DB_PATH), en vez de
     # usar sjf.db_connect(). El scraper sincronizado desde la Mac tiene su DB_PATH
@@ -208,6 +295,8 @@ def main() -> int:
             t = sjf.normalize_tesis(raw, cur)
             sjf.upsert_tesis(conn, t)
             ok += 1
+            if not ok % 25 or ok == 1:
+                waf_liberar(conn)   # hubo descarga real: el bloqueo quedó atrás
             consec_404 = consec_403 = 0
             log.info("[+%d] %d %s | %s", ok, cur, raw.get("fechaPublicacion", ""),
                      (t.get("rubro") or "")[:60])
@@ -218,6 +307,7 @@ def main() -> int:
             if consec_403 >= BLOCK_TOLERANCE_403:
                 blocked = True
                 log.error("WAF bloqueando (%d×403). Aborto sin marcar 404.", consec_403)
+                waf_marcar(conn)
                 break
         else:  # 404/410
             miss += 1

@@ -351,6 +351,19 @@ def main() -> int:
         log.error("No existe el harvester en %s", HARVEST_PATH)
         return 1
     harvest = _load(HARVEST_PATH, "sjf_harvest")   # fetch_tesis + _prime
+
+    # El mismo interruptor que el harvester: es el MISMO servidor y el MISMO WAF.
+    # Sin esto, el backfill (cada hora) seguiría tocando la puerta mientras el
+    # harvester se aparta, y el bloqueo no se levantaría nunca.
+    if hasattr(harvest, "waf_bloqueado"):
+        _c = sqlite3.connect(DB_PATH)
+        try:
+            espera = harvest.waf_bloqueado(_c)
+        finally:
+            _c.close()
+        if espera:
+            log.warning("%s", espera)
+            return 0
     sjf = _load(SCRAPER_PATH, "sjf_biblioteca")    # normalize_tesis + upsert_tesis (+ mark_404)
     harvest._prime()
 
@@ -455,6 +468,12 @@ def main() -> int:
              ok, miss, rechazos, hallados, _pct(hallados + n404 + muerto, span),
              nunca, pend)
     if rechazos and rechazos >= max(1, ok + miss):
+        if hasattr(harvest, "waf_marcar"):
+            _c = sqlite3.connect(DB_PATH)
+            try:
+                harvest.waf_marcar(_c)
+            finally:
+                _c.close()
         log.error("El SJF rechazó %d de %d intentos: esta corrida NO avanzó por "
                   "BLOQUEO, no por falta de trabajo. Revisa si el server está vetado "
                   "(403) antes de suponer que el acervo está completo.",

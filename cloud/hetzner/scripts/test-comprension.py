@@ -234,6 +234,52 @@ def main() -> int:
         fallas.append(f"_SLACK_APP_HANDLE={core._SLACK_APP_HANDLE!r}: la app en Slack se "
                       f"llama 'louis'; cambiarlo solo cuando se renombre en api.slack.com")
 
+    # ── Interruptor del WAF del SJF ─────────────────────────────────────────
+    # El 10-sep el WAF de la SCJN nos bloqueó y el acervo dejó de crecer (la tesis
+    # más nueva quedó en 2026-08-28). Harvest y backfill seguían disparándose y cada
+    # corrida quemaba 12 peticiones más contra un WAF que ya había dicho que no.
+    import sqlite3 as _sq3, datetime as _dtm, importlib.util as _iu
+    _hpath = (Path(__file__).resolve().parents[1] / "legal-scrapers" / "sjf_harvest.py")
+    _casos_waf = 0
+    if _hpath.is_file():
+        _sp = _iu.spec_from_file_location("_h", _hpath)
+        _h = _iu.module_from_spec(_sp); _sp.loader.exec_module(_h)
+        _wc = _sq3.connect(":memory:")
+        pruebas_waf = []
+        pruebas_waf.append((_h.waf_bloqueado(_wc) == "", "sin bloqueo se puede trabajar"))
+        _h.waf_marcar(_wc)
+        pruebas_waf.append(("bloqueo #1" in _h.waf_bloqueado(_wc), "primer bloqueo aparta"))
+        _h.waf_marcar(_wc); _h.waf_marcar(_wc); _h.waf_marcar(_wc); _h.waf_marcar(_wc)
+        pruebas_waf.append(("24" in _h.waf_bloqueado(_wc), "la espera tope es 24 h"))
+        _h.waf_liberar(_wc)
+        pruebas_waf.append((_h.waf_bloqueado(_wc) == "",
+                            "una descarga exitosa limpia el bloqueo"))
+        _h.waf_marcar(_wc)
+        _wc.execute("UPDATE progress SET value=? WHERE key='waf_bloqueo'",
+                    ((_dtm.datetime.now() - _dtm.timedelta(hours=1))
+                     .isoformat(timespec="seconds") + "|3",))
+        _wc.commit()
+        pruebas_waf.append((_h.waf_bloqueado(_wc) == "", "un bloqueo vencido deja pasar"))
+        _wc.execute("UPDATE progress SET value='basura' WHERE key='waf_bloqueo'"); _wc.commit()
+        pruebas_waf.append((_h.waf_bloqueado(_wc) == "",
+                            "un valor corrupto no truena ni bloquea para siempre"))
+        # El ritmo tiene que seguir siendo suave: es lo que nos bloqueó.
+        _src = _hpath.read_text()
+        pruebas_waf.append(('"SJF_THROTTLE_MS", "1500"' in _src,
+                            "el throttle por default es de 1500 ms"))
+        _unit = (Path(__file__).resolve().parents[1] / "services" / "sjf-backfill.service")
+        if _unit.is_file():
+            _u = _unit.read_text()
+            pruebas_waf.append(("BACKFILL_THROTTLE_MS=1500" in _u and
+                                "BACKFILL_BATCH=1200" in _u,
+                                "la unit del backfill pide despacio"))
+        for ok, nombre in pruebas_waf:
+            if not ok:
+                fallas.append(f"WAF: {nombre}")
+        _casos_waf = len(pruebas_waf)
+    else:
+        fallas.append("no encontré sjf_harvest.py — el interruptor del WAF quedó sin probar")
+
     # ── Búsqueda legal: un cero habla del acervo, no de la ley ──────────────
     # Caso real: Donna contestó «❌ No encuentro resolución reciente de cannabis en
     # SJF/DOF». Dos causas: la consulta cruda reventaba FTS5 con paréntesis o
@@ -599,7 +645,7 @@ def main() -> int:
              # nuevos: diagnósticos negativos, errores de Slack, canal del briefing
              + len(CASOS_DIAGNOSTICO) + 1 + len(core._DIAG_SERVICIOS)
              + len(CASOS_SLACK_ERR) * 3 + 4 + 4 + 1 + 1
-             + _casos_briefing + 2 + _n_units + 1 + _casos_edad + _casos_legal)
+             + _casos_briefing + 2 + _n_units + 1 + _casos_edad + _casos_legal + _casos_waf)
     if fallas:
         print(f"❌ {len(fallas)} de {total} fallaron:\n")
         for f in fallas:

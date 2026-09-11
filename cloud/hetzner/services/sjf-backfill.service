@@ -12,8 +12,12 @@ WorkingDirectory=@@OPENCLAW_HOME@@/legal/sjf
 Environment=SJF_DB_PATH=@@OPENCLAW_HOME@@/legal/sjf/biblioteca.db
 Environment=SJF_HARVEST=@@OPENCLAW_HOME@@/legal/sjf/sjf_harvest.py
 Environment=SJF_SCRAPER=@@OPENCLAW_HOME@@/legal/sjf/sjf_biblioteca.py
-Environment=BACKFILL_BATCH=3000
-Environment=BACKFILL_THROTTLE_MS=150
+# Ritmo: 3000 peticiones a 150 ms son ~24,000/hora contra un servicio público de la
+# SCJN. El 10-sep su WAF nos bloqueó y el acervo dejó de crecer. A 1500 ms y lotes de
+# 1200, una corrida tarda ~30 min y pide ~2,400/hora. El relleno histórico corre solo:
+# que tarde semanas en vez de días no le cuesta nada a nadie; estar bloqueados sí.
+Environment=BACKFILL_BATCH=1200
+Environment=BACKFILL_THROTTLE_MS=1500
 Environment=BACKFILL_404_THRESHOLD=50
 Environment=BACKFILL_404_JUMP=50000
 Environment=SJF_BACKFILL_FLOOR=0

@@ -1367,3 +1367,57 @@ mismo error en distinto disfraz.
 
 Cubierto por 20 casos (206 en total), y verificado que fallan si se vuelve a mandar
 la consulta cruda.
+
+---
+
+## El SJF nos bloqueó porque le estábamos pegando duro
+
+Tres datos de producción, del mismo comando:
+
+```
+tesis más nueva: 2026-08-28    ·    total: 178,554
+cannabis en el acervo: 85
+ERROR WAF bloqueando (12×403). Aborto sin marcar 404.
+```
+
+**Las 85 confirman que el «no encuentro resolución de cannabis» era el bug de la
+consulta y nada más.** Las tesis estaban ahí desde siempre.
+
+Y el acervo dejó de crecer el **28 de agosto**: el WAF de la SCJN nos bloquea con
+403 en cadena. Vale nombrar la causa sin adornos:
+
+| | peticiones/hora |
+|---|---|
+| harvester (400 ms + jitter) | ~7,000 |
+| backfill (150 ms × lotes de 3,000) | ~24,000 mientras corre |
+
+Contra un servicio público, presentándonos con un **User-Agent de Safari falso**. Y
+al ser bloqueados, harvest (diario) y backfill (cada hora) **seguían disparándose**,
+quemando 12 peticiones más por corrida contra un WAF que ya había dicho que no —
+lo que alarga el bloqueo y, desde el otro lado, se ve como insistencia deliberada.
+
+La salida no es evadir mejor. Es pedir menos y dar la cara:
+
+- **Ritmo**: `SJF_THROTTLE_MS` de 400 → **1500 ms**; el backfill de 150 ms y lotes de
+  3,000 → **1500 ms y lotes de 1,200**. De ~24,000 peticiones/hora a ~2,400. El
+  relleno histórico corre solo: que tarde semanas en vez de días no le cuesta nada a
+  nadie; estar bloqueados sí.
+- **Interruptor de bloqueo**: al ser bloqueados se anota en `progress` con espera
+  creciente (2h → 6h → 12h → 24h, tope) y las corridas siguientes —harvest **y**
+  backfill, que comparten servidor y WAF— se saltan solas hasta que venza. Una
+  descarga exitosa limpia el contador.
+- **Identificarse**: `SJF_USER_AGENT` permite cambiar el UA falso por uno que diga
+  quién es y a qué viene. El default **no se cambió**: cómo se presenta Kawiil ante
+  la SCJN es decisión de Polo, no mía.
+
+8 casos en `test-comprension.py` (214 en total), incluidos el tope de 24 h, que una
+descarga exitosa limpie el bloqueo, que un valor corrupto no deje el sistema
+bloqueado para siempre, y que el ritmo suave siga puesto en el código y en la unit.
+
+### Y otro archivo que el deploy no instalaba
+
+`briefing_doc.py` **no estaba en la lista de instalación**, aunque `scheduler.py` lo
+lanza como subprocess desde `/opt/openclaw/scripts/`. El arreglo de los pendientes
+rezagados se subió a git y nunca llegó al runtime — la misma falla que con
+`legal-scrapers/`, dos veces en tres días. Ya está en la lista, y la regla queda
+escrita ahí: **si un archivo se ejecuta desde `$oc/scripts/`, va en esta lista.**

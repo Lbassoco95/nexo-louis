@@ -148,7 +148,10 @@ instalar_solo_servicios() {
   # Misma lista que deploy.sh, MÁS donna_html.py: `donna_core` lo importa para el
   # HTML interactivo (el formato por defecto de Kawiil) y deploy.sh nunca lo copió,
   # así que en el runtime podía quedar una versión vieja o ninguna.
-  for svc in donna_core.py donna_html.py telegram-bridge.py slack-bridge.py scheduler.py \
+  # briefing_doc.py lo lanza scheduler.py como subprocess desde este mismo
+  # directorio, pero no estaba en la lista: un arreglo suyo se subió a git y nunca
+  # llegó al runtime. Si un archivo se ejecuta desde $oc/scripts/, va en esta lista.
+  for svc in donna_core.py donna_html.py briefing_doc.py telegram-bridge.py slack-bridge.py scheduler.py \
              openclaw_gateway.py self_update.py browser_runner.py cerebro_kawiil_mcp.py; do
     # Un archivo de la lista que NO está en el paquete es un ERROR, no algo que
     # saltarse en silencio: así se ocultó que la lista decía `louis_core.py` después
