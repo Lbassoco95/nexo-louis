@@ -234,6 +234,76 @@ def main() -> int:
         fallas.append(f"_SLACK_APP_HANDLE={core._SLACK_APP_HANDLE!r}: la app en Slack se "
                       f"llama 'louis'; cambiarlo solo cuando se renombre en api.slack.com")
 
+    # ── Búsqueda legal: un cero habla del acervo, no de la ley ──────────────
+    # Caso real: Donna contestó «❌ No encuentro resolución reciente de cannabis en
+    # SJF/DOF». Dos causas: la consulta cruda reventaba FTS5 con paréntesis o
+    # guiones, y con varias palabras FTS5 las exige TODAS.
+    import sqlite3 as _sq, tempfile as _tf
+    _d = Path(_tf.mkdtemp()); _db = _d / "sjf.db"
+    _c = _sq.connect(_db)
+    _c.executescript("""
+        CREATE TABLE tesis(registro_digital INTEGER PRIMARY KEY, rubro TEXT, texto TEXT,
+          epoca TEXT, instancia TEXT, materias TEXT, fecha_publicacion TEXT, ta_tj INTEGER);
+        CREATE VIRTUAL TABLE tesis_fts USING fts5(rubro, texto, content='tesis',
+          content_rowid='registro_digital', tokenize="unicode61 remove_diacritics 2");
+        CREATE TABLE registros_404(registro_digital INTEGER PRIMARY KEY, first_seen_at TEXT);""")
+    _c.executemany("INSERT INTO tesis VALUES (?,?,?,?,?,?,?,?)", [
+        (2019001, "CANNABIS. LA PROHIBICIÓN ABSOLUTA DE SU CONSUMO LÚDICO ES INCONSTITUCIONAL",
+         "amparo en revisión autoconsumo", "Décima", "Primera Sala", "Constitucional",
+         "2019-02-15", 1),
+        (2021002, "CANNABIS PSICOACTIVO. DECLARATORIA GENERAL DE INCONSTITUCIONALIDAD",
+         "Pleno Ley General de Salud", "Undécima", "Pleno", "Constitucional",
+         "2021-07-09", 1)])
+    _c.execute("INSERT INTO tesis_fts(tesis_fts) VALUES('rebuild')")
+    _c.commit(); _c.close()
+    _prev_db = core.SJF_DB
+    try:
+        core.SJF_DB = _db
+        # (consulta, debe_encontrar_algo, debe_marcarse_amplia)
+        CASOS_BUSQUEDA_SJF = [
+            ("cannabis", True, False),
+            ("cannabis (Pleno)", True, False),        # reventaba: syntax error
+            ("amparo-cannabis", True, False),         # reventaba: no such column
+            ('"consumo lúdico"', True, False),        # frase exacta
+            ("resolución reciente cannabis", True, True),  # daba 0 por el AND
+            ("zarzaparrilla intergaláctica", False, False),
+        ]
+        for q, hay, esp_amplia in CASOS_BUSQUEDA_SJF:
+            r = core._legal_buscar("sjf", q, 5)
+            if r.startswith("Error buscando"):
+                fallas.append(f"legal_buscar(«{q}») reventó: {r[:80]}")
+                continue
+            encontro = "resultado(s)" in r
+            if encontro != hay:
+                fallas.append(f"legal_buscar(«{q}»): encontró={encontro}, esperaba {hay}")
+            if encontro and ("AMPLIA" in r) != esp_amplia:
+                fallas.append(f"legal_buscar(«{q}») marca AMPLIA={'AMPLIA' in r}, "
+                              f"esperaba {esp_amplia}")
+            # Un cero SIEMPRE tiene que venir con la cobertura del acervo, para que
+            # no se lea como «no existe».
+            if not encontro:
+                if "Cobertura del acervo" not in r or "INCOMPLETO" not in r:
+                    fallas.append(f"un cero en «{q}» no reporta la cobertura: {r[:90]}")
+        _casos_legal = len(CASOS_BUSQUEDA_SJF) * 2 + 1
+    finally:
+        core.SJF_DB = _prev_db
+
+    # _fts_query neutraliza los operadores de FTS5 en las DOS rutas
+    for entrada, esperado in (
+        ("cannabis", '"cannabis"'),
+        ("cannabis Pleno", '"cannabis" AND "Pleno"'),
+        ("amparo-cannabis", '"amparo" AND "cannabis"'),
+        ('"frase exacta"', '"frase exacta"'),
+        ("", ""),
+        ("(((", ""),
+    ):
+        got = core._fts_query(entrada)
+        if got != esperado:
+            fallas.append(f"_fts_query({entrada!r})={got!r}, esperaba {esperado!r}")
+    if core._fts_query("cannabis Pleno", unir="OR") != '"cannabis" OR "Pleno"':
+        fallas.append("_fts_query con unir='OR' no arma la consulta amplia")
+    _casos_legal += 7
+
     # ── Edad de los pendientes (el briefing arrastraba junio) ───────────────
     # El caso real: el briefing del 9-sep traía «desayuno Francisco Romanelli,
     # martes 23-jun» como asunto del día, 78 días después.
@@ -529,7 +599,7 @@ def main() -> int:
              # nuevos: diagnósticos negativos, errores de Slack, canal del briefing
              + len(CASOS_DIAGNOSTICO) + 1 + len(core._DIAG_SERVICIOS)
              + len(CASOS_SLACK_ERR) * 3 + 4 + 4 + 1 + 1
-             + _casos_briefing + 2 + _n_units + 1 + _casos_edad)
+             + _casos_briefing + 2 + _n_units + 1 + _casos_edad + _casos_legal)
     if fallas:
         print(f"❌ {len(fallas)} de {total} fallaron:\n")
         for f in fallas:

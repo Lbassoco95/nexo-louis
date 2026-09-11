@@ -841,7 +841,15 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "un «requiere reconfirmación hoy». O propones cerrarlo, o preguntas en UNA línea "
         "si sigue vivo — al final, aparte. Arrastrar un desayuno de hace dos meses "
         "dentro del briefing le hace perder el tiempo a Polo justo cuando arranca.\n"
-        "8. **Cita el error, no lo traduzcas.** Reporta el error EXACTO que devolvió la "
+        "8. **Una búsqueda legal vacía habla de NUESTRO acervo, no de la ley.** El SJF "
+        "que tenemos está incompleto (le falta buena parte de la Novena Época, "
+        "1997-2011). Si `legal_buscar` no devuelve nada, NUNCA digas «no existe» ni "
+        "«no hay resolución»: di que no está EN NUESTRO ACERVO, con la cobertura que "
+        "la tool te reportó, y ofrece buscar con menos palabras o en la fuente "
+        "oficial. FTS5 exige TODAS las palabras: si buscaste «resolución reciente "
+        "cannabis» y salió vacío, reintenta con el término solo («cannabis») antes de "
+        "concluir nada.\n"
+        "9. **Cita el error, no lo traduzcas.** Reporta el error EXACTO que devolvió la "
         "tool y su arreglo. 'Token inactivo' se dice SOLO si el error dice literalmente "
         "`invalid_auth`, `token_revoked`, `token_expired` o `account_inactive`. "
         "`not_in_channel` significa que falta `/invite @louis` en ese canal de Slack — el "
@@ -6622,25 +6630,104 @@ def _legal_estado(modulo: str = "ambos") -> str:
     return _legal_estado_sjf() + "\n\n" + _legal_estado_dof()
 
 
+def _fts_query(termino: str, unir: str = "AND") -> str:
+    """Convierte el texto del usuario en una consulta FTS5 SEGURA.
+
+    Cada palabra se entrecomilla, así que ningún carácter del usuario se interpreta
+    como operador (`-`, `*`, `:`, `(`, `NEAR`, `OR`…) ni rompe la sintaxis. Si el
+    usuario entrecomilla todo, se respeta como frase exacta.
+
+    Esta función vivía SOLO en cerebro_kawiil_mcp.py (la ruta de Cowork). La ruta de
+    Donna mandaba el texto crudo, así que «cannabis (Pleno)» o «amparo-cannabis»
+    reventaban con un error de sintaxis de FTS5 que se reportaba como si no hubiera
+    nada. Las dos rutas buscan sobre la misma base; tienen que construir igual.
+    """
+    t = (termino or "").strip()
+    if len(t) >= 2 and t[0] == '"' and t[-1] == '"':
+        interior = t[1:-1].replace('"', "")
+        return f'"{interior}"' if interior.strip() else ""
+    palabras = re.findall(r"[0-9A-Za-zÀ-ÿ\u00f1\u00d1]+", t)
+    return f" {unir} ".join(f'"{w}"' for w in palabras)
+
+
+def _legal_cobertura(modulo: str) -> str:
+    """Una línea con lo que el acervo REALMENTE cubre.
+
+    Sin esto, una búsqueda vacía devolvía «(sin resultados)» a secas y el modelo lo
+    traducía a «❌ No encuentro resolución reciente de cannabis en SJF/DOF» — un
+    hecho sobre el mundo, cuando es un hecho sobre NUESTRA copia. El acervo del SJF
+    está explorado al ~25% y la Novena Época se corta en 1997: una búsqueda vacía
+    ahí no significa que la tesis no exista.
+    """
+    db = SJF_DB if modulo == "sjf" else DOF_DB
+    if not db.exists():
+        return ""
+    try:
+        conn = _legal_open(db)
+        try:
+            if modulo == "sjf":
+                n = conn.execute("SELECT COUNT(*) FROM tesis").fetchone()[0]
+                lo, hi = conn.execute(
+                    "SELECT MIN(fecha_publicacion), MAX(fecha_publicacion) FROM tesis "
+                    "WHERE fecha_publicacion IS NOT NULL AND fecha_publicacion <> ''"
+                ).fetchone()
+                try:
+                    n404 = conn.execute("SELECT COUNT(*) FROM registros_404").fetchone()[0]
+                    ids = conn.execute("SELECT MIN(registro_digital), MAX(registro_digital) "
+                                       "FROM tesis").fetchone()
+                    span = (ids[1] - ids[0] + 1) if ids[0] and ids[1] else 0
+                    pct = f", ~{100 * (n + n404) // max(span, 1)}% del rango de IDs explorado" \
+                        if span else ""
+                except Exception:
+                    pct = ""
+                return (f"Cobertura del acervo: {n:,} tesis, fechadas entre {lo or '?'} y "
+                        f"{hi or '?'}{pct}. El acervo está INCOMPLETO — falta buena parte "
+                        f"de la Novena Época (1997-2011). Una búsqueda vacía NO prueba que "
+                        f"la tesis no exista.")
+            n = conn.execute("SELECT COUNT(*) FROM notas WHERE incluido=1").fetchone()[0]
+            lo, hi = conn.execute("SELECT MIN(fecha), MAX(fecha) FROM notas "
+                                  "WHERE incluido=1").fetchone()
+            return (f"Cobertura del acervo: {n:,} notas del DOF entre {lo or '?'} y "
+                    f"{hi or '?'}. Fuera de ese rango no hay nada que encontrar.")
+        finally:
+            conn.close()
+    except Exception as e:
+        return f"(no pude medir la cobertura del acervo: {e})"
+
+
 def _legal_buscar(modulo: str, query: str, limit: int = 10) -> str:
     if modulo == "sjf":
         if not SJF_DB.exists():
             return "SJF BD no disponible aún (rsync Mac→Hetzner no ha corrido)"
+        sql = ("SELECT t.registro_digital, t.rubro, t.epoca, t.instancia, t.materias, "
+               "t.fecha_publicacion, t.ta_tj "
+               "FROM tesis_fts JOIN tesis t ON t.registro_digital = tesis_fts.rowid "
+               "WHERE tesis_fts MATCH ? ORDER BY rank LIMIT ?")
+        amplia = False
         try:
             conn = _legal_open(SJF_DB)
-            rows = conn.execute(
-                "SELECT t.registro_digital, t.rubro, t.epoca, t.instancia, t.materias, t.fecha_publicacion, t.ta_tj "
-                "FROM tesis_fts JOIN tesis t ON t.registro_digital = tesis_fts.rowid "
-                "WHERE tesis_fts MATCH ? "
-                "ORDER BY rank LIMIT ?",
-                (query, limit),
-            ).fetchall()
-            conn.close()
+            try:
+                q_and = _fts_query(query)
+                rows = conn.execute(sql, (q_and, limit)).fetchall() if q_and else []
+                # FTS5 exige TODAS las palabras. «resolución reciente cannabis» da cero
+                # aunque la tesis de cannabis exista, porque pide las tres juntas. Si
+                # el AND no da nada, se reintenta con OR y se DICE que es más amplia,
+                # en vez de devolver un «no hay» que es falso.
+                if not rows and len(re.findall(r"[0-9A-Za-zÀ-ÿ]+", query)) > 1:
+                    q_or = _fts_query(query, unir="OR")
+                    if q_or:
+                        rows = conn.execute(sql, (q_or, limit)).fetchall()
+                        amplia = bool(rows)
+            finally:
+                conn.close()
         except Exception as e:
-            return f"Error buscando SJF: {e}"
+            return f"Error buscando SJF: {e}\n{_legal_cobertura('sjf')}"
         if not rows:
-            return f"(sin resultados SJF para «{query}»)"
-        out = [f"🔎 SJF · {len(rows)} resultado(s) para «{query}»\n"]
+            return (f"(sin resultados SJF para «{query}», ni exigiendo todas las palabras "
+                    f"ni cualquiera de ellas)\n{_legal_cobertura('sjf')}")
+        nota = (" — coincidencia AMPLIA: ninguna tesis trae todas las palabras, estas "
+                "traen alguna") if amplia else ""
+        out = [f"🔎 SJF · {len(rows)} resultado(s) para «{query}»{nota}\n"]
         for r in rows:
             kind = "JUR" if r["ta_tj"] == 1 else "TA"
             out.append(f"• [{kind}] {r['rubro'] or '(sin rubro)'}")
@@ -6650,23 +6737,30 @@ def _legal_buscar(modulo: str, query: str, limit: int = 10) -> str:
         return "\n".join(out)
 
     if modulo == "dof":
+        amplia = False
         if not DOF_DB.exists():
             return "DOF BD no disponible aún (rsync Mac→Hetzner no ha corrido)"
         try:
             conn = _legal_open(DOF_DB)
-            rows = conn.execute(
-                "SELECT n.cod_nota, n.fecha, n.titulo, n.tipo_documento, n.nombre_cod_orga_uno "
-                "FROM notas_fts JOIN notas n ON n.cod_nota = notas_fts.rowid "
-                "WHERE notas_fts MATCH ? AND n.incluido=1 "
-                "ORDER BY n.fecha DESC, rank LIMIT ?",
-                (query, limit),
-            ).fetchall()
+            sql = ("SELECT n.cod_nota, n.fecha, n.titulo, n.tipo_documento, n.nombre_cod_orga_uno "
+                   "FROM notas_fts JOIN notas n ON n.cod_nota = notas_fts.rowid "
+                   "WHERE notas_fts MATCH ? AND n.incluido=1 "
+                   "ORDER BY n.fecha DESC, rank LIMIT ?")
+            q_and = _fts_query(query)
+            rows = conn.execute(sql, (q_and, limit)).fetchall() if q_and else []
+            if not rows and len(re.findall(r"[0-9A-Za-zÀ-ÿ]+", query)) > 1:
+                q_or = _fts_query(query, unir="OR")
+                if q_or:
+                    rows = conn.execute(sql, (q_or, limit)).fetchall()
+                    amplia = bool(rows)
             conn.close()
         except Exception as e:
-            return f"Error buscando DOF: {e}"
+            return f"Error buscando DOF: {e}\n{_legal_cobertura('dof')}"
         if not rows:
-            return f"(sin resultados DOF para «{query}»)"
-        out = [f"🔎 DOF · {len(rows)} resultado(s) para «{query}»\n"]
+            return (f"(sin resultados DOF para «{query}», ni exigiendo todas las palabras "
+                    f"ni cualquiera de ellas)\n{_legal_cobertura('dof')}")
+        nota = (" — coincidencia AMPLIA: ninguna nota trae todas las palabras") if amplia else ""
+        out = [f"🔎 DOF · {len(rows)} resultado(s) para «{query}»{nota}\n"]
         for r in rows:
             out.append(f"• [{r['tipo_documento'] or '?'}] {r['titulo']}")
             out.append(f"    {r['fecha']} · {r['nombre_cod_orga_uno'] or '?'} · cod={r['cod_nota']}")
@@ -6699,6 +6793,7 @@ def _legal_ultimo(modulo: str, n: int = 10) -> str:
         return "\n".join(out)
 
     if modulo == "dof":
+        amplia = False
         if not DOF_DB.exists():
             return "DOF BD no disponible aún"
         try:

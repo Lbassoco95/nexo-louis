@@ -1315,3 +1315,55 @@ inválido, la fecha imposible («31 feb»), el ítem sin fecha que debe seguir v
 que el rezagado no salga duplicado —las dos fuentes traían el mismo ítem con formato
 distinto y una se reimprimía como `- - [ ]`. Verificado que las pruebas **fallan** si
 se desactiva el filtro.
+
+---
+
+## «No encuentro resolución de cannabis»: el cero era nuestro, no de la ley
+
+Polo preguntó por una resolución de cannabis y Donna contestó:
+
+> ❌ **No encuentro resolución reciente de cannabis en SJF/DOF.**
+
+Eso se lee como un hecho sobre el mundo. Era un hecho sobre nuestra copia, y con
+**dos causas de código**, no una.
+
+### 1. La consulta cruda reventaba FTS5
+
+`_fts_query()` —que entrecomilla cada palabra para que nada se interprete como
+operador— existía **solo** en `cerebro_kawiil_mcp.py`, la ruta que usa Cowork. La
+ruta de Donna mandaba el texto del usuario directo al `MATCH`. Medido contra un
+FTS5 real con dos tesis de cannabis dentro:
+
+| consulta | Donna antes | ahora |
+|---|---|---|
+| `cannabis` | 2 | 2 |
+| `cannabis (Pleno)` | **ERROR de sintaxis** | 1 |
+| `amparo-cannabis` | **ERROR: no such column** | 1 |
+| `resolución reciente cannabis` | **0** | 2 (marcadas AMPLIA) |
+
+Los dos errores se reportaban como «Error buscando SJF», que el modelo traducía a
+«no encuentro». Las dos rutas buscan sobre la misma base: tienen que construir la
+consulta igual.
+
+### 2. FTS5 exige TODAS las palabras
+
+Eso no lo arregla sanear. `resolución reciente cannabis` pide las tres juntas y da
+cero aunque la tesis exista. Ahora, si el AND no devuelve nada, se reintenta con OR
+y el resultado se **etiqueta** como coincidencia amplia («ninguna tesis trae todas
+las palabras, estas traen alguna») en vez de devolver un «no hay» que es falso.
+
+### 3. Un cero ahora dice de qué tamaño es nuestro acervo
+
+Antes: `(sin resultados SJF para «…»)`. Ahora el cero viene con la cobertura real
+—cuántas tesis, entre qué fechas, qué porcentaje del rango de IDs se ha explorado—
+y la frase **«El acervo está INCOMPLETO … una búsqueda vacía NO prueba que la tesis
+no exista»**. Más una regla en el system prompt: nunca decir «no existe» ni «no hay
+resolución», sino «no está en nuestro acervo», y reintentar con menos palabras antes
+de concluir nada.
+
+Es la misma lección que el `not_in_channel` de Slack y que el `+0 nuevas, 0 404` del
+backfill: **una limitación propia presentada como un hecho del mundo.** Tres veces el
+mismo error en distinto disfraz.
+
+Cubierto por 20 casos (206 en total), y verificado que fallan si se vuelve a mandar
+la consulta cruda.
