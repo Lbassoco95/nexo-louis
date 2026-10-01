@@ -26,7 +26,10 @@ chown -R "${SYSTEM_USER:-polo}":"${SYSTEM_USER:-polo}" "${ENTREGABLES_DIR}"
 ok "Directorio de entregables listo: ${ENTREGABLES_DIR}"
 
 # Crear directorio de DBs legales (las BDs se poblarán con el pipeline existente)
-LEGAL_DIR="${SJF_DB_PATH:-/opt/openclaw/legal/sjf.db}"
-mkdir -p "$(dirname "$LEGAL_DIR")"
-chown -R "${SYSTEM_USER:-polo}":"${SYSTEM_USER:-polo}" "$(dirname "$LEGAL_DIR")"
-ok "Directorio legal listo: $(dirname "$LEGAL_DIR")"
+# Rutas canónicas alineadas con louis_core / sjf_harvest / dof scrapers.
+LEGAL_SJF_DB="${SJF_DB_PATH:-/opt/openclaw/legal/sjf/biblioteca.db}"
+LEGAL_DOF_DB="${DOF_DB_PATH:-/opt/openclaw/legal/dof/biblioteca_dof.db}"
+mkdir -p "$(dirname "$LEGAL_SJF_DB")" "$(dirname "$LEGAL_DOF_DB")"
+chown -R "${SYSTEM_USER:-polo}":"${SYSTEM_USER:-polo}" \
+  "$(dirname "$LEGAL_SJF_DB")" "$(dirname "$LEGAL_DOF_DB")"
+ok "Directorios legales listos: $(dirname "$LEGAL_SJF_DB") + $(dirname "$LEGAL_DOF_DB")"
