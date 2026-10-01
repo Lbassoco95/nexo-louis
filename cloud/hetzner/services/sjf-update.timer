@@ -7,7 +7,8 @@ Documentation=https://github.com/Lbassoco95/kawiil-agents
 # con margen aleatorio para no pegarle al API siempre al mismo segundo.
 OnCalendar=*-*-* 13:30:00
 RandomizedDelaySec=900
-Persistent=true
+# Sin Persistent: evita pegarle al SJF (WAF) con catch-up al arrancar tras caída.
+Persistent=false
 
 [Install]
 WantedBy=timers.target

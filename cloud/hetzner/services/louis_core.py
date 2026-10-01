@@ -4206,7 +4206,9 @@ def _legal_open(db_path):
 
 def _legal_estado_sjf() -> str:
     if not SJF_DB.exists():
-        return f"SJF: BD no encontrada en {SJF_DB} (todavía no se sincroniza desde Mac, o el rsync no ha corrido)."
+        return (f"SJF: BD no encontrada en {SJF_DB}. "
+                f"Revisa timer `sjf-update` y logs en /opt/openclaw/logs/sjf-update.log "
+                f"(el push Mac→server está desactivado).")
     try:
         conn = _legal_open(SJF_DB)
         total = conn.execute("SELECT COUNT(*) FROM tesis").fetchone()[0]
@@ -4255,7 +4257,9 @@ def _legal_estado_sjf() -> str:
 
 def _legal_estado_dof() -> str:
     if not DOF_DB.exists():
-        return f"DOF: BD no encontrada en {DOF_DB} (todavía no se sincroniza desde Mac)."
+        return (f"DOF: BD no encontrada en {DOF_DB}. "
+                f"Revisa timers `dof-harvest`/`dof-contents` y logs en /opt/openclaw/logs/ "
+                f"(el push Mac→server está desactivado).")
     try:
         conn = _legal_open(DOF_DB)
         total = conn.execute("SELECT COUNT(*) FROM notas").fetchone()[0]

@@ -261,8 +261,8 @@ fi
 # Causa raíz del estancamiento (jun-2026): no existía timer y el scraper no usaba
 # el parámetro ?isSemanal=true. Aquí instalamos el harvester corregido + su timer.
 log "[7b] Instalando harvester SJF + timer diario"
-mkdir -p /opt/openclaw/legal/sjf
-for f in sjf_harvest.py sjf_weekly_summary.py sjf_biblioteca.py; do
+mkdir -p /opt/openclaw/legal/sjf /opt/openclaw/legal/dof/pdfs /opt/openclaw/logs
+for f in sjf_harvest.py sjf_weekly_summary.py sjf_biblioteca.py sjf_backfill.py; do
   if [[ -f "legal-scrapers/${f}" ]]; then
     install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" "legal-scrapers/${f}" "/opt/openclaw/legal/sjf/${f}"
   fi
@@ -284,6 +284,37 @@ for t in sjf-update.timer sjf-weekly.timer; do
   fi
 done
 ok "SJF: harvester diario (13:30) + resumen semanal (lun 8:00) en /opt/openclaw/legal/sjf/"
+
+# Pipeline DOF + digests legales — units existían en repo pero deploy NO las
+# instalaba (solo SJF). Sin esto: harvest/texto/PDF/boletines/digest quedan huérfanos.
+log "[7c] Instalando scrapers DOF + timers (harvest/contents/pdfs/boletines/digest)"
+for f in dof_biblioteca.py dof_daily_summary.py; do
+  if [[ -f "legal-scrapers/${f}" ]]; then
+    install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" "legal-scrapers/${f}" "/opt/openclaw/legal/dof/${f}"
+  fi
+done
+for f in legal_digest.py estado_legal.py; do
+  if [[ -f "legal-scrapers/${f}" ]]; then
+    install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" "legal-scrapers/${f}" "/opt/openclaw/legal/${f}"
+  fi
+done
+for unit in dof-harvest dof-contents dof-pdfs dof-daily dof-daily-tarde legal-digest legal-estado; do
+  if [[ -f "services/${unit}.service" && -f "services/${unit}.timer" ]]; then
+    sed -e "s|@@SYSTEM_USER@@|${SYSTEM_USER}|g" -e "s|@@OPENCLAW_HOME@@|/opt/openclaw|g" \
+        "services/${unit}.service" > "/etc/systemd/system/${unit}.service"
+    sed -e "s|@@SYSTEM_USER@@|${SYSTEM_USER}|g" -e "s|@@OPENCLAW_HOME@@|/opt/openclaw|g" \
+        "services/${unit}.timer" > "/etc/systemd/system/${unit}.timer"
+  fi
+done
+systemctl daemon-reload
+for t in dof-harvest.timer dof-contents.timer dof-pdfs.timer dof-daily.timer dof-daily-tarde.timer legal-digest.timer legal-estado.timer; do
+  if [[ -f "/etc/systemd/system/${t}" ]]; then
+    systemctl enable --now "$t"
+    systemctl is-active --quiet "$t" && ok "${t} activo" || warn "${t} no levantó — systemctl status ${t}"
+  fi
+done
+chown -R "$SYSTEM_USER":"$SYSTEM_USER" /opt/openclaw/legal /opt/openclaw/logs 2>/dev/null || true
+ok "DOF: harvest + contents + pdfs + boletines + digest/estado en /opt/openclaw/legal/"
 
 # ── 8) Seeds: agentes + briefing matutino (idempotentes) ──────
 log "[8/8] Sembrando agentes y briefing matutino"

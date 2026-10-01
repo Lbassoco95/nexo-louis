@@ -6,7 +6,9 @@ Description=Dispara la extracción de texto del DOF en lotes (rápido, hasta lle
 # Lotes de 800 → llena el histórico en pocos días, sin saturar al DOF.
 OnBootSec=3min
 OnUnitActiveSec=8min
-Persistent=true
+# Sin Persistent: tras una caída larga, systemd dispararía la corrida perdida
+# en el arranque. Corre cada 8 min — el catch-up es irrelevante y satura la red.
+Persistent=false
 
 [Install]
 WantedBy=timers.target
