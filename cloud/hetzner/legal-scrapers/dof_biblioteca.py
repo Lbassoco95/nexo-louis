@@ -1242,11 +1242,18 @@ def cmd_classify():
 
 
 def cmd_download_contents(batch: int = 200, workers: int = DEFAULT_WORKERS):
-    """Descarga HTML de las notas incluidas sin contenido."""
+    """Descarga HTML de las notas incluidas sin contenido.
+
+    Solo procesa notas con existe_html=1 (el ~84% del histórico son PDFs
+    escaneados sin HTML). Ordena por fecha DESC para priorizar lo reciente.
+    Si el fetch falla o viene vacío, marca content_downloaded_at con
+    sufijo [sin-html] para no ciclar la misma cola de fallos.
+    """
     conn = db_connect()
     rows = conn.execute(
         "SELECT cod_nota FROM notas "
-        "WHERE incluido=1 AND content_downloaded_at IS NULL "
+        "WHERE incluido=1 AND existe_html=1 AND content_downloaded_at IS NULL "
+        "ORDER BY fecha DESC "  # recientes primero → mayor tasa de éxito HTML
         "LIMIT ?",
         (batch,)
     ).fetchall()
@@ -1299,6 +1306,12 @@ def cmd_download_contents(batch: int = 200, workers: int = DEFAULT_WORKERS):
                 )
                 ok += 1
             else:
+                # Sin HTML: marcar intentada para que no bloquee la cola.
+                # texto_plano=NULL = "sin contenido disponible" (escaneada/antigua).
+                conn.execute(
+                    "UPDATE notas SET content_downloaded_at=? WHERE cod_nota=?",
+                    (dt.datetime.now().isoformat(timespec="seconds") + " [sin-html]", cn)
+                )
                 err += 1
             if i % 25 == 0:
                 conn.commit()

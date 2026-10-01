@@ -4,7 +4,8 @@ Description=Dispara la generación de PDFs individuales del DOF (tras tener el t
 [Timer]
 OnBootSec=6min
 OnUnitActiveSec=12min
-Persistent=true
+# Sin Persistent: evita ráfaga de catch-up al volver de una suspensión larga.
+Persistent=false
 
 [Install]
 WantedBy=timers.target
