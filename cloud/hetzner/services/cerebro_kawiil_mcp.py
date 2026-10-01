@@ -15,8 +15,8 @@ Variables de entorno:
   CEREBRO_PORT           Puerto interno (default: 4040)
   OPENCLAW_SPACES        Ruta a la memoria de Louis (default: /opt/openclaw/spaces/general)
   ENTREGABLES_PATH       Almacén compartido  (default: /opt/openclaw/entregables)
-  SJF_DB_PATH            SQLite SJF          (default: /opt/openclaw/legal/sjf.db)
-  DOF_DB_PATH            SQLite DOF          (default: /opt/openclaw/legal/dof.db)
+  SJF_DB_PATH            SQLite SJF          (default: /opt/openclaw/legal/sjf/biblioteca.db)
+  DOF_DB_PATH            SQLite DOF          (default: /opt/openclaw/legal/dof/biblioteca_dof.db)
   CEREBRO_CACHE_TTL      Segundos de cache   (default: 60)
 """
 
@@ -49,8 +49,8 @@ BEARER_TOKEN     = os.environ.get("CEREBRO_KAWIIL_TOKEN", "")
 PORT             = int(os.environ.get("CEREBRO_PORT", "4040"))
 SPACES_PATH      = Path(os.environ.get("OPENCLAW_SPACES", "/opt/openclaw/spaces/general"))
 ENTREGABLES_PATH = Path(os.environ.get("ENTREGABLES_PATH", "/opt/openclaw/entregables"))
-SJF_DB_PATH      = Path(os.environ.get("SJF_DB_PATH", "/opt/openclaw/legal/sjf.db"))
-DOF_DB_PATH      = Path(os.environ.get("DOF_DB_PATH", "/opt/openclaw/legal/dof.db"))
+SJF_DB_PATH      = Path(os.environ.get("SJF_DB_PATH", "/opt/openclaw/legal/sjf/biblioteca.db"))
+DOF_DB_PATH      = Path(os.environ.get("DOF_DB_PATH", "/opt/openclaw/legal/dof/biblioteca_dof.db"))
 CACHE_TTL        = int(os.environ.get("CEREBRO_CACHE_TTL", "60"))
 
 ESTADOS_VALIDOS = {"borrador", "listo", "en_vobo", "aprobado", "archivado"}
@@ -483,14 +483,17 @@ def legal_buscar(termino: str, fuente: str = "ambas", limite: int = 5,
     if fuente in ("sjf", "ambas") and SJF_DB_PATH.exists():
         tablas = _tablas_db(SJF_DB_PATH)
         if "tesis" in tablas:
+            # Esquema real (sjf_biblioteca): fecha_publicacion, no "fecha".
             filas = _query_db(
                 SJF_DB_PATH,
-                "SELECT rubro, texto, fecha FROM tesis WHERE texto LIKE ? OR rubro LIKE ? LIMIT ?",
+                "SELECT rubro, texto, fecha_publicacion, registro_digital FROM tesis "
+                "WHERE texto LIKE ? OR rubro LIKE ? LIMIT ?",
                 (f"%{termino}%", f"%{termino}%", limite),
             )
             for f in filas:
                 resultados.append(
-                    f"[SJF/{f.get('fecha','')}] {f.get('rubro','')}\n"
+                    f"[SJF/{f.get('fecha_publicacion','')}] id={f.get('registro_digital','')} "
+                    f"{f.get('rubro','')}\n"
                     f"{(f.get('texto') or '')[:excerpt_chars]}…"
                 )
         elif tablas:
@@ -499,7 +502,23 @@ def legal_buscar(termino: str, fuente: str = "ambas", limite: int = 5,
 
     if fuente in ("dof", "ambas") and DOF_DB_PATH.exists():
         tablas = _tablas_db(DOF_DB_PATH)
-        if "publicaciones" in tablas:
+        # Esquema real (dof_biblioteca): tabla `notas` (no `publicaciones`).
+        if "notas" in tablas:
+            filas = _query_db(
+                DOF_DB_PATH,
+                "SELECT titulo, texto_plano, fecha, cod_nota FROM notas "
+                "WHERE (texto_plano LIKE ? OR titulo LIKE ?) "
+                "AND (incluido IS NULL OR incluido=1) "
+                "ORDER BY fecha DESC LIMIT ?",
+                (f"%{termino}%", f"%{termino}%", limite),
+            )
+            for f in filas:
+                resultados.append(
+                    f"[DOF/{f.get('fecha','')}] cod={f.get('cod_nota','')} {f.get('titulo','')}\n"
+                    f"{(f.get('texto_plano') or '')[:excerpt_chars]}…"
+                )
+        elif "publicaciones" in tablas:
+            # Fallback por si alguna BD legacy usa otro nombre.
             filas = _query_db(
                 DOF_DB_PATH,
                 "SELECT titulo, contenido, fecha_publicacion FROM publicaciones "

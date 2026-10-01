@@ -277,7 +277,24 @@ def _fetch_one(url: str, registro: int) -> tuple[int, dict | None]:
     for attempt in range(1, RETRY_ATTEMPTS + 1):
         try:
             with _OPENER.open(_mk_req(), timeout=20) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+                body = resp.read()
+                ct = (resp.headers.get("Content-Type") or "").lower()
+                # Incapsula a veces responde 200 text/html con challenge; no es JSON.
+                if "html" in ct or body.lstrip()[:1] == b"<":
+                    log.warning(
+                        "Respuesta no-JSON (posible WAF/Incapsula) en registro %d intento %d",
+                        registro, attempt,
+                    )
+                    if attempt < RETRY_ATTEMPTS:
+                        _session_primed = False
+                        time.sleep(RETRY_BACKOFF * attempt)
+                        _prime_session()
+                        continue
+                    return 403, None
+                data = json.loads(body.decode("utf-8"))
+                # El API a veces envuelve el payload en {"data": {...}}.
+                if isinstance(data, dict) and isinstance(data.get("data"), dict):
+                    data = data["data"]
                 return resp.status, data
         except urllib.error.HTTPError as e:
             if e.code in PERMANENT_FAIL:

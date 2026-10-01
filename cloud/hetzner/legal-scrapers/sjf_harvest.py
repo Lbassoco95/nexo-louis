@@ -100,7 +100,18 @@ def _fetch_one(url: str, reg: int) -> tuple[int, dict | None]:
     for attempt in range(1, RETRY_ATTEMPTS + 1):
         try:
             with _OPENER.open(urllib.request.Request(url, headers=_headers(reg)), timeout=25) as r:
-                d = json.loads(r.read().decode("utf-8"))
+                body = r.read()
+                ct = (r.headers.get("Content-Type") or "").lower()
+                # Incapsula puede devolver 200 HTML (challenge) en vez de JSON.
+                if "html" in ct or body.lstrip()[:1] == b"<":
+                    log.warning("Respuesta no-JSON (posible WAF) en %d intento %d", reg, attempt)
+                    if attempt < RETRY_ATTEMPTS:
+                        _primed = False
+                        time.sleep(RETRY_BACKOFF * attempt)
+                        _prime()
+                        continue
+                    return 403, None
+                d = json.loads(body.decode("utf-8"))
                 return 200, (d.get("data", d) if isinstance(d, dict) else d)
         except urllib.error.HTTPError as e:
             if e.code in (404, 410):

@@ -742,9 +742,10 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "(leer, marcar leído, archivar, borrar, responder, mandar, calendario), úsalas. Para BORRAR siempre "
         "confirma primero. Para MANDAR correo nuevo o crear evento: muestra borrador y espera 'confirmo'."
         "\n\n# BIBLIOTECA LEGAL (SJF + DOF) — CONSULTA, NO DESCARGA\n"
-        "Tienes acceso de lectura a dos bases de datos SQLite que se sincronizan desde la "
-        "Mac de Polo cada 15 min: SJF (tesis y jurisprudencias del Semanario Judicial Federación) "
-        "y DOF (Diario Oficial de la Federación). Los scripts de descarga viven en la Mac, no en ti. "
+        "Tienes acceso de lectura a dos bases SQLite en el VPS (fuente de verdad del servidor):\n"
+        "SJF (tesis/jurisprudencias del Semanario Judicial) vía harvester diario "
+        "(`sjf_harvest.py` + timer `sjf-update`) y DOF vía scrapers/timers locales. "
+        "El push Mac→Hetzner está desactivado por defecto para no pisar el acervo del server. "
         "Tu trabajo es REPORTAR estado, BUSCAR y AVISAR:\n"
         "- `legal_estado(modulo)` — estado de descarga (total, % progreso, última corrida, errores). "
         "Úsalo cuando Polo pregunte 'cómo va la descarga', 'cuántas tesis llevamos', 'qué tan al día estamos del DOF'.\n"
@@ -752,8 +753,8 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "'qué dijo el DOF de reforma fiscal'.\n"
         "- `legal_ultimo(modulo, n)` — últimas N publicaciones recientes.\n"
         "- `legal_briefing()` — combinado SJF + DOF, ideal para el briefing matutino.\n"
-        "Si Polo pregunta por el estado y la BD no se ha sincronizado todavía, dile claramente "
-        "'la BD no ha llegado al VPS aún — revisa que el cron de mac-push-legal.sh esté activo en tu Mac'.\n"
+        "Si la BD no existe en el VPS, dilo claramente y sugiere revisar timers `sjf-update` / DOF "
+        "y logs en `/opt/openclaw/logs/`.\n"
         "## ⛔ REGLA ABSOLUTA — NUNCA INVENTES DATOS LEGALES\n"
         "JAMÁS fabriques resultados del DOF o SJF: ni títulos, ni fechas, ni números de "
         "acuerdo/decreto, ni artículos, ni publicaciones. Si no lo obtuviste de una fuente "
@@ -4185,8 +4186,11 @@ def _verificar_conexiones(incluir_m365: bool = True) -> str:
 
 
 # ===== Biblioteca Legal (SJF + DOF) =====
-# Las BDs llegan vía rsync Mac→Hetzner (mac-push-legal.sh cada 15 min).
-# Las abrimos READ-ONLY para que un rsync a mitad de query no rompa nada.
+# Fuente de verdad en el servidor Hetzner:
+#   SJF → harvester diario (sjf_harvest.py / systemd timer sjf-update)
+#   DOF → scrapers/timers en el server
+# El push Mac→Hetzner (mac-push-legal.sh) está DESACTIVADO por defecto para no
+# pisar el acervo del server. Abrimos READ-ONLY por si algún proceso escribe.
 import sqlite3 as _sqlite
 
 LEGAL_BASE = HOME_OC / "legal"
