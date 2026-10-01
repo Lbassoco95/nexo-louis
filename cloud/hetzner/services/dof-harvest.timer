@@ -7,7 +7,11 @@ OnCalendar=*-*-* 08:30:00 America/Mexico_City
 # Tarde: trae la vespertina antes del boletín de las 18:30.
 OnCalendar=Mon..Fri *-*-* 18:00:00 America/Mexico_City
 RandomizedDelaySec=300
-Persistent=true
+# Sin Persistent: tras una caída larga (el servidor estuvo suspendido por
+# falta de pago tres semanas), systemd dispararía la corrida perdida EN EL
+# ARRANQUE. Corre dos veces al día; adelantar una no compensa la ráfaga al encender.
+# Un arranque no es el momento de salir a la red con todo al mismo tiempo.
+Persistent=false
 
 [Install]
 WantedBy=timers.target

@@ -28,6 +28,7 @@ import sys
 import json
 import time
 import uuid
+import html as _html
 import logging
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -84,6 +85,11 @@ log = logging.getLogger("scheduler")
 #   ambos            → los dos (el comportamiento que duplicaba el briefing)
 # El default fue 'texto' un día y estuvo mal: el dashboard ya existía y es el que
 # Polo abre. Además el texto arrastraba pendientes de hace meses.
+# Cuántas horas de atraso admite un recordatorio antes de dejar de dispararse solo.
+# Seis horas cubren un reinicio o un mantenimiento; tres semanas de servidor
+# suspendido, no.
+ATRASO_MAX_H = float(os.environ.get("DONNA_ATRASO_MAX_H", "6"))
+
 _BRIEFING_MODOS = ("texto", "html", "ambos")
 _BRIEFING_DEFAULT = "html"
 
@@ -130,6 +136,34 @@ def send_telegram(text: str):
             return False
     except Exception as e:
         log.error(f"Telegram send falló: {e}")
+        return False
+
+
+def send_telegram_html(html_text: str) -> bool:
+    """Manda HTML ya armado, sin pasarlo por format_for_telegram.
+
+    El resumen de atrasados se construye con etiquetas propias; reformatearlo
+    volvería a escapar lo ya escapado y saldría con &lt;b&gt; en crudo.
+    """
+    creds = core.load_env_file(CREDS_TELEGRAM)
+    token = creds.get("TELEGRAM_BOT_TOKEN")
+    chat_id = creds.get("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        log.error("Faltan credenciales Telegram")
+        return False
+    import urllib.request
+    import urllib.parse
+    datos = urllib.parse.urlencode({
+        "chat_id": chat_id, "text": html_text[:4000],
+        "parse_mode": "HTML", "disable_web_page_preview": "true",
+    }).encode()
+    try:
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{token}/sendMessage", data=datos)
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.status == 200
+    except Exception as e:
+        log.error("No pude mandar el resumen de atrasados: %s", e)
         return False
 
 
@@ -456,6 +490,7 @@ def tick():
         return
     to_keep = []
     fired = 0
+    vencidos: list = []   # recordatorios que vencieron mientras el server no corría
     for entry in queue:
         try:
             fire_at_str = entry.get("fire_at")
@@ -468,6 +503,27 @@ def tick():
             continue
 
         if fire_at <= now:
+            # ── Guarda de atraso ────────────────────────────────────────────
+            # Si el servidor estuvo caído (suspensión, mantenimiento, reinicio
+            # largo), TODOS los recordatorios vencidos se disparaban juntos al
+            # volver: semanas de avisos cayendo de golpe en Telegram. Un aviso de
+            # hace tres semanas ya no es un aviso, es ruido — pero tampoco se
+            # tira, porque pudo ser un vencimiento importante. Se juntan y se
+            # entregan como UN resumen al final.
+            atraso_h = (now - fire_at).total_seconds() / 3600
+            if atraso_h > ATRASO_MAX_H:
+                raw_v = entry.get("message", "")
+                if entry.get("mode") == "briefing" or raw_v == MORNING_BRIEFING_MARKER:
+                    # Un briefing viejo no se resume ni se manda: el del día
+                    # siguiente lo reemplaza por completo.
+                    log.info("Briefing atrasado %.0f h descartado (%s)",
+                             atraso_h, entry.get("id"))
+                else:
+                    vencidos.append((fire_at, raw_v or "(sin mensaje)", atraso_h))
+                append_sent({**entry, "delivered": False, "atrasado_h": round(atraso_h, 1)})
+                fired += 1
+                continue
+
             # Disparar
             raw = entry.get("message", "(recordatorio sin mensaje)")
             mode = entry.get("mode", "enrich")
@@ -524,6 +580,25 @@ def tick():
                     log.info(f"Recurrente '{rec}' → reencolado para {next_iso}")
         else:
             to_keep.append(entry)
+
+    # Un solo mensaje por todo lo que venció mientras el server no corría, en vez
+    # de una avalancha. Se ordenan del más viejo al más reciente y se dice cuánto
+    # llevaban esperando, que es el dato que permite decidir si todavía importan.
+    if vencidos:
+        vencidos.sort(key=lambda v: v[0])
+        horas = max(v[2] for v in vencidos)
+        cab = (f"🕰 <b>{len(vencidos)} recordatorio(s) vencieron mientras estuve "
+               f"fuera</b>\nNo te los mandé en su momento porque el servidor no "
+               f"estaba corriendo. El más viejo lleva {horas/24:.0f} día(s).\n")
+        cuerpo = []
+        for fa, msg, _h in vencidos[:25]:
+            limpio = " ".join(str(msg).split())[:160]
+            cuerpo.append(f"• <b>{fa:%d-%b %H:%M}</b> — {_html.escape(limpio)}")
+        if len(vencidos) > 25:
+            cuerpo.append(f"… y {len(vencidos) - 25} más (ver reminders/sent.jsonl)")
+        enviado = send_telegram_html(cab + "\n".join(cuerpo))
+        log.info("Resumen de %d recordatorio(s) atrasado(s) → ok=%s",
+                 len(vencidos), enviado)
 
     if fired > 0:
         write_queue(to_keep)

@@ -8,7 +8,11 @@ Documentation=https://github.com/Lbassoco95/nexo-louis
 # antes de que se solapen (~9 min de duración real).
 OnCalendar=*-*-* 00/1:00:00
 RandomizedDelaySec=300
-Persistent=true
+# Sin Persistent: tras una caída larga (el servidor estuvo suspendido por
+# falta de pago tres semanas), systemd dispararía la corrida perdida EN EL
+# ARRANQUE. Corre cada hora; el catch-up solo adelanta una hora y golpea al SJF al arrancar.
+# Un arranque no es el momento de salir a la red con todo al mismo tiempo.
+Persistent=false
 
 [Install]
 WantedBy=timers.target

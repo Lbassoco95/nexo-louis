@@ -1421,3 +1421,74 @@ lanza como subprocess desde `/opt/openclaw/scripts/`. El arreglo de los pendient
 rezagados se subió a git y nunca llegó al runtime — la misma falla que con
 `legal-scrapers/`, dos veces en tres días. Ya está en la lista, y la regla queda
 escrita ahí: **si un archivo se ejecuta desde `$oc/scripts/`, va en esta lista.**
+
+---
+
+## El servidor estaba suspendido por falta de pago
+
+Lo señaló Polo al no poder entrar por SSH, y es la lección metodológica de toda esta
+parte: **el diagnóstico saltó directo al WAF de la SCJN sin comprobar antes si la
+máquina estaba pagada y encendida.** El servidor es de pago mensual. Una suspensión
+explica «dejó de bajar información» sin ningún análisis de seguridad, y se habría
+visto en treinta segundos.
+
+Conviene ser preciso, porque no fue una sola causa:
+
+| | |
+|---|---|
+| 28-ago | última tesis nueva |
+| 10-sep | el log registra los 403 de Incapsula — **la máquina estaba encendida** |
+| 11-sep | último despliegue exitoso |
+| ~12-sep → 1-oct | servidor suspendido; no hay acceso ni por SSH |
+
+El bloqueo del WAF fue real y ocurrió con la máquina corriendo. La suspensión es un
+evento posterior y distinto, que ahora impide hasta diagnosticar. Atribuirlo todo al
+pago sería el error espejo del que ya se cometió.
+
+### `diagnostico-infra.py`: lo barato antes que lo complicado
+
+Comprueba, en orden de costo: arranques en el journal (una suspensión deja huella al
+reiniciar), disco e inodos (un disco lleno hace que SQLite deje de escribir **en
+silencio**), salida a internet contra un destino **neutral** —que separa «no tengo
+red» de «la SCJN me bloquea»—, IP pública, DNS, reloj (un desfase de NTP produce
+**403 idénticos a un bloqueo**), unidades failed, timers atrasados, y la última
+escritura real de cada BD y cada log.
+
+La comprobación que decide: **si TODOS los subsistemas se detuvieron el mismo día, la
+causa es la máquina.** Más un análisis de huecos en el log del scheduler, que escribe
+cada pocos minutos: un hueco largo es tiempo apagado, con fecha.
+
+Al correrlo aparecieron tres defectos propios, todos de la misma familia: sin systemd
+reportaba «unidades en failed» y «reloj no sincronizado» cuando lo que pasaba es que
+no pudo medir, y —peor— decía **«✓ todos los timers han corrido» sin haber leído
+ninguno**. Ahora distingue SIN MEDIR de ESTÁ MAL. La prueba de internet usa tres
+destinos: con uno solo, un host bloqueado se reportaba como «sin internet».
+
+## Que el regreso no sea una avalancha
+
+Con el servidor caído, lo útil es preparar el encendido. Dos cosas lo habrían hecho
+desagradable:
+
+**1. Tres semanas de recordatorios de golpe.** La cola no tenía ninguna guarda de
+antigüedad: cada entrada cuyo `fire_at` ya pasó se dispara en cuanto el scheduler
+arranca. Al volver, semanas de avisos habrían caído juntos en Telegram — justo lo que
+Polo reportó al inicio de esta sesión («sigue enviando mensajes a todas horas»), pero
+esta vez de verdad.
+
+Ahora, pasadas `DONNA_ATRASO_MAX_H` horas (6 por default), un recordatorio deja de
+dispararse solo. **No se tira** —pudo ser un vencimiento importante— sino que se junta
+con los demás en **un solo resumen**, ordenado del más viejo al más nuevo y con la
+antigüedad a la vista, que es el dato con el que se decide si todavía importa. Un
+briefing atrasado sí se descarta: el del día siguiente lo reemplaza entero.
+
+**2. Seis timers con `Persistent=true`.** Tras una caída larga, systemd dispara al
+arrancar la corrida perdida de cada uno. Dos de ellos —`sjf-update` y
+`sjf-backfill`— salen directo contra el SJF, el servicio que ya nos bloqueó. Todos
+repiten dentro de horas o minutos, así que el catch-up no gana nada y cuesta una
+ráfaga a la red en el peor momento. Ninguna unidad hace ya catch-up al arrancar.
+
+7 casos nuevos (221 en total). Verificado que fallan con los dos defectos puestos de
+vuelta — y de paso se corrigió la prueba de la guarda, que al principio fallaba por
+un error de credenciales en vez de por el comportamiento: sin la guarda, un briefing
+viejo en la cola dispara una llamada real al modelo al arrancar, que es otra razón
+para la guarda.

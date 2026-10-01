@@ -5,7 +5,11 @@ Description=Dispara el reporte de avance de descargas legales (cada 4h, el scrip
 # Corre cada 4h; estado_legal.py decide si es hora según schedule adaptativo:
 #   semanas 1-2 → diario · días 15-35 → cada 3 días · día 36+ → semanal
 OnCalendar=*-*-* 00/4:20:00 America/Mexico_City
-Persistent=true
+# Sin Persistent: tras una caída larga (el servidor estuvo suspendido por
+# falta de pago tres semanas), systemd dispararía la corrida perdida EN EL
+# ARRANQUE. Corre cada 4 h, y al volver de una caída mandaría un estado viejo.
+# Un arranque no es el momento de salir a la red con todo al mismo tiempo.
+Persistent=false
 
 [Install]
 WantedBy=timers.target

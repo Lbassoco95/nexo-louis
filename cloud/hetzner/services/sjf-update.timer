@@ -9,7 +9,11 @@ Documentation=https://github.com/Lbassoco95/kawiil-agents
 # siempre al mismo segundo. Job SILENCIOSO: Persistent sí, no molesta a Polo.
 OnCalendar=*-*-* 13:30:00 America/Mexico_City
 RandomizedDelaySec=900
-Persistent=true
+# Sin Persistent: tras una caída larga (el servidor estuvo suspendido por
+# falta de pago tres semanas), systemd dispararía la corrida perdida EN EL
+# ARRANQUE. La siguiente corrida es dentro de 24 h y le pega al SJF, que ya nos bloqueó.
+# Un arranque no es el momento de salir a la red con todo al mismo tiempo.
+Persistent=false
 
 [Install]
 WantedBy=timers.target

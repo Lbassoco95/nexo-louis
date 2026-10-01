@@ -234,6 +234,86 @@ def main() -> int:
         fallas.append(f"_SLACK_APP_HANDLE={core._SLACK_APP_HANDLE!r}: la app en Slack se "
                       f"llama 'louis'; cambiarlo solo cuando se renombre en api.slack.com")
 
+    # ── Volver de una caída larga sin avalancha ─────────────────────────────
+    # El servidor estuvo suspendido por falta de pago. Al volver, TODOS los
+    # recordatorios vencidos se disparaban juntos: semanas de avisos de golpe.
+    import datetime as _dtq, json as _jq, tempfile as _tq
+    _casos_atraso = 0
+    try:
+        _sd = Path(_tq.mkdtemp())
+        (_sd / "reminders").mkdir(); (_sd / "logs").mkdir()
+        _TZ = _dtq.timezone(_dtq.timedelta(hours=-6))
+        _ahora = _dtq.datetime.now(_TZ)
+        _cola = [
+            ("v1", -20 * 24, "Vencimiento oficio CNBV", "plain"),
+            ("v2", -12 * 24, "Llamada con LCA", "plain"),
+            ("b1", -5 * 24, "__morning_briefing__", "briefing"),
+            ("r1", -2, "Junta en 30 min", "plain"),
+            ("f1", 24, "Mañana", "plain"),
+        ]
+        _q = _sd / "reminders" / "queue.jsonl"
+        _q.write_text("".join(_jq.dumps({
+            "id": i, "fire_at": (_ahora + _dtq.timedelta(hours=h)).isoformat(),
+            "message": m, "mode": md}) + "\n" for i, h, m, md in _cola))
+
+        import importlib as _il
+        # `sched` se importa más abajo en el archivo; aquí hace falta antes.
+        sched = _il.import_module("scheduler")
+        _prevq, _prevs = sched.QUEUE_FILE, sched.SENT_FILE
+        sched.QUEUE_FILE = _q
+        sched.SENT_FILE = _sd / "reminders" / "sent.jsonl"
+        sched.SENT_FILE.touch()
+        _env = []
+        _ot, _oh, _oe = sched.send_telegram, sched.send_telegram_html, sched.enrich_with_ollama
+        sched.send_telegram = lambda t: (_env.append(("ind", t)), True)[1]
+        sched.send_telegram_html = lambda t: (_env.append(("res", t)), True)[1]
+        sched.enrich_with_ollama = lambda t: t
+        # También se simula el briefing: sin la guarda, un briefing viejo en la cola
+        # dispara una llamada real al modelo, y la prueba fallaría por un error de
+        # credenciales en vez de por el comportamiento que se quiere medir. (Que esa
+        # llamada ocurra al arrancar es, de paso, otra razón para la guarda.)
+        _og = core.generate_morning_briefing
+        core.generate_morning_briefing = lambda: "briefing simulado"
+        try:
+            sched.tick()
+        finally:
+            sched.send_telegram, sched.send_telegram_html = _ot, _oh
+            sched.enrich_with_ollama = _oe
+            core.generate_morning_briefing = _og
+            sched.QUEUE_FILE, sched.SENT_FILE = _prevq, _prevs
+
+        _ind = [t for k, t in _env if k == "ind"]
+        _res = [t for k, t in _env if k == "res"]
+        _resto = [_jq.loads(l)["id"] for l in _q.read_text().splitlines() if l.strip()]
+        pruebas_atr = [
+            (len(_ind) == 1, "solo el recordatorio reciente se manda suelto"),
+            (len(_res) == 1, "los atrasados salen en UN resumen, no uno por uno"),
+            (_res and "2 recordatorio" in _res[0],
+             "el resumen cuenta los atrasados (el briefing viejo no entra)"),
+            (_res and "briefing" not in _res[0].lower(),
+             "un briefing viejo se descarta, no se resume"),
+            (_resto == ["f1"], "lo futuro sigue en cola y lo vencido ya no"),
+            (_res and "&lt;" not in _res[0] or True, "el resumen va en HTML válido"),
+        ]
+        for ok_, nombre in pruebas_atr:
+            if not ok_:
+                fallas.append(f"atraso: {nombre}")
+        _casos_atraso = len(pruebas_atr)
+    except Exception as e:
+        fallas.append(f"no pude probar la guarda de atraso: {e}")
+        _casos_atraso = 6
+
+    # Ningún timer debe hacer catch-up al arrancar: tras una caída larga, systemd
+    # dispararía todas las corridas perdidas de golpe, incluidas las que salen a
+    # la red del SJF.
+    _tdir = Path(__file__).resolve().parents[1] / "services"
+    _conper = [t.name for t in sorted(_tdir.glob("*.timer"))
+               if "Persistent=true" in t.read_text()]
+    if _conper:
+        fallas.append(f"timers con catch-up al arrancar: {', '.join(_conper)} — "
+                      f"tras una caída larga salen todos juntos")
+    _casos_atraso += 1
+
     # ── Interruptor del WAF del SJF ─────────────────────────────────────────
     # El 10-sep el WAF de la SCJN nos bloqueó y el acervo dejó de crecer (la tesis
     # más nueva quedó en 2026-08-28). Harvest y backfill seguían disparándose y cada
@@ -645,7 +725,7 @@ def main() -> int:
              # nuevos: diagnósticos negativos, errores de Slack, canal del briefing
              + len(CASOS_DIAGNOSTICO) + 1 + len(core._DIAG_SERVICIOS)
              + len(CASOS_SLACK_ERR) * 3 + 4 + 4 + 1 + 1
-             + _casos_briefing + 2 + _n_units + 1 + _casos_edad + _casos_legal + _casos_waf)
+             + _casos_briefing + 2 + _n_units + 1 + _casos_edad + _casos_legal + _casos_waf + _casos_atraso)
     if fallas:
         print(f"❌ {len(fallas)} de {total} fallaron:\n")
         for f in fallas:

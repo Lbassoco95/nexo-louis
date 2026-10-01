@@ -4,7 +4,11 @@ Description=Dispara la generación de PDFs individuales del DOF (tras tener el t
 [Timer]
 OnBootSec=6min
 OnUnitActiveSec=12min
-Persistent=true
+# Sin Persistent: tras una caída larga (el servidor estuvo suspendido por
+# falta de pago tres semanas), systemd dispararía la corrida perdida EN EL
+# ARRANQUE. Corre cada 12 min: el catch-up es irrelevante.
+# Un arranque no es el momento de salir a la red con todo al mismo tiempo.
+Persistent=false
 
 [Install]
 WantedBy=timers.target
