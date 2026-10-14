@@ -1,0 +1,40 @@
+[Unit]
+Description=Biblioteca Legal Kawiil — buscar SJF/DOF, ver PDFs y lo que aprenden los agentes (solo lectura)
+Documentation=https://github.com/Lbassoco95/nexo-louis
+After=network-online.target
+
+[Service]
+Type=simple
+User=@@SYSTEM_USER@@
+Group=@@SYSTEM_USER@@
+WorkingDirectory=@@OPENCLAW_HOME@@
+# Sin EnvironmentFile a propósito: la app no necesita ningún token de @@ENV_FILE@@.
+Environment=BIBLIOTECA_HOST=127.0.0.1
+Environment=BIBLIOTECA_PORT=4050
+Environment=BIBLIOTECA_EMAIL_DOMAIN=kawiil.mx
+ExecStart=/usr/bin/python3 @@OPENCLAW_HOME@@/scripts/biblioteca.py
+Restart=always
+RestartSec=5
+StandardOutput=append:@@OPENCLAW_HOME@@/logs/biblioteca.log
+StandardError=append:@@OPENCLAW_HOME@@/logs/biblioteca.log
+SyslogIdentifier=biblioteca
+
+# Endurecimiento: el sistema de archivos queda en solo lectura salvo el registro de acceso.
+# Si las bases están en modo WAL, SQLite necesita escribir el archivo -shm junto a la base:
+# comprueba con `PRAGMA journal_mode` y, de ser 'wal', agrega @@OPENCLAW_HOME@@/legal/sjf y
+# @@OPENCLAW_HOME@@/legal/dof a ReadWritePaths (la app abre las bases con mode=ro de todos modos).
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ReadWritePaths=@@OPENCLAW_HOME@@/logs
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryMax=768M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

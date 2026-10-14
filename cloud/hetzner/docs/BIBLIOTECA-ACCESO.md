@@ -31,6 +31,24 @@ correo; (D) cabecera falsa del cliente → la app recibe el correo verificado, n
 (E) sesión sin correo + cabecera falsa → la falsa se descarta (la app recibe un texto no válido).
 **No se ha probado todavía con un tenant real de Microsoft.**
 
+## Mientras Microsoft 365 no esté configurado: túnel SSH
+
+La app (`biblioteca.py`, unidad `biblioteca.service`) escucha **solo en `127.0.0.1:4050`**: no
+es accesible desde Internet. Para usarla ya, abre un túnel desde tu Mac:
+
+```bash
+ssh -L 4050:127.0.0.1:4050 polo@louis.kawiil.mx
+```
+
+y mientras esa terminal esté abierta entra a `http://localhost:4050`. Solo entra quien tenga
+acceso SSH al servidor (llave); la app los registra como `local`. **No actives el sitio
+`biblioteca.kawiil.mx` de Caddy sin el inicio de sesión de Microsoft** (pasos abajo): cualquier
+petición que llegue por Caddy sin un correo verificado recibe 401 (la app falla cerrado), pero
+el inicio de sesión es lo que identifica a cada persona.
+
+Estado de agentes e indexación sin abrir el navegador (solo lectura):
+`python3 /opt/openclaw/scripts/biblioteca.py --estado`
+
 ## Lo que necesitas antes
 
 1. **DNS:** un registro `A` de `biblioteca.kawiil.mx` hacia la IP del VPS. Sin esto Caddy no
