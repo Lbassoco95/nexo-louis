@@ -16,6 +16,8 @@ services:
       AGENTS_DOMAIN: ${AGENTS_DOMAIN}
       CEREBRO_DOMAIN: ${CEREBRO_DOMAIN:-cerebro.kawiil.mx}
       CEREBRO_PORT: ${CEREBRO_PORT:-4040}
+      BIBLIOTECA_DOMAIN: ${BIBLIOTECA_DOMAIN:-biblioteca.kawiil.mx}
+      BIBLIOTECA_PORT: ${BIBLIOTECA_PORT:-4050}
       ACME_EMAIL: ${ACME_EMAIL}
       OPENCLAW_PORT: ${OPENCLAW_PORT:-3000}
       # Basic-auth del tablero/dashboards (genera el hash con 'caddy hash-password')
@@ -28,6 +30,52 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+
+  # ── Inicio de sesión con Microsoft 365 para la Biblioteca Legal ─────────────────
+  # Solo arranca con COMPOSE_PROFILES=biblioteca (ver docs/BIBLIOTECA-ACCESO.md): hasta
+  # entonces no se levanta, para no entrar en bucle de reinicios sin credenciales.
+  # Modo "auth-only": Caddy le pregunta (forward_auth) si la sesión es válida; el proxy
+  # nunca sirve contenido. Escucha solo en 127.0.0.1.
+  # OJO: las variables BIBLIOTECA_* no pueden ser obligatorias (${VAR:?}): Compose las evalúa
+  # aunque el perfil esté apagado y rompería el deploy de quien aún no las define.
+  # Si faltan, el contenedor no arranca y lo dice en `docker logs louis-oauth2-proxy`.
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.3
+    container_name: louis-oauth2-proxy
+    profiles: ["biblioteca"]
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      OAUTH2_PROXY_PROVIDER: entra-id
+      OAUTH2_PROXY_OIDC_ISSUER_URL: https://login.microsoftonline.com/${BIBLIOTECA_TENANT_ID:-}/v2.0
+      OAUTH2_PROXY_CLIENT_ID: ${BIBLIOTECA_CLIENT_ID:-}
+      OAUTH2_PROXY_CLIENT_SECRET: ${BIBLIOTECA_CLIENT_SECRET:-}
+      OAUTH2_PROXY_COOKIE_SECRET: ${BIBLIOTECA_COOKIE_SECRET:-}
+      OAUTH2_PROXY_REDIRECT_URL: https://${BIBLIOTECA_DOMAIN:-biblioteca.kawiil.mx}/oauth2/callback
+      OAUTH2_PROXY_WHITELIST_DOMAINS: ${BIBLIOTECA_DOMAIN:-biblioteca.kawiil.mx}
+      OAUTH2_PROXY_HTTP_ADDRESS: 127.0.0.1:4180
+      OAUTH2_PROXY_UPSTREAMS: static://202
+      # Solo cuentas del dominio de Kawiil (además de "Assignment required" en Entra).
+      OAUTH2_PROXY_EMAIL_DOMAINS: ${BIBLIOTECA_EMAIL_DOMAIN:-kawiil.mx}
+      OAUTH2_PROXY_REVERSE_PROXY: "true"
+      OAUTH2_PROXY_SET_XAUTHREQUEST: "true"
+      OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
+      OAUTH2_PROXY_CODE_CHALLENGE_METHOD: S256
+      # offline_access: sin él Microsoft no entrega refresh token, la renovación horaria de la
+      # sesión no puede revalidar a la persona con Entra y una baja tardaría hasta COOKIE_EXPIRE.
+      OAUTH2_PROXY_SCOPE: openid email profile offline_access
+      OAUTH2_PROXY_COOKIE_NAME: __Host-biblioteca
+      OAUTH2_PROXY_COOKIE_SECURE: "true"
+      OAUTH2_PROXY_COOKIE_HTTPONLY: "true"
+      OAUTH2_PROXY_COOKIE_SAMESITE: lax
+      OAUTH2_PROXY_COOKIE_EXPIRE: 8h
+      OAUTH2_PROXY_COOKIE_REFRESH: 1h
+      OAUTH2_PROXY_SILENCE_PING_LOGGING: "true"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   kawiil-agents:
     build:
