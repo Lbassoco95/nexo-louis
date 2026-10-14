@@ -159,7 +159,7 @@ mkdir -p /opt/openclaw/scripts /opt/openclaw/scripts/m365 /opt/openclaw/logs
 # dependen de él fallan en silencio (self_update → ImportError; browser_* → error).
 for svc in louis_core.py telegram-bridge.py slack-bridge.py scheduler.py \
            openclaw_gateway.py self_update.py browser_runner.py cerebro_kawiil_mcp.py \
-           gather_bridge.py; do
+           gather_bridge.py biblioteca.py; do
   if [[ -f "services/${svc}" ]]; then
     install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" "services/${svc}" "/opt/openclaw/scripts/${svc}"
   fi
@@ -190,7 +190,7 @@ ok "Scripts en /opt/openclaw/scripts/"
 # ── 7) Bridges systemd units (Telegram + Slack) ──────────────
 log "[7/8] Instalando units (telegram + slack + scheduler + gateway)"
 ENV_OUT="/opt/openclaw/openclaw.env"
-for unit in telegram-bridge slack-bridge scheduler openclaw-gateway cerebro-kawiil; do
+for unit in telegram-bridge slack-bridge scheduler openclaw-gateway cerebro-kawiil biblioteca; do
   if [[ -f "services/${unit}.service" ]]; then
     sed \
       -e "s|@@SYSTEM_USER@@|${SYSTEM_USER}|g" \
@@ -267,6 +267,16 @@ if [[ -f /opt/openclaw/scripts/scheduler.py ]]; then
   fi
 else
   warn "scheduler.py no copiado — sin recordatorios ni briefing automático"
+fi
+
+# Biblioteca Legal (solo lectura, escucha en 127.0.0.1:4050; entra por Caddy+Microsoft o túnel SSH).
+if [[ -f /opt/openclaw/scripts/biblioteca.py ]]; then
+  systemctl enable --now biblioteca
+  if systemctl is-active --quiet biblioteca; then
+    ok "biblioteca activa en 127.0.0.1:4050 (túnel: ssh -L 4050:127.0.0.1:4050 ${SYSTEM_USER}@<servidor>)"
+  else
+    warn "biblioteca no levantó — journalctl -u biblioteca -n 50"
+  fi
 fi
 
 # Harvester legal SJF — actualiza las tesis del Semanario Judicial (timer diario).
