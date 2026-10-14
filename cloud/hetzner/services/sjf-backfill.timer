@@ -1,0 +1,15 @@
+[Unit]
+Description=SJF backfill histórico — rellena el acervo judicial hacia atrás (cada hora)
+Documentation=https://github.com/Lbassoco95/nexo-louis
+
+[Timer]
+# Cada hora, con margen aleatorio. Con el cursor en 0 (recorrido terminado) cada
+# corrida sale sin hacer peticiones; si se reinicia el cursor, avanza por lotes.
+OnCalendar=*-*-* 00/1:00:00
+RandomizedDelaySec=300
+# Sin Persistent: evita ráfagas de catch-up contra el WAF del SJF tras una caída
+# (mismo criterio que sjf-update.timer).
+Persistent=false
+
+[Install]
+WantedBy=timers.target

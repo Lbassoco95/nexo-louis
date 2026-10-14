@@ -19,10 +19,12 @@ Uso:
     SJF_BACKFILL_FLOOR=1900000 python3 sjf_backfill.py   # no bajar de ese registro
 
 Variables de entorno:
-    SJF_DB_PATH          BD (default /opt/openclaw/legal/sjf/biblioteca.db)
-    BACKFILL_BATCH       descargas reales por corrida (default 800)
-    SJF_BACKFILL_FLOOR   registro mínimo a intentar (default 0 = sin piso)
-    SJF_SCRAPER          ruta al sjf_biblioteca.py (normalize/upsert/mark_404)
+    SJF_DB_PATH            BD (default /opt/openclaw/legal/sjf/biblioteca.db)
+    BACKFILL_BATCH         descargas reales por corrida (default 400; era 800)
+    BACKFILL_THROTTLE_MS   pausa entre peticiones (default 1500; era 400)
+    SJF_BACKFILL_FLOOR     registro mínimo a intentar (default 0 = sin piso)
+    SJF_SCRAPER            ruta al sjf_biblioteca.py (normalize/upsert/mark_404)
+    SJF_HARVEST            ruta al sjf_harvest.py (fetch + interruptor WAF)
 """
 from __future__ import annotations
 
@@ -45,9 +47,12 @@ SCRAPER_PATH = os.environ.get("SJF_SCRAPER") or next(
     "/opt/openclaw/legal/sjf/sjf_biblioteca.py",
 )
 DB_PATH = os.environ.get("SJF_DB_PATH", "/opt/openclaw/legal/sjf/biblioteca.db")
-BATCH = int(os.environ.get("BACKFILL_BATCH", "800"))
+# Ritmo: 800×400 ms ≈ 7k/h; a 1500 ms y lotes de 400 ≈ 2.4k/h (mismo techo que harvest).
+BATCH = int(os.environ.get("BACKFILL_BATCH", "400"))
 FLOOR = int(os.environ.get("SJF_BACKFILL_FLOOR", "0"))
-THROTTLE_MS = 400
+THROTTLE_MS = int(os.environ.get("BACKFILL_THROTTLE_MS", "1500"))
+# Mismo umbral que harvest: 12×403 → anotar interruptor WAF y abortar.
+BLOCK_TOLERANCE_403 = 12
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("sjf_backfill")
@@ -66,7 +71,19 @@ def main() -> int:
     if not Path(HARVEST_PATH).exists():
         log.error("No existe el harvester en %s", HARVEST_PATH)
         return 1
-    harvest = _load(HARVEST_PATH, "sjf_harvest")   # fetch_tesis + _prime
+    harvest = _load(HARVEST_PATH, "sjf_harvest")   # fetch_tesis + _prime + waf_*
+
+    # El mismo interruptor que el harvester: mismo servidor y mismo WAF.
+    if hasattr(harvest, "waf_bloqueado"):
+        _c = sqlite3.connect(DB_PATH)
+        try:
+            espera = harvest.waf_bloqueado(_c)
+        finally:
+            _c.close()
+        if espera:
+            log.warning("%s", espera)
+            return 0
+
     sjf = _load(SCRAPER_PATH, "sjf_biblioteca")    # normalize_tesis + upsert_tesis (+ mark_404)
     harvest._prime()
 
@@ -97,10 +114,10 @@ def main() -> int:
         conn.execute("CREATE TABLE IF NOT EXISTS registros_404 (registro_digital INTEGER PRIMARY KEY, first_seen_at TEXT)")
         conn.commit()
 
-    log.info("Backfill desde %d (piso %d), lote %d. En BD: %d, 404 conocidos: %d",
-             cursor, FLOOR, BATCH, len(present), len(known404))
+    log.info("Backfill desde %d (piso %d), lote %d @ %dms. En BD: %d, 404 conocidos: %d",
+             cursor, FLOOR, BATCH, THROTTLE_MS, len(present), len(known404))
 
-    ok = miss = 0
+    ok = miss = rechazos = consec_403 = 0
     done = 0
     while done < BATCH and cursor > FLOOR:
         cursor -= 1
@@ -113,10 +130,14 @@ def main() -> int:
             sjf.upsert_tesis(conn, t)
             present.add(cursor)
             ok += 1
+            consec_403 = 0
+            if hasattr(harvest, "waf_liberar") and (ok == 1 or not ok % 25):
+                harvest.waf_liberar(conn)
             conn.commit()  # commit por registro → crash-safe
             log.info("[+%d] %d %s | %s", ok, cursor, raw.get("fechaPublicacion", ""),
                      (t.get("rubro") or "")[:55])
         elif st in (404, 410):
+            consec_403 = 0
             if hasattr(sjf, "mark_404"):
                 sjf.mark_404(conn, cursor)
             else:
@@ -126,7 +147,16 @@ def main() -> int:
             miss += 1
             if miss % 50 == 0:
                 conn.commit()
-        # 403/otros: no marcar, reintentar en otra corrida
+        else:
+            # 403/otros: no marcar 404; contar rechazos y activar interruptor WAF
+            rechazos += 1
+            if st == 403:
+                consec_403 += 1
+                if consec_403 >= BLOCK_TOLERANCE_403:
+                    log.error("WAF bloqueando (%d×403). Aborto backfill.", consec_403)
+                    if hasattr(harvest, "waf_marcar"):
+                        harvest.waf_marcar(conn)
+                    break
         time.sleep(THROTTLE_MS / 1000)
 
     conn.execute(
@@ -136,8 +166,13 @@ def main() -> int:
     conn.commit()
     total = conn.execute("SELECT COUNT(*) FROM tesis").fetchone()[0]
     conn.close()
-    log.info("== backfill: +%d nuevas, %d 404. Cursor en %d. Acervo total: %d",
-             ok, miss, cursor, total)
+    log.info("== backfill: +%d nuevas, %d 404, %d rechazos. Cursor en %d. Acervo total: %d",
+             ok, miss, rechazos, cursor, total)
+    if rechazos and rechazos >= max(1, ok + miss) and hasattr(harvest, "waf_marcar"):
+        # Si casi todo fue rechazo y no llegamos al umbral consecutivo (p.ej. intercalado),
+        # no forzar otro marcar aquí: el umbral consecutivo ya cubre el caso típico.
+        log.error("El SJF rechazó %d de %d intentos: esta corrida NO avanzó por "
+                  "BLOQUEO, no por falta de trabajo.", rechazos, ok + miss + rechazos)
     return 0
 
 
