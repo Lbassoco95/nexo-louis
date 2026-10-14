@@ -279,8 +279,8 @@ for f in sjf_harvest.py sjf_weekly_summary.py sjf_biblioteca.py sjf_backfill.py;
     install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" "legal-scrapers/${f}" "/opt/openclaw/legal/sjf/${f}"
   fi
 done
-# update diario + resumen semanal (lunes)
-for unit in sjf-update sjf-weekly; do
+# update diario + resumen semanal (lunes) + backfill histórico (cada hora, lotes chicos)
+for unit in sjf-update sjf-weekly sjf-backfill; do
   if [[ -f "services/${unit}.service" && -f "services/${unit}.timer" ]]; then
     sed -e "s|@@SYSTEM_USER@@|${SYSTEM_USER}|g" -e "s|@@OPENCLAW_HOME@@|/opt/openclaw|g" \
         "services/${unit}.service" > "/etc/systemd/system/${unit}.service"
@@ -289,7 +289,7 @@ for unit in sjf-update sjf-weekly; do
   fi
 done
 systemctl daemon-reload
-for t in sjf-update.timer sjf-weekly.timer; do
+for t in sjf-update.timer sjf-weekly.timer sjf-backfill.timer; do
   if [[ -f "/etc/systemd/system/${t}" ]]; then
     systemctl enable --now "$t"
     systemctl is-active --quiet "$t" && ok "${t} activo" || warn "${t} no levantó — systemctl status ${t}"

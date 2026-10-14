@@ -1,0 +1,34 @@
+[Unit]
+Description=Louis SJF — backfill histórico del acervo (rellena hacia atrás en lotes pequeños)
+Documentation=https://github.com/Lbassoco95/nexo-louis
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@@SYSTEM_USER@@
+Group=@@SYSTEM_USER@@
+WorkingDirectory=@@OPENCLAW_HOME@@/legal/sjf
+Environment=SJF_DB_PATH=@@OPENCLAW_HOME@@/legal/sjf/biblioteca.db
+Environment=SJF_HARVEST=@@OPENCLAW_HOME@@/legal/sjf/sjf_harvest.py
+Environment=SJF_SCRAPER=@@OPENCLAW_HOME@@/legal/sjf/sjf_biblioteca.py
+# Ritmo suave. Con 150 ms y lotes de 3000 (≈7 peticiones/s, el doble en los 404 por el
+# reintento del fetch) el WAF de la SCJN bloqueó al servidor el 10-sep-2026.
+# 800 × ~2.6 s ≈ 35 min por corrida: cabe en TimeoutStartSec.
+Environment=BACKFILL_BATCH=800
+Environment=BACKFILL_THROTTLE_MS=2000
+Environment=SJF_BACKFILL_FLOOR=0
+# Identificarse ante la SCJN en lugar de disfrazarse de navegador (ver sjf_harvest.py).
+Environment="SJF_USER_AGENT=KawiilLegalBot/1.0 (+https://kawiil.mx) investigación jurídica"
+ExecStart=/usr/bin/python3 @@OPENCLAW_HOME@@/legal/sjf/sjf_backfill.py
+StandardOutput=append:@@OPENCLAW_HOME@@/logs/sjf-backfill.log
+StandardError=append:@@OPENCLAW_HOME@@/logs/sjf-backfill.log
+SyslogIdentifier=louis-sjf-backfill
+
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+ReadWritePaths=@@OPENCLAW_HOME@@
+MemoryMax=512M
+TasksMax=64
+TimeoutStartSec=3600
