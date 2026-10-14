@@ -367,7 +367,9 @@ def main():
             try:
                 import gather_bridge
                 r = gather_bridge.run_once()
-                if r and "sin cambios" not in r and "omitido" not in r:
+                partes = r.removeprefix("gather: ").split("|") if r else []
+                # Loguea solo si hubo envío o error (no los "sin cambios" ni el "omitido").
+                if "omitido" not in r and not all(p.strip().endswith("sin cambios") for p in partes):
                     log.info(r)
             except Exception as e:
                 log.warning(f"gather bridge falló: {e}")
