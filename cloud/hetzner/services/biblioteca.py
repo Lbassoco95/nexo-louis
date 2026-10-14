@@ -49,6 +49,7 @@ DOF_PDF_ROOT = Path(os.environ.get("DOF_PDF_DIR", "/opt/openclaw/legal/dof/pdfs"
 KNOWLEDGE = Path(os.environ.get("LEGAL_KNOWLEDGE_BASE", "/opt/openclaw/spaces/general/agents/knowledge"))
 LOUIS_CORE = Path(os.environ.get("LOUIS_CORE_PATH", "/opt/openclaw/scripts/louis_core.py"))
 OLLAMA_MEMORY = Path(os.environ.get("OLLAMA_LEGAL_MEMORY", "/opt/openclaw/spaces/general/OLLAMA_LEGAL_MEMORY.md"))
+BUDGET_FILE = Path(os.environ.get("LEGAL_BG_BUDGET", "/opt/openclaw/state/legal-bg-budget.json"))
 AUDIT_LOG = Path(os.environ.get("BIBLIOTECA_AUDIT_LOG", "/opt/openclaw/logs/biblioteca-access.log"))
 EMAIL_DOMAIN = os.environ.get("BIBLIOTECA_EMAIL_DOMAIN", "kawiil.mx").lower()
 REQUIRE_AUTH = os.environ.get("BIBLIOTECA_REQUIRE_AUTH", "0") == "1"
@@ -214,7 +215,11 @@ def escanear_conocimiento() -> dict:
                     idx = json.loads((d / "index.json").read_text())
                 except Exception:
                     idx = {}
-                agentes[d.name] = {"docs": docs, "index": idx}
+                try:                       # estado del indexador: cursores y universo por flujo
+                    est = json.loads((d / "cursor.json").read_text())
+                except Exception:
+                    est = {}
+                agentes[d.name] = {"docs": docs, "index": idx, "estado": est}
         return {"agentes": agentes, "por_doc": dict(por_doc)}
     return cacheado("conocimiento", 60, leer)
 
@@ -231,6 +236,12 @@ def consulta_or(palabras: list[str]) -> str:
 def universo_agente(nombre: str) -> dict:
     """Documentos de cada base que coinciden con las palabras clave del agente (aprox., vía FTS)."""
     cfg = mapa_agentes().get(nombre) or {}
+    est = (escanear_conocimiento()["agentes"].get(nombre) or {}).get("estado") or {}
+    # El indexador guarda el universo de cada flujo; «texto» incluye a «título», así que es el total.
+    d_ind = (est.get("dof_texto") or {}).get("total")
+    s_ind = [(est.get(k) or {}).get("total") for k in ("sjf_jur_texto", "sjf_ais_texto")]
+    if d_ind is not None or all(x is not None for x in s_ind):
+        return {"dof": d_ind, "sjf": sum(s_ind) if all(x is not None for x in s_ind) else None}
 
     def calc():
         out = {"dof": None, "sjf": None}
@@ -252,6 +263,16 @@ def lineas_aprendizaje(agente: str, n: int = 25) -> list[str]:
         return ls[-n:][::-1]
     except Exception:
         return []
+
+
+def presupuesto_hoy() -> tuple[int | None, int | None]:
+    try:
+        d = json.loads(BUDGET_FILE.read_text())
+        if d.get("fecha") == dt.date.today().isoformat():
+            return int(d.get("docs", 0)), d.get("tope")
+        return 0, d.get("tope")
+    except Exception:
+        return None, None
 
 
 def resumen_agentes() -> list[dict]:
@@ -491,7 +512,10 @@ def p_agentes(quien):
                   f'<td class=num>{n(a["dof"])}<br><span class=aviso>de ~{n(rel_d)} · {cob_d}</span></td>'
                   f'<td class=num>{n(a["sjf"])}<br><span class=aviso>de ~{n(rel_s)} · {cob_s}</span></td>'
                   f'<td>{esc(a["desde"])}<br>{esc(a["hasta"])}</td><td>{esc(a["ultimo"] or "—")}</td></tr>')
-    cuerpo = ("<h1>Agentes</h1><p class=aviso>«Revisados» son los documentos que el agente ya resumió y de los que sacó un aprendizaje. "
+    usados, tope = presupuesto_hoy()
+    hoy = (f'<div class=card>Hoy los agentes han revisado <b>{n(usados)}</b>'
+           + (f' de <b>{n(tope)}</b> documentos permitidos' if tope else ' documentos') + '.</div>') if usados is not None else ""
+    cuerpo = (hoy + "<h1>Agentes</h1><p class=aviso>«Revisados» son los documentos que el agente ya resumió y de los que sacó un aprendizaje. "
               "«De ~N» es cuántos documentos de cada base coinciden con las palabras clave de su área (cálculo aproximado por búsqueda "
               "de texto); la diferencia es lo que falta por revisar.</p>"
               "<table><tr><th>Agente</th><th class=num>DOF revisados</th><th class=num>SJF revisados</th><th>Fechas revisadas</th><th>Última pasada</th></tr>"
@@ -519,8 +543,18 @@ def p_agente(nombre, quien):
                   f'<td><a href="/agentes/{esc(nombre)}/{esc(urllib.parse.quote(d[3], safe=""))}">{esc(d[3])}</a></td></tr>' for d in docs[:150])
     apr = "".join(f"<li>{esc(l[2:])}</li>" for l in lineas_aprendizaje(nombre)) or "<li class=aviso>Sin aprendizajes registrados.</li>"
     cfg = mapa_agentes().get(nombre) or {}
+    est = info.get("estado") or {}
+    nombres = {"sjf_jur_rubro": "SJF · jurisprudencia · palabra en el rubro", "dof_titulo": "DOF · palabra en el título",
+               "sjf_jur_texto": "SJF · jurisprudencia · en el texto", "dof_texto": "DOF · en el texto",
+               "sjf_ais_rubro": "SJF · tesis aisladas · en el rubro", "sjf_ais_texto": "SJF · tesis aisladas · en el texto"}
+    fl = "".join(f"<tr><td>{esc(nombres.get(k, k))}</td><td class=num>{n(v.get('hechos', 0))}</td><td class=num>{n(v.get('total'))}</td>"
+                 f"<td>{'completo' if v.get('fin') else 'avanzando'}{' · ERROR: ' + esc(str(v['error'])) if v.get('error') else ''}</td>"
+                 f"<td>{esc(str(v.get('cursor', ['—'])[0]) if v.get('cursor') else '—')}</td><td>{esc((v.get('actualizado') or '')[:16].replace('T', ' '))}</td></tr>"
+                 for k, v in est.items() if isinstance(v, dict))
+    flujos = (f"<h2>Avance por flujo</h2><table><tr><th>Flujo</th><th class=num>Hechos</th><th class=num>Universo</th><th>Estado</th>"
+              f"<th>Va en la fecha</th><th>Actualizado</th></tr>{fl}</table>") if fl else ""
     cuerpo = (f'<p><a href="/agentes">← Agentes</a></p><h1>{esc(nombre)}</h1><p class=aviso>{esc(cfg.get("label", ""))}</p>'
-              f'<h2>Lo que está aprendiendo (más reciente primero)</h2><div class=card><ul>{apr}</ul></div>'
+              f'{flujos}<h2>Lo que está aprendiendo (más reciente primero)</h2><div class=card><ul>{apr}</ul></div>'
               f'<h2>Documentos revisados ({len(docs):,}; se muestran los 150 más recientes)</h2>'
               f'<table><tr><th>Fuente</th><th>Fecha</th><th>Documento</th></tr>{lis}</table>')
     return pagina(nombre, cuerpo, "/agentes", quien)
@@ -751,6 +785,9 @@ def cli_estado() -> int:
     e = estado()
     print(f"SJF: {n(e['sjf_total'])} tesis ({n(e['sjf_jur'])} jurisprudencias) · última {e['sjf_ultima']} · PDF servidor {n(e['sjf_pdf'])}")
     print(f"DOF: {n(e['dof_validas'])} notas · última {e['dof_ultima']} · PDF {n(e['dof_pdf'])} (pendientes {n(e['dof_pdf_pend'])})")
+    u, t = presupuesto_hoy()
+    if u is not None:
+        print(f"Presupuesto de hoy: {u:,} documentos revisados" + (f" de {t:,} permitidos" if t else ""))
     print(f"\n{'agente':22} {'DOF rev.':>9} {'de ~':>9} {'SJF rev.':>9} {'de ~':>9}  fechas revisadas            última pasada")
     for a in resumen_agentes():
         u = universo_agente(a["nombre"])
