@@ -935,7 +935,10 @@ def build_nota_pdf(nota_row: sqlite3.Row, texto_plano: str) -> Path | None:
     def _esc(s):
         if not s:
             return ""
-        return re.sub(r"&(?!(?:amp|lt|gt|quot|apos);)", "&amp;", s)
+        # ReportLab interpreta <...> como marcado: un "<" suelto en el texto de una nota
+        # ("a < b", etiquetas truncadas) rompe el Paragraph. Escapar también < y >.
+        s = re.sub(r"&(?!(?:amp|lt|gt|quot|apos);)", "&amp;", s)
+        return s.replace("<", "&lt;").replace(">", "&gt;")
 
     # Frame
     frame = Frame(15 * mm, 22 * mm, A4[0] - 30 * mm, A4[1] - 46 * mm,
@@ -995,7 +998,11 @@ def build_nota_pdf(nota_row: sqlite3.Row, texto_plano: str) -> Path | None:
                 story.append(Paragraph(_esc(parrafo), body_st))
             except Exception:
                 # Si reportlab falla por chars exóticos, parsea el escape
-                story.append(Paragraph(_esc(parrafo.encode("ascii", errors="ignore").decode()), body_st))
+                try:
+                    story.append(Paragraph(_esc(parrafo.encode("ascii", errors="ignore").decode()), body_st))
+                except Exception:
+                    # Último recurso: sin marcado alguno. Un párrafo malo no debe tumbar la nota.
+                    story.append(Paragraph(re.sub(r"[<>&]", " ", parrafo.encode("ascii", errors="ignore").decode()), body_st))
     else:
         story.append(Paragraph("<i>Contenido no descargado. Visite el enlace oficial.</i>",
                                body_st))
@@ -1567,7 +1574,11 @@ def cmd_generate_pdfs(batch: int = 500):
 
     ok = err = 0
     for i, row in enumerate(rows, 1):
-        pdf_file = build_nota_pdf(row, row["texto_plano"] or "")
+        try:
+            pdf_file = build_nota_pdf(row, row["texto_plano"] or "")
+        except Exception as e:  # una nota mala no debe tumbar el lote completo
+            log.warning("generate-pdfs: nota %s falló: %s", row["cod_nota"], e)
+            pdf_file = None
         if pdf_file:
             conn.execute(
                 "UPDATE notas SET pdf_path=? WHERE cod_nota=?",
