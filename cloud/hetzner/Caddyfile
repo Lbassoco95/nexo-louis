@@ -109,3 +109,55 @@
         }
     }
 }
+
+# ── Biblioteca Legal (SJF + DOF + agentes) ──────────────────
+# Acceso del equipo de Kawiil con cuenta Microsoft 365 (oauth2-proxy, ver
+# docs/BIBLIOTECA-ACCESO.md). Falla CERRADO: si oauth2-proxy no responde, nadie entra.
+# La app (biblioteca.py) escucha solo en 127.0.0.1:BIBLIOTECA_PORT y es de solo lectura.
+{$BIBLIOTECA_DOMAIN} {
+    encode zstd gzip
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options    "nosniff"
+        # SAMEORIGIN (no DENY): la ficha de cada tesis incrusta su PDF.
+        X-Frame-Options           "SAMEORIGIN"
+        Referrer-Policy           "no-referrer"
+        Permissions-Policy        "camera=(), microphone=(), geolocation=()"
+        -Server
+    }
+
+    # Endpoints del propio oauth2-proxy (inicio de sesión, callback, cierre de sesión).
+    handle /oauth2/* {
+        reverse_proxy 127.0.0.1:4180 {
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-Uri {uri}
+        }
+    }
+
+    # Todo lo demás exige sesión válida; sin ella, redirige al inicio de sesión.
+    handle {
+        forward_auth 127.0.0.1:4180 {
+            uri /oauth2/auth
+            header_up X-Real-IP {remote_host}
+            copy_headers X-Auth-Request-User X-Auth-Request-Email
+            @sin_sesion status 401
+            handle_response @sin_sesion {
+                redir * /oauth2/start?rd={http.request.uri.path} 302
+            }
+        }
+        reverse_proxy 127.0.0.1:{$BIBLIOTECA_PORT} {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    log {
+        output file /data/logs/biblioteca.log {
+            roll_size 10mb
+            roll_keep 5
+            roll_keep_for 720h
+        }
+    }
+}
