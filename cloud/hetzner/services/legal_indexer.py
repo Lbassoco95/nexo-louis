@@ -48,6 +48,7 @@ FLUJOS = (
 TOTAL_TTL_S = 6 * 3600          # cada cuánto se recalcula el universo (consultas de conteo)
 VENTANA_DIAS = 90               # ventana reciente que se revisa en cada pasada
 LOTE = 40
+MAX_FALLOS = 3                  # tras tantos fallos del resumidor se guarda el texto original y se sigue
 
 
 # ── utilidades ───────────────────────────────────────────────────────────────
@@ -132,6 +133,7 @@ class Flujo:
         self.q = q
         self.cutoff = (dt.date.today() - dt.timedelta(days=ventana_dias)).isoformat()
         self._cola: list = []          # filas del cursor ya leídas, aún no entregadas
+        self.ids_ventana: set = set()  # candidatos que salieron de la ventana reciente (no del cursor)
         self._ventana: list | None = None
 
         if fuente == "dof":
@@ -162,6 +164,12 @@ class Flujo:
     def _id(self, fila) -> str:
         return f"{self.fuente}-{fila['id']}"
 
+    def rebobinar(self, k, ident) -> None:
+        """Deja el cursor justo por encima de la fila (k, ident) para volver a examinarla."""
+        c = (k, ident + 1)
+        if self.cursor is None or c > self.cursor:
+            self.cursor, self.fin, self._cola = c, False, []
+
     def siguiente(self):
         """Siguiente fila NO indexada: primero la ventana reciente, luego el cursor hacia atrás."""
         if not self.activo:
@@ -173,6 +181,7 @@ class Flujo:
             while self._ventana:
                 f = self._ventana.pop(0)
                 if self._id(f) not in self.ya:
+                    self.ids_ventana.add(self._id(f))
                     return f
             while not self.fin:
                 if not self._cola:
@@ -250,21 +259,39 @@ def indexar_agente(agente: str, cfg: dict, kdir: Path, docs_dir: Path, dof_conn,
         fl, f = par
         titulo = f["titulo"] or ("(sin título)" if fl.fuente == "dof" else "(sin rubro)")
         try:
-            return summarize(agente, titulo, f["fecha"] or "", fl.fuente.upper(), f["texto"] or "")
-        except Exception as e:                           # nunca perder la pasada por un documento
+            r = summarize(agente, titulo, f["fecha"] or "", fl.fuente.upper(), f["texto"] or "")
+            if not r or not str(r[0]).strip():
+                raise ValueError("resumen vacío")
+            return r
+        except Exception as e:             # un fallo NO se guarda como conocimiento: se reintenta
             if log:
-                log.warning("indexer: resumen falló (%s %s): %s", agente, fl._id(f), e)
-            return (str(f["texto"] or "")[:800] + "…", titulo[:150])
+                log.warning("indexer: resumen falló (%s %s): %s", agente, fl._id(f), str(e)[:160])
+            return None
 
-    nuevos = errores = 0
+    fallos = estado.setdefault("_fallos", {})
+    nuevos = errores = fallidos = degradados = 0
     por_flujo: dict = {}
     if candidatos:
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
             resultados = list(pool.map(tarea, candidatos))
-        for (fl, f), (resumen, aprendizaje) in zip(candidatos, resultados):
+        for (fl, f), res in zip(candidatos, resultados):
+            did = fl._id(f)
+            titulo = f["titulo"] or ("(sin título)" if fl.fuente == "dof" else "(sin rubro)")
+            if res is None:
+                n = fallos.get(did, 0) + 1
+                if n < MAX_FALLOS:
+                    fallos[did] = n
+                    fallidos += 1
+                    if did not in fl.ids_ventana:      # lo del cursor se vuelve a examinar; la ventana ya lo repite
+                        fl.rebobinar(f["k"], f["id"])
+                    continue
+                fallos.pop(did, None)                  # 3.er fallo: texto original marcado, para no bloquear el avance
+                degradados += 1
+                res = (f"⚠️ Resumen automático no disponible (el resumidor falló {n} veces). "
+                       f"Inicio del texto original:\n\n{str(f['texto'] or '')[:800]}…", None)
+            resumen, aprendizaje = res
             try:
                 fe = fecha10(f["fecha"])
-                titulo = f["titulo"] or ("(sin título)" if fl.fuente == "dof" else "(sin rubro)")
                 if fl.fuente == "dof":
                     cab = (f"# {titulo}\n**Fuente:** DOF | **Fecha:** {f['fecha']} | "
                            f"**Tipo:** {f['tipo'] or '?'} | **ID:** {f['id']}\n\n")
@@ -277,14 +304,16 @@ def indexar_agente(agente: str, cfg: dict, kdir: Path, docs_dir: Path, dof_conn,
                 tmp = destino.with_suffix(".md.tmp")
                 tmp.write_text(cab + resumen + "\n", encoding="utf-8")
                 tmp.replace(destino)
-                append_memory(agente, cfg.get("label", fl.fuente.upper()), f["fecha"] or "", titulo, aprendizaje)
-                ya.add(fl._id(f))
+                if aprendizaje:                        # lo degradado no contamina la memoria de Ollama
+                    append_memory(agente, cfg.get("label", fl.fuente.upper()), f["fecha"] or "", titulo, aprendizaje)
+                fallos.pop(did, None)
+                ya.add(did)
                 nuevos += 1
                 por_flujo[fl.nombre] = por_flujo.get(fl.nombre, 0) + 1
             except Exception as e:
                 errores += 1
                 if log:
-                    log.warning("indexer: no pude escribir %s %s: %s", agente, fl._id(f), e)
+                    log.warning("indexer: no pude escribir %s %s: %s", agente, did, e)
 
     # Cursores y estado visibles (la biblioteca los lee para mostrar el avance)
     for fl in flujos:
@@ -302,6 +331,8 @@ def indexar_agente(agente: str, cfg: dict, kdir: Path, docs_dir: Path, dof_conn,
         if log:
             log.warning("indexer: no pude guardar cursor.json de %s: %s", agente, e)
 
-    return {"nuevos": nuevos, "errores": errores, "por_flujo": por_flujo,
+    api_caida = len(candidatos) >= 3 and fallidos >= max(3, (len(candidatos) + 1) // 2)
+    return {"nuevos": nuevos, "errores": errores, "fallidos": fallidos, "degradados": degradados,
+            "api_caida": api_caida, "por_flujo": por_flujo,
             "agotados": [f.nombre for f in flujos if f.fin], "indexados_antes": ya_antes,
             "indexados_ahora": len(ya), "errores_flujo": {f.nombre: f.error for f in flujos if f.error}}

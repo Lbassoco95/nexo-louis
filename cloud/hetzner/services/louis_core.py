@@ -4467,6 +4467,7 @@ LEGAL_BG_DAILY_MAX = int(os.environ.get("LEGAL_BG_DAILY_MAX", "1500"))    # tope
 LEGAL_BG_WORKERS = int(os.environ.get("LEGAL_BG_WORKERS", "3"))           # resúmenes en paralelo
 LEGAL_BG_BUDGET = HOME_OC / "state" / "legal-bg-budget.json"
 _legal_bg_lock = _threading.Lock()
+_legal_bg_pausa_hasta = 0.0            # epoch hasta el que el indexador de fondo está en pausa (DeepSeek caído)
 KNOWLEDGE_CONTEXT_DOCS = 5     # docs que se inyectan en cada invocación de agente
 # Rotation state: qué agente fue el último en indexarse en background
 LEGAL_BG_ROTATION = HOME_OC / "state" / "legal-bg-rotation.json"
@@ -4556,6 +4557,10 @@ def _knowledge_save_index(agente: str, idx: dict):
     idx_file.write_text(json.dumps(idx, ensure_ascii=False, indent=2))
 
 
+_LLM_ERROR_PREFIXES = ("(error DeepSeek", "(error llamando a DeepSeek", "(sin respuesta de DeepSeek",
+                       "(respuesta vacía de DeepSeek")
+
+
 def _summarize_for_knowledge(agente: str, titulo: str, fecha: str, fuente: str,
                              texto: str) -> tuple[str, str]:
     """
@@ -4580,23 +4585,22 @@ def _summarize_for_knowledge(agente: str, titulo: str, fecha: str, fuente: str,
         f"Responde en español de México. No repitas el título en la parte 1."
     )
     prompt = f"Fuente: {fuente} | Fecha: {fecha}\nTítulo: {titulo}\n\n{texto[:5000]}"
-    try:
-        resumen_raw = call_deepseek(system, [], prompt)
-        if resumen_raw and "|||OLLAMA|||" in resumen_raw:
-            partes = resumen_raw.split("|||OLLAMA|||", 1)
-            resumen = partes[0].strip()
-            aprendizaje = partes[1].strip()[:300]
-        elif resumen_raw:
-            # DeepSeek no siguió el formato — tomar todo como resumen, extractar inicio
-            resumen = resumen_raw.strip()
-            aprendizaje = resumen[:200].rstrip(".") + "."
-        else:
-            resumen = texto[:800] + "…"
-            aprendizaje = titulo[:150]
-    except Exception as e:
-        log.warning(f"DeepSeek summarize falló ({agente}): {e}")
-        resumen = texto[:800] + "…"
-        aprendizaje = titulo[:150]
+    # call_deepseek NO lanza ante un fallo: devuelve un texto como "(error DeepSeek HTTP 429: ...)".
+    # Antes ese texto se guardaba como si fuera el resumen y el documento quedaba «indexado» para
+    # siempre con un mensaje de error como conocimiento. Ahora se lanza y el indexador reintenta.
+    resumen_raw = call_deepseek(system, [], prompt)
+    if not resumen_raw or resumen_raw.startswith(_LLM_ERROR_PREFIXES):
+        raise RuntimeError((resumen_raw or "sin respuesta")[:160])
+    if "|||OLLAMA|||" in resumen_raw:
+        partes = resumen_raw.split("|||OLLAMA|||", 1)
+        resumen = partes[0].strip()
+        aprendizaje = partes[1].strip()[:300]
+    else:
+        # DeepSeek no siguió el formato — tomar todo como resumen, extractar inicio
+        resumen = resumen_raw.strip()
+        aprendizaje = resumen[:200].rstrip(".") + "."
+    if not resumen:
+        raise RuntimeError("resumen vacío")
     return resumen, aprendizaje
 
 
@@ -4691,6 +4695,10 @@ def _legal_indexar_agente(agente: str, forzar: bool = False, limite: int = 30,
                 pass
 
     nuevos, errores = r["nuevos"], r["errores"]
+    global _legal_bg_pausa_hasta
+    if r.get("api_caida") and background:
+        _legal_bg_pausa_hasta = time.time() + 1800
+        log.warning(f"legal bg: DeepSeek falló en {r['fallidos']} documentos de {agente}; pausa de 30 min")
     if background:
         LI.gastar(LEGAL_BG_BUDGET, nuevos, LEGAL_BG_DAILY_MAX)
     if nuevos > 0:
@@ -4706,10 +4714,12 @@ def _legal_indexar_agente(agente: str, forzar: bool = False, limite: int = 30,
     _knowledge_save_index(agente, idx)
 
     if background:
-        return f"{agente}:+{nuevos}" if nuevos else f"{agente}:al-día"
+        estado = (f"{agente}:+{nuevos}" if nuevos else
+                  (f"{agente}:sin-avance" if r.get("fallidos") else f"{agente}:al-día"))
+        return estado + (f" (fallos del resumidor: {r['fallidos']})" if r.get("fallidos") else "")
     return (
         f"✅ Indexación {agente} completada:\n"
-        f"  • Nuevos: {nuevos} | Errores: {errores}\n"
+        f"  • Nuevos: {nuevos} | Errores: {errores + r.get('fallidos', 0)}\n"
         f"  • Total en knowledge: {total_docs}\n"
         f"  • Área: {cfg.get('label', '?')}"
     )
@@ -4873,6 +4883,8 @@ def _legal_bg_worker(limite: int):
                 log.info(f"legal bg [{tipo}]: {r}")
             except Exception as e:
                 log.warning(f"legal bg {tipo} {agente}: {e}")
+            if time.time() < _legal_bg_pausa_hasta:
+                break
     except Exception as e:
         log.warning(f"legal bg worker: {e}")
     finally:
@@ -4887,6 +4899,8 @@ def _legal_indexar_background_tick(limite: int = 10) -> str:
     Candado: nunca dos pasadas a la vez. Presupuesto: LEGAL_BG_DAILY_MAX documentos al día.
     """
     lim = LEGAL_BG_LIMIT if LEGAL_BG_LIMIT > 0 else limite
+    if time.time() < _legal_bg_pausa_hasta:
+        return "bg: en pausa por fallos de DeepSeek"
     if not _legal_bg_lock.acquire(blocking=False):
         return "bg: pasada anterior aún en curso"
     try:

@@ -16,6 +16,7 @@ invoca y mantiene el candado, la rotación y el presupuesto.
 | Sin prioridad | Daba igual una tesis aislada que una jurisprudencia, o una mención perdida que una coincidencia en el título | 6 flujos ponderados: jurisprudencia/título primero, luego texto, luego tesis aisladas (cada flujo conserva turnos, nada se muere de hambre) |
 | Memoria de «ya indexados» al azar | `list(already_indexed)[-500:]` sobre un conjunto sin orden: pasado el tope repetía y volvía a cobrar documentos | La verdad es la carpeta `docs/` del agente (el id numérico al final del nombre del archivo) |
 | Sin presupuesto, bloqueaba al scheduler | Cada documento es una llamada a DeepSeek y se hacía dentro del hilo del scheduler | Tope diario de documentos, pasada en un hilo aparte con candado (nunca dos a la vez) y resúmenes en paralelo |
+| Mensajes de error guardados como conocimiento | `call_deepseek` no lanza ante un fallo: devuelve un texto como `(error DeepSeek HTTP 429: ...)`, y `_summarize_for_knowledge` lo trataba como el resumen: el documento quedaba «indexado» con un mensaje de error y el error entraba a la memoria de Ollama | El resumidor lanza; el documento queda pendiente, el cursor retrocede y se reintenta. Tras 3 fallos se guarda el texto original marcado «Resumen automático no disponible» (sin tocar la memoria de Ollama). Si fallan la mitad o más de una pasada, el indexador de fondo se pausa 30 min |
 | Notas nuevas del DOF invisibles | `update` no clasifica y ningún timer del servidor ejecutaba `classify`: las notas posteriores a ~5-jun quedan con `incluido=NULL`, no se les baja texto, ni las indexan los agentes ni salen en la Biblioteca | `dof-harvest.service` ejecuta `classify` tras `update` |
 
 ## Parámetros (en `/opt/openclaw/openclaw.env`)
@@ -81,9 +82,29 @@ Tras clasificar, `dof-contents` (cada 8 min) descarga el texto de lo recién inc
 
 **Reversa:** `sudo cp louis_core.py.bak-<fecha> louis_core.py && sudo systemctl restart scheduler`.
 
+## Limpiar lo que el defecto anterior pudo dejar
+
+Documentos cuyo «resumen» es un mensaje de error de DeepSeek (y líneas equivalentes en la memoria
+de Ollama). Primero **solo cuenta**:
+
+```bash
+K=/opt/openclaw/spaces/general/agents/knowledge
+grep -rlE "^\((error (llamando a )?DeepSeek|sin respuesta de DeepSeek|respuesta vacía de DeepSeek)" $K/*/docs | wc -l
+grep -cE "\((error (llamando a )?DeepSeek|sin respuesta de DeepSeek|respuesta vacía de DeepSeek)" /opt/openclaw/spaces/general/OLLAMA_LEGAL_MEMORY.md
+```
+
+Si hay, bórralos y reinicia el cursor de los agentes afectados para que se vuelvan a resumir (lo ya
+resumido bien no se repite: la verdad es la carpeta `docs/`):
+
+```bash
+grep -rlE "^\((error (llamando a )?DeepSeek|sin respuesta de DeepSeek|respuesta vacía de DeepSeek)" $K/*/docs | xargs -r rm -v
+rm -f $K/*/cursor.json
+sed -i -E '/\((error (llamando a )?DeepSeek|sin respuesta de DeepSeek|respuesta vacía de DeepSeek)/d' /opt/openclaw/spaces/general/OLLAMA_LEGAL_MEMORY.md
+```
+
 ## Pruebas
 
 `python3 cloud/hetzner/tests/test_legal_indexer.py` (bases sintéticas con los esquemas reales; sin
 red ni DeepSeek): progreso hasta cubrir el 100 % del universo, notas sin clasificar excluidas,
-publicaciones nuevas y tardías, idempotencia, recuperación sin `cursor.json`, resumidor caído,
-BD ausente, palabras clave hostiles y presupuesto.
+publicaciones nuevas y tardías, idempotencia, recuperación sin `cursor.json`, resumidor caído
+(reintento y degradación tras 3 fallos), BD ausente, palabras clave hostiles y presupuesto.

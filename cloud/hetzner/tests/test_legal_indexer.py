@@ -58,7 +58,7 @@ d.close(); s.close()
 assert len(ids) == uni, (len(ids), uni)
 assert not any(i.startswith("dof-") and int(i[4:]) > 1800 for i in ids), "indexó notas sin clasificar"
 assert len(llamadas) == len(set(llamadas)), "resumió dos veces el mismo documento"
-assert all(v["fin"] for v in json.loads((kdir / "cursor.json").read_text()).values())
+assert all(v["fin"] for k, v in json.loads((kdir / "cursor.json").read_text()).items() if not k.startswith("_"))
 
 # 2) Idempotencia y recuperación: sin cursor.json no se re-indexa nada (la verdad es docs/)
 n0, l0 = len(ids), len(llamadas); (kdir / "cursor.json").unlink()
@@ -76,12 +76,38 @@ assert pasada()["nuevos"] == 2 and {"dof-900000", "dof-900001"} <= LI.ids_indexa
 assert {"sjf-999991", "sjf-999992"} <= LI.ids_indexados(docs) and len(LI.ids_indexados(docs)) > 500
 
 # 5) Resumidor caído, BD ausente, palabras clave hostiles, agente sin palabras clave
-shutil.rmtree(docs); (kdir / "cursor.json").unlink(missing_ok=True)
-def malo(*a): raise RuntimeError("DeepSeek caído")
+shutil.rmtree(docs, ignore_errors=True); (kdir / "cursor.json").unlink(missing_ok=True)
 d, s = ro(W / "dof.db"), ro(W / "sjf.db")
-r = LI.indexar_agente("kawiil-x", cfg, kdir, docs, d, s, summarize=malo, append_memory=lambda *a: None, limite=5, log=logging.getLogger("t"))
-assert r["nuevos"] == 5 and r["errores"] == 0
-shutil.rmtree(docs); (kdir / "cursor.json").unlink(missing_ok=True)
+# 5a) DeepSeek caído: NO se guarda un "resumen" de relleno, el cursor retrocede y se reintenta
+estado_api = {"ok": False}; mem = []
+def resumidor(ag, t, f, fu, tx):
+    if not estado_api["ok"]:
+        raise RuntimeError("DeepSeek caído")
+    return (f"Resumen {t}", f"Aprendizaje {t[:20]}")
+def correr(limite=6):
+    return LI.indexar_agente("kawiil-x", cfg, kdir, docs, d, s, summarize=resumidor, append_memory=lambda *a: mem.append(a),
+                             limite=limite, log=logging.getLogger("t"))
+r = correr(); assert r["nuevos"] == 0 and r["fallidos"] == 6 and r["api_caida"] and not list(docs.glob("*.md")), r
+assert not mem, "un fallo no debe contaminar la memoria de Ollama"
+estado_api["ok"] = True                                # DeepSeek vuelve: los mismos 6 documentos se reintentan
+r = correr(); assert r["nuevos"] == 6 and r["fallidos"] == 0 and len(LI.ids_indexados(docs)) == 6, r
+assert len(mem) == 6
+# 5b) un documento que falla SIEMPRE: tras MAX_FALLOS se guarda el texto original marcado y el avance sigue
+shutil.rmtree(docs, ignore_errors=True); (kdir / "cursor.json").unlink(missing_ok=True); mem.clear()
+primero = {}
+def resumidor_tozudo(ag, t, f, fu, tx):
+    primero.setdefault("t", t)
+    if t == primero["t"]:
+        raise RuntimeError("este documento siempre falla")
+    return (f"Resumen {t}", f"Aprendizaje {t[:20]}")
+for _ in range(LI.MAX_FALLOS):
+    r = LI.indexar_agente("kawiil-x", cfg, kdir, docs, d, s, summarize=resumidor_tozudo, append_memory=lambda *a: mem.append(a), limite=4, log=logging.getLogger("t"))
+degradados = [p for p in docs.glob("*.md") if "Resumen automático no disponible" in p.read_text()]
+assert len(degradados) == 1 and r["degradados"] == 1, (degradados, r)
+assert len(mem) == len(list(docs.glob("*.md"))) - 1, "el documento degradado no debe aportar a la memoria"
+assert "_fallos" in json.loads((kdir / "cursor.json").read_text())
+shutil.rmtree(docs, ignore_errors=True); (kdir / "cursor.json").unlink(missing_ok=True)
+shutil.rmtree(docs, ignore_errors=True); (kdir / "cursor.json").unlink(missing_ok=True)
 r = LI.indexar_agente("kawiil-x", cfg, kdir, docs, None, s, summarize=resumir, append_memory=lambda *a: None, limite=10, log=logging.getLogger("t"))
 assert r["nuevos"] == 10 and not any(k.startswith("dof") for k in r["por_flujo"])
 hostil = {"label": "h", "dof": ['persona "moral"', "a' OR 1=1 --", "(((", "NOT", ""], "sjf": []}

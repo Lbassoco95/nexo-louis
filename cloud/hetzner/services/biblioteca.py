@@ -550,7 +550,7 @@ def p_agente(nombre, quien):
     fl = "".join(f"<tr><td>{esc(nombres.get(k, k))}</td><td class=num>{n(v.get('hechos', 0))}</td><td class=num>{n(v.get('total'))}</td>"
                  f"<td>{'completo' if v.get('fin') else 'avanzando'}{' · ERROR: ' + esc(str(v['error'])) if v.get('error') else ''}</td>"
                  f"<td>{esc(str(v.get('cursor', ['—'])[0]) if v.get('cursor') else '—')}</td><td>{esc((v.get('actualizado') or '')[:16].replace('T', ' '))}</td></tr>"
-                 for k, v in est.items() if isinstance(v, dict))
+                 for k, v in est.items() if isinstance(v, dict) and not k.startswith('_'))
     flujos = (f"<h2>Avance por flujo</h2><table><tr><th>Flujo</th><th class=num>Hechos</th><th class=num>Universo</th><th>Estado</th>"
               f"<th>Va en la fecha</th><th>Actualizado</th></tr>{fl}</table>") if fl else ""
     cuerpo = (f'<p><a href="/agentes">← Agentes</a></p><h1>{esc(nombre)}</h1><p class=aviso>{esc(cfg.get("label", ""))}</p>'
