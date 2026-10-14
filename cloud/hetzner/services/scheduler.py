@@ -361,6 +361,17 @@ def main():
         except Exception as e:
             log.warning(f"auto-memoria tick falló: {e}")
 
+        # Gather Smart Object (Bot Status Monitor): refleja el estado de Louis cada ~5 min.
+        # Solo envía si cambió; silencioso si no hay GATHER_STATUS_URL/SECRET.
+        if tick_count % 5 == 0:
+            try:
+                import gather_bridge
+                r = gather_bridge.run_once()
+                if r and "sin cambios" not in r and "omitido" not in r:
+                    log.info(r)
+            except Exception as e:
+                log.warning(f"gather bridge falló: {e}")
+
         # Chequeos intradía (Fase 3): a las 13:00 y 18:00 CDMX, empuja seguimiento SOLO
         # si hay algo abierto (vencimientos de hoy, entregables listo, briefs). Una vez
         # por slot/día. Silencioso si no hay nada que reportar.

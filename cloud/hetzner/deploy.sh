@@ -158,11 +158,23 @@ mkdir -p /opt/openclaw/scripts /opt/openclaw/scripts/m365 /opt/openclaw/logs
 # TODOS los .py que el runtime importa o ejecuta. Si falta alguno, las tools que
 # dependen de él fallan en silencio (self_update → ImportError; browser_* → error).
 for svc in louis_core.py telegram-bridge.py slack-bridge.py scheduler.py \
-           openclaw_gateway.py self_update.py browser_runner.py cerebro_kawiil_mcp.py; do
+           openclaw_gateway.py self_update.py browser_runner.py cerebro_kawiil_mcp.py \
+           gather_bridge.py; do
   if [[ -f "services/${svc}" ]]; then
     install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" "services/${svc}" "/opt/openclaw/scripts/${svc}"
   fi
 done
+# Puente Gather (Smart Object Bot Status Monitor): helper Node + SDK oficial.
+if [[ -d services/gather ]]; then
+  mkdir -p /opt/openclaw/scripts/gather
+  install -m 0644 -o "$SYSTEM_USER" -g "$SYSTEM_USER" services/gather/package.json services/gather/send.mjs /opt/openclaw/scripts/gather/
+  if command -v npm >/dev/null 2>&1; then
+    (cd /opt/openclaw/scripts/gather && sudo -u "$SYSTEM_USER" npm install --omit=dev --silent) \
+      || warn "npm install del puente Gather falló — Gather no se actualizará"
+  else
+    warn "npm no disponible — puente Gather desactivado"
+  fi
+fi
 if [[ -f "services/m365.py" ]]; then
   install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" "services/m365.py" "/opt/openclaw/scripts/m365/m365.py"
 fi
