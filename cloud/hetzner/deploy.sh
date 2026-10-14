@@ -273,14 +273,14 @@ fi
 # Causa raíz del estancamiento (jun-2026): no existía timer y el scraper no usaba
 # el parámetro ?isSemanal=true. Aquí instalamos el harvester corregido + su timer.
 log "[7b] Instalando harvester SJF + timer diario"
-mkdir -p /opt/openclaw/legal/sjf /opt/openclaw/legal/dof/pdfs /opt/openclaw/logs
-for f in sjf_harvest.py sjf_weekly_summary.py sjf_biblioteca.py sjf_backfill.py; do
+mkdir -p /opt/openclaw/legal/sjf /opt/openclaw/legal/sjf/pdfs /opt/openclaw/legal/dof/pdfs /opt/openclaw/logs
+for f in sjf_harvest.py sjf_weekly_summary.py sjf_biblioteca.py sjf_backfill.py sjf_pdfs.py; do
   if [[ -f "legal-scrapers/${f}" ]]; then
     install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" "legal-scrapers/${f}" "/opt/openclaw/legal/sjf/${f}"
   fi
 done
 # update diario + resumen semanal (lunes) + backfill histórico (cada hora, lotes chicos)
-for unit in sjf-update sjf-weekly sjf-backfill; do
+for unit in sjf-update sjf-weekly sjf-backfill sjf-pdfs; do
   if [[ -f "services/${unit}.service" && -f "services/${unit}.timer" ]]; then
     sed -e "s|@@SYSTEM_USER@@|${SYSTEM_USER}|g" -e "s|@@OPENCLAW_HOME@@|/opt/openclaw|g" \
         "services/${unit}.service" > "/etc/systemd/system/${unit}.service"
@@ -289,7 +289,7 @@ for unit in sjf-update sjf-weekly sjf-backfill; do
   fi
 done
 systemctl daemon-reload
-for t in sjf-update.timer sjf-weekly.timer sjf-backfill.timer; do
+for t in sjf-update.timer sjf-weekly.timer sjf-backfill.timer sjf-pdfs.timer; do
   if [[ -f "/etc/systemd/system/${t}" ]]; then
     systemctl enable --now "$t"
     systemctl is-active --quiet "$t" && ok "${t} activo" || warn "${t} no levantó — systemctl status ${t}"

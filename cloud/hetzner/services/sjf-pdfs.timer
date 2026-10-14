@@ -1,0 +1,11 @@
+[Unit]
+Description=Dispara la generación de PDFs de tesis del SJF (hasta vaciar los pendientes)
+
+[Timer]
+OnBootSec=8min
+OnUnitActiveSec=10min
+# Sin Persistent: evita una ráfaga de catch-up tras una suspensión larga.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,19 @@
+[Unit]
+Description=Louis SJF — genera el PDF de cada tesis/jurisprudencia (plantilla propia, en el servidor)
+Documentation=https://github.com/Lbassoco95/nexo-louis
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=@@SYSTEM_USER@@
+Group=@@SYSTEM_USER@@
+WorkingDirectory=@@OPENCLAW_HOME@@/legal/sjf
+Environment=SJF_DB_PATH=@@OPENCLAW_HOME@@/legal/sjf/biblioteca.db
+Environment=SJF_PDF_DIR=@@OPENCLAW_HOME@@/legal/sjf/pdfs
+# 2000 por corrida × ~0.1-0.15 s ≈ 3-5 min; cada 10 min ≈ 12k/h → ~15 h para las ~178k.
+ExecStart=/usr/bin/python3 @@OPENCLAW_HOME@@/legal/sjf/sjf_pdfs.py generate --batch 2000
+StandardOutput=append:@@OPENCLAW_HOME@@/logs/sjf-pdfs.log
+StandardError=append:@@OPENCLAW_HOME@@/logs/sjf-pdfs.log
+SyslogIdentifier=louis-sjf-pdfs
+TimeoutStartSec=1800
+MemoryMax=512M
