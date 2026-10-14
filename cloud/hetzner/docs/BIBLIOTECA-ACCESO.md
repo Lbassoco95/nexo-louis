@@ -20,10 +20,15 @@ Navegador ──HTTPS──► Caddy (biblioteca.kawiil.mx)
 - **Falla cerrado:** si `oauth2-proxy` se cae, Caddy responde 502 y nadie entra.
 - Caddy **sobrescribe** `X-Auth-Request-Email` y `X-Auth-Request-User` con lo que dice
   `oauth2-proxy`; un cliente no puede suplantar a otra persona mandando esa cabecera.
+- **La app debe validar la identidad que recibe:** si el proxy aprueba una sesión sin correo,
+  Caddy entrega el texto literal `{http.reverse_proxy.header.X-Auth-Request-Email}` (la
+  cabecera falsa del cliente igual se descarta). `biblioteca.py` solo acepta un valor con
+  forma de correo y rechaza cualquier otro.
 
 Verificado con Caddy 2.8.4 real y un proxy de sesión simulado: (A) proxy caído → 502 sin
 contenido; (B) sin sesión → 302 a `/oauth2/start`; (C) con sesión → la app recibe el
-correo; (D) cabecera falsa del cliente → la app recibe el correo verificado, no el falso.
+correo; (D) cabecera falsa del cliente → la app recibe el correo verificado, no el falso;
+(E) sesión sin correo + cabecera falsa → la falsa se descarta (la app recibe un texto no válido).
 **No se ha probado todavía con un tenant real de Microsoft.**
 
 ## Lo que necesitas antes
@@ -54,7 +59,8 @@ Después, en esa aplicación:
    momento: Microsoft solo lo muestra una vez. Elige una caducidad (p. ej. 12 meses) y
    **agéndala**: el día que caduque, el inicio de sesión dejará de funcionar.
 3. **Permisos de API:** con los permisos delegados por defecto de Microsoft Graph
-   (`User.Read`) y `openid`, `profile`, `email` basta. No pidas nada más.
+   (`User.Read`) y `openid`, `profile`, `email`, `offline_access` basta (este último permite
+   renovar y revalidar la sesión cada hora). No pidas nada más.
 4. **Configuración de token → Agregar notificación opcional → ID → `email`** (si alguna
    persona entra y `oauth2-proxy` dice que no encuentra su correo).
 
@@ -109,8 +115,10 @@ secreto es incorrecto: el motivo aparece en `docker logs louis-oauth2-proxy`.
 ## Operación
 
 - **Dar de baja a alguien:** quitarlo de "Usuarios y grupos" (o deshabilitar su cuenta). Las
-  sesiones duran 8 h y se revalidan con Microsoft cada hora, así que pierde el acceso en
-  aproximadamente una hora.
+  sesiones duran 8 h y se renuevan con Microsoft cada hora: en cuanto Entra rechaza la
+  renovación la sesión se cierra. Esperado: **hasta ~1 h; tope 8 h**. Esto no se ha medido con
+  un tenant real; si necesitas corte inmediato, cierra también sus sesiones desde Entra
+  ("Revocar sesiones") y reinicia `oauth2-proxy`.
 - **Rotar el secreto:** crear uno nuevo en Entra, actualizar `BIBLIOTECA_CLIENT_SECRET` y
   `docker compose --env-file .env up -d oauth2-proxy`.
 - **Quién consultó qué:** el log de Caddy (`/opt/louis-data/caddy/data/logs/biblioteca.log`)

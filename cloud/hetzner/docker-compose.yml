@@ -61,6 +61,9 @@ services:
       OAUTH2_PROXY_SET_XAUTHREQUEST: "true"
       OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
       OAUTH2_PROXY_CODE_CHALLENGE_METHOD: S256
+      # offline_access: sin él Microsoft no entrega refresh token, la renovación horaria de la
+      # sesión no puede revalidar a la persona con Entra y una baja tardaría hasta COOKIE_EXPIRE.
+      OAUTH2_PROXY_SCOPE: openid email profile offline_access
       OAUTH2_PROXY_COOKIE_NAME: __Host-biblioteca
       OAUTH2_PROXY_COOKIE_SECURE: "true"
       OAUTH2_PROXY_COOKIE_HTTPONLY: "true"
