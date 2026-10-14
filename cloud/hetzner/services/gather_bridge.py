@@ -7,7 +7,8 @@ Cada objeto es opcional: sin sus variables se omite en silencio.
 
 ── Bot Status Monitor ──
 Estados (prioridad de mayor a menor):
-  alert    → algún servicio/timer clave de Louis está en 'failed'
+  alert    → algún servicio/timer clave de Louis está en 'failed', o el SJF lleva más de
+             GATHER_SJF_STALE_DAYS (default 21) días sin tesis nuevas
   working  → un agente arrancó una tarea en los últimos 90s
   question → hay entregables LISTO esperando Vo.Bo. o pendientes que vencen hoy
   on       → todo en orden
@@ -119,13 +120,38 @@ def _estancados(agenda: str, dias: int = 7) -> int:
     return n
 
 
+SJF_STALE_DAYS = int(os.environ.get("GATHER_SJF_STALE_DAYS", "21"))
+
+
+def _sjf_dias_sin_actualizar() -> int | None:
+    """Días desde la tesis más reciente del SJF, o None si no se puede saber.
+
+    El harvester puede salir con código 0 sin traer nada (p. ej. en pausa por bloqueo del
+    WAF), así que el estado de systemd no basta: se mide por la fecha de la última tesis.
+    """
+    fn = getattr(core, "_sjf_resumen_tablero", None)
+    if fn is None:
+        return None
+    try:
+        r = fn()
+        if not r.get("ok") or not r.get("ultima_fecha"):
+            return None
+        ultima = date.fromisoformat(str(r["ultima_fecha"])[:10])
+        dias = (datetime.now(TZ_CDMX).date() - ultima).days
+        return dias if dias >= 0 else None  # fecha futura = dato dudoso, no se alerta
+    except Exception:
+        return None
+
+
 def calcular_status(agenda: str, ents: list) -> dict:
     hoy = [d for d in core._extract_deadlines(agenda, 30)
            if re.search(r"\bhoy\b|urgente|vence hoy", d.lower())]
     listos = [e for e in ents if e.get("estado") == "listo"]
     malas = _units_fallidas()
+    sjf_dias = _sjf_dias_sin_actualizar()
+    sjf_viejo = sjf_dias if (sjf_dias is not None and sjf_dias > SJF_STALE_DAYS) else 0
 
-    if malas:
+    if malas or sjf_viejo:
         state = "alert"
     elif _agente_trabajando():
         state = "working"
@@ -138,6 +164,7 @@ def calcular_status(agenda: str, ents: list) -> dict:
         ("vobo", len(listos), f"{len(listos)} entregable(s) esperando Vo.Bo."),
         ("hoy", len(hoy), f"{len(hoy)} pendiente(s) que vencen hoy"),
         ("falla", len(malas), f"{len(malas)} servicio(s) de Louis con falla"),
+        ("sjf", sjf_viejo, f"SJF sin tesis nuevas hace {sjf_viejo} días"),
     ))
     return {"state": state, "activity": activity, "remove": remove}
 
