@@ -159,7 +159,9 @@ def buscar_dof(q: str, tipo: str, orden: str, pag: int):
 
 
 # ── Conocimiento de los agentes ──────────────────────────────────────────────
-DOC_RE = re.compile(r"^(dof|sjf)-([0-9nd-]+?)-(\d+)\.md$")
+# El indexador arma el nombre con la fecha tal cual viene de la base ("2026-08-28", "2026-08-28 00:00:00",
+# "nd"...). Se acepta cualquier cosa entre la fuente y el id numérico final.
+DOC_RE = re.compile(r"^(dof|sjf)-(.+)-(\d+)\.md$")
 AGENT_RE = re.compile(r"^kawiil-[a-z0-9-]{1,40}$")
 _cache: dict = {}
 _cache_lock = threading.Lock()
@@ -205,7 +207,8 @@ def escanear_conocimiento() -> dict:
                     for f in dd.glob("*.md"):
                         m = DOC_RE.match(f.name)
                         if m:
-                            docs.append((m.group(1), m.group(2), int(m.group(3)), f.name))
+                            fe = m.group(2)[:10] if re.match(r"\d{4}-\d{2}-\d{2}", m.group(2)) else m.group(2)
+                            docs.append((m.group(1), fe, int(m.group(3)), f.name))
                             por_doc[(m.group(1), int(m.group(3)))].append(d.name)
                 try:
                     idx = json.loads((d / "index.json").read_text())
@@ -423,7 +426,7 @@ def agentes_de(fuente: str, ident: int) -> str:
     for a in ags:
         docs = escanear_conocimiento()["agentes"][a]["docs"]
         f = next((d[3] for d in docs if d[0] == fuente and d[2] == ident), "")
-        items.append(f'<li><a href="/agentes/{esc(a)}/{esc(f)}">{esc(a)}</a></li>')
+        items.append(f'<li><a href="/agentes/{esc(a)}/{esc(urllib.parse.quote(f, safe=""))}">{esc(a)}</a></li>')
     return f"<ul>{''.join(items)}</ul>"
 
 
@@ -513,7 +516,7 @@ def p_agente(nombre, quien):
         return None
     docs = sorted(info["docs"], key=lambda d: (d[1], d[2]), reverse=True)
     lis = "".join(f'<tr><td><span class="tag {"d" if d[0] == "dof" else "j"}">{d[0].upper()}</span></td><td>{esc(d[1])}</td>'
-                  f'<td><a href="/agentes/{esc(nombre)}/{esc(d[3])}">{esc(d[3])}</a></td></tr>' for d in docs[:150])
+                  f'<td><a href="/agentes/{esc(nombre)}/{esc(urllib.parse.quote(d[3], safe=""))}">{esc(d[3])}</a></td></tr>' for d in docs[:150])
     apr = "".join(f"<li>{esc(l[2:])}</li>" for l in lineas_aprendizaje(nombre)) or "<li class=aviso>Sin aprendizajes registrados.</li>"
     cfg = mapa_agentes().get(nombre) or {}
     cuerpo = (f'<p><a href="/agentes">← Agentes</a></p><h1>{esc(nombre)}</h1><p class=aviso>{esc(cfg.get("label", ""))}</p>'
@@ -524,10 +527,13 @@ def p_agente(nombre, quien):
 
 
 def p_agente_doc(nombre, archivo, quien):
-    if not AGENT_RE.match(nombre) or not DOC_RE.match(archivo):
+    archivo = urllib.parse.unquote(archivo)
+    if (not AGENT_RE.match(nombre) or not DOC_RE.match(archivo) or Path(archivo).name != archivo
+            or "\x00" in archivo or archivo.startswith(".")):
         return None
-    f = KNOWLEDGE / nombre / "docs" / archivo
-    if not f.is_file():
+    carpeta = (KNOWLEDGE / nombre / "docs").resolve()
+    f = (carpeta / archivo).resolve()
+    if f.parent != carpeta or not f.is_file():      # debe ser un archivo directo de la carpeta del agente
         return None
     m = DOC_RE.match(archivo)
     enlace = f'/{"tesis" if m.group(1) == "sjf" else "nota"}/{int(m.group(3))}'
@@ -669,7 +675,7 @@ class H(BaseHTTPRequestHandler):
             m = re.match(r"^/(tesis|nota)/(\d{1,12})$", ruta)
             m2 = re.match(r"^/pdf/(sjf|dof)/(\d{1,12})$", ruta)
             m3 = re.match(r"^/agentes/([a-z0-9-]{1,48})$", ruta)
-            m4 = re.match(r"^/agentes/([a-z0-9-]{1,48})/([A-Za-z0-9._-]{1,80})$", ruta)
+            m4 = re.match(r"^/agentes/([a-z0-9-]{1,48})/([^/]{1,300})$", ruta)
             if ruta == "/":
                 r = p_inicio(quien)
             elif ruta == "/buscar":
