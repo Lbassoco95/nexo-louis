@@ -3,3 +3,4 @@ credentials/
 *.key
 *.pem
 __pycache__/
+.env.tmp
