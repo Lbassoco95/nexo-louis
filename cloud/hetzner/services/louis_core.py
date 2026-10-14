@@ -4192,6 +4192,7 @@ def _verificar_conexiones(incluir_m365: bool = True) -> str:
 # El push Mac→Hetzner (mac-push-legal.sh) está DESACTIVADO por defecto para no
 # pisar el acervo del server. Abrimos READ-ONLY por si algún proceso escribe.
 import sqlite3 as _sqlite
+import threading as _threading
 
 LEGAL_BASE = HOME_OC / "legal"
 SJF_DB = LEGAL_BASE / "sjf" / "biblioteca.db"
@@ -4459,7 +4460,14 @@ def _legal_briefing() -> str:
 # El conocimiento se inyecta automáticamente cuando se invoca el agente.
 
 KNOWLEDGE_BASE = HOME_OC / "spaces" / "general" / "agents" / "knowledge"
-KNOWLEDGE_MAX_DOCS = 500       # docs máximos por agente (acumulación continua)
+KNOWLEDGE_MAX_DOCS = 500       # ids guardados en index.json por compatibilidad (la verdad es la carpeta docs/)
+# Indexador de fondo (ver legal_indexer.py). Cada documento nuevo es una llamada a DeepSeek.
+LEGAL_BG_LIMIT = int(os.environ.get("LEGAL_BG_LIMIT", "20"))              # documentos por pasada
+LEGAL_BG_DAILY_MAX = int(os.environ.get("LEGAL_BG_DAILY_MAX", "1500"))    # tope diario (todos los agentes)
+LEGAL_BG_WORKERS = int(os.environ.get("LEGAL_BG_WORKERS", "3"))           # resúmenes en paralelo
+LEGAL_BG_BUDGET = HOME_OC / "state" / "legal-bg-budget.json"
+_legal_bg_lock = _threading.Lock()
+_legal_bg_pausa_hasta = 0.0            # epoch hasta el que el indexador de fondo está en pausa (DeepSeek caído)
 KNOWLEDGE_CONTEXT_DOCS = 5     # docs que se inyectan en cada invocación de agente
 # Rotation state: qué agente fue el último en indexarse en background
 LEGAL_BG_ROTATION = HOME_OC / "state" / "legal-bg-rotation.json"
@@ -4549,6 +4557,10 @@ def _knowledge_save_index(agente: str, idx: dict):
     idx_file.write_text(json.dumps(idx, ensure_ascii=False, indent=2))
 
 
+_LLM_ERROR_PREFIXES = ("(error DeepSeek", "(error llamando a DeepSeek", "(sin respuesta de DeepSeek",
+                       "(respuesta vacía de DeepSeek")
+
+
 def _summarize_for_knowledge(agente: str, titulo: str, fecha: str, fuente: str,
                              texto: str) -> tuple[str, str]:
     """
@@ -4573,23 +4585,22 @@ def _summarize_for_knowledge(agente: str, titulo: str, fecha: str, fuente: str,
         f"Responde en español de México. No repitas el título en la parte 1."
     )
     prompt = f"Fuente: {fuente} | Fecha: {fecha}\nTítulo: {titulo}\n\n{texto[:5000]}"
-    try:
-        resumen_raw = call_deepseek(system, [], prompt)
-        if resumen_raw and "|||OLLAMA|||" in resumen_raw:
-            partes = resumen_raw.split("|||OLLAMA|||", 1)
-            resumen = partes[0].strip()
-            aprendizaje = partes[1].strip()[:300]
-        elif resumen_raw:
-            # DeepSeek no siguió el formato — tomar todo como resumen, extractar inicio
-            resumen = resumen_raw.strip()
-            aprendizaje = resumen[:200].rstrip(".") + "."
-        else:
-            resumen = texto[:800] + "…"
-            aprendizaje = titulo[:150]
-    except Exception as e:
-        log.warning(f"DeepSeek summarize falló ({agente}): {e}")
-        resumen = texto[:800] + "…"
-        aprendizaje = titulo[:150]
+    # call_deepseek NO lanza ante un fallo: devuelve un texto como "(error DeepSeek HTTP 429: ...)".
+    # Antes ese texto se guardaba como si fuera el resumen y el documento quedaba «indexado» para
+    # siempre con un mensaje de error como conocimiento. Ahora se lanza y el indexador reintenta.
+    resumen_raw = call_deepseek(system, [], prompt)
+    if not resumen_raw or resumen_raw.startswith(_LLM_ERROR_PREFIXES):
+        raise RuntimeError((resumen_raw or "sin respuesta")[:160])
+    if "|||OLLAMA|||" in resumen_raw:
+        partes = resumen_raw.split("|||OLLAMA|||", 1)
+        resumen = partes[0].strip()
+        aprendizaje = partes[1].strip()[:300]
+    else:
+        # DeepSeek no siguió el formato — tomar todo como resumen, extractar inicio
+        resumen = resumen_raw.strip()
+        aprendizaje = resumen[:200].rstrip(".") + "."
+    if not resumen:
+        raise RuntimeError("resumen vacío")
     return resumen, aprendizaje
 
 
@@ -4630,9 +4641,10 @@ def _ollama_legal_append(agente: str, area: str, fecha: str, titulo: str, aprend
 def _legal_indexar_agente(agente: str, forzar: bool = False, limite: int = 30,
                           background: bool = False) -> str:
     """
-    Indexa DOF/SJF para el agente. En background=True procesa lo más reciente
-    que aún no está indexado sin gate de recencia — la puerta real es already_indexed.
-    forzar=True re-indexa todo desde cero (borra el set de already_indexed).
+    Indexa DOF/SJF para el agente de forma incremental (ver legal_indexer.py): flujos con
+    prioridad (jurisprudencia y coincidencias en título primero), cursor que avanza hacia atrás
+    en el tiempo, ventana reciente para publicaciones nuevas o tardías, y la carpeta docs/ del
+    agente como verdad de lo ya indexado. forzar=True reinicia los cursores y vuelve a resumir.
     """
     if not _AGENT_NAME_RE.match(agente):
         return f"ERROR: nombre de agente '{agente}' inválido."
@@ -4642,8 +4654,8 @@ def _legal_indexar_agente(agente: str, forzar: bool = False, limite: int = 30,
 
     idx = _knowledge_index(agente)
 
-    # En modo manual (no background, no forzar), avisamos si no hay nada nuevo que hacer
-    if not background and not forzar and idx.get("docs") and idx.get("last_indexed"):
+    # En modo manual (no background, no forzar), avisamos si se indexó hace poco
+    if not background and not forzar and idx.get("total") and idx.get("last_indexed"):
         try:
             last = datetime.fromisoformat(idx["last_indexed"])
             hours_ago = int((datetime.now() - last).total_seconds() / 3600)
@@ -4653,11 +4665,7 @@ def _legal_indexar_agente(agente: str, forzar: bool = False, limite: int = 30,
         except Exception:
             pass
 
-    # forzar=True: empieza desde cero
-    if forzar:
-        idx["docs"] = []
-
-    # Obtener keywords para este agente
+    # Palabras clave: mapa explícito o, si no hay, derivadas de la especialidad del agente
     cfg = KAWIIL_KNOWLEDGE_MAP.get(agente)
     if not cfg:
         meta = _parse_agent_file(agent_file)
@@ -4665,129 +4673,53 @@ def _legal_indexar_agente(agente: str, forzar: bool = False, limite: int = 30,
         words = [w for w in especialidad.replace(",", " ").split() if len(w) > 4][:5]
         cfg = {"label": especialidad, "dof": words, "sjf": words}
 
+    try:
+        import legal_indexer as LI
+    except ImportError as e:
+        return f"ERROR: falta legal_indexer.py junto a louis_core.py ({e})"
+
     kdir = _knowledge_dir(agente)
     docs_dir = kdir / "docs"
-    nuevos = 0
-    errores = 0
-    already_indexed = set(idx.get("docs", []))
-
-    # Cuántos por keyword (distribuir el límite)
-    dof_keywords = (cfg.get("dof") or [])[:4]
-    sjf_keywords = (cfg.get("sjf") or [])[:4]
-    per_kw_dof = max(1, limite // max(len(dof_keywords), 1))
-    per_kw_sjf = max(1, limite // max(len(sjf_keywords), 1))
-
-    # ── Indexar desde DOF (más recientes primero) ──────────────────────────
-    if DOF_DB.exists() and nuevos < limite:
-        conn = _legal_open(DOF_DB)
-        for keyword in dof_keywords:
-            if nuevos >= limite:
-                break
+    dof_conn = _legal_open(DOF_DB)
+    sjf_conn = _legal_open(SJF_DB)
+    try:
+        r = LI.indexar_agente(agente, cfg, kdir, docs_dir, dof_conn, sjf_conn,
+                              summarize=_summarize_for_knowledge, append_memory=_ollama_legal_append,
+                              limite=limite, forzar=forzar, workers=LEGAL_BG_WORKERS, log=log)
+    finally:
+        for c in (dof_conn, sjf_conn):
             try:
-                rows = conn.execute(
-                    "SELECT n.cod_nota, n.fecha, n.titulo, n.tipo_documento, n.texto_plano "
-                    "FROM notas n "
-                    "WHERE n.incluido=1 AND n.texto_plano IS NOT NULL "
-                    "AND length(n.texto_plano) > 200 "
-                    "AND (n.titulo LIKE ? OR n.texto_plano LIKE ?) "
-                    "ORDER BY n.fecha DESC LIMIT ?",
-                    (f"%{keyword}%", f"%{keyword}%", per_kw_dof * 5),
-                ).fetchall()
-            except Exception as e:
-                log.warning(f"DOF bg query '{keyword}': {e}")
-                rows = []
-            for r in rows:
-                if nuevos >= limite:
-                    break
-                doc_id = f"dof-{r['cod_nota']}"
-                if doc_id in already_indexed:
-                    continue
-                try:
-                    titulo_doc = r["titulo"] or "(sin título)"
-                    resumen, aprendizaje = _summarize_for_knowledge(
-                        agente, titulo_doc, r["fecha"] or "", "DOF", r["texto_plano"] or "")
-                    fname = f"dof-{r['fecha'] or 'nd'}-{r['cod_nota']}.md"
-                    (docs_dir / fname).write_text(
-                        f"# {titulo_doc}\n"
-                        f"**Fuente:** DOF | **Fecha:** {r['fecha']} | "
-                        f"**Tipo:** {r['tipo_documento'] or '?'} | **ID:** {r['cod_nota']}\n\n"
-                        f"{resumen}\n"
-                    )
-                    _ollama_legal_append(agente, cfg.get("label", "DOF"),
-                                        r["fecha"] or "", titulo_doc, aprendizaje)
-                    already_indexed.add(doc_id)
-                    nuevos += 1
-                except Exception as e:
-                    log.warning(f"Doc DOF {r['cod_nota']} ({agente}): {e}")
-                    errores += 1
-        conn.close()
+                if c is not None:
+                    c.close()
+            except Exception:
+                pass
 
-    # ── Indexar desde SJF (más recientes primero) ──────────────────────────
-    if SJF_DB.exists() and nuevos < limite:
-        conn = _legal_open(SJF_DB)
-        for keyword in sjf_keywords:
-            if nuevos >= limite:
-                break
-            try:
-                rows = conn.execute(
-                    "SELECT t.registro_digital, t.rubro, t.epoca, t.instancia, "
-                    "t.materias, t.fecha_publicacion, t.ta_tj, t.texto "
-                    "FROM tesis t "
-                    "WHERE t.texto IS NOT NULL AND length(t.texto) > 200 "
-                    "AND (t.rubro LIKE ? OR t.texto LIKE ? OR t.materias LIKE ?) "
-                    "ORDER BY t.fecha_publicacion DESC LIMIT ?",
-                    (f"%{keyword}%", f"%{keyword}%", f"%{keyword}%", per_kw_sjf * 5),
-                ).fetchall()
-            except Exception as e:
-                log.warning(f"SJF bg query '{keyword}': {e}")
-                rows = []
-            for r in rows:
-                if nuevos >= limite:
-                    break
-                doc_id = f"sjf-{r['registro_digital']}"
-                if doc_id in already_indexed:
-                    continue
-                try:
-                    kind = "Jurisprudencia" if r["ta_tj"] == 1 else "Tesis Aislada"
-                    rubro = r["rubro"] or "(sin rubro)"
-                    resumen, aprendizaje = _summarize_for_knowledge(
-                        agente, rubro, r["fecha_publicacion"] or "", "SJF", r["texto"] or "")
-                    fname = f"sjf-{r['fecha_publicacion'] or 'nd'}-{r['registro_digital']}.md"
-                    (docs_dir / fname).write_text(
-                        f"# {rubro}\n"
-                        f"**Fuente:** SJF ({kind}) | **Época:** {r['epoca'] or '?'} | "
-                        f"**Instancia:** {r['instancia'] or '?'} | "
-                        f"**Fecha:** {r['fecha_publicacion']} | **ID:** {r['registro_digital']}\n"
-                        f"**Materias:** {r['materias'] or '?'}\n\n"
-                        f"{resumen}\n"
-                    )
-                    _ollama_legal_append(agente, cfg.get("label", "SJF"),
-                                        r["fecha_publicacion"] or "", rubro, aprendizaje)
-                    already_indexed.add(doc_id)
-                    nuevos += 1
-                except Exception as e:
-                    log.warning(f"Doc SJF {r['registro_digital']} ({agente}): {e}")
-                    errores += 1
-        conn.close()
-
-    # ── Actualizar índice y resumen ─────────────────────────────────────────
-    total_docs = len(list(docs_dir.glob("*.md")))
+    nuevos, errores = r["nuevos"], r["errores"]
+    global _legal_bg_pausa_hasta
+    if r.get("api_caida") and background:
+        _legal_bg_pausa_hasta = time.time() + 1800
+        log.warning(f"legal bg: DeepSeek falló en {r['fallidos']} documentos de {agente}; pausa de 30 min")
+    if background:
+        LI.gastar(LEGAL_BG_BUDGET, nuevos, LEGAL_BG_DAILY_MAX)
     if nuevos > 0:
         _rebuild_weekly_summary(agente, kdir, docs_dir)
+    total_docs = len(list(docs_dir.glob("*.md")))
     idx.update({
         "agente": agente,
         "label": cfg.get("label", ""),
-        "docs": list(already_indexed)[-KNOWLEDGE_MAX_DOCS:],
+        "docs": sorted(LI.ids_indexados(docs_dir))[-KNOWLEDGE_MAX_DOCS:],
         "last_indexed": datetime.now().isoformat(),
         "total": total_docs,
     })
     _knowledge_save_index(agente, idx)
 
     if background:
-        return f"{agente}:+{nuevos}" if nuevos else f"{agente}:al-día"
+        estado = (f"{agente}:+{nuevos}" if nuevos else
+                  (f"{agente}:sin-avance" if r.get("fallidos") else f"{agente}:al-día"))
+        return estado + (f" (fallos del resumidor: {r['fallidos']})" if r.get("fallidos") else "")
     return (
         f"✅ Indexación {agente} completada:\n"
-        f"  • Nuevos: {nuevos} | Errores: {errores}\n"
+        f"  • Nuevos: {nuevos} | Errores: {errores + r.get('fallidos', 0)}\n"
         f"  • Total en knowledge: {total_docs}\n"
         f"  • Área: {cfg.get('label', '?')}"
     )
@@ -4904,7 +4836,9 @@ def _legal_bg_next_agent() -> str | None:
     """
     if not AGENTS_DIR.exists():
         return None
-    kawiil = sorted(f.stem for f in AGENTS_DIR.glob("kawiil-*.md"))
+    # Solo agentes con palabras clave en KAWIIL_KNOWLEDGE_MAP: los demás (sin mapa) indexaban
+    # el mismo puñado de notas genéricas y se llevaban más de la mitad de los turnos.
+    kawiil = sorted(f.stem for f in AGENTS_DIR.glob("kawiil-*.md") if f.stem in KAWIIL_KNOWLEDGE_MAP)
     if not kawiil:
         return None
     rot = {}
@@ -4925,43 +4859,61 @@ def _legal_bg_next_agent() -> str | None:
     return nxt
 
 
+def _legal_bg_worker(limite: int):
+    """Trabajo real de una pasada de fondo; corre en su propio hilo (libera el candado al terminar)."""
+    try:
+        import legal_indexer as LI
+        trabajo = []
+        # 1) Prioridad: temas urgentes / leyes recién subidas (máx 3 por pasada)
+        for entry in _legal_drain_priority()[:3]:
+            agente = entry.get("agente", "")
+            if agente and _AGENT_NAME_RE.match(agente) and (AGENTS_DIR / f"{agente}.md").exists():
+                trabajo.append(("prio", agente))
+        # 2) Rotación normal entre los agentes con palabras clave
+        agente = _legal_bg_next_agent()
+        if agente:
+            trabajo.append(("bg", agente))
+        for tipo, agente in trabajo:
+            restante = LI.presupuesto_restante(LEGAL_BG_BUDGET, LEGAL_BG_DAILY_MAX)
+            if restante <= 0:
+                log.info("legal bg: tope diario de %d documentos alcanzado", LEGAL_BG_DAILY_MAX)
+                break
+            try:
+                r = _legal_indexar_agente(agente, forzar=False, limite=min(limite, restante), background=True)
+                log.info(f"legal bg [{tipo}]: {r}")
+            except Exception as e:
+                log.warning(f"legal bg {tipo} {agente}: {e}")
+            if time.time() < _legal_bg_pausa_hasta:
+                break
+    except Exception as e:
+        log.warning(f"legal bg worker: {e}")
+    finally:
+        _legal_bg_lock.release()
+
+
 def _legal_indexar_background_tick(limite: int = 10) -> str:
     """
-    Un tick de indexación en background — silencioso, llamado cada N minutos
-    por el scheduler. Procesa:
-      1) Cola de prioridad primero (temas urgentes / leyes recién subidas)
-      2) Siguiente agente en rotación round-robin, 10 docs más recientes sin indexar
-    Devuelve string corto para el log.
+    Un tick de indexación en background, llamado cada N minutos por el scheduler. Antes corría
+    en el hilo del scheduler y lo bloqueaba (hasta minutos de llamadas a DeepSeek mientras los
+    recordatorios esperaban); ahora lanza la pasada en un hilo aparte y vuelve al instante.
+    Candado: nunca dos pasadas a la vez. Presupuesto: LEGAL_BG_DAILY_MAX documentos al día.
     """
-    resultados = []
-
-    # 1) Prioridad: si hay entries en la cola, indexar esos agentes primero
-    priority = _legal_drain_priority()
-    for entry in priority[:3]:  # máx 3 prioridades por tick para no bloquear
-        agente = entry.get("agente", "")
-        if not agente or not _AGENT_NAME_RE.match(agente):
-            continue
-        if not (AGENTS_DIR / f"{agente}.md").exists():
-            continue
-        try:
-            r = _legal_indexar_agente(agente, forzar=False, limite=limite, background=True)
-            resultados.append(f"[prio] {r}")
-            log.info(f"legal bg priority: {r}")
-        except Exception as e:
-            log.warning(f"legal bg priority {agente}: {e}")
-
-    # 2) Rotación normal: siguiente agente en la lista
-    agente = _legal_bg_next_agent()
-    if agente:
-        try:
-            r = _legal_indexar_agente(agente, forzar=False, limite=limite, background=True)
-            resultados.append(f"[bg] {r}")
-            log.info(f"legal bg tick: {r}")
-        except Exception as e:
-            log.warning(f"legal bg tick {agente}: {e}")
-            resultados.append(f"[bg] {agente}: error {e}")
-
-    return " | ".join(resultados) if resultados else "bg: sin agentes"
+    lim = LEGAL_BG_LIMIT if LEGAL_BG_LIMIT > 0 else limite
+    if time.time() < _legal_bg_pausa_hasta:
+        return "bg: en pausa por fallos de DeepSeek"
+    if not _legal_bg_lock.acquire(blocking=False):
+        return "bg: pasada anterior aún en curso"
+    try:
+        import legal_indexer as LI
+        if LI.presupuesto_restante(LEGAL_BG_BUDGET, LEGAL_BG_DAILY_MAX) <= 0:
+            _legal_bg_lock.release()
+            return "bg: tope diario alcanzado"
+        _threading.Thread(target=_legal_bg_worker, args=(lim,), daemon=True,
+                          name="legal-bg-indexer").start()
+    except Exception as e:                         # no se pudo lanzar: soltar el candado
+        _legal_bg_lock.release()
+        return f"bg: error {e}"
+    return "bg: pasada lanzada"
 
 
 # ===== Mac status / wake request =====
