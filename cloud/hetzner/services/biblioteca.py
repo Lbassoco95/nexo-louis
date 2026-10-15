@@ -54,6 +54,9 @@ BUDGET_FILE = Path(os.environ.get("LEGAL_BG_BUDGET", "/opt/openclaw/state/legal-
 AUDIT_LOG = Path(os.environ.get("BIBLIOTECA_AUDIT_LOG", "/opt/openclaw/logs/biblioteca-access.log"))
 EMAIL_DOMAIN = os.environ.get("BIBLIOTECA_EMAIL_DOMAIN", "kawiil.mx").lower()
 REQUIRE_AUTH = os.environ.get("BIBLIOTECA_REQUIRE_AUTH", "0") == "1"
+# Acceso por Tailscale Serve: tailscaled agrega `Tailscale-User-Login` con la cuenta de quien se conectó (y descarta
+# la que mande el cliente). Solo se acepta si ese correo está en esta lista (coma). Vacía = apagado.
+TS_ALLOW = {x.strip().lower() for x in os.environ.get("BIBLIOTECA_TS_ALLOW", "").split(",") if x.strip()}
 RATE_PER_MIN = int(os.environ.get("BIBLIOTECA_RATE", "120"))
 QUERY_TIMEOUT_S = float(os.environ.get("BIBLIOTECA_QUERY_TIMEOUT_S", "8"))
 PAGE = 20
@@ -835,6 +838,12 @@ def identidad(headers) -> tuple[str | None, str]:
         if EMAIL_DOMAIN and not em.lower().endswith("@" + EMAIL_DOMAIN):
             return None, "dominio no permitido"
         return em.lower(), "ok"
+    ts = (headers.get("Tailscale-User-Login") or "").strip().lower()
+    if TS_ALLOW and via_proxy and EMAIL_RE.match(ts):
+        if ts in TS_ALLOW:
+            return ts, "ok"
+        log.warning("login de Tailscale no permitido: %s (agrégalo a BIBLIOTECA_TS_ALLOW si debe entrar)", ts)
+        return None, "cuenta de Tailscale no permitida"
     if via_proxy or REQUIRE_AUTH:
         return None, "sin identidad verificada"
     return "local", "ok"      # loopback directo (túnel SSH)

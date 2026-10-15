@@ -46,6 +46,20 @@ acceso SSH al servidor (llave); la app los registra como `local`. **No actives e
 petición que llegue por Caddy sin un correo verificado recibe 401 (la app falla cerrado), pero
 el inicio de sesión es lo que identifica a cada persona.
 
+## Alternativa a Microsoft: Tailscale (celular y equipo, sin DNS)
+
+`sudo tailscale serve --bg 4050` publica la app **solo dentro de tu red de Tailscale** (`https://<servidor>.<red>.ts.net`).
+Tailscale manda la cuenta de quien entra en `Tailscale-User-Login`; la app solo la acepta si está en una lista:
+
+```bash
+sudo systemctl edit biblioteca     # agrega:  [Service]  Environment=BIBLIOTECA_TS_ALLOW=persona1@kawiil.mx,persona2@kawiil.mx
+sudo systemctl restart biblioteca
+```
+
+Sin `BIBLIOTECA_TS_ALLOW` esta vía está apagada. Una cuenta de la red que no esté en la lista recibe 401 y queda en el log
+(`login de Tailscale no permitido: …`). La lista es necesaria porque una red de Tailscale suele tener más personas y equipos
+que quienes deben ver el acervo. Caddy descarta esa cabecera si la manda un cliente, así que por Internet nunca vale.
+
 Estado de agentes e indexación sin abrir el navegador (solo lectura):
 `python3 /opt/openclaw/scripts/biblioteca.py --estado`
 

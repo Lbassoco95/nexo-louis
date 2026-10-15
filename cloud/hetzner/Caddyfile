@@ -150,6 +150,8 @@
             header_up Host {host}
             header_up X-Real-IP {remote_host}
             header_up X-Forwarded-Proto {scheme}
+            # Por aquí solo cuenta la identidad de Microsoft: nunca aceptar la de Tailscale que mande un cliente.
+            header_up -Tailscale-User-Login
         }
     }
 
