@@ -38,3 +38,22 @@ for titulo, esperado in CASOS:
     assert obtenido == esperado, (titulo, obtenido, esperado)
 assert b.clave_ley("Ley de Navegación") == b.clave_ley("LEY DE  NAVEGACION")
 print("ok:", len(CASOS), "casos")
+
+# ── Identidad por Tailscale (BIBLIOTECA_TS_ALLOW) ──
+import os
+os.environ["BIBLIOTECA_TS_ALLOW"] = "polo@kawiil.mx, otra@kawiil.mx"
+sp2 = importlib.util.spec_from_file_location("b2", pathlib.Path(__file__).parent.parent / "services" / "biblioteca.py")
+b2 = importlib.util.module_from_spec(sp2)
+sp2.loader.exec_module(b2)
+ts = {"X-Forwarded-Proto": "https"}
+assert b2.identidad({**ts, "Tailscale-User-Login": "Polo@Kawiil.mx"})[0] == "polo@kawiil.mx"
+assert b2.identidad({**ts, "Tailscale-User-Login": "vturcott@x.com"})[0] is None      # otra cuenta de la red
+assert b2.identidad({**ts})[0] is None                                                 # proxy sin identidad
+assert b2.identidad({"Tailscale-User-Login": "polo@kawiil.mx"})[0] == "local"          # directo a loopback: sin cambios
+assert b2.identidad({**ts, "Tailscale-User-Login": "x{y}@kawiil.mx"})[0] is None
+os.environ["BIBLIOTECA_TS_ALLOW"] = ""
+sp3 = importlib.util.spec_from_file_location("b3", pathlib.Path(__file__).parent.parent / "services" / "biblioteca.py")
+b3 = importlib.util.module_from_spec(sp3)
+sp3.loader.exec_module(b3)
+assert b3.identidad({**ts, "Tailscale-User-Login": "polo@kawiil.mx"})[0] is None       # apagado por defecto
+print("ok: identidad Tailscale")
