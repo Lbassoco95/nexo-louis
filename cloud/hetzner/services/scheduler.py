@@ -268,6 +268,31 @@ def next_fire(current_iso: str, recurrence: str) -> str:
     return None
 
 
+_SLACK_THREAD = {"t": None}
+
+
+def _lanzar_slack(modo: str):
+    """Corre slack_digest.run_digest / run_followup en un hilo (uno a la vez)."""
+    t = _SLACK_THREAD["t"]
+    if t is not None and t.is_alive():
+        return
+
+    def _run():
+        try:
+            import slack_digest
+            fn = slack_digest.run_digest if modo == "digest" else slack_digest.run_followup
+            r = fn(send_telegram)
+            if r and (r.startswith("OK") or r.startswith("ERROR")):
+                log.info(f"slack_{modo}: {r}")
+        except Exception as e:
+            log.warning(f"slack_{modo} falló: {e}")
+
+    import threading
+    th = threading.Thread(target=_run, daemon=True, name=f"slack-{modo}")
+    _SLACK_THREAD["t"] = th
+    th.start()
+
+
 # ===== Main tick =====
 def tick():
     now = datetime.now(TZ_CDMX)
@@ -371,6 +396,20 @@ def main():
                     log.info(f"steward: {r}")
         except Exception as e:
             log.warning(f"steward tick falló: {e}")
+
+        # Resumen de Slack de la tarde (18:17+) y seguimiento de la mañana (07:41+), lun-vie CDMX.
+        # Leen Slack y tardan varios minutos: van en un hilo aparte para no frenar los recordatorios.
+        # Las funciones son idempotentes por día (y limitan los reintentos), así que repetir el tick es seguro.
+        try:
+            _s = datetime.now(TZ_CDMX)
+            if _s.weekday() < 5:
+                _hm = _s.hour * 60 + _s.minute
+                if 18 * 60 + 17 <= _hm < 22 * 60:
+                    _lanzar_slack("digest")
+                elif 7 * 60 + 41 <= _hm < 11 * 60:
+                    _lanzar_slack("followup")
+        except Exception as e:
+            log.warning(f"slack digest tick falló: {e}")
 
         # Gather Smart Object (Bot Status Monitor): refleja el estado de Louis cada ~5 min.
         # Solo envía si cambió; silencioso si no hay GATHER_STATUS_URL/SECRET.
