@@ -4174,6 +4174,9 @@ def _verificar_conexiones(incluir_m365: bool = True) -> str:
     out.append("\n--- OpenClaw Gateway ---")
     try:
         req = urllib.request.Request("http://127.0.0.1:3000/v1/status")
+        _gw_tok = os.environ.get("OPENCLAW_GATEWAY_TOKEN", "")
+        if _gw_tok:  # el gateway ahora exige Bearer también en /v1/status
+            req.add_header("Authorization", f"Bearer {_gw_tok}")
         with urllib.request.urlopen(req, timeout=5) as r:
             st = json.loads(r.read())
             out.append(f"  agents_count: {st.get('agents_count', '?')}")

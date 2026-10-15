@@ -23,11 +23,16 @@ Sólo stdlib (http.server) — sin FastAPI/uvicorn — para minimizar deps.
 """
 
 import os
+import re
 import sys
 import json
 import time
+import hmac
+import base64
 import logging
+import threading
 import traceback
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -38,28 +43,98 @@ if SCRIPTS_DIR.exists():
 
 import louis_core as core  # noqa: E402
 
-LOG_FILE = Path("/opt/openclaw/logs/openclaw-gateway.log")
-LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+# Solo StreamHandler: el servicio de systemd ya redirige stdout/stderr al log
+# (StandardOutput=append:.../openclaw-gateway.log). Con FileHandler además, cada
+# línea salía duplicada y el log crecía al doble.
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
-    handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler()],
+    handlers=[logging.StreamHandler()],
 )
 log = logging.getLogger("openclaw-gateway")
 
 HOST = os.environ.get("OPENCLAW_HOST", "127.0.0.1")
 PORT = int(os.environ.get("OPENCLAW_PORT", "3000"))
-TOKEN = os.environ.get("OPENCLAW_GATEWAY_TOKEN", "")  # opcional, si está, valida Bearer
+# ---- Autenticación (falla CERRADO) -----------------------------------------
+# Antes, sin OPENCLAW_GATEWAY_TOKEN el gateway no pedía nada y cualquiera en internet
+# podía hablar con el agente (con memoria y tools) o ejecutar tools. Ahora, sin
+# credenciales configuradas, se rechaza todo salvo /healthz. Para trabajar en local
+# sin credenciales: OPENCLAW_ALLOW_NO_AUTH=1 (nunca en producción).
+TOKEN = os.environ.get("OPENCLAW_GATEWAY_TOKEN", "")       # API completa (Bearer)
+DOC_TOKEN = os.environ.get("DOC_CHAT_TOKEN", "")           # chat embebido en documentos (Bearer, alcance mínimo)
+DASH_USER = os.environ.get("TABLERO_USER", "")             # tablero/dashboard (Basic)
+DASH_PASS = os.environ.get("TABLERO_PASSWORD", "")
+ALLOW_NO_AUTH = os.environ.get("OPENCLAW_ALLOW_NO_AUTH", "") == "1"
+
+
+def _same(a: str, b: str) -> bool:
+    """Comparación en tiempo constante; vacío nunca coincide."""
+    return bool(a) and bool(b) and hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+
+
+def _bearer(handler) -> str:
+    auth = handler.headers.get("Authorization", "")
+    return auth[7:].strip() if auth.startswith("Bearer ") else ""
 
 
 def _require_auth(handler) -> bool:
-    """Si TOKEN está configurado, exige Authorization: Bearer."""
+    """API completa: exige Authorization: Bearer <OPENCLAW_GATEWAY_TOKEN>."""
     if not TOKEN:
-        return True
+        return ALLOW_NO_AUTH
+    return _same(_bearer(handler), TOKEN)
+
+
+def _require_doc_auth(handler) -> bool:
+    """Chat de documentos: exige Bearer <DOC_CHAT_TOKEN> (distinto del token principal)."""
+    if not DOC_TOKEN:
+        return ALLOW_NO_AUTH
+    return _same(_bearer(handler), DOC_TOKEN)
+
+
+def _require_dashboard_auth(handler) -> bool:
+    """Tablero/dashboard: HTTP Basic con TABLERO_USER / TABLERO_PASSWORD. No depende de Caddy."""
+    if not (DASH_USER and DASH_PASS):
+        return ALLOW_NO_AUTH
     auth = handler.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
+    if not auth.startswith("Basic "):
         return False
-    return auth[7:].strip() == TOKEN
+    try:
+        user, _, pw = base64.b64decode(auth[6:].strip()).decode("utf-8").partition(":")
+    except Exception:
+        return False
+    return _same(user, DASH_USER) and _same(pw, DASH_PASS)
+
+
+_AGENT_NAME_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,80}$")
+
+# Límite global para el chat de documentos (token con alcance mínimo, pero aun así
+# cuesta dinero si alguien lo extrae de un HTML): 20/min y 300/día.
+_DOC_RATE_LOCK = threading.Lock()
+_DOC_HITS_MIN: deque = deque()
+_DOC_HITS_DAY: deque = deque()
+
+
+def _doc_rate_ok() -> bool:
+    now = time.time()
+    with _DOC_RATE_LOCK:
+        while _DOC_HITS_MIN and now - _DOC_HITS_MIN[0] > 60:
+            _DOC_HITS_MIN.popleft()
+        while _DOC_HITS_DAY and now - _DOC_HITS_DAY[0] > 86400:
+            _DOC_HITS_DAY.popleft()
+        if len(_DOC_HITS_MIN) >= 20 or len(_DOC_HITS_DAY) >= 300:
+            return False
+        _DOC_HITS_MIN.append(now)
+        _DOC_HITS_DAY.append(now)
+        return True
+
+
+_DOC_CHAT_SYSTEM = (
+    "Eres un asistente que ayuda a entender el documento cuyo contenido viene en el "
+    "mensaje. Responde SOLO con base en ese contenido. No tienes acceso a correo, "
+    "agenda, clientes, archivos ni herramientas: si la pregunta no se puede responder "
+    "con el documento, dilo. Español mexicano, claro y conciso."
+)
+_MAX_BODY = 1_000_000  # 1 MB
 
 
 # ============================================================================
@@ -437,8 +512,23 @@ class Handler(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length", "0"))
         if not n:
             return {}
+        if n > _MAX_BODY:
+            raise ValueError("cuerpo demasiado grande")
         raw = self.rfile.read(n)
         return json.loads(raw.decode("utf-8"))
+
+    def _challenge(self):
+        """401 con WWW-Authenticate para que el navegador pida usuario y contraseña."""
+        body = b'{"error": "unauthorized"}'
+        try:
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Basic realm="Louis", charset="UTF-8"')
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            return
+        self._safe_write(body)
 
     def log_message(self, fmt, *args):
         log.info("%s %s", self.address_string(), fmt % args)
@@ -450,7 +540,18 @@ class Handler(BaseHTTPRequestHandler):
                                   "version": "1.0", "uptime_started": getattr(self.server, "started_at", 0)})
             return
 
-        # Dashboard visual de agentes — página única, sin auth (solo lectura, detrás de Caddy).
+        # Todo lo que muestra datos (dashboard, tablero, entregables) exige usuario y
+        # contraseña AQUÍ, sin depender de que Caddy lo haga: en producción se vio que
+        # el tráfico llegaba al gateway sin pasar por esa protección.
+        _ruta = self.path.split("?", 1)[0]
+        if (_ruta in ("/", "/dashboard", "/agentes", "/tablero", "/seguimiento",
+                      "/v1/activity", "/v1/tablero")
+                or _ruta.startswith("/v1/entregable")):
+            if not _require_dashboard_auth(self):
+                self._challenge()
+                return
+
+        # Dashboard visual de agentes — solo lectura, con usuario y contraseña.
         if self.path in ("/", "/dashboard", "/agentes"):
             self._send_html(200, _DASHBOARD_HTML)
             return
@@ -515,6 +616,12 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
 
+        # Rutas de API (listar tools, agentes y su contenido): exigen el token Bearer.
+        if self.path == "/v1/tools" or self.path.startswith("/v1/agents"):
+            if not _require_auth(self):
+                self._send_json(401, {"error": "unauthorized"})
+                return
+
         if self.path == "/v1/tools":
             self._send_json(200, {
                 "tools": [{"name": t["name"], "description": t["description"]} for t in core.TOOLS_DEFINITION]
@@ -561,6 +668,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/v1/agents/") and self.command == "GET":
             # GET /v1/agents/{name} — detalles de un agente específico
             name = self.path[len("/v1/agents/"):]
+            # Sin esta validación, '/v1/agents/../AGENDA' leía cualquier .md fuera de
+            # la carpeta de agentes (toda la memoria de Louis).
+            if not _AGENT_NAME_OK.match(name):
+                self._send_json(400, {"error": "nombre de agente inválido"})
+                return
             from pathlib import Path as _P
             f = _P(f"/opt/openclaw/spaces/general/agents/{name}.md")
             if not f.exists():
@@ -576,7 +688,45 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(404, {"error": f"GET {self.path} no existe"})
 
     # ---------- POST ----------
+    def _doc_chat(self):
+        """Chat de seguimiento embebido en los documentos HTML. A propósito NO usa
+        louis_core.call_llm: sin tools, sin memoria, solo el contexto del documento que
+        manda el navegador. Token propio (DOC_CHAT_TOKEN) y límite de uso."""
+        if not _require_doc_auth(self):
+            self._send_json(401, {"error": "unauthorized"})
+            return
+        if not _doc_rate_ok():
+            self._send_json(429, {"error": "demasiadas solicitudes, intenta en unos minutos"})
+            return
+        try:
+            body = self._read_json()
+        except Exception as e:
+            self._send_json(400, {"error": f"JSON inválido: {e}"})
+            return
+        msgs = [m for m in (body.get("messages") or []) if isinstance(m, dict) and m.get("role") == "user"]
+        texto = msgs[-1].get("content", "") if msgs else ""
+        if not isinstance(texto, str) or not texto.strip():
+            self._send_json(400, {"error": "messages requerido"})
+            return
+        try:
+            api_key = core.load_anthropic_key()
+            respuesta = core.call_haiku(api_key, _DOC_CHAT_SYSTEM, [], texto[:12000])
+        except Exception:
+            log.exception("doc-chat falló")
+            self._send_json(500, {"error": "no pude responder ahora"})
+            return
+        now = int(time.time())
+        self._send_json(200, {
+            "id": f"doc-{now}", "object": "chat.completion", "created": now, "model": "haiku",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": respuesta},
+                         "finish_reason": "stop"}],
+        })
+
     def do_POST(self):
+        if self.path == "/v1/doc-chat":
+            self._doc_chat()
+            return
+
         if not _require_auth(self):
             self._send_json(401, {"error": "unauthorized"})
             return
@@ -717,7 +867,9 @@ def main():
     srv.started_at = int(time.time())
     log.info("Tools cargados: %d", len(core.TOOLS_DEFINITION))
     log.info("Memory files: %s", ", ".join(core.MEMORY_FILES))
-    log.info("Auth: %s", "Bearer required" if TOKEN else "DISABLED (sólo accesible vía 127.0.0.1)")
+    log.info("Auth API (Bearer): %s", "activa" if TOKEN else ("DESACTIVADA (OPENCLAW_ALLOW_NO_AUTH=1)" if ALLOW_NO_AUTH else "sin token → todo rechazado"))
+    log.info("Auth chat de documentos: %s", "activa" if DOC_TOKEN else ("DESACTIVADA" if ALLOW_NO_AUTH else "sin token → rechazado"))
+    log.info("Auth tablero (Basic): %s", "activa" if (DASH_USER and DASH_PASS) else ("DESACTIVADA" if ALLOW_NO_AUTH else "sin usuario/contraseña → rechazado"))
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

@@ -223,8 +223,12 @@ def render_page(titulo: str, agente: str, body_html: str, *,
     esc = _html.escape
     fecha = _dt.datetime.now().strftime("%d/%m/%Y %H:%M")
 
-    chat_url = _os.environ.get("CHAT_ENDPOINT", "https://louis.kawiil.mx/v1/chat/completions")
-    chat_token = _os.environ.get("OPENCLAW_GATEWAY_TOKEN", "")
+    # El HTML se entrega a terceros: lleva SOLO el token del chat de documentos
+    # (sin tools ni memoria), nunca el token principal del gateway.
+    chat_url = _os.environ.get("CHAT_ENDPOINT", "https://louis.kawiil.mx/v1/doc-chat")
+    if chat_url.endswith("/v1/chat/completions"):
+        chat_url = chat_url[: -len("/v1/chat/completions")] + "/v1/doc-chat"
+    chat_token = _os.environ.get("DOC_CHAT_TOKEN", "")
     ctx_json = _json.dumps((ctx_md or "")[:4000])
     script_js = (f'const CHAT_URL={_json.dumps(chat_url)};'
                  f'const CHAT_TOKEN={_json.dumps(chat_token)};'
