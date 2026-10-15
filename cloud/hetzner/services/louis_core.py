@@ -8124,32 +8124,40 @@ def run_memory_distillation(force: bool = False) -> str:
 
 
 # ===== Agente de seguimiento de AGENDA (steward) =====
-# Corre 1×/día (scheduler, 07:00 CDMX). Revisa los pendientes abiertos, los califica
-# con Haiku (vigente / cerrar / replantear) y le manda a Polo un reporte corto con
-# comentarios útiles. NUNCA cierra nada por su cuenta: guarda la propuesta y solo la
-# aplica cuando Polo responde «cierra 3, 5» o «cierra todos los sugeridos».
+# Corre 1×/día (scheduler, 07:00 CDMX). Revisa los pendientes abiertos, los califica con Haiku
+# (vigente / cerrar / replantear) y le manda a Polo un reporte corto. NUNCA cierra nada por su
+# cuenta: guarda la propuesta y solo la aplica cuando Polo responde «cierra 3, 5» o «cierra todos
+# los sugeridos». Reglas que se hacen cumplir EN CÓDIGO (no solo en el prompt):
+#   • Lo regulatorio/legal (REGULATORY_RE) jamás entra a «sugeridos»: va a «verificar».
+#   • Para sugerir cerrar hace falta evidencia citada por el modelo o una fecha ya vencida en el texto.
+#   • Los días de atraso los calcula Python, no el modelo.
+#   • Los pendientes casi idénticos se reportan como duplicados, no se cierran los dos.
 STEWARD_STATE = STATE_DIR / "agenda_steward.json"
+SLACK_FOLLOWUP_STATE = STATE_DIR / "slack_followup.json"
 STEWARD_ARCHIVO = "AGENDA-ARCHIVO.md"
 STEWARD_STALE_DAYS = 14
-STEWARD_MAX_ITEMS = 40
+STEWARD_MAX_ITEMS = 60
 _STEWARD_OPEN_RE = re.compile(r"^\s*-\s*\[\s*\]\s+")
 _STEWARD_AGE_RE = re.compile(r"\[(?:auto|capturado|visto)\s+(\d{4}-\d{2}-\d{2})\]")
+REGULATORY_RE = re.compile(
+    r"oficio|cnbv|\buif\b|\bpld\b|lfpiorpi|pr[oó]rroga|plazo|vencid|vencimiento|amparo|juzgad|expediente|"
+    r"demanda|denuncia|audiencia|requerimiento|sanci[oó]n|multa|\bsat\b|ministerio p[uú]blico", re.I)
+_MESES_ES = {"ene": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6, "jul": 7, "ago": 8, "sep": 9,
+             "oct": 10, "nov": 11, "dic": 12}
 
 _STEWARD_SYSTEM = (
-    "Eres el agente de seguimiento de Nexo (asistente ejecutivo de Polo Bassoco, CEO de "
-    "Kawiil/Yoltik). Recibes los pendientes abiertos de su AGENDA con su antigüedad y la "
-    "fecha de HOY. Devuelve SOLO un JSON:\n"
-    '{"enfoque": ["máx 3 frases: qué debería atacar hoy y por qué"],\n'
-    ' "items": [{"n": <número>, "veredicto": "vigente"|"cerrar"|"replantear", '
-    '"comentario": "máx 18 palabras, accionable"}],\n'
-    ' "observaciones": "opcional, máx 2 frases (patrones, bloqueos, duplicados temáticos)"}\n'
-    "Reglas: (1) «cerrar» SOLO si el texto trae una fecha ya vencida respecto a HOY, un "
-    "evento claramente pasado, o dice que ya se hizo — cita esa evidencia en el comentario. "
-    "(2) Si no hay evidencia pero lleva mucho tiempo sin moverse, usa «replantear» "
-    "(sugiere el siguiente paso concreto o a quién preguntar). (3) No inventes datos, "
-    "personas ni fechas. (4) Español mexicano, directo. (5) Incluye solo los ítems con "
-    "veredicto «cerrar» o «replantear», más los «vigente» que venzan hoy o mañana."
-)
+    "Eres el agente de seguimiento de Nexo (asistente ejecutivo de Polo Bassoco, CEO de Kawiil/Yoltik). Recibes "
+    "los pendientes abiertos de su AGENDA con su antigüedad, las fechas YA VENCIDAS que cita cada uno (con los "
+    "días de atraso ya calculados) y, si existe, un resumen reciente de lo que pasó en Slack. Devuelve SOLO un JSON:\n"
+    '{"enfoque": ["máx 3 frases: qué atacar hoy y por qué"],\n'
+    ' "items": [{"n": <número>, "veredicto": "cerrar"|"replantear", "comentario": "máx 18 palabras, accionable", '
+    '"evidencia": "cita breve de dónde sale (p. ej. «fecha 5-jun ya venció» o «Slack 12-oct: …»), o —"}],\n'
+    ' "observaciones": "opcional, máx 2 frases completas"}\n'
+    "Reglas: (1) «cerrar» SOLO con evidencia concreta: una fecha ya vencida que cite el propio pendiente, un evento "
+    "claramente pasado, o un mensaje de Slack que confirme que se hizo. Cítala en «evidencia». (2) Sin evidencia pero "
+    "viejo o confuso: «replantear» con el siguiente paso concreto. (3) NO calcules días ni fechas: usa SOLO los datos "
+    "que te doy. (4) No inventes personas, cifras ni fechas. (5) Español mexicano, directo. (6) Incluye solo los "
+    "pendientes con veredicto; los demás se omiten.")
 
 
 def _steward_load_state() -> dict:
@@ -8174,9 +8182,7 @@ def _steward_backup(path: Path) -> None:
 
 
 def _steward_stamp_undated(today: str) -> int:
-    """Marca con [visto HOY] los pendientes sin fecha de captura, para que a partir de
-    hoy sí se pueda medir su antigüedad (los viejos no traen fecha y nadie los veía
-    estancarse). Respalda AGENDA antes de escribir."""
+    """Marca con [visto HOY] los pendientes sin fecha de captura, para poder medir su antigüedad."""
     path = SPACE / "AGENDA.md"
     if not path.exists():
         return 0
@@ -8190,6 +8196,40 @@ def _steward_stamp_undated(today: str) -> int:
         _steward_backup(path)
         path.write_text("\n".join(lines) + "\n")
     return n
+
+
+def _steward_tokens(texto: str) -> set:
+    import unicodedata
+    s = unicodedata.normalize("NFKD", texto or "")
+    s = "".join(c for c in s if not unicodedata.combining(c)).lower()
+    stop = {"para", "como", "pero", "porque", "sobre", "entre", "desde", "hasta", "esta", "este", "estos", "estas",
+            "una", "uno", "los", "las", "del", "con", "sin", "por", "que", "hoy", "pendiente", "revisar", "enviar",
+            "seguimiento", "falta", "favor", "todo", "todos", "cliente", "clientes"}
+    return {t for t in re.findall(r"[a-z0-9]{4,}", s) if t not in stop}
+
+
+def _steward_fechas_pasadas(texto: str, today) -> list:
+    """Fechas ya vencidas que cita el texto: [(date, días_de_atraso)]. Calculado en Python."""
+    from datetime import date as _d
+    out = {}
+    for m in re.finditer(r"\b(\d{1,2})\s*(?:de\s+)?[-/ ]?\s*(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)[a-záéíóú]*\.?",
+                         (texto or "").lower()):
+        try:
+            f = _d(today.year, _MESES_ES[m.group(2)], int(m.group(1)))
+        except ValueError:
+            continue
+        if f > today + timedelta(days=180):
+            f = _d(today.year - 1, f.month, f.day)
+        if f < today:
+            out[f] = (today - f).days
+    for m in re.finditer(r"\b(20\d{2})-(\d{2})-(\d{2})\b", texto or ""):
+        try:
+            f = _d(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            continue
+        if f < today:
+            out[f] = (today - f).days
+    return sorted(out.items())
 
 
 def _steward_open_items(today) -> list:
@@ -8209,10 +8249,47 @@ def _steward_open_items(today) -> list:
                 pass
         texto = _STEWARD_AGE_RE.sub("", _STEWARD_OPEN_RE.sub("", line)).replace("**", "")
         texto = re.sub(r"\s*·\s*$", "", texto.strip()).strip()
-        items.append({"line": line.strip(), "texto": texto, "edad": edad})
-    # Los más viejos primero (sin fecha = edad desconocida, al final del bloque).
+        items.append({"line": line.strip(), "texto": texto, "edad": edad,
+                      "pasadas": _steward_fechas_pasadas(texto, today),
+                      "regulatorio": bool(REGULATORY_RE.search(texto))})
     items.sort(key=lambda it: -(it["edad"] if it["edad"] is not None else -1))
     return items[:STEWARD_MAX_ITEMS]
+
+
+def _steward_duplicados(items: list) -> list:
+    """Pares (i, j) 1-based de pendientes casi idénticos."""
+    toks = [_steward_tokens(it["texto"]) for it in items]
+    pares = []
+    for i in range(len(items)):
+        for j in range(i + 1, len(items)):
+            a, b = toks[i], toks[j]
+            if len(a) >= 3 and len(b) >= 3 and len(a & b) / len(a | b) >= 0.6:
+                pares.append((i + 1, j + 1))
+    return pares
+
+
+def _steward_slack_context() -> str:
+    """Resumen reciente de Slack (lo deja slack_digest) para que el modelo tenga evidencia."""
+    try:
+        files = sorted((STATE_DIR / "slack_digests").glob("*.json"), reverse=True)[:2]
+        partes = []
+        for f in files:
+            d = json.loads(f.read_text())
+            acc = "; ".join(f"{a.get('id')}: {a.get('que')} ({a.get('fecha')}, resp: {a.get('respuesta')})"
+                            for a in (d.get("acciones") or [])[:25])
+            partes.append(f"[{d.get('fecha')}] {d.get('resumen', '')}\nAcciones: {acc}")
+        return "\n\n".join(partes)[:6000]
+    except Exception:
+        return ""
+
+
+def _cortar_frase(txt: str, n: int = 300) -> str:
+    txt = (txt or "").strip()
+    if len(txt) <= n:
+        return txt
+    corte = txt[:n]
+    i = max(corte.rfind(". "), corte.rfind("; "))
+    return (corte[:i + 1] if i > n // 2 else corte.rsplit(" ", 1)[0] + "…")
 
 
 def _steward_memory_health() -> list:
@@ -8244,39 +8321,58 @@ def run_agenda_steward(force: bool = False) -> str:
         _steward_save_state({"date": today_s, "items": {}, "sugeridos": []})
         return "(steward: AGENDA sin pendientes abiertos)"
 
-    listado = "\n".join(
-        f"{i}. [{('%dd' % it['edad']) if it['edad'] is not None else 'sin fecha'}] {it['texto'][:220]}"
-        for i, it in enumerate(items, 1))
+    def _fila(i, it):
+        edad = ("%dd" % it["edad"]) if it["edad"] is not None else "sin fecha"
+        s = f"{i}. [{edad}]{' [REGULATORIO]' if it['regulatorio'] else ''} {it['texto'][:240]}"
+        if it["pasadas"]:
+            s += "\n   · fechas citadas ya vencidas: " + ", ".join(
+                f"{f.isoformat()} (hace {d} días)" for f, d in it["pasadas"][:3])
+        return s
+
+    listado = "\n".join(_fila(i, it) for i, it in enumerate(items, 1))
+    slack_ctx = _steward_slack_context()
     data = {}
     try:
         api_key = load_anthropic_key()
         raw = call_haiku(api_key, _STEWARD_SYSTEM, [],
-                         f"HOY es {_fmt_dt_es(now)}.\n\nPendientes abiertos "
-                         f"({len(items)}; los de edad 0d acaban de ser marcados como vistos):\n{listado}")
+                         f"HOY es {_fmt_dt_es(now)}.\n\nPENDIENTES ABIERTOS ({len(items)}):\n{listado}"
+                         + (f"\n\nRESUMEN RECIENTE DE SLACK:\n{slack_ctx}" if slack_ctx else ""),
+                         max_tokens=3000, timeout=90)
         data = _distill_parse_json(raw)
     except Exception as e:
         log.warning(f"steward: Haiku falló, reporte sin comentarios: {e}")
 
-    veredictos = {}
+    cerrar, verificar, replantear = [], [], []
     for it in (data.get("items") or []):
         try:
-            veredictos[int(it["n"])] = (str(it.get("veredicto", "")), str(it.get("comentario", "")).strip())
+            n = int(it["n"])
         except Exception:
             continue
-
-    cerrar, replantear, hoy_vence = [], [], []
-    for n, (v, c) in sorted(veredictos.items()):
         if not 1 <= n <= len(items):
             continue
-        linea = f"{n}. {items[n-1]['texto'][:110]} — {c}" if c else f"{n}. {items[n-1]['texto'][:110]}"
-        {"cerrar": cerrar, "replantear": replantear}.get(v, hoy_vence).append(linea)
+        item = items[n - 1]
+        v = str(it.get("veredicto", ""))
+        c = str(it.get("comentario", "")).strip()
+        ev = str(it.get("evidencia", "")).strip().strip("—-").strip()
+        base = f"{n}. {item['texto'][:110]}"
+        linea = f"{base} — {c}" if c else base
+        if v == "cerrar":
+            if item["regulatorio"]:
+                verificar.append(linea + (f" [{ev}]" if ev else ""))          # nunca se sugiere cerrar
+            elif not (ev or item["pasadas"]):
+                replantear.append(linea + " (sin evidencia suficiente para cerrar)")
+            else:
+                cerrar.append((n, linea + (f" [{ev}]" if ev else "")))
+        elif v == "replantear":
+            (verificar if item["regulatorio"] else replantear).append(linea)
     # Sin Haiku: al menos lista los estancados por antigüedad.
-    if not veredictos:
+    if not (data.get("items")):
         for i, it in enumerate(items, 1):
             if it["edad"] is not None and it["edad"] >= STEWARD_STALE_DAYS:
-                replantear.append(f"{i}. ({it['edad']}d) {it['texto'][:110]}")
+                (verificar if it["regulatorio"] else replantear).append(f"{i}. ({it['edad']}d) {it['texto'][:110]}")
 
-    sugeridos = [int(l.split(".", 1)[0]) for l in cerrar]
+    dups = _steward_duplicados(items)
+    sugeridos = [n for n, _ in cerrar]
     _steward_save_state({
         "date": today_s,
         "items": {str(i): it["line"] for i, it in enumerate(items, 1)},
@@ -8286,23 +8382,26 @@ def run_agenda_steward(force: bool = False) -> str:
     salud = _steward_memory_health()
     lines = [f"🧭 *Seguimiento diario — {now.strftime('%d %b')}*",
              f"_{len(items)} pendientes revisados_"
-             + (f" · marqué {sellados} sin fecha como vistos hoy" if sellados else "")]
+             + (f" · marqué {sellados} sin fecha como vistos hoy" if sellados else "")
+             + ("" if slack_ctx else " · sin resumen de Slack reciente")]
     if data.get("enfoque"):
         enf = data["enfoque"] if isinstance(data["enfoque"], list) else [str(data["enfoque"])]
         lines.append("\n🎯 *Enfoque de hoy:*")
-        lines += [f"• {str(e)[:200]}" for e in enf[:3]]
-    if hoy_vence:
-        lines.append("\n⏰ *Vigentes que vencen pronto:*")
-        lines += [f"• {l}" for l in hoy_vence[:6]]
+        lines += [f"• {_cortar_frase(str(e), 220)}" for e in enf[:3]]
     if cerrar:
-        lines.append(f"\n🧹 *Propongo cerrar ({len(cerrar)}):*")
-        lines += [f"• {l}" for l in cerrar[:10]]
+        lines.append(f"\n🧹 *Propongo cerrar ({len(cerrar)}) — con evidencia:*")
+        lines += [f"• {l}" for _, l in cerrar[:10]]
         lines.append("_Responde «cierra 3, 5» o «cierra todos los sugeridos». No cierro nada sin tu OK._")
+    if verificar:
+        lines.append(f"\n⚠️ *Regulatorio / legal — verificar antes de tocar ({len(verificar)}):*")
+        lines += [f"• {l}" for l in verificar[:8]]
     if replantear:
         lines.append(f"\n🔁 *Para replantear ({len(replantear)}):*")
         lines += [f"• {l}" for l in replantear[:8]]
+    if dups:
+        lines.append("\n🔗 *Posibles duplicados:* " + ", ".join(f"{a} y {b}" for a, b in dups[:6]))
     if data.get("observaciones"):
-        lines.append(f"\n💡 {str(data['observaciones'])[:300]}")
+        lines.append(f"\n💡 {_cortar_frase(str(data['observaciones']), 300)}")
     if salud:
         lines.append("\n🗂 *Salud de la memoria:*")
         lines += [f"• {s}" for s in salud]
@@ -8312,7 +8411,8 @@ def run_agenda_steward(force: bool = False) -> str:
         _encolar_notificacion("\n".join(lines)[:3800], canal="telegram")
     except Exception as e:
         log.warning(f"steward: no pude encolar el reporte: {e}")
-    return f"OK steward: {len(items)} pendientes, {len(cerrar)} a cerrar, {len(replantear)} a replantear"
+    return (f"OK steward: {len(items)} pendientes, {len(cerrar)} a cerrar, {len(verificar)} a verificar, "
+            f"{len(replantear)} a replantear, {len(dups)} duplicados")
 
 
 def aplicar_cierres_steward(seleccion: str) -> str:
@@ -8351,6 +8451,37 @@ def aplicar_cierres_steward(seleccion: str) -> str:
     _steward_save_state(estado)
     return (f"✅ Archivé {len(movidos)} pendiente(s) en {STEWARD_ARCHIVO} (AGENDA respaldada). "
             f"Quedan {sum(1 for l in quedan if _STEWARD_OPEN_RE.match(l))} abiertos.")
+
+
+def aplicar_altas_seguimiento(seleccion: str) -> str:
+    """Agrega a la AGENDA las altas que propuso el seguimiento de Slack, SOLO tras el OK de Polo.
+    `seleccion` = «todas» o números («1, 3 y 4»). Respalda AGENDA.md y evita duplicados."""
+    try:
+        est = json.loads(SLACK_FOLLOWUP_STATE.read_text())
+    except Exception:
+        est = {}
+    altas = est.get("altas") or []
+    if not altas:
+        return "No tengo altas propuestas. Salen en el seguimiento de Slack de las 7:41."
+    if re.search(r"(?i)todas", seleccion or ""):
+        elegidas = altas
+    else:
+        nums = {int(n) for n in re.findall(r"\d+", seleccion or "")}
+        elegidas = [a for a in altas if a.get("n") in nums]
+    if not elegidas:
+        return "Ninguno de esos números está en las altas propuestas."
+    path = SPACE / "AGENDA.md"
+    if path.exists():
+        _steward_backup(path)
+    nuevas = sum(1 for a in elegidas if _distill_append("AGENDA.md", a["texto"]))
+    est["altas"] = [a for a in altas if a not in elegidas]
+    try:
+        SLACK_FOLLOWUP_STATE.write_text(json.dumps(est, ensure_ascii=False, indent=1))
+    except Exception:
+        pass
+    ya = len(elegidas) - nuevas
+    return (f"✅ Agregué {nuevas} pendiente(s) a la AGENDA (respaldo hecho)"
+            + (f"; {ya} ya estaban." if ya else "."))
 
 
 # ===== Sub-agentes =====
@@ -9263,8 +9394,10 @@ def call_deepseek(system_prompt: str, history: list, user_message: str, model: s
     return (msg.get("content") or "").strip() or "(respuesta vacía de DeepSeek)"
 
 
-def call_haiku(api_key: str, system_prompt: str, history: list, user_message: str) -> str:
-    """Llama Haiku SIN tools — para chat rápido. ~1-3s."""
+def call_haiku(api_key: str, system_prompt: str, history: list, user_message: str,
+               max_tokens: int = 2048, timeout: int = 60) -> str:
+    """Llama Haiku SIN tools — para chat rápido. ~1-3s. `max_tokens`/`timeout` suben
+    para trabajos largos (resúmenes de Slack); los defaults no cambian el comportamiento."""
     messages = []
     for h in history:
         if h["role"] in ("user", "assistant") and isinstance(h["content"], str) and h["content"].strip():
@@ -9291,12 +9424,12 @@ def call_haiku(api_key: str, system_prompt: str, history: list, user_message: st
     headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
     body = {
         "model": CLAUDE_HAIKU,
-        "max_tokens": 2048,
+        "max_tokens": max_tokens,
         "system": sys_p,
         "messages": cleaned,
     }
     try:
-        resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=60)
+        resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=timeout)
     except urllib.error.HTTPError as e:
         err_body = getattr(e, "body", "") or ""
         log.error(f"Haiku falló — code={e.code} body={err_body[:500]}")
@@ -9306,7 +9439,7 @@ def call_haiku(api_key: str, system_prompt: str, history: list, user_message: st
             log.warning("Modelo Haiku rechazado por API — fallback a Sonnet")
             body["model"] = CLAUDE_SONNET
             try:
-                resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=60)
+                resp = http_post_json(ANTHROPIC_API_BASE, headers, body, timeout=timeout)
             except urllib.error.HTTPError as e2:
                 err_body2 = getattr(e2, "body", "") or ""
                 return f"(Haiku→Sonnet fallback falló: HTTP {e2.code}: {err_body2[:200]})"
@@ -9619,6 +9752,13 @@ def call_llm(
     if m_cierre:
         _mark_last_route("cierre-steward")
         return aplicar_cierres_steward(m_cierre.group(1)), "cierre-steward"
+
+    # Respuesta al seguimiento de Slack: «agrega altas 1, 3» / «agrega todas las altas».
+    m_altas = re.match(r"(?i)^\s*agrega(?:r)?\s+(?:(todas)\s+las\s+altas|(?:las\s+)?altas?\s+(\d[\d,\sy]*))\s*$",
+                       user_message or "")
+    if m_altas:
+        _mark_last_route("altas-seguimiento")
+        return aplicar_altas_seguimiento(m_altas.group(1) or m_altas.group(2) or ""), "altas-seguimiento"
 
     # Limpieza de duplicados de la AGENDA bajo demanda ("limpia la agenda").
     if re.search(r"(?i)\blimpia(?:r)?\s+(?:la\s+|mi\s+)?agenda\b|\bquita(?:r)?\s+(?:los\s+)?duplicados\b",
