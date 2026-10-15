@@ -4110,7 +4110,7 @@ def _run_m365_tool(name: str, args: dict) -> str:
         return f"ERROR ejecutando m365.py: {e}"
 
 
-def _verificar_conexiones(incluir_m365: bool = True) -> str:
+def _verificar_conexiones(incluir_m365: bool = True, incluir_gateway: bool = True) -> str:
     out = ["=== Verificación EN VIVO de Louis ===\n"]
     try:
         hostname = subprocess.run(["hostname"], capture_output=True, text=True, timeout=2).stdout.strip()
@@ -4172,14 +4172,22 @@ def _verificar_conexiones(incluir_m365: bool = True) -> str:
     except Exception as e:
         out.append(f"  ? agentes: {e}")
     out.append("\n--- OpenClaw Gateway ---")
-    try:
-        req = urllib.request.Request("http://127.0.0.1:3000/v1/status")
-        with urllib.request.urlopen(req, timeout=5) as r:
-            st = json.loads(r.read())
-            out.append(f"  agents_count: {st.get('agents_count', '?')}")
-            out.append(f"  routing: {st.get('routing', {})}")
-    except Exception as e:
-        out.append(f"  ✗ gateway :3000 — {e}")
+    if not incluir_gateway:
+        # El propio gateway llama a esta función desde /v1/status: consultarse a sí mismo
+        # por HTTP generaba una cadena infinita de /v1/status (millones de líneas de log).
+        out.append("  (omitido: esta verificación corre dentro del gateway)")
+    else:
+        try:
+            req = urllib.request.Request("http://127.0.0.1:3000/v1/status")
+            _gw_tok = os.environ.get("OPENCLAW_GATEWAY_TOKEN", "")
+            if _gw_tok:  # el gateway ahora exige Bearer también en /v1/status
+                req.add_header("Authorization", f"Bearer {_gw_tok}")
+            with urllib.request.urlopen(req, timeout=5) as r:
+                st = json.loads(r.read())
+                out.append(f"  agents_count: {st.get('agents_count', '?')}")
+                out.append(f"  routing: {st.get('routing', {})}")
+        except Exception as e:
+            out.append(f"  ✗ gateway :3000 — {e}")
     if incluir_m365 and M365_SCRIPT.exists():
         out.append("\n--- M365 ---")
         for tenant in ("kawiil", "yoltik"):

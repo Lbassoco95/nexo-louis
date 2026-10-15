@@ -27,7 +27,7 @@
     # Tablero / dashboards protegidos con usuario+contraseña (datos de clientes/legal).
     # TABLERO_USER y TABLERO_HASH vienen del entorno del container (compose → .env).
     # Hash: docker exec louis-caddy caddy hash-password --plaintext 'TU_PASSWORD'
-    @tablero path / /dashboard* /agentes* /tablero* /seguimiento* /v1/tablero* /v1/activity*
+    @tablero path / /dashboard* /agentes* /tablero* /seguimiento* /v1/tablero* /v1/activity* /v1/entregable*
     basic_auth @tablero {
         {$TABLERO_USER} {$TABLERO_HASH}
     }
