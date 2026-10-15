@@ -1770,12 +1770,12 @@ def build_weekly_review() -> str:
             continue
         abiertos += 1
         txt = re.sub(r"^\s*-\s*\[\s*\]\s*", "", line.strip()).replace("**", "").strip()
-        mcap = re.search(r"\[(?:auto|capturado)\s+(\d{4}-\d{2}-\d{2})\]", line)
+        mcap = re.search(r"\[(?:auto|capturado|visto)\s+(\d{4}-\d{2}-\d{2})\]", line)
         if mcap:
             try:
                 edad = (hoy - date.fromisoformat(mcap.group(1))).days
                 if edad >= 7:
-                    estancados.append((edad, re.sub(r"\s*·?\s*\[(?:auto|capturado)[^\]]*\]", "", txt).strip()))
+                    estancados.append((edad, re.sub(r"\s*·?\s*\[(?:auto|capturado|visto)[^\]]*\]", "", txt).strip()))
             except Exception:
                 pass
     deadlines = _extract_deadlines(agenda, 10)
@@ -8051,7 +8051,7 @@ def _distill_parse_json(raw: str) -> dict:
 
 def _distill_norm(s: str) -> str:
     """Normaliza para dedup: quita marca de fecha, baja a minúsculas, deja alfanumérico."""
-    s = re.sub(r"\[(auto |)\d{4}-\d{2}-\d{2}[^\]]*\]", "", s)
+    s = re.sub(r"\[(auto |visto |)\d{4}-\d{2}-\d{2}[^\]]*\]", "", s)
     return re.sub(r"[^a-z0-9áéíóúñ ]", "", s.lower()).strip()
 
 
@@ -8113,6 +8113,236 @@ def run_memory_distillation(force: bool = False) -> str:
     _distill_save_state(today, resumen)
     log.info(f"auto-memoria destilada → {resumen}")
     return f"OK auto-memoria: {resumen}"
+
+
+# ===== Agente de seguimiento de AGENDA (steward) =====
+# Corre 1×/día (scheduler, 07:00 CDMX). Revisa los pendientes abiertos, los califica
+# con Haiku (vigente / cerrar / replantear) y le manda a Polo un reporte corto con
+# comentarios útiles. NUNCA cierra nada por su cuenta: guarda la propuesta y solo la
+# aplica cuando Polo responde «cierra 3, 5» o «cierra todos los sugeridos».
+STEWARD_STATE = STATE_DIR / "agenda_steward.json"
+STEWARD_ARCHIVO = "AGENDA-ARCHIVO.md"
+STEWARD_STALE_DAYS = 14
+STEWARD_MAX_ITEMS = 40
+_STEWARD_OPEN_RE = re.compile(r"^\s*-\s*\[\s*\]\s+")
+_STEWARD_AGE_RE = re.compile(r"\[(?:auto|capturado|visto)\s+(\d{4}-\d{2}-\d{2})\]")
+
+_STEWARD_SYSTEM = (
+    "Eres el agente de seguimiento de Nexo (asistente ejecutivo de Polo Bassoco, CEO de "
+    "Kawiil/Yoltik). Recibes los pendientes abiertos de su AGENDA con su antigüedad y la "
+    "fecha de HOY. Devuelve SOLO un JSON:\n"
+    '{"enfoque": ["máx 3 frases: qué debería atacar hoy y por qué"],\n'
+    ' "items": [{"n": <número>, "veredicto": "vigente"|"cerrar"|"replantear", '
+    '"comentario": "máx 18 palabras, accionable"}],\n'
+    ' "observaciones": "opcional, máx 2 frases (patrones, bloqueos, duplicados temáticos)"}\n'
+    "Reglas: (1) «cerrar» SOLO si el texto trae una fecha ya vencida respecto a HOY, un "
+    "evento claramente pasado, o dice que ya se hizo — cita esa evidencia en el comentario. "
+    "(2) Si no hay evidencia pero lleva mucho tiempo sin moverse, usa «replantear» "
+    "(sugiere el siguiente paso concreto o a quién preguntar). (3) No inventes datos, "
+    "personas ni fechas. (4) Español mexicano, directo. (5) Incluye solo los ítems con "
+    "veredicto «cerrar» o «replantear», más los «vigente» que venzan hoy o mañana."
+)
+
+
+def _steward_load_state() -> dict:
+    try:
+        return json.loads(STEWARD_STATE.read_text())
+    except Exception:
+        return {}
+
+
+def _steward_save_state(data: dict):
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        STEWARD_STATE.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+    except Exception:
+        log.warning("no pude guardar agenda_steward.json", exc_info=True)
+
+
+def _steward_backup(path: Path) -> None:
+    import shutil
+    ts = datetime.now(TZ_CDMX).strftime("%Y%m%d-%H%M%S")
+    shutil.copy2(path, path.with_suffix(f".md.bak-{ts}"))
+
+
+def _steward_stamp_undated(today: str) -> int:
+    """Marca con [visto HOY] los pendientes sin fecha de captura, para que a partir de
+    hoy sí se pueda medir su antigüedad (los viejos no traen fecha y nadie los veía
+    estancarse). Respalda AGENDA antes de escribir."""
+    path = SPACE / "AGENDA.md"
+    if not path.exists():
+        return 0
+    lines = path.read_text().splitlines()
+    n = 0
+    for i, line in enumerate(lines):
+        if _STEWARD_OPEN_RE.match(line) and not _STEWARD_AGE_RE.search(line):
+            lines[i] = f"{line.rstrip()}  · [visto {today}]"
+            n += 1
+    if n:
+        _steward_backup(path)
+        path.write_text("\n".join(lines) + "\n")
+    return n
+
+
+def _steward_open_items(today) -> list:
+    path = SPACE / "AGENDA.md"
+    if not path.exists():
+        return []
+    items = []
+    for line in path.read_text().splitlines():
+        if not _STEWARD_OPEN_RE.match(line):
+            continue
+        m = _STEWARD_AGE_RE.search(line)
+        edad = None
+        if m:
+            try:
+                edad = (today - datetime.strptime(m.group(1), "%Y-%m-%d").date()).days
+            except Exception:
+                pass
+        texto = _STEWARD_AGE_RE.sub("", _STEWARD_OPEN_RE.sub("", line)).replace("**", "")
+        texto = re.sub(r"\s*·\s*$", "", texto.strip()).strip()
+        items.append({"line": line.strip(), "texto": texto, "edad": edad})
+    # Los más viejos primero (sin fecha = edad desconocida, al final del bloque).
+    items.sort(key=lambda it: -(it["edad"] if it["edad"] is not None else -1))
+    return items[:STEWARD_MAX_ITEMS]
+
+
+def _steward_memory_health() -> list:
+    """Archivos de memoria cuyo tamaño ya excede por mucho lo que cabe en el prompt."""
+    out = []
+    for fname in MEMORY_FILES:
+        p = SPACE / fname
+        if not p.exists():
+            continue
+        size = p.stat().st_size
+        limite = CLAUDE_MEMORY_LIMITS.get(fname, CLAUDE_MEMORY_DEFAULT_LIMIT)
+        if size > limite * 3 and size > 20_000:
+            out.append(f"{fname}: {size // 1024} KB (en el prompt solo caben {limite // 1000} KB) "
+                       f"— conviene archivar o resumir lo viejo")
+    return out
+
+
+def run_agenda_steward(force: bool = False) -> str:
+    """Seguimiento diario de la AGENDA. Idempotente por fecha. Devuelve un resumen para log."""
+    now = datetime.now(TZ_CDMX)
+    today_s, today = now.strftime("%Y-%m-%d"), now.date()
+    estado = _steward_load_state()
+    if not force and estado.get("date") == today_s:
+        return "(steward ya corrió hoy)"
+
+    sellados = _steward_stamp_undated(today_s)
+    items = _steward_open_items(today)
+    if not items:
+        _steward_save_state({"date": today_s, "items": {}, "sugeridos": []})
+        return "(steward: AGENDA sin pendientes abiertos)"
+
+    listado = "\n".join(
+        f"{i}. [{('%dd' % it['edad']) if it['edad'] is not None else 'sin fecha'}] {it['texto'][:220]}"
+        for i, it in enumerate(items, 1))
+    data = {}
+    try:
+        api_key = load_anthropic_key()
+        raw = call_haiku(api_key, _STEWARD_SYSTEM, [],
+                         f"HOY es {_fmt_dt_es(now)}.\n\nPendientes abiertos "
+                         f"({len(items)}; los de edad 0d acaban de ser marcados como vistos):\n{listado}")
+        data = _distill_parse_json(raw)
+    except Exception as e:
+        log.warning(f"steward: Haiku falló, reporte sin comentarios: {e}")
+
+    veredictos = {}
+    for it in (data.get("items") or []):
+        try:
+            veredictos[int(it["n"])] = (str(it.get("veredicto", "")), str(it.get("comentario", "")).strip())
+        except Exception:
+            continue
+
+    cerrar, replantear, hoy_vence = [], [], []
+    for n, (v, c) in sorted(veredictos.items()):
+        if not 1 <= n <= len(items):
+            continue
+        linea = f"{n}. {items[n-1]['texto'][:110]} — {c}" if c else f"{n}. {items[n-1]['texto'][:110]}"
+        {"cerrar": cerrar, "replantear": replantear}.get(v, hoy_vence).append(linea)
+    # Sin Haiku: al menos lista los estancados por antigüedad.
+    if not veredictos:
+        for i, it in enumerate(items, 1):
+            if it["edad"] is not None and it["edad"] >= STEWARD_STALE_DAYS:
+                replantear.append(f"{i}. ({it['edad']}d) {it['texto'][:110]}")
+
+    sugeridos = [int(l.split(".", 1)[0]) for l in cerrar]
+    _steward_save_state({
+        "date": today_s,
+        "items": {str(i): it["line"] for i, it in enumerate(items, 1)},
+        "sugeridos": sugeridos,
+    })
+
+    salud = _steward_memory_health()
+    lines = [f"🧭 *Seguimiento diario — {now.strftime('%d %b')}*",
+             f"_{len(items)} pendientes revisados_"
+             + (f" · marqué {sellados} sin fecha como vistos hoy" if sellados else "")]
+    if data.get("enfoque"):
+        enf = data["enfoque"] if isinstance(data["enfoque"], list) else [str(data["enfoque"])]
+        lines.append("\n🎯 *Enfoque de hoy:*")
+        lines += [f"• {str(e)[:200]}" for e in enf[:3]]
+    if hoy_vence:
+        lines.append("\n⏰ *Vigentes que vencen pronto:*")
+        lines += [f"• {l}" for l in hoy_vence[:6]]
+    if cerrar:
+        lines.append(f"\n🧹 *Propongo cerrar ({len(cerrar)}):*")
+        lines += [f"• {l}" for l in cerrar[:10]]
+        lines.append("_Responde «cierra 3, 5» o «cierra todos los sugeridos». No cierro nada sin tu OK._")
+    if replantear:
+        lines.append(f"\n🔁 *Para replantear ({len(replantear)}):*")
+        lines += [f"• {l}" for l in replantear[:8]]
+    if data.get("observaciones"):
+        lines.append(f"\n💡 {str(data['observaciones'])[:300]}")
+    if salud:
+        lines.append("\n🗂 *Salud de la memoria:*")
+        lines += [f"• {s}" for s in salud]
+    if len(lines) <= 2:
+        return f"OK steward: {len(items)} pendientes, nada que reportar"
+    try:
+        _encolar_notificacion("\n".join(lines)[:3800], canal="telegram")
+    except Exception as e:
+        log.warning(f"steward: no pude encolar el reporte: {e}")
+    return f"OK steward: {len(items)} pendientes, {len(cerrar)} a cerrar, {len(replantear)} a replantear"
+
+
+def aplicar_cierres_steward(seleccion: str) -> str:
+    """Aplica la propuesta del steward tras el OK de Polo. `seleccion` = «todos los
+    sugeridos» o números («3, 5 y 7»). Mueve los pendientes a AGENDA-ARCHIVO.md
+    (con respaldo de AGENDA.md) en vez de borrarlos."""
+    estado = _steward_load_state()
+    items = estado.get("items") or {}
+    if not items:
+        return "No tengo una propuesta de cierre vigente. Se genera cada mañana en el seguimiento diario."
+    if re.search(r"(?i)sugeridos", seleccion):
+        nums = [str(n) for n in estado.get("sugeridos", [])]
+    else:
+        nums = re.findall(r"\d+", seleccion)
+    lineas = [items[n] for n in nums if n in items]
+    if not lineas:
+        return "Ninguno de esos números está en la propuesta de hoy."
+    path = SPACE / "AGENDA.md"
+    if not path.exists():
+        return "AGENDA.md no existe."
+    actuales = path.read_text().splitlines()
+    quitar = {l.strip() for l in lineas}
+    quedan = [l for l in actuales if l.strip() not in quitar]
+    movidos = [l.strip() for l in actuales if l.strip() in quitar]
+    if not movidos:
+        return "Esos pendientes ya no están en la AGENDA (¿ya los cerraste?)."
+    _steward_backup(path)
+    path.write_text("\n".join(quedan) + "\n")
+    fecha = datetime.now(TZ_CDMX).strftime("%Y-%m-%d")
+    with (SPACE / STEWARD_ARCHIVO).open("a") as f:
+        for l in movidos:
+            f.write(_STEWARD_OPEN_RE.sub("- [x] ", l) + f"  · [archivado {fecha}]\n")
+    # Lo ya aplicado no se vuelve a ofrecer.
+    estado["items"] = {k: v for k, v in items.items() if v.strip() not in quitar}
+    estado["sugeridos"] = [n for n in estado.get("sugeridos", []) if str(n) in estado["items"]]
+    _steward_save_state(estado)
+    return (f"✅ Archivé {len(movidos)} pendiente(s) en {STEWARD_ARCHIVO} (AGENDA respaldada). "
+            f"Quedan {sum(1 for l in quedan if _STEWARD_OPEN_RE.match(l))} abiertos.")
 
 
 # ===== Sub-agentes =====
@@ -9374,6 +9604,13 @@ def call_llm(
     if det_task is not None:
         _mark_last_route("tarea-directa")
         return det_task, "tarea-directa"
+
+    # Respuesta al seguimiento diario: «cierra 3, 5» / «cierra todos los sugeridos».
+    m_cierre = re.match(r"(?i)^\s*cierra(?:r)?\s+(?:los\s+)?(?:pendientes?\s+)?"
+                        r"(todos\s+los\s+sugeridos|\d[\d,\sy]*)\s*$", user_message or "")
+    if m_cierre:
+        _mark_last_route("cierre-steward")
+        return aplicar_cierres_steward(m_cierre.group(1)), "cierre-steward"
 
     # Limpieza de duplicados de la AGENDA bajo demanda ("limpia la agenda").
     if re.search(r"(?i)\blimpia(?:r)?\s+(?:la\s+|mi\s+)?agenda\b|\bquita(?:r)?\s+(?:los\s+)?duplicados\b",

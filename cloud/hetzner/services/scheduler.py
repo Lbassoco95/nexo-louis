@@ -361,6 +361,17 @@ def main():
         except Exception as e:
             log.warning(f"auto-memoria tick falló: {e}")
 
+        # Seguimiento diario de AGENDA (steward): 07:00 CDMX, antes del briefing. Revisa los
+        # pendientes, comenta y propone cierres/replanteos; no cierra nada sin el OK de Polo.
+        # Idempotente por fecha (guarda estado), así que los ticks repetidos de la hora no lo repiten.
+        try:
+            if datetime.now(TZ_CDMX).hour == 7:
+                r = core.run_agenda_steward()
+                if r and r.startswith("OK"):
+                    log.info(f"steward: {r}")
+        except Exception as e:
+            log.warning(f"steward tick falló: {e}")
+
         # Gather Smart Object (Bot Status Monitor): refleja el estado de Louis cada ~5 min.
         # Solo envía si cambió; silencioso si no hay GATHER_STATUS_URL/SECRET.
         if tick_count % 5 == 0:
