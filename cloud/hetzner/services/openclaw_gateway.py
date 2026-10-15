@@ -588,7 +588,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(401, {"error": "unauthorized"})
                 return
             try:
-                status = core._verificar_conexiones(incluir_m365=False)
+                status = core._verificar_conexiones(incluir_m365=False, incluir_gateway=False)
             except Exception as e:
                 status = f"(error: {e})"
             agents_dir = Path("/opt/openclaw/spaces/general/agents")
