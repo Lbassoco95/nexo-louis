@@ -497,6 +497,90 @@ def resumen_agentes() -> list[dict]:
     return out
 
 
+# ── Seguimiento del aprendizaje ──────────────────────────────────────────────
+# Cada documento aprendido es un .md en docs/; su fecha de escritura dice CUÁNDO se aprendió.
+def actividad() -> dict:
+    """{agente: {día ISO: documentos escritos ese día, "_bytes": tamaño medio, "_cortos": resúmenes muy cortos}}"""
+    def leer():
+        out = {}
+        if not KNOWLEDGE.exists():
+            return out
+        for d in sorted(KNOWLEDGE.glob("kawiil-*")):
+            if not (d.is_dir() and AGENT_RE.match(d.name) and (d / "docs").is_dir()):
+                continue
+            dias, tam, cortos, n_ = collections.Counter(), 0, 0, 0
+            with os.scandir(d / "docs") as it:
+                for e in it:
+                    if not (e.name.endswith(".md") and DOC_RE.match(e.name)):
+                        continue
+                    try:
+                        st = e.stat()
+                    except OSError:
+                        continue
+                    dias[dt.date.fromtimestamp(st.st_mtime).isoformat()] += 1
+                    tam += st.st_size
+                    cortos += st.st_size < 400
+                    n_ += 1
+            out[d.name] = {"dias": dias, "medio": tam // n_ if n_ else 0, "cortos": cortos, "n": n_}
+        return out
+    return cacheado("actividad", 60, leer)
+
+
+def barras(serie: list[int]) -> str:
+    mx = max(serie) if serie and max(serie) else 0
+    return "".join("·" if not v else "▁▂▃▄▅▆▇█"[min(7, int(v / mx * 7.99))] for v in serie) if mx else "·" * len(serie)
+
+
+def p_seguimiento(quien):
+    act, con = actividad(), escanear_conocimiento()["agentes"]
+    hoy = dt.date.today()
+    dias = [(hoy - dt.timedelta(days=i)).isoformat() for i in range(13, -1, -1)]
+    gastado, tope = presupuesto_hoy()
+    tot_dia = [sum(a["dias"].get(d, 0) for a in act.values()) for d in dias]
+    filas, pend_total, rit_total = "", 0, 0.0
+    for nombre in sorted(set(act) | set(mapa_agentes())):
+        a = act.get(nombre, {"dias": {}, "medio": 0, "cortos": 0, "n": 0})
+        serie = [a["dias"].get(d, 0) for d in dias]
+        hoy_n, sem = serie[-1], sum(serie[-7:])
+        est = (con.get(nombre) or {}).get("estado") or {}
+        fall = est.get("_fallos") or {}
+        descart = sum(1 for v in fall.values() if isinstance(v, int) and v >= 3)
+        u = universo_agente(nombre)
+        docs = (con.get(nombre) or {}).get("docs", [])
+        rev = sum(1 for x in docs if x[0] == "dof") + sum(1 for x in docs if x[0] == "sjf")
+        univ = sum(v for v in (u.get("dof"), u.get("sjf")) if isinstance(v, int))
+        pend = max(0, univ - rev) if univ else 0
+        pend_total += pend
+        rit = sem / 7
+        rit_total += rit
+        eta = (f"{pend / rit:.0f} d" if rit and pend else ("al día" if univ and not pend else "—"))
+        cob = pct(rev, univ) if univ else "—"
+        ult = ((con.get(nombre) or {}).get("index", {}).get("last_indexed") or "")[:16].replace("T", " ")
+        filas += (f'<tr><td><a href="/agentes/{esc(nombre)}">{esc(nombre.replace("kawiil-", ""))}</a></td>'
+                  f'<td class=num>{a["n"]}</td><td class=num>{hoy_n}</td><td class=num>{sem}</td>'
+                  f'<td style="font-family:monospace;letter-spacing:1px">{barras(serie)}</td><td class=num>{cob}</td>'
+                  f'<td class=num>{eta}</td><td class=num>{len(fall) - descart}/{descart}</td><td class=num>{a["cortos"]}</td>'
+                  f'<td>{esc(ult)}</td></tr>')
+    tope_t = f" de {n(tope)}" if tope else ""
+    kp = [("Aprendidos hoy", n(sum(tot_dia[-1:]))), ("Últimos 7 días", n(sum(tot_dia[-7:]))),
+          ("Presupuesto de hoy", f"{n(gastado) if gastado is not None else '—'}{tope_t}"),
+          ("Pendiente total", n(pend_total)),
+          ("Para terminar (ritmo 7 d)", f"{pend_total / rit_total:.0f} d" if rit_total and pend_total else "—")]
+    kpis = "".join(f"<div class=kpi><b>{b}</b><span>{esc(a)}</span></div>" for a, b in kp)
+    glob_ = "".join(f'<tr><td>{esc(d[5:])}</td><td style="width:75%"><div class=bar><i style="width:{v / (max(tot_dia) or 1) * 100:.0f}%"></i></div></td>'
+                    f'<td class=num>{v}</td></tr>' for d, v in zip(dias, tot_dia))
+    cuerpo = (f"<h1>Seguimiento del aprendizaje</h1><div class=kpis>{kpis}</div>"
+              f"<p class=aviso>«Aprender» = leer un documento del DOF o del SJF, resumirlo y guardarlo en la memoria del agente. "
+              f"No se entrena ningún modelo. Los días salen de la fecha de escritura de cada documento.</p>"
+              f"<h2>Por agente</h2><div class=sc><table><tr><th>Agente</th><th class=num>Docs</th><th class=num>Hoy</th><th class=num>7 d</th>"
+              f"<th>Últimos 14 días</th><th class=num>Cobertura</th><th class=num>Faltan</th><th class=num>Reintento / descartados</th>"
+              f"<th class=num>Resumen &lt;400 B</th><th>Última pasada</th></tr>{filas}</table></div>"
+              f"<p class=aviso>Cobertura = documentos aprendidos ÷ universo de su materia. Reintento/descartados: documentos que fallaron "
+              f"(se descartan tras 3 intentos). «Resumen &lt;400 B» marca resúmenes sospechosamente cortos para revisarlos.</p>"
+              f"<h2>Total por día</h2><table>{glob_}</table>")
+    return pagina("Seguimiento", cuerpo, "/seguimiento", quien)
+
+
 # ── Estado de las bases ──────────────────────────────────────────────────────
 def estado() -> dict:
     def calc():
@@ -555,10 +639,10 @@ dl.f{display:grid;grid-template-columns:150px 1fr;gap:4px 14px;margin:0}dl.f dt{
 .txt{white-space:pre-wrap;font-family:Georgia,'Times New Roman',serif;line-height:1.6}
 iframe.pdf{width:100%;height:78vh;border:1px solid var(--line);border-radius:8px;background:#fff}
 .pg{display:flex;gap:12px;justify-content:space-between;margin:16px 0}.aviso{color:var(--grey);font-size:13px}
-.bar{height:8px;background:var(--line);border-radius:99px;overflow:hidden}.bar i{display:block;height:100%;background:var(--blue)}
+.sc{overflow-x:auto}.bar{height:8px;background:var(--line);border-radius:99px;overflow:hidden}.bar i{display:block;height:100%;background:var(--blue)}
 """
 
-NAV = (("/", "Inicio"), ("/buscar", "Buscar"), ("/leyes", "Leyes"), ("/materias", "Materias"), ("/agentes", "Agentes"), ("/estado", "Estado"))
+NAV = (("/", "Inicio"), ("/buscar", "Buscar"), ("/leyes", "Leyes"), ("/materias", "Materias"), ("/seguimiento", "Seguimiento"), ("/agentes", "Agentes"), ("/estado", "Estado"))
 
 
 def pagina(titulo: str, cuerpo: str, activo: str = "/", quien: str = "") -> bytes:
@@ -924,6 +1008,8 @@ class H(BaseHTTPRequestHandler):
                 r = p_inicio(quien)
             elif ruta == "/buscar":
                 r = p_buscar(qs, quien)
+            elif ruta == "/seguimiento":
+                r = p_seguimiento(quien)
             elif ruta == "/leyes":
                 r = p_leyes(qs, quien)
             elif ruta == "/ley":
