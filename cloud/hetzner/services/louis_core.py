@@ -518,6 +518,36 @@ MEMORY_FILES = [
 ]
 
 
+# Tope de caracteres por archivo de memoria en el system prompt de Claude.
+# Sin tope, PROJECTS (~235KB) + IMPORTANT (~67KB) + ... superaban los 200K tokens
+# (HTTP 400 "prompt is too long"). El archivo completo sigue accesible con la tool
+# `memoria_leer`; aquí solo va lo que Louis necesita tener siempre a la mano.
+CLAUDE_MEMORY_LIMITS = {
+    "USER.md": 6000,
+    "AGENDA.md": 10000,
+    "JOURNAL.md": 3000,
+    "LEARNINGS.md": 8000,
+    "IMPORTANT.md": 8000,
+    "PROJECTS.md": 10000,
+    "PEOPLE.md": 6000,
+}
+CLAUDE_MEMORY_DEFAULT_LIMIT = 4000
+
+
+def _budget_memory(fname: str, text: str) -> str:
+    """Recorta un archivo de memoria a su presupuesto. JOURNAL conserva lo más reciente
+    (el final); el resto conserva inicio y final, donde viven estructura y lo último."""
+    limit = CLAUDE_MEMORY_LIMITS.get(fname, CLAUDE_MEMORY_DEFAULT_LIMIT)
+    if len(text) <= limit:
+        return text
+    omitted = len(text) - limit
+    nota = f"\n…[{omitted} chars omitidos — usa la tool memoria_leer('{fname}') para el archivo completo]…\n"
+    if fname == "JOURNAL.md":
+        return nota + text[-limit:]
+    mitad = limit // 2
+    return text[:mitad] + nota + text[-mitad:]
+
+
 def load_system_prompt(channel: str = "telegram") -> str:
     """Concatena AGENTS.md + memoria estructurada. Adapta por canal."""
     parts = []
@@ -560,7 +590,7 @@ def load_system_prompt(channel: str = "telegram") -> str:
     for fname in MEMORY_FILES:
         path = SPACE / fname
         if path.exists():
-            parts.append(f"\n## {fname}\n```\n{path.read_text()}\n```\n")
+            parts.append(f"\n## {fname}\n```\n{_budget_memory(fname, path.read_text())}\n```\n")
 
     parts.append(
         "\n\n# IDENTIDAD Y TONO (Ollama / chat normal)\n"
