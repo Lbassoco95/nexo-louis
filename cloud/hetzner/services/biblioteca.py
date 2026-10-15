@@ -35,6 +35,7 @@ import sqlite3
 import sys
 import threading
 import time
+import unicodedata
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -157,6 +158,206 @@ def buscar_dof(q: str, tipo: str, orden: str, pag: int):
         "snippet(notas_fts, 1, char(1), char(2), '…', 28) AS ext "
         f"{base} ORDER BY {order} LIMIT ? OFFSET ?", args + [PAGE, pag * PAGE])
     return rows, total
+
+
+# ── Leyes: cómo se han creado y reformado, según el DOF ──────────────────────
+# El título de cada decreto dice qué hace ("se reforman… de la Ley X", "se expide la Ley Y").
+# Se extrae ese par (acción, ley) solo del TÍTULO: es una pista para navegar, no un dictamen.
+# Lo que no se logra identificar simplemente no aparece (se informa cuántos quedaron fuera).
+_INICIO_LEY = (r"(?:Constituci[oó]n|CONSTITUCI[OÓ]N|Nueva\s+Ley|Ley|LEY|C[oó]digo|C[OÓ]DIGO|"
+               r"Reglamento|REGLAMENTO|Estatuto|ESTATUTO)\b")
+# El nombre termina en un signo de puntuación o al empezar otra frase del título. Una coma NO termina el nombre
+# cuando sigue otra palabra del nombre ("Niñas, Niños y Adolescentes", "Adquisiciones, Arrendamientos y Servicios").
+_FIN_LEY = (r"(?=\s*(?:;|\(|\.|$)|,\s+(?!(?:Ni[ñn]os|Arrendamientos|Obras|Mutualistas|la\s+Bandera)\b)|"
+            r"\s+y\s+(?:se\b|de\s+(?:la|el|los|las|otr)|del\b)|\s+en\s+(?:materia|relaci|el\s+que)"
+            r"|\s+publicad|\s+en\s+vigor|\s+que\b|\s+por\s+el\s+que|$)")
+NOMBRE_LEY = re.compile(r"(" + _INICIO_LEY + r".+?)" + _FIN_LEY)
+_VERBOS = (("abroga", re.compile(r"\bse\s+abrogan?\b", re.I)),
+           ("expide", re.compile(r"\bse\s+expide\b", re.I)),
+           ("reforma", re.compile(r"\bse\s+(?:reforman?|adicionan?|derogan?|modifican?|actualizan?)\b"
+                                  r"|\bse\s+declara\s+(?:reformad|adicionad|derogad)", re.I)))
+ACCION_TXT = {"expide": "Expedición", "reforma": "Reforma", "abroga": "Abrogación"}
+
+
+def sin_acentos(s: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
+
+
+def extraer_leyes(titulo: str) -> list[tuple[str, str]]:
+    """[(acción, nombre de la ley)] a partir del título de un decreto. Vacío si no se identifica."""
+    t = " ".join((titulo or "").split())
+    if not t:
+        return []
+    salida: list[tuple[str, str]] = []
+    for accion, rx in _VERBOS:
+        v = rx.search(t)
+        if not v:
+            continue
+        m = NOMBRE_LEY.search(t, v.end())
+        if not m:
+            continue
+        nombre = re.sub(r"\s+para\s+el\s+ejercicio\s+fiscal.*$", "", m.group(1), flags=re.I).strip(" .,")
+        if 6 <= len(nombre) <= 140 and (accion, nombre) not in salida:
+            salida.append((accion, nombre))
+    return salida
+
+
+def clave_ley(nombre: str) -> str:
+    return re.sub(r"\s+", " ", sin_acentos(nombre).lower()).strip()
+
+
+def indice_leyes() -> dict:
+    """Agrupa las notas incluidas del DOF por ley. Se recalcula cada 30 min (unos segundos)."""
+    def construir():
+        leyes: dict[str, dict] = {}
+        total = ident = 0
+        primera = ""
+        for r in consulta(DOF_DB, "SELECT cod_nota, fecha, titulo FROM notas "
+                                  "WHERE incluido = 1 AND fecha IS NOT NULL AND length(fecha) >= 10"):
+            total += 1
+            primera = min(primera, r["fecha"][:10]) if primera else r["fecha"][:10]
+            pares = extraer_leyes(r["titulo"])
+            if not pares:
+                continue
+            ident += 1
+            for accion, nombre in pares:
+                k = clave_ley(nombre)
+                L = leyes.setdefault(k, {"nombre": nombre, "items": []})
+                L["items"].append((r["fecha"][:10], r["cod_nota"], accion, r["titulo"] or ""))
+        for L in leyes.values():
+            L["items"].sort()
+            # el nombre mostrado: la variante más larga con mayúsculas normales (evita títulos en VERSALES)
+        return {"leyes": leyes, "total": total, "identificadas": ident, "primera": primera,
+                "generado": time.strftime("%Y-%m-%d %H:%M")}
+    return cacheado("indice_leyes", 1800, construir)
+
+
+def resumen_ley(L: dict) -> dict:
+    it = L["items"]
+    exp = [x for x in it if x[2] == "expide"]
+    return {"n": len(it), "reformas": sum(1 for x in it if x[2] == "reforma"),
+            "primera": it[0][0], "ultima": it[-1][0], "expedida": exp[0][0] if exp else ""}
+
+
+def p_leyes(qs, quien):
+    idx = indice_leyes()
+    q = sin_acentos((qs.get("q", [""])[0] or "").strip().lower())[:80]
+    orden = qs.get("orden", ["reformas"])[0]
+    filas = []
+    for k, L in idx["leyes"].items():
+        if q and q not in k:
+            continue
+        filas.append((k, L["nombre"], resumen_ley(L)))
+    claves = {"reformas": lambda f: (-f[2]["reformas"], f[1]), "reciente": lambda f: (f[2]["ultima"], f[1]),
+              "nombre": lambda f: f[1].lower()}
+    filas.sort(key=claves.get(orden, claves["reformas"]), reverse=(orden == "reciente"))
+    try:
+        pag = max(0, min(int(qs.get("p", ["0"])[0]), 200))
+    except ValueError:
+        pag = 0
+    tam = 50
+    vista = filas[pag * tam:(pag + 1) * tam]
+    op = lambda v, t: f'<option value="{v}"{" selected" if v == orden else ""}>{t}</option>'
+    form = (f'<form class=s action="/leyes" method=get><input type=text name=q value="{esc(q)}" '
+            f'placeholder="Filtra por nombre de ley (ej. trabajo, amparo, renta)"><select name=orden>'
+            f'{op("reformas", "Más reformadas")}{op("reciente", "Más recientes")}{op("nombre", "Por nombre")}</select>'
+            f'<button>Filtrar</button></form>')
+    sin = idx["total"] - idx["identificadas"]
+    aviso = (f'<p class=aviso>{n(len(filas))} ley(es) o código(s) con movimientos en el DOF. Identificadas a partir del título '
+             f'de {n(idx["identificadas"])} de {n(idx["total"])} notas incluidas ({n(sin)} no mencionan una ley en el título). '
+             f'El DOF cargado aquí empieza en {esc(idx["primera"])}; no cubre el origen histórico de las leyes más antiguas. '
+             f'Calculado {esc(idx["generado"])}.</p>')
+    tabla = "".join(
+        f'<tr><td><a href="/ley?k={urllib.parse.quote(k)}">{esc(nom)}</a></td><td class=num>{r["n"]}</td>'
+        f'<td class=num>{r["reformas"]}</td><td>{esc(r["expedida"] or "—")}</td>'
+        f'<td>{esc(r["primera"])}</td><td>{esc(r["ultima"])}</td></tr>' for k, nom, r in vista)
+    if not vista:
+        tabla = '<tr><td colspan=6>Sin resultados.</td></tr>'
+    base = "/leyes?" + urllib.parse.urlencode({"q": q, "orden": orden})
+    nav = (f'<a href="{esc(base)}&p={pag - 1}">← Anterior</a>' if pag > 0 else "") + "<span></span>"
+    if (pag + 1) * tam < len(filas):
+        nav += f'<a href="{esc(base)}&p={pag + 1}">Siguiente →</a>'
+    cuerpo = (f"<h1>Leyes y su historia en el DOF</h1>{form}{aviso}<table><tr><th>Ley o código</th><th class=num>Publicaciones</th>"
+              f"<th class=num>Reformas</th><th>Expedición (si aparece)</th><th>Primera</th><th>Última</th></tr>{tabla}</table>"
+              f'<div class=pg>{nav}</div>')
+    return pagina("Leyes", cuerpo, "/leyes", quien)
+
+
+def p_ley(qs, quien):
+    k = (qs.get("k", [""])[0] or "")[:200]
+    L = indice_leyes()["leyes"].get(k)   # solo claves que existen en el índice: nada de la URL llega a SQL
+    if not L:
+        return None
+    r = resumen_ley(L)
+    por_decada: dict[str, int] = {}
+    for f, _c, acc, _t in L["items"]:
+        d = f[:3] + "0s"
+        por_decada[d] = por_decada.get(d, 0) + 1
+    mx = max(por_decada.values())
+    hist = "".join(f'<tr><td>{esc(d)}</td><td style="width:70%"><div class=bar><i style="width:{c / mx * 100:.0f}%"></i></div></td>'
+                   f'<td class=num>{c}</td></tr>' for d, c in sorted(por_decada.items()))
+    linea, anio = "", None
+    for f, cod, acc, tit in L["items"]:
+        if f[:4] != anio:
+            anio = f[:4]
+            linea += f"<h2>{esc(anio)}</h2>"
+        linea += (f'<div class=res><div class=t><span class="tag d">{ACCION_TXT.get(acc, acc)}</span>'
+                  f'<a href="/nota/{cod}">{esc(tit)}</a></div><div class=m>{esc(f)} · cod. {cod}</div></div>')
+    kp = [("Publicaciones", n(r["n"])), ("Reformas", n(r["reformas"])), ("Expedición", esc(r["expedida"] or "no aparece en el acervo")),
+          ("Primera / última", f'{esc(r["primera"][:4])} – {esc(r["ultima"][:4])}')]
+    kpis = "".join(f"<div class=kpi><b>{b}</b><span>{esc(a)}</span></div>" for a, b in kp)
+    q_sjf = urllib.parse.urlencode({"q": f'"{L["nombre"]}"', "fuente": "sjf"})
+    q_dof = urllib.parse.urlencode({"q": f'"{L["nombre"]}"', "fuente": "dof", "orden": "fecha"})
+    cuerpo = (f'<p><a href="/leyes">← Leyes</a></p><h1>{esc(L["nombre"])}</h1><div class=kpis>{kpis}</div>'
+              f'<p class=aviso>Se arma con los títulos del DOF; una nota puede reformar varias leyes y aparece en cada una. '
+              f'<a href="/buscar?{esc(q_sjf)}">Tesis que la mencionan</a> · <a href="/buscar?{esc(q_dof)}">Todas las notas que la mencionan</a></p>'
+              f"<h2>Movimiento por década</h2><table>{hist}</table><h2>Línea del tiempo</h2>{linea}")
+    return pagina(L["nombre"], cuerpo, "/leyes", quien)
+
+
+# ── Materias del SJF ─────────────────────────────────────────────────────────
+def indice_materias() -> dict:
+    def construir():
+        cuenta: dict[str, int] = {}
+        for r in consulta(SJF_DB, "SELECT materias, COUNT(*) c FROM tesis GROUP BY materias"):
+            for m in {x.strip() for x in re.split(r"[,;]", r["materias"] or "") if x.strip()}:
+                cuenta[m] = cuenta.get(m, 0) + r["c"]
+        return cuenta
+    return cacheado("indice_materias", 1800, construir)
+
+
+def p_materias(qs, quien):
+    m = (qs.get("m", [""])[0] or "")[:80]
+    cuenta = indice_materias()
+    if not m:
+        filas = "".join(f'<tr><td><a href="/materias?m={urllib.parse.quote(k)}">{esc(k)}</a></td><td class=num>{n(v)}</td></tr>'
+                        for k, v in sorted(cuenta.items(), key=lambda kv: -kv[1]))
+        return pagina("Materias", f"<h1>Materias del SJF</h1><p class=aviso>Tesis y jurisprudencia por materia, según la clasificación "
+                      f"oficial del Semanario.</p><table><tr><th>Materia</th><th class=num>Tesis</th></tr>{filas}</table>", "/materias", quien)
+    if m not in cuenta:          # solo materias que existen: el valor de la URL nunca se usa tal cual
+        return None
+    try:
+        pag = max(0, min(int(qs.get("p", ["0"])[0]), 500))
+    except ValueError:
+        pag = 0
+    like = "%" + m.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    try:
+        rows = consulta(SJF_DB, "SELECT registro_digital id, rubro, epoca, instancia, fecha_publicacion fecha, ta_tj, tipo_tesis "
+                                "FROM tesis WHERE materias LIKE ? ESCAPE '\\' ORDER BY fecha_publicacion DESC LIMIT ? OFFSET ?",
+                        (like, PAGE, pag * PAGE))
+    except Pesada:
+        return pagina("Materia", '<div class=card>Esa consulta tardó demasiado. Intenta de nuevo.</div>', "/materias", quien)
+    cuerpo = f'<p><a href="/materias">← Materias</a></p><h1>{esc(m)}</h1><p class=aviso>{n(cuenta[m])} tesis · más recientes primero</p>'
+    for r in rows:
+        jur = (r["ta_tj"] == 1) or "urisprud" in (r["tipo_tesis"] or "")
+        meta = " · ".join(x for x in (r["epoca"], r["instancia"], (r["fecha"] or "")[:10]) if x)
+        cuerpo += (f'<div class=res><div class=t><span class="tag j">{"Jurisprudencia" if jur else "Tesis aislada"}</span>'
+                   f'<a href="/tesis/{r["id"]}">{esc(r["rubro"] or "(sin rubro)")}</a></div><div class=m>{esc(meta)}</div></div>')
+    base = "/materias?" + urllib.parse.urlencode({"m": m})
+    nav = (f'<a href="{esc(base)}&p={pag - 1}">← Anterior</a>' if pag > 0 else "") + "<span></span>"
+    if len(rows) == PAGE:
+        nav += f'<a href="{esc(base)}&p={pag + 1}">Siguiente →</a>'
+    return pagina(m, cuerpo + f'<div class=pg>{nav}</div>', "/materias", quien)
 
 
 # ── Conocimiento de los agentes ──────────────────────────────────────────────
@@ -354,7 +555,7 @@ iframe.pdf{width:100%;height:78vh;border:1px solid var(--line);border-radius:8px
 .bar{height:8px;background:var(--line);border-radius:99px;overflow:hidden}.bar i{display:block;height:100%;background:var(--blue)}
 """
 
-NAV = (("/", "Inicio"), ("/buscar", "Buscar"), ("/agentes", "Agentes"), ("/estado", "Estado"))
+NAV = (("/", "Inicio"), ("/buscar", "Buscar"), ("/leyes", "Leyes"), ("/materias", "Materias"), ("/agentes", "Agentes"), ("/estado", "Estado"))
 
 
 def pagina(titulo: str, cuerpo: str, activo: str = "/", quien: str = "") -> bytes:
@@ -714,6 +915,12 @@ class H(BaseHTTPRequestHandler):
                 r = p_inicio(quien)
             elif ruta == "/buscar":
                 r = p_buscar(qs, quien)
+            elif ruta == "/leyes":
+                r = p_leyes(qs, quien)
+            elif ruta == "/ley":
+                r = p_ley(qs, quien)
+            elif ruta == "/materias":
+                r = p_materias(qs, quien)
             elif ruta == "/agentes":
                 r = p_agentes(quien)
             elif ruta == "/estado":
@@ -776,6 +983,8 @@ def calentar():
         estado()
         for nombre in mapa_agentes():
             universo_agente(nombre)
+        indice_leyes()
+        indice_materias()
         log.info("precálculo listo")
     except Exception as e:
         log.warning("precálculo falló: %s", e)
