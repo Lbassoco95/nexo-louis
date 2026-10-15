@@ -166,8 +166,11 @@ def buscar_dof(q: str, tipo: str, orden: str, pag: int):
 # Lo que no se logra identificar simplemente no aparece (se informa cuántos quedaron fuera).
 _INICIO_LEY = (r"(?:Constituci[oó]n|CONSTITUCI[OÓ]N|Nueva\s+Ley|Ley|LEY|C[oó]digo|C[OÓ]DIGO|"
                r"Reglamento|REGLAMENTO|Estatuto|ESTATUTO)\b")
-_FIN_LEY = (r"(?=\s*(?:,|;|\(|\.|$)|\s+y\s+(?:se\b|de\s+(?:la|el|los|las|otr)|del\b)|\s+en\s+(?:materia|relaci|el\s+que)"
-            r"|\s+para\b|\s+publicad|\s+en\s+vigor|\s+que\b|\s+por\s+el\s+que|$)")
+# El nombre termina en un signo de puntuación o al empezar otra frase del título. Una coma NO termina el nombre
+# cuando sigue otra palabra del nombre ("Niñas, Niños y Adolescentes", "Adquisiciones, Arrendamientos y Servicios").
+_FIN_LEY = (r"(?=\s*(?:;|\(|\.|$)|,\s+(?!(?:Ni[ñn]os|Arrendamientos|Obras|Mutualistas|la\s+Bandera)\b)|"
+            r"\s+y\s+(?:se\b|de\s+(?:la|el|los|las|otr)|del\b)|\s+en\s+(?:materia|relaci|el\s+que)"
+            r"|\s+publicad|\s+en\s+vigor|\s+que\b|\s+por\s+el\s+que|$)")
 NOMBRE_LEY = re.compile(r"(" + _INICIO_LEY + r".+?)" + _FIN_LEY)
 _VERBOS = (("abroga", re.compile(r"\bse\s+abrogan?\b", re.I)),
            ("expide", re.compile(r"\bse\s+expide\b", re.I)),
@@ -193,7 +196,7 @@ def extraer_leyes(titulo: str) -> list[tuple[str, str]]:
         m = NOMBRE_LEY.search(t, v.end())
         if not m:
             continue
-        nombre = m.group(1).strip(" .")
+        nombre = re.sub(r"\s+para\s+el\s+ejercicio\s+fiscal.*$", "", m.group(1), flags=re.I).strip(" .,")
         if 6 <= len(nombre) <= 140 and (accion, nombre) not in salida:
             salida.append((accion, nombre))
     return salida
