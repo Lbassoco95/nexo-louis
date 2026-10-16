@@ -242,8 +242,16 @@ CREATE TABLE IF NOT EXISTS progress (
 
 def db_connect() -> sqlite3.Connection:
     BASE_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn = sqlite3.connect(DB_PATH, timeout=120)
     conn.row_factory = sqlite3.Row
+    # Varios timers (harvest, contents, pdfs, leyes) y Cerebro comparten esta base: con WAL los
+    # lectores no bloquean a quien escribe y, si otro escribe, se espera en vez de abortar con
+    # «database is locked» (así se cayó el harvest del DOF el 15-oct).
+    try:
+        conn.execute("PRAGMA busy_timeout=120000")
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError as e:
+        log.warning("No pude activar WAL (%s); sigo en modo normal", e)
     conn.executescript(SCHEMA)
     return conn
 
