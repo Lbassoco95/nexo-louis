@@ -1,0 +1,10 @@
+[Unit]
+Description=Actualiza el texto vigente de las leyes federales (semanal; lo que no cambió no se reescribe)
+
+[Timer]
+# Domingo de madrugada: Diputados consolida reformas con retraso, no hace falta más seguido.
+OnCalendar=Sun *-*-* 04:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

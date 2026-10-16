@@ -1603,12 +1603,177 @@ def cmd_generate_pdfs(batch: int = 500):
 # ============================================================
 # LEYES FEDERALES (placeholder — se implementa en Fase 4)
 # ============================================================
-def cmd_leyes_init():
-    log.info("leyes-init: pendiente. Se conectará a diputados.gob.mx en Fase 4.")
+_LEY_GENERICO = re.compile(r"^(pdf|doc|docx|word|html?|ver|descargar|texto|imprimir)?$", re.I)
+_ULT_REFORMA_RE = re.compile(
+    r"(?:[ÚU]ltima\s+reforma\s+publicada|Nueva\s+(?:Ley|Constituci[oó]n|C[oó]digo)\s+publicad[ao])"
+    r"\s+(?:en\s+el\s+)?(?:DOF|Diario\s+Oficial(?:\s+de\s+la\s+Federaci[oó]n)?)(?:\s+el)?\s*:?\s*"
+    r"(\d{1,2}[-/]\d{1,2}[-/]\d{4})", re.I)
+
+
+def _decodificar_html(body: bytes) -> str:
+    try:
+        return body.decode("utf-8")
+    except UnicodeDecodeError:
+        return body.decode("cp1252", "ignore")
+
+
+def _leyes_indice(index_url: str = DIPUTADOS_INDEX) -> list[dict]:
+    """Lee el índice de Diputados → [{clave, nombre, pdf_url}]. Vacío si no responde."""
+    st, body, _ = http_get(index_url, timeout=60)
+    if st != 200 or not body:
+        log.error("No pude leer el índice de Diputados (%s, HTTP %s)", index_url, st)
+        return []
+    html = _decodificar_html(body)
+    base = index_url.rsplit("/", 1)[0] + "/"
+    items: dict[str, dict] = {}
+    for m in re.finditer(r'<a\s[^>]*?href\s*=\s*["\']([^"\']+)["\'][^>]*>(.*?)</a>', html, re.I | re.S):
+        href, crudo = m.group(1).strip(), m.group(2)
+        texto = re.sub(r"\s+", " ", html_mod.unescape(re.sub(r"<[^>]+>", " ", crudo))).strip()
+        pm = re.search(r"(?:^|/)pdf/([A-Za-z0-9_\-]+)\.pdf$", href, re.I)
+        rm = re.search(r"(?:^|/)ref/([A-Za-z0-9_\-]+)\.htm$", href, re.I)
+        mm = pm or rm
+        if not mm:
+            continue
+        clave = mm.group(1).upper()
+        it = items.setdefault(clave, {"clave": clave, "nombre": "",
+                                      "pdf_url": urllib.parse.urljoin(base, f"pdf/{clave}.pdf")})
+        if pm:
+            it["pdf_url"] = urllib.parse.urljoin(base, href)
+        if len(texto) > len(it["nombre"]) and not _LEY_GENERICO.match(texto):
+            it["nombre"] = texto
+    out = [i for i in items.values() if i["nombre"]]
+    log.info("Índice de Diputados: %d leyes con nombre (%d claves en total)", len(out), len(items))
+    return out
+
+
+def _pdf_a_texto(pdf: bytes) -> str:
+    """Texto del PDF con pdftotext (poppler). '' si falla o no hay capa de texto."""
+    import subprocess
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        ruta = Path(d) / "x.pdf"
+        ruta.write_bytes(pdf)
+        try:
+            r = subprocess.run(["pdftotext", "-layout", "-enc", "UTF-8", str(ruta), "-"],
+                               capture_output=True, timeout=180)
+        except Exception as e:
+            log.error("pdftotext falló: %s", e)
+            return ""
+    if r.returncode != 0:
+        return ""
+    txt = r.stdout.decode("utf-8", "ignore").replace("\x0c", "\n")
+    return re.sub(r"\n{3,}", "\n\n", txt).strip()
+
+
+def _tipo_norma(nombre: str) -> str:
+    n = nombre.lower()
+    if n.startswith("constituci"):
+        return "CONSTITUCION"
+    if n.startswith("código") or n.startswith("codigo"):
+        return "CODIGO"
+    if n.startswith("reglamento") or " reglamento " in f" {n} ":
+        return "REGLAMENTO"
+    return "LEY"
+
+
+def _guardar_ley(conn: sqlite3.Connection, *, clave: str, nombre: str, texto: str,
+                 pdf_url: str, ambito: str = "FEDERAL", tipo: str | None = None) -> str:
+    """Inserta o actualiza una norma. Devuelve 'nueva' | 'actualizada' | 'igual'."""
+    m = _ULT_REFORMA_RE.search(texto[:6000])
+    version = to_iso_date(m.group(1).replace("/", "-")) if m else ""
+    ahora = dt.datetime.now().isoformat(timespec="seconds")
+    previa = conn.execute("SELECT id, texto_completo FROM leyes WHERE ambito=? AND nombre_completo=?",
+                          (ambito, nombre)).fetchone()
+    if previa is None:
+        conn.execute(
+            "INSERT INTO leyes (ambito, tipo, nombre_corto, nombre_completo, version_vigente_fecha,"
+            " texto_completo, url_origen, fetched_at) VALUES (?,?,?,?,?,?,?,?)",
+            (ambito, tipo or _tipo_norma(nombre), clave, nombre, version, texto, pdf_url, ahora))
+        return "nueva"
+    if previa["texto_completo"] == texto:
+        conn.execute("UPDATE leyes SET fetched_at=? WHERE id=?", (ahora, previa["id"]))
+        return "igual"
+    conn.execute("UPDATE leyes SET nombre_corto=?, tipo=?, version_vigente_fecha=?, texto_completo=?,"
+                 " url_origen=?, fetched_at=? WHERE id=?",
+                 (clave, tipo or _tipo_norma(nombre), version, texto, pdf_url, ahora, previa["id"]))
+    return "actualizada"
+
+
+def _reindexar_leyes(conn: sqlite3.Connection):
+    conn.execute("INSERT INTO leyes_fts(leyes_fts) VALUES('rebuild')")
+
+
+def cmd_leyes_init(solo: str | None = None, listar: bool = False, pausa_s: float = 1.0) -> dict:
+    """Descarga las leyes federales consolidadas de Diputados a la tabla `leyes`.
+
+    Idempotente: lo que no cambió no se reescribe. `solo` = claves separadas por coma
+    (p. ej. 'LGIPE,CPEUM,LFDA'). `listar` solo muestra el índice, sin descargar.
+    """
+    indice = _leyes_indice()
+    if solo:
+        pedidas = {s.strip().upper() for s in solo.split(",") if s.strip()}
+        indice = [i for i in indice if i["clave"] in pedidas]
+    if listar:
+        for i in indice:
+            print(f"{i['clave']:12} {i['nombre'][:90]}")
+        return {"listadas": len(indice)}
+    res = {"nueva": 0, "actualizada": 0, "igual": 0, "sin_texto": 0, "fallo": 0}
+    if not indice:
+        log.error("leyes: índice vacío; no se descargó nada")
+        return res
+    conn = db_connect()
+    try:
+        for n, it in enumerate(indice, 1):
+            st, body, _ = http_get(it["pdf_url"], accept="application/pdf", timeout=120)
+            if st != 200 or not body.startswith(b"%PDF"):
+                log.warning("[%d/%d] %s: sin PDF (HTTP %s)", n, len(indice), it["clave"], st)
+                res["fallo"] += 1
+                continue
+            texto = _pdf_a_texto(body)
+            if len(texto) < 2000:          # PDF escaneado o vacío: no se guarda texto engañoso
+                log.warning("[%d/%d] %s: PDF sin texto utilizable (%d chars)", n, len(indice),
+                            it["clave"], len(texto))
+                res["sin_texto"] += 1
+                continue
+            r = _guardar_ley(conn, clave=it["clave"], nombre=it["nombre"], texto=texto,
+                             pdf_url=it["pdf_url"])
+            res[r] += 1
+            conn.commit()
+            log.info("[%d/%d] %s %s (%d chars)", n, len(indice), r, it["clave"], len(texto))
+            time.sleep(pausa_s)
+        if res["nueva"] or res["actualizada"]:
+            _reindexar_leyes(conn)
+            conn.commit()
+    finally:
+        conn.close()
+    log.info("leyes: %s", res)
+    return res
 
 
 def cmd_leyes_update():
-    log.info("leyes-update: pendiente. Se conectará a diputados.gob.mx en Fase 4.")
+    return cmd_leyes_init()
+
+
+def cmd_leyes_add(nombre: str, url: str, clave: str = "", tipo: str | None = None) -> str:
+    """Carga a mano una norma que Diputados no publica (p. ej. Reglamento Interior del INE)."""
+    st, body, _ = http_get(url, accept="application/pdf", timeout=120)
+    if st != 200 or not body.startswith(b"%PDF"):
+        log.error("leyes-add: no obtuve un PDF de %s (HTTP %s)", url, st)
+        return "fallo"
+    texto = _pdf_a_texto(body)
+    if len(texto) < 2000:
+        log.error("leyes-add: el PDF no trae texto utilizable (%d chars)", len(texto))
+        return "sin_texto"
+    conn = db_connect()
+    try:
+        r = _guardar_ley(conn, clave=clave or slugify(nombre, 20).upper(), nombre=nombre,
+                         texto=texto, pdf_url=url, tipo=tipo)
+        _reindexar_leyes(conn)
+        conn.commit()
+    finally:
+        conn.close()
+    log.info("leyes-add: %s → %s", nombre, r)
+    return r
 
 
 def cmd_leyes_link():
@@ -1646,8 +1811,15 @@ def main():
     gpdfs.add_argument("--batch", type=int, default=500)
 
     sub.add_parser("catchup")
-    sub.add_parser("leyes-init")
+    li = sub.add_parser("leyes-init")
+    li.add_argument("--solo", default=None, help="claves separadas por coma, p. ej. LGIPE,CPEUM")
+    li.add_argument("--listar", action="store_true", help="solo muestra el índice de Diputados")
     sub.add_parser("leyes-update")
+    la = sub.add_parser("leyes-add", help="carga a mano una norma desde una URL de PDF")
+    la.add_argument("--nombre", required=True)
+    la.add_argument("--url", required=True)
+    la.add_argument("--clave", default="")
+    la.add_argument("--tipo", default=None)
     sub.add_parser("leyes-link")
     sub.add_parser("report")
     sub.add_parser("stats")
@@ -1672,8 +1844,9 @@ def main():
                                                     workers=args.workers),
         "generate-pdfs": lambda: cmd_generate_pdfs(batch=args.batch),
         "catchup": cmd_catchup,
-        "leyes-init": cmd_leyes_init,
+        "leyes-init": lambda: cmd_leyes_init(solo=args.solo, listar=args.listar),
         "leyes-update": cmd_leyes_update,
+        "leyes-add": lambda: cmd_leyes_add(args.nombre, args.url, clave=args.clave, tipo=args.tipo),
         "leyes-link": cmd_leyes_link,
         "report": cmd_report,
         "stats": cmd_stats,
