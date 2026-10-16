@@ -471,14 +471,19 @@ def memoria_leer(archivo: str = "IMPORTANT", max_chars: int = 2000) -> str:
 def legal_buscar(termino: str, fuente: str = "ambas", limite: int = 5,
                  excerpt_chars: int = 250) -> str:
     """
-    [DETALLE] Busca en el acervo legal (SJF y/o DOF).
+    [DETALLE] Busca en el acervo legal: leyes consolidadas (texto vigente), SJF y/o DOF.
     Defaults conservadores: 5 resultados, 250 chars por resultado.
     Aumentar solo si el usuario necesita más contexto legal.
-    fuente: 'sjf' | 'dof' | 'ambas'
+    fuente: 'leyes' | 'sjf' | 'dof' | 'ambas' (ambas = las tres).
+    Para leer un artículo concreto usar legal_ley(); para saber hasta qué fecha llega
+    cada base usar legal_estado().
     """
     limite      = min(int(limite), 20)
     excerpt_chars = min(int(excerpt_chars), 1200)
     resultados  = []
+
+    if fuente in ("leyes", "ambas"):
+        resultados += _buscar_leyes(termino, limite, excerpt_chars)
 
     if fuente in ("sjf", "ambas") and SJF_DB_PATH.exists():
         tablas = _tablas_db(SJF_DB_PATH)
@@ -538,21 +543,118 @@ def legal_buscar(termino: str, fuente: str = "ambas", limite: int = 5,
         disp = [n for n, p in [("SJF", SJF_DB_PATH), ("DOF", DOF_DB_PATH)] if p.exists()]
         if not disp:
             return "Acervo legal no disponible aún. Usar legal_estado() para diagnóstico."
-        return f"Sin resultados para «{termino}» en {', '.join(disp)}."
+        extra = ""
+        if fuente in ("leyes", "ambas") and _n_leyes() == 0:
+            extra = (" OJO: la base de leyes consolidadas está VACÍA (no es que la ley no exista): "
+                     "falta correr `dof_biblioteca.py leyes-init`.")
+        return f"Sin resultados para «{termino}» en {', '.join(disp)}.{extra}"
 
     return f"\n{'─'*50}\n".join(resultados)
 
 
+def _n_leyes() -> int:
+    if not DOF_DB_PATH.exists() or "leyes" not in _tablas_db(DOF_DB_PATH):
+        return 0
+    return _query_db(DOF_DB_PATH, "SELECT COUNT(*) AS n FROM leyes WHERE texto_completo IS NOT NULL "
+                                  "AND texto_completo != ''")[0]["n"]
+
+
+def _snippet(texto: str, termino: str, n: int) -> str:
+    """Fragmento de `n` caracteres alrededor de la primera coincidencia (sin distinguir mayúsculas)."""
+    i = texto.casefold().find(termino.casefold())
+    if i < 0:
+        return texto[:n].strip() + "…"
+    ini = max(0, i - n // 4)
+    return ("…" if ini else "") + re.sub(r"\s+", " ", texto[ini:ini + n]).strip() + "…"
+
+
+def _buscar_leyes(termino: str, limite: int, excerpt_chars: int) -> list[str]:
+    if not DOF_DB_PATH.exists() or "leyes" not in _tablas_db(DOF_DB_PATH):
+        return []
+    like = f"%{termino}%"
+    filas = _query_db(
+        DOF_DB_PATH,
+        "SELECT nombre_corto, nombre_completo, version_vigente_fecha, texto_completo FROM leyes "
+        "WHERE nombre_completo LIKE ? OR nombre_corto LIKE ? OR texto_completo LIKE ? "
+        "ORDER BY (nombre_completo LIKE ? OR nombre_corto LIKE ?) DESC LIMIT ?",
+        (like, like, like, like, like, limite),
+    )
+    out = []
+    for f in filas:
+        v = f.get("version_vigente_fecha") or "s/f"
+        out.append(f"[LEY/{f.get('nombre_corto','')}] {f.get('nombre_completo','')} "
+                   f"(última reforma DOF: {v})\n{_snippet(f.get('texto_completo') or '', termino, excerpt_chars)}")
+    return out
+
+
+@mcp.tool()
+def legal_ley(nombre: str, articulo: str = "", max_chars: int = 3000) -> str:
+    """
+    [DETALLE] Texto vigente de una ley (de la base de leyes consolidadas).
+    nombre: clave o parte del nombre (p. ej. 'LGIPE', 'Derecho de Autor').
+    articulo: número del artículo ('58', '30 Bis'); vacío = inicio de la ley.
+    Indica siempre la fecha de la última reforma incluida: citarla al usar el texto.
+    """
+    max_chars = min(int(max_chars), 12000)
+    if _n_leyes() == 0:
+        return ("La base de leyes consolidadas está VACÍA: falta correr "
+                "`dof_biblioteca.py leyes-init` en el servidor. No hay texto vigente que citar.")
+    like = f"%{nombre}%"
+    filas = _query_db(
+        DOF_DB_PATH,
+        "SELECT nombre_corto, nombre_completo, version_vigente_fecha, texto_completo, url_origen "
+        "FROM leyes WHERE nombre_corto = ? COLLATE NOCASE OR nombre_completo LIKE ? "
+        "ORDER BY (nombre_corto = ? COLLATE NOCASE) DESC LIMIT 5",
+        (nombre, like, nombre),
+    )
+    if not filas:
+        return f"Ninguna ley coincide con «{nombre}». Probar legal_buscar(fuente='leyes')."
+    if len(filas) > 1 and filas[0]["nombre_corto"].upper() != nombre.upper():
+        return "Varias coinciden, precisar: " + "; ".join(f"{f['nombre_corto']} = {f['nombre_completo']}" for f in filas)
+    f = filas[0]
+    cab = (f"{f['nombre_completo']} [{f['nombre_corto']}] — última reforma DOF: "
+           f"{f.get('version_vigente_fecha') or 's/f'} — fuente: {f.get('url_origen') or ''}\n")
+    texto = f["texto_completo"] or ""
+    art = re.sub(r"(?i)^\s*art(?:[íi]culo|\.)?\s*", "", articulo or "").strip().rstrip(".")
+    if not art:
+        return cab + texto[:max_chars] + ("…" if len(texto) > max_chars else "")
+    ord_ = r"\s*(?:o|º|°)?" if art.isdigit() else ""
+    ini = re.search(rf"(?mi)^\s*Art[íi]culo\s+{re.escape(art)}{ord_}\s*[.\-–—]", texto)
+    if not ini:
+        return cab + f"No encontré el artículo «{articulo}» en esta ley (puede estar derogado o con otro número)."
+    sig = re.search(r"(?mi)^\s*Art[íi]culo\s+\d", texto[ini.end():])
+    fin = ini.end() + sig.start() if sig else len(texto)
+    cuerpo = texto[ini.start():fin].strip()
+    return cab + cuerpo[:max_chars] + ("…[truncado]" if len(cuerpo) > max_chars else "")
+
+
 @mcp.tool()
 def legal_estado() -> str:
-    """[COMPACTO] Disponibilidad y tamaño de las bases de datos legales SJF y DOF."""
+    """[COMPACTO] Disponibilidad y COBERTURA (fechas) de las bases legales: leyes, SJF y DOF."""
     partes = []
     for nombre, db_path in [("SJF", SJF_DB_PATH), ("DOF", DOF_DB_PATH)]:
         if not db_path.exists():
             partes.append(f"{nombre}:⚠️no_disponible")
-        else:
-            tablas = _tablas_db(db_path)
-            partes.append(f"{nombre}:✅{db_path.stat().st_size//1024//1024}MB tablas={','.join(tablas)}")
+            continue
+        tablas = _tablas_db(db_path)
+        extra = ""
+        try:
+            if nombre == "DOF" and "notas" in tablas:
+                r = _query_db(db_path, "SELECT MIN(fecha) AS a, MAX(fecha) AS b, COUNT(*) AS n, "
+                                       "SUM(texto_plano IS NOT NULL AND texto_plano != '') AS c FROM notas")[0]
+                extra = f" notas={r['n']} con_texto={r['c']} cobertura={r['a']}→{r['b']}"
+            elif nombre == "SJF" and "tesis" in tablas:
+                r = _query_db(db_path, "SELECT MAX(fecha_publicacion) AS b, COUNT(*) AS n FROM tesis")[0]
+                extra = f" tesis={r['n']} hasta={r['b']}"
+        except Exception as e:  # diagnóstico: no debe tirar la herramienta
+            extra = f" (cobertura no disponible: {e})"
+        partes.append(f"{nombre}:✅{db_path.stat().st_size//1024//1024}MB tablas={','.join(tablas)}{extra}")
+    n = _n_leyes()
+    if n:
+        r = _query_db(DOF_DB_PATH, "SELECT MIN(fetched_at) AS a, MAX(fetched_at) AS b FROM leyes")[0]
+        partes.append(f"LEYES:✅{n} leyes con texto (bajadas {str(r['a'])[:10]}→{str(r['b'])[:10]})")
+    else:
+        partes.append("LEYES:⚠️VACÍA — sin texto de leyes; correr `dof_biblioteca.py leyes-init`")
     return " | ".join(partes)
 
 

@@ -320,7 +320,7 @@ for f in legal_digest.py estado_legal.py; do
     install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" "legal-scrapers/${f}" "/opt/openclaw/legal/${f}"
   fi
 done
-for unit in dof-harvest dof-contents dof-pdfs dof-daily dof-daily-tarde legal-digest legal-estado; do
+for unit in dof-harvest dof-contents dof-pdfs dof-daily dof-daily-tarde legal-digest legal-estado leyes-update; do
   if [[ -f "services/${unit}.service" && -f "services/${unit}.timer" ]]; then
     sed -e "s|@@SYSTEM_USER@@|${SYSTEM_USER}|g" -e "s|@@OPENCLAW_HOME@@|/opt/openclaw|g" \
         "services/${unit}.service" > "/etc/systemd/system/${unit}.service"
@@ -329,7 +329,7 @@ for unit in dof-harvest dof-contents dof-pdfs dof-daily dof-daily-tarde legal-di
   fi
 done
 systemctl daemon-reload
-for t in dof-harvest.timer dof-contents.timer dof-pdfs.timer dof-daily.timer dof-daily-tarde.timer legal-digest.timer legal-estado.timer; do
+for t in dof-harvest.timer dof-contents.timer dof-pdfs.timer dof-daily.timer dof-daily-tarde.timer legal-digest.timer legal-estado.timer leyes-update.timer; do
   if [[ -f "/etc/systemd/system/${t}" ]]; then
     systemctl enable --now "$t"
     systemctl is-active --quiet "$t" && ok "${t} activo" || warn "${t} no levantó — systemctl status ${t}"

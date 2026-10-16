@@ -1,0 +1,18 @@
+[Unit]
+Description=Louis — leyes federales consolidadas (texto vigente, Cámara de Diputados)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@@SYSTEM_USER@@
+Group=@@SYSTEM_USER@@
+WorkingDirectory=@@OPENCLAW_HOME@@/legal/dof
+Environment=DOF_BASE_DIR=@@OPENCLAW_HOME@@/legal/dof
+Environment=DOF_DB_PATH=@@OPENCLAW_HOME@@/legal/dof/biblioteca_dof.db
+ExecStart=/usr/bin/python3 @@OPENCLAW_HOME@@/legal/dof/dof_biblioteca.py leyes-update
+StandardOutput=append:@@OPENCLAW_HOME@@/logs/leyes-update.log
+StandardError=append:@@OPENCLAW_HOME@@/logs/leyes-update.log
+SyslogIdentifier=louis-leyes-update
+TimeoutStartSec=7200
+MemoryMax=1G
