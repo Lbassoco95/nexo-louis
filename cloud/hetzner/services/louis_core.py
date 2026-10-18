@@ -1029,6 +1029,11 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "- NO borrar tareas/proyectos sin confirmación literal de Polo.\n"
         "- NO tocar configuraciones de sistema (esto se traduce a: nada de DROP/TRUNCATE/ALTER/GRANT/REVOKE).\n"
         "- NO operar contra archivos del repo — no tienes acceso (vive en Vercel, no aquí)."
+        "\n\n# WEB (sin browser)\n"
+        "Tienes `web_buscar(query)` y `web_leer(url)` — funcionan por HTTP directo, sin Playwright. "
+        "Para cualquier pregunta sobre decretos, leyes, trámites o datos que puedan haber cambiado, BUSCA primero "
+        "en vez de suponer; cita las URLs y distingue lo verificado de lo supuesto. Si el browser no está disponible, "
+        "NO te quedes en 'no puedo': usa estas dos.\n"
         "\n\n# BROWSER HEADLESS — Chromium en Hetzner\n"
         "Tienes un Chromium corriendo en Hetzner que persiste cookies/sesiones entre llamadas. "
         "Es independiente del Chrome de Polo. Sirve para tareas como: consultar páginas web, hacer login "
@@ -3055,6 +3060,30 @@ TOOLS_DEFINITION = [
             "properties": {
                 "que": {"type": "string", "description": "cola_mac | resultados_mac | heartbeat | log_telegram | log_scheduler | legal_conteo"},
             },
+        },
+    },
+    {
+        "name": "web_buscar",
+        "description": "Busca en la web (DuckDuckGo) y devuelve título, URL y extracto de los primeros resultados. NO requiere browser/Playwright. Úsala primero para localizar fuentes (DOF, SAT, SE, despachos); luego abre las relevantes con `web_leer`.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "max_resultados": {"type": "integer", "default": 8},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "web_leer",
+        "description": "Descarga una URL (HTML o PDF) y devuelve su texto. NO requiere browser/Playwright. Para SPAs que exigen JavaScript o login usa `browser_navegar` + `browser_leer`.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string"},
+                "max_chars": {"type": "integer", "default": 12000},
+            },
+            "required": ["url"],
         },
     },
     {
@@ -6428,6 +6457,64 @@ def _mac_comando_estado(cmd_id: str = "") -> str:
     return "\n".join(out)
 
 
+# ===== Web sin browser (búsqueda + lectura por HTTP) =====
+WEB_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+
+
+def _web_get(url: str, timeout: int = 25) -> tuple:
+    req = urllib.request.Request(url, headers={"User-Agent": WEB_UA, "Accept-Language": "es-MX,es;q=0.9,en;q=0.5"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read(8_000_000), r.headers.get("Content-Type", ""), r.geturl()
+
+
+def _html_to_text(html: str) -> str:
+    import html as _h
+    html = re.sub(r"(?is)<(script|style|noscript|svg)[^>]*>.*?</\1>", " ", html)
+    html = re.sub(r"(?i)<br\s*/?>|</(p|div|li|tr|h[1-6])>", "\n", html)
+    text = _h.unescape(re.sub(r"(?s)<[^>]+>", " ", html))
+    text = re.sub(r"[ \t\r\f]+", " ", text)
+    return re.sub(r"\n\s*\n+", "\n\n", text).strip()
+
+
+def _web_buscar(query: str, max_resultados: int = 8) -> str:
+    import html as _h
+    try:
+        data, _, _ = _web_get("https://html.duckduckgo.com/html/?" + urllib.parse.urlencode({"q": query, "kl": "mx-es"}))
+    except Exception as e:
+        return f"❌ web_buscar falló: {e}"
+    page = data.decode("utf-8", "replace")
+    blocks = re.findall(r'(?s)<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>.*?(?:class="result__snippet"[^>]*>(.*?)</a>)?', page)
+    out = []
+    for href, title, snip in blocks[:max(1, min(int(max_resultados), 15))]:
+        m = re.search(r"uddg=([^&]+)", href)
+        url = urllib.parse.unquote(m.group(1)) if m else href
+        clean = lambda t: _h.unescape(re.sub(r"<[^>]+>", "", t or "")).strip()
+        out.append(f"{len(out)+1}. {clean(title)}\n   {url}\n   {clean(snip)[:300]}")
+    if not out:
+        return "(sin resultados — reformula la búsqueda o intenta web_leer sobre una URL conocida)"
+    return f"🔎 Resultados para «{query}»:\n\n" + "\n\n".join(out)
+
+
+def _web_leer(url: str, max_chars: int = 12000) -> str:
+    if not re.match(r"^https?://", url or ""):
+        return "❌ web_leer solo acepta URLs http(s)."
+    try:
+        data, ctype, final = _web_get(url)
+    except Exception as e:
+        return f"❌ web_leer falló: {e}"
+    if "pdf" in ctype.lower() or data[:4] == b"%PDF":
+        try:
+            r = subprocess.run(["pdftotext", "-layout", "-", "-"], input=data, capture_output=True, timeout=60)
+            text = r.stdout.decode("utf-8", "replace").strip()
+        except Exception as e:
+            return f"❌ PDF descargado pero pdftotext no disponible: {e}"
+    else:
+        text = _html_to_text(data.decode("utf-8", "replace"))
+    cut = text[:max_chars]
+    more = f"\n\n… (truncado, {len(text)} chars en total)" if len(text) > max_chars else ""
+    return f"📄 {final}\n\n{cut}{more}"
+
+
 # ===== Browser headless (Playwright via subprocess) =====
 BROWSER_RUNNER = Path("/opt/openclaw/scripts/browser_runner.py")
 BROWSER_TIMEOUT_S = 90
@@ -9096,6 +9183,10 @@ def execute_tool(name: str, args: dict) -> str:
             return _mac_comando_estado(args.get("id", ""))
         elif name == "hetzner_estado":
             return _hetzner_estado(args.get("que", ""))
+        elif name == "web_buscar":
+            return _web_buscar(args["query"], args.get("max_resultados", 8))
+        elif name == "web_leer":
+            return _web_leer(args["url"], args.get("max_chars", 12000))
         elif name == "browser_navegar":
             return _browser_navegar(args["url"], args.get("wait_until", "networkidle"), args.get("wait_extra_ms", 0))
         elif name == "browser_leer":
