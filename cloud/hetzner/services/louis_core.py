@@ -415,6 +415,10 @@ TOOL_KEYWORDS = [
     r"\b(kawiil[\s-]?central|kawiil[\s-]?os|mati|matiox)\b",
     r"\b(tarea|tareas|proyecto|proyectos|avance|avances|backlog|pendiente)\b",
     r"\b(supabase|vercel|postgres|base\s+de\s+datos|database)\b",
+    # Búsqueda web: DeepSeek no tiene tools y alucina '<DSML invoke web_search>' como texto.
+    # Debe ir a Claude-con-tools (web_buscar / web_leer).
+    r"\b(busca|buscar|b[uú]squeda|busc[aá]ndo|investiga|investigar|googlea|google|internet|en\s+l[ií]nea|online|web)\b",
+    r"\b(intenta|int[eé]ntalo|reintenta|otra\s+vez|de\s+nuevo|nuevamente|vas|sigues|ya\s+qued[oó])\b",
     # Browser / navegación / vault
     r"\b(navega|abre\s+(?:la\s+)?(?:p[aá]gina|web|sitio|url)|chrome|browser|click|llena|completa\s+(?:el\s+)?formulario|login\s+en|sesi[oó]n\s+en)\b",
     r"\b(screenshot|captura\s+de\s+pantalla|extrae\s+de\s+la\s+p[aá]gina)\b",
