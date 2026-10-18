@@ -8235,7 +8235,7 @@ _STEWARD_AGE_RE = re.compile(r"\[(?:auto|capturado|visto)\s+(\d{4}-\d{2}-\d{2})\
 REGULATORY_RE = re.compile(
     r"oficio|cnbv|\buif\b|\bpld\b|lfpiorpi|pr[oó]rroga|plazo|vencid|vencimiento|amparo|juzgad|expediente|"
     r"demanda|denuncia|audiencia|requerimiento|sanci[oó]n|multa|\bsat\b|ministerio p[uú]blico", re.I)
-_MESES_ES = {"ene": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6, "jul": 7, "ago": 8, "sep": 9,
+_MESES_ES_NUM = {"ene": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6, "jul": 7, "ago": 8, "sep": 9,
              "oct": 10, "nov": 11, "dic": 12}
 
 _STEWARD_SYSTEM = (
@@ -8308,7 +8308,7 @@ def _steward_fechas_pasadas(texto: str, today) -> list:
     for m in re.finditer(r"\b(\d{1,2})\s*(?:de\s+)?[-/ ]?\s*(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)[a-záéíóú]*\.?",
                          (texto or "").lower()):
         try:
-            f = _d(today.year, _MESES_ES[m.group(2)], int(m.group(1)))
+            f = _d(today.year, _MESES_ES_NUM[m.group(2)], int(m.group(1)))
         except ValueError:
             continue
         if f > today + timedelta(days=180):
