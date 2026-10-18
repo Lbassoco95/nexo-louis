@@ -6483,7 +6483,13 @@ def _web_buscar(query: str, max_resultados: int = 8) -> str:
     except Exception as e:
         return f"❌ web_buscar falló: {e}"
     page = data.decode("utf-8", "replace")
-    blocks = re.findall(r'(?s)<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>.*?(?:class="result__snippet"[^>]*>(.*?)</a>)?', page)
+    blocks = []
+    for chunk in re.split(r'(?=<a[^>]+class="result__a")', page)[1:]:
+        m = re.match(r'(?s)<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', chunk)
+        if not m:
+            continue
+        sn = re.search(r'(?s)class="result__snippet"[^>]*>(.*?)</a>', chunk)
+        blocks.append((m.group(1), m.group(2), sn.group(1) if sn else ""))
     out = []
     for href, title, snip in blocks[:max(1, min(int(max_resultados), 15))]:
         m = re.search(r"uddg=([^&]+)", href)
