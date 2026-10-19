@@ -41,7 +41,7 @@ add agentes-reales \
 add calculo-ahorro \
   "Cálculos fiscales" \
   "Ahorro de ISR = deducción × tasa (30% personas morales). Una deducción adicional de 25% sobre un gasto G ahorra G × 25% × 30%, no G × 25%. Muestra la fórmula y marca los ejemplos como ilustrativos." \
-  "Error en el ejemplo de ahorro del D237 ($12,500 en vez de $3,750 sobre $50,000)."
+  "Error en el ejemplo de ahorro del D237 (\$12,500 en vez de \$3,750 sobre \$50,000)."
 
 add se-vs-sep \
   "Siglas y fechas" \
