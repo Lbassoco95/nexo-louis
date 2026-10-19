@@ -415,6 +415,7 @@ TOOL_KEYWORDS = [
     r"\b(kawiil[\s-]?central|kawiil[\s-]?os|mati|matiox)\b",
     r"\b(tarea|tareas|proyecto|proyectos|avance|avances|backlog|pendiente)\b",
     r"\b(supabase|vercel|postgres|base\s+de\s+datos|database)\b",
+    r"\b(aprendizajes?|aprendiste|has\s+aprendido|reglas?\s+pendientes?)\b",
     # Búsqueda web: DeepSeek no tiene tools y alucina '<DSML invoke web_search>' como texto.
     # Debe ir a Claude-con-tools (web_buscar / web_leer).
     r"\b(busca|buscar|b[uú]squeda|busc[aá]ndo|investiga|investigar|googlea|google|internet|en\s+l[ií]nea|online|web)\b",
@@ -768,7 +769,10 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "lección EN ESE TURNO y luego aplícala de inmediato.\n"
         "- Cuando una tool falle y descubras la forma correcta (una ruta, el nombre de una tabla, un flujo), "
         "guárdalo con `save_learning` para no repetir el error.\n"
-        "- No prometas 'lo voy a recordar' sin llamar la tool: si no lo guardas, no lo recordarás."
+        "- No prometas 'lo voy a recordar' sin llamar la tool: si no lo guardas, no lo recordarás.\n"
+        "- Además aprendes en segundo plano: cada noche se destilan tus correcciones en reglas propuestas. "
+        "Si Polo pregunta qué aprendiste, usa `aprendizajes_pendientes`. NUNCA apruebes ni guardes esas reglas "
+        "por tu cuenta: solo Polo las aprueba con «aprueba reglas 1, 3»."
         "\n\n# 🧭 MODO COACH EJECUTIVO\n"
         "Tienes un rol de COACH EJECUTIVO de Polo, basado en COACH.md (su perfil psicométrico y "
         "prioridades de desarrollo, arriba en tu contexto). ACTÍVALO cuando Polo lo pida ('hagamos "
@@ -3090,6 +3094,16 @@ TOOLS_DEFINITION = [
                 "que": {"type": "string", "description": "cola_mac | resultados_mac | heartbeat | log_telegram | log_scheduler | legal_conteo"},
             },
         },
+    },
+    {
+        "name": "aprendizajes_pendientes",
+        "description": "Muestra las reglas que Louis propone aprender de las correcciones de Polo (pendientes de su aprobación) y el historial de aprobadas/descartadas. NO puede aprobarlas: solo Polo lo hace escribiendo «aprueba reglas 1, 3».",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "aprendizaje_destilar",
+        "description": "Procesa ahora las correcciones capturadas (usa un modelo de la API) y genera propuestas de reglas para que Polo las revise. Normalmente corre solo cada noche; úsalo si Polo lo pide.",
+        "input_schema": {"type": "object", "properties": {}},
     },
     {
         "name": "navegador_agente",
@@ -9338,6 +9352,13 @@ def execute_tool(name: str, args: dict) -> str:
             return _mac_comando_estado(args.get("id", ""))
         elif name == "hetzner_estado":
             return _hetzner_estado(args.get("que", ""))
+        elif name == "aprendizajes_pendientes":
+            import learning as _learning
+            return _learning.try_command("reglas pendientes") or _learning.review_text()
+        elif name == "aprendizaje_destilar":
+            import learning as _learning
+            r = _learning.distill()
+            return r + "\n\n" + _learning.review_text()
         elif name == "navegador_agente":
             return _navegador_agente(args["tarea"], args.get("url", ""), args.get("max_pasos", 12))
         elif name == "web_buscar":
@@ -9972,6 +9993,18 @@ def call_llm(
     """
     msg = (user_message or "").strip().lower()
     first_of_day = is_first_conversation_today(history_file)
+
+    # Bucle de aprendizaje (learning.py): comandos de revisión («aprueba reglas 1, 3») sin LLM,
+    # y captura de correcciones/preferencias de Polo como episodios (gratis, nunca rompe la respuesta).
+    try:
+        import learning as _learning
+        _lr = _learning.try_command(user_message)
+        if _lr is not None:
+            _mark_last_route("aprendizaje")
+            return _lr, "aprendizaje"
+        _learning.capture(user_message, history)
+    except Exception as _e:
+        log.warning(f"learning hook falló: {_e}")
 
     # Recordatorio relativo a prueba de fallos: "recuérdame en N min/horas …" se crea
     # DIRECTO en el servidor (reloj real), sin depender del modelo ni de Ollama.

@@ -386,6 +386,17 @@ def main():
         except Exception as e:
             log.warning(f"auto-memoria tick falló: {e}")
 
+        # Aprendizaje (learning.py): 21:xx CDMX destila las correcciones del día con un modelo de la API
+        # y, si hay reglas candidatas, se las manda a Polo para aprobar. Idempotente por fecha.
+        try:
+            if datetime.now(TZ_CDMX).hour == 21:
+                import learning
+                r = learning.run_daily(send_telegram)
+                if r and r.startswith("OK"):
+                    log.info(f"aprendizaje: {r}")
+        except Exception as e:
+            log.warning(f"aprendizaje tick falló: {e}")
+
         # Seguimiento diario de AGENDA (steward): 07:00 CDMX, antes del briefing. Revisa los
         # pendientes, comenta y propone cierres/replanteos; no cierra nada sin el OK de Polo.
         # Idempotente por fecha (guarda estado), así que los ticks repetidos de la hora no lo repiten.
