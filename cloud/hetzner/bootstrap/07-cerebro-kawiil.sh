@@ -11,7 +11,7 @@ log "Instalando dependencias Python para Cerebro Kawiil MCP"
 # mcp >= 1.0 incluye FastMCP y el transport SSE/streamable-HTTP
 # uvicorn para correr el server ASGI
 pip3 install --quiet --upgrade \
-    "mcp>=1.0" \
+    "mcp>=1.0,<2" \
     "uvicorn[standard]>=0.30" \
     "starlette>=0.37"
 
