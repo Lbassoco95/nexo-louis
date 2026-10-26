@@ -149,7 +149,7 @@
   Ref: `f2d1d083`.
 
 ## 2026-04-01
-- Recap conversaciones Polo: Sylon Capital audit, Fiat Coin Pay, Credix SOFOM modelo financiero, Anthropic Ambassador, K'awiil inventory password-protected (K4wiil2026).
+- Recap conversaciones Polo: Sylon Capital audit, Fiat Coin Pay, Credix SOFOM modelo financiero, Anthropic Ambassador, K'awiil inventory password-protected ([CREDENCIAL RETIRADA]).
   Ref: `80cc4707`.
 - Sistema control producción Dazon V1–V4 (CONTROL_PRODUCCION_DAZON_V4.xlsx) con orden_armado vs chasis_asignado.
   Ref: `f639c249`.
