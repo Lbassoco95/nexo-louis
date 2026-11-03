@@ -607,9 +607,10 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "\n# BRIEFING DIARIO\n"
         "En el system prompt recibes [CONTEXTO INTERNO] con AGENDA/IMPORTANT/JOURNAL parseados. "
         "Úsalos como única fuente de pendientes.\n"
-        "**Primera conversación del día** (hola / buenos días): saluda a Polo + triage URGENTE + "
-        "máx. 4 bullets Para HOY fieles al contexto + ¿Por dónde empezamos?\n"
-        "**Mismo día después:** saludo breve; recuerda urgente si aplica; si no, ¿en qué te ayudo?\n"
+        "**Saludo (hola / buenos días):** responde SOLO con un saludo breve y ¿en qué te ayudo?. "
+        "NO listes pendientes ni tareas salvo que Polo pida el briefing o pregunte qué tiene pendiente.\n"
+        "**Si Polo pide el briefing:** triage URGENTE + máx. 4 bullets Para HOY fieles al contexto + "
+        "¿Por dónde empezamos?\n"
         "**'Los de la mañana':** retoma el último briefing guardado + contexto actual.\n"
     )
 
@@ -1896,6 +1897,24 @@ def _is_greeting(user_message: str) -> bool:
     return bool(GREETING_RE.match(msg)) and len(msg.split()) <= 8
 
 
+PLAIN_GREETING_RE = re.compile(
+    r"^\s*¡?(hola|buenos?\s*d[ií]as|buenas?\s*tardes|buenas?\s*noches|buenas|hey|hi)"
+    r"(\s*,?\s*(donna|louis|nexo|polo))?\s*[!.¡,]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def is_plain_greeting(user_message: str) -> bool:
+    """True solo si el mensaje es un saludo y nada más (no 'hola, ¿qué tengo hoy?')."""
+    return bool(PLAIN_GREETING_RE.match(user_message or ""))
+
+
+def short_greeting_response() -> str:
+    hour = datetime.now(TZ_CDMX).hour
+    saludo = "Buenos días" if hour < 12 else ("Buenas tardes" if hour < 19 else "Buenas noches")
+    return f"{saludo}, Polo. ¿En qué te ayudo?"
+
+
 def _load_last_briefing_text() -> str:
     if not LAST_BRIEFING_FILE.exists():
         return ""
@@ -1919,7 +1938,7 @@ def save_last_briefing(text: str, snapshot: str):
 def _build_ollama_task_instruction(user_message: str, history: list, first_of_day: bool) -> str:
     """Instrucción interna (va en system, no debe aparecer en la respuesta a Polo)."""
     msg = (user_message or "").strip()
-    if first_of_day and (_is_greeting(msg) or not history):
+    if first_of_day and wants_explicit_briefing(msg):
         return (
             "Tarea ahora: briefing del día para Polo. Solo datos del contexto interno. "
             "Máx. 4 bullets Para HOY reales, triage URGENTE, cierra con ¿Por dónde empezamos?"
@@ -2489,9 +2508,8 @@ def should_deterministic_operational_response(user_message: str, history: list |
     if has_history and had_briefing:
         return False
 
-    if _is_greeting(msg) and len(msg.split()) <= 8:
-        return True
-
+    # Un saludo ya NO dispara el briefing (se responde corto en route_message);
+    # solo un pedido explícito.
     if not has_history and wants_explicit_briefing(msg):
         return True
 
@@ -9770,6 +9788,13 @@ def call_llm(
                  (user_message or "")):
         _mark_last_route("limpieza-agenda")
         return limpiar_agenda_duplicados(dry_run=False), "limpieza-agenda"
+
+    # Saludo simple ("hola", "buenas tardes Donna") → respuesta breve, SIN briefing.
+    # El briefing completo solo sale si Polo lo pide ("briefing", "qué tengo hoy"…)
+    # o con el automático de las 7:00.
+    if is_plain_greeting(user_message):
+        _mark_last_route("saludo-directo")
+        return short_greeting_response(), "saludo-directo"
 
     # Coach personal (Fase 6): comidas → SALUD.md, avances → COACH.md.
     det_coach = try_deterministic_coach_capture(user_message)
