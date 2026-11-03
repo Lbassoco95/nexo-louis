@@ -317,16 +317,17 @@ def tick():
             raw = entry.get("message", "(recordatorio sin mensaje)")
             mode = entry.get("mode", "enrich")
             channel = entry.get("channel", "telegram")
-            doc_adjunto = None
+            doc_enviado = False
             if mode == "briefing" or raw == MORNING_BRIEFING_MARKER:
-                # Preferencia: dashboard HTML interactivo + mensaje corto. Si falla, texto largo.
-                try:
-                    import briefing_dashboard as _BD
-                    text, _html_b, _fname = _BD.build("hoy")
-                    doc_adjunto = (_html_b, _fname)
-                except Exception as e:
-                    log.warning(f"briefing dashboard falló, uso texto: {e}")
-                    text = core.generate_morning_briefing()
+                # Preferencia: dashboard HTML interactivo (briefing_doc.py lo manda con su
+                # propio resumen). Solo si falla se manda el texto largo de respaldo.
+                if channel != "slack":
+                    try:
+                        doc_enviado = core.enviar_briefing_dashboard("hoy")
+                    except Exception as e:
+                        log.warning(f"briefing dashboard falló, uso texto: {e}")
+                text = ("Briefing enviado como documento interactivo."
+                        if doc_enviado else core.generate_morning_briefing())
                 try:
                     core.save_last_briefing(text, core.build_operational_snapshot())
                 except Exception as e:
@@ -339,16 +340,12 @@ def tick():
             prefix = "☀️ " if mode == "briefing" or raw == MORNING_BRIEFING_MARKER else "⏰ "
             if not text.lstrip().startswith(prefix.strip()):
                 text = f"{prefix}{text}"
-            if channel == "slack":
+            if doc_enviado:
+                ok = True  # el documento ya salió por Telegram; no repetir mensaje
+            elif channel == "slack":
                 ok = send_slack(text)
             else:
                 ok = send_telegram(text)
-                if ok and doc_adjunto:
-                    try:
-                        _BD.send_document(doc_adjunto[0], doc_adjunto[1],
-                                          "🗓️ Briefing interactivo — ábrelo en Safari/Chrome")
-                    except Exception as e:
-                        log.warning(f"No pude mandar el adjunto del briefing: {e}")
             log.info(f"Disparado {entry.get('id')} ({channel}, mode={mode}) → ok={ok}")
             append_sent({**entry, "delivered": ok})
             fired += 1

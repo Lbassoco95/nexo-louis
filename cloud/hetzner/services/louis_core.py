@@ -2584,18 +2584,34 @@ def format_morning_briefing_deterministic(snapshot: str) -> str:
     )
 
 
-def deterministic_operational_response(snapshot: str | None = None) -> tuple[str, str]:
-    """Respuesta operativa instantánea. Preferencia: dashboard HTML interactivo + mensaje
-    corto (el HTML se encola y el bridge lo manda como adjunto). Si algo falla, cae al
-    briefing de texto de siempre."""
+def enviar_briefing_dashboard(rango: str = "hoy") -> bool:
+    """Manda el briefing como DASHBOARD HTML interactivo: corre briefing_doc.py, que arma
+    el HTML (calendario M365 + pendientes de AGENDA.md) y lo envía por Telegram con su
+    propio resumen corto como caption. True si se envió; False → usar el texto de respaldo."""
+    import subprocess, sys as _sys
+    script = Path(__file__).resolve().parent / "briefing_doc.py"
+    if not script.exists():
+        log.warning("briefing_doc.py no encontrado; uso briefing de texto")
+        return False
     try:
-        import briefing_dashboard as _BD
-        texto, html_bytes, fname = _BD.build("hoy")
-        _queue_file(html_bytes, fname, "🗓️ Briefing interactivo — ábrelo en Safari/Chrome")
-        _mark_last_route("briefing-dashboard")
-        return texto, "briefing-dashboard"
+        r = subprocess.run([_sys.executable, str(script), rango], capture_output=True,
+                           text=True, timeout=150)
     except Exception as e:
-        log.warning(f"briefing dashboard falló, uso texto: {e}")
+        log.warning(f"briefing dashboard: no se pudo ejecutar ({e})")
+        return False
+    ok = r.returncode == 0 and "Enviado" in (r.stdout or "")
+    if not ok:
+        log.warning(f"briefing dashboard falló (rc={r.returncode}): "
+                    f"{((r.stderr or '') + (r.stdout or ''))[-300:]}")
+    return ok
+
+
+def deterministic_operational_response(snapshot: str | None = None) -> tuple[str, str]:
+    """Respuesta operativa. Preferencia: dashboard HTML interactivo (mensaje corto en el
+    chat); si falla, cae al briefing de texto de siempre."""
+    if enviar_briefing_dashboard("hoy"):
+        _mark_last_route("briefing-dashboard")
+        return "🗓️ Briefing interactivo enviado 👆 Ábrelo en Safari o Chrome.", "briefing-dashboard"
     snap = snapshot if snapshot is not None else build_operational_snapshot(compact=True)
     response = sanitize_ollama_response(format_morning_briefing_deterministic(snap))
     _mark_last_route("deterministic-briefing")
