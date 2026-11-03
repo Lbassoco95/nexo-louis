@@ -329,7 +329,8 @@ def tick():
                 text = raw
             # Prefijo discreto para distinguir mensaje proactivo
             prefix = "☀️ " if mode == "briefing" or raw == MORNING_BRIEFING_MARKER else "⏰ "
-            text = f"{prefix}{text}"
+            if not text.lstrip().startswith(prefix.strip()):
+                text = f"{prefix}{text}"
             if channel == "slack":
                 ok = send_slack(text)
             else:

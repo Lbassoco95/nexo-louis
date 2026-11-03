@@ -215,6 +215,11 @@ def set_active_tz(tz_name: str) -> bool:
         return False
 
 
+def _fmt_fecha_es(dt) -> str:
+    """Fecha larga en español ('martes 3 nov 2026') sin depender del locale del servidor."""
+    return f"{_DIAS_ES[dt.weekday()]} {dt.day} {_MESES_ES[dt.month - 1]} {dt.year}"
+
+
 def _fmt_dt_es(dt) -> str:
     """Fecha/hora en español sin depender del locale del sistema."""
     return f"{_DIAS_ES[dt.weekday()]} {dt.day} {_MESES_ES[dt.month - 1]} {dt.year}, {dt.strftime('%H:%M')}"
@@ -2555,7 +2560,7 @@ def format_morning_briefing_deterministic(snapshot: str) -> str:
     saludo = "Buenos días" if hour < 12 else ("Buenas tardes" if hour < 19 else "Buenas noches")
     ts = datetime.now(TZ_CDMX).strftime("%H:%M")
     return (
-        f"*{saludo} Polo* — briefing {datetime.now(TZ_CDMX).strftime('%A %d %b %Y')} (CDMX)\n\n"
+        f"*{saludo} Polo* — briefing {_fmt_fecha_es(datetime.now(TZ_CDMX))} (CDMX)\n\n"
         f"{snapshot[:3200]}\n\n"
         f"¿Por dónde empezamos?\n_(datos AGENDA/IMPORTANT · {ts})_"
     )
@@ -2614,7 +2619,7 @@ def generate_morning_briefing() -> str:
     snap = build_operational_snapshot()
     reasoned = _reason_briefing(snap)
     if reasoned:
-        saludo_ts = datetime.now(TZ_CDMX).strftime("%A %d %b %Y")
+        saludo_ts = _fmt_fecha_es(datetime.now(TZ_CDMX))
         return f"☀️ *Briefing {saludo_ts} (CDMX)*\n\n{reasoned}"
     return format_morning_briefing_deterministic(snap)
 
