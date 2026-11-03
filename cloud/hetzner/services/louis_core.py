@@ -549,8 +549,41 @@ def _budget_memory(fname: str, text: str) -> str:
     nota = f"\n…[{omitted} chars omitidos — usa la tool memoria_leer('{fname}') para el archivo completo]…\n"
     if fname == "JOURNAL.md":
         return nota + text[-limit:]
+    por_secciones = _budget_por_secciones(fname, text, limit)
+    if por_secciones is not None:
+        return por_secciones
     mitad = limit // 2
     return text[:mitad] + nota + text[-mitad:]
+
+
+def _budget_por_secciones(fname: str, text: str, limit: int):
+    """Archivos organizados en secciones '## …' (PROJECTS, PEOPLE, IMPORTANT, LEARNINGS):
+    en vez de inicio+final (que dejaba secciones enteras fuera), cada sección aparece con
+    su encabezado y el arranque de su contenido, para que Louis sepa QUÉ existe y use
+    memoria_leer para el detalle. CRÍTICO pesa el doble. None si el archivo no tiene
+    secciones suficientes (se usa el recorte clásico)."""
+    partes = re.split(r"(?m)^(?=## )", text)
+    pre, secs = partes[0], partes[1:]
+    if len(secs) < 3:
+        return None
+    nota = (f"[Índice por secciones: cada una recortada para caber en el prompt — "
+            f"memoria_leer('{fname}') devuelve el archivo completo]\n")
+    pre_cut = pre[: limit // 8].rstrip()
+    resto = max(limit - len(pre_cut) - len(nota), 200 * len(secs))
+    pesos = [2 if re.search(r"(?i)cr[ií]tic", s.split("\n", 1)[0]) else 1 for s in secs]
+    unidad = resto / sum(pesos)
+    out = [nota, pre_cut, "\n"]
+    for sec, peso in zip(secs, pesos):
+        cab, _, cuerpo = sec.partition("\n")
+        cab = cab[:120]
+        cupo = max(int(unidad * peso) - len(cab) - 1, 60)
+        cuerpo = cuerpo.strip("\n")
+        if len(cuerpo) > cupo:
+            corte = cuerpo[:cupo]
+            i = corte.rfind("\n")
+            cuerpo = (corte[:i] if i > cupo // 2 else corte).rstrip() + "\n…"
+        out.append(f"{cab}\n{cuerpo}\n")
+    return "\n".join(out)
 
 
 def load_system_prompt(channel: str = "telegram") -> str:
@@ -8350,6 +8383,14 @@ def _steward_memory_health() -> list:
             continue
         size = p.stat().st_size
         limite = CLAUDE_MEMORY_LIMITS.get(fname, CLAUDE_MEMORY_DEFAULT_LIMIT)
+        # Con secciones '##' el prompt ya trae un índice de TODAS (ver _budget_por_secciones):
+        # solo se avisa si el archivo es realmente enorme. Sin secciones, el umbral de siempre.
+        try:
+            n_secs = len(re.findall(r"(?m)^## ", p.read_text(errors="replace")))
+        except Exception:
+            n_secs = 0
+        if n_secs >= 3 and size <= 200_000:
+            continue
         if size > limite * 3 and size > 20_000:
             out.append(f"{fname}: {size // 1024} KB (en el prompt solo caben {limite // 1000} KB) "
                        f"— conviene archivar o resumir lo viejo")
