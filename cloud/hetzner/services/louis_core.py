@@ -2585,7 +2585,17 @@ def format_morning_briefing_deterministic(snapshot: str) -> str:
 
 
 def deterministic_operational_response(snapshot: str | None = None) -> tuple[str, str]:
-    """Respuesta operativa instantánea (<1s)."""
+    """Respuesta operativa instantánea. Preferencia: dashboard HTML interactivo + mensaje
+    corto (el HTML se encola y el bridge lo manda como adjunto). Si algo falla, cae al
+    briefing de texto de siempre."""
+    try:
+        import briefing_dashboard as _BD
+        texto, html_bytes, fname = _BD.build("hoy")
+        _queue_file(html_bytes, fname, "🗓️ Briefing interactivo — ábrelo en Safari/Chrome")
+        _mark_last_route("briefing-dashboard")
+        return texto, "briefing-dashboard"
+    except Exception as e:
+        log.warning(f"briefing dashboard falló, uso texto: {e}")
     snap = snapshot if snapshot is not None else build_operational_snapshot(compact=True)
     response = sanitize_ollama_response(format_morning_briefing_deterministic(snap))
     _mark_last_route("deterministic-briefing")

@@ -317,8 +317,16 @@ def tick():
             raw = entry.get("message", "(recordatorio sin mensaje)")
             mode = entry.get("mode", "enrich")
             channel = entry.get("channel", "telegram")
+            doc_adjunto = None
             if mode == "briefing" or raw == MORNING_BRIEFING_MARKER:
-                text = core.generate_morning_briefing()
+                # Preferencia: dashboard HTML interactivo + mensaje corto. Si falla, texto largo.
+                try:
+                    import briefing_dashboard as _BD
+                    text, _html_b, _fname = _BD.build("hoy")
+                    doc_adjunto = (_html_b, _fname)
+                except Exception as e:
+                    log.warning(f"briefing dashboard falló, uso texto: {e}")
+                    text = core.generate_morning_briefing()
                 try:
                     core.save_last_briefing(text, core.build_operational_snapshot())
                 except Exception as e:
@@ -335,6 +343,12 @@ def tick():
                 ok = send_slack(text)
             else:
                 ok = send_telegram(text)
+                if ok and doc_adjunto:
+                    try:
+                        _BD.send_document(doc_adjunto[0], doc_adjunto[1],
+                                          "🗓️ Briefing interactivo — ábrelo en Safari/Chrome")
+                    except Exception as e:
+                        log.warning(f"No pude mandar el adjunto del briefing: {e}")
             log.info(f"Disparado {entry.get('id')} ({channel}, mode={mode}) → ok={ok}")
             append_sent({**entry, "delivered": ok})
             fired += 1
