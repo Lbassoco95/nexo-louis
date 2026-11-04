@@ -159,7 +159,8 @@ mkdir -p /opt/openclaw/scripts /opt/openclaw/scripts/m365 /opt/openclaw/logs
 # dependen de él fallan en silencio (self_update → ImportError; browser_* → error).
 for svc in louis_core.py telegram-bridge.py slack-bridge.py scheduler.py \
            openclaw_gateway.py self_update.py browser_runner.py cerebro_kawiil_mcp.py cerebro_calidad.py \
-           gather_bridge.py biblioteca.py legal_indexer.py; do
+           gather_bridge.py biblioteca.py legal_indexer.py briefing_doc.py louis_html.py learning.py \
+           nexo_backfill.py nexo_backfill_kc.py nexo_backfill_local.py nexo_embeddings.py nexo_kb_audit.py nexo_kb_local.py nexo_retrieve.py; do
   if [[ -f "services/${svc}" ]]; then
     install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" "services/${svc}" "/opt/openclaw/scripts/${svc}"
   fi
