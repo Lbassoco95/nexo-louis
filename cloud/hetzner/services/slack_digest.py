@@ -195,17 +195,35 @@ def _clean(text: str, names: dict) -> str:
     return re.sub(r"\s+", " ", t).strip()[:700]
 
 
+def _workspaces(creds: dict) -> list:
+    """[(nombre, user_token, bot_token, owner_id)]. El workspace base ('kawiil' por defecto, o
+    SLACK_WORKSPACE_NAME) usa las claves sin prefijo: SLACK_USER_TOKEN / SLACK_BOT_TOKEN /
+    SLACK_OWNER_USER. Los demás usan prefijo: SLACK_YOLTIK_USER_TOKEN, SLACK_YOLTIK_BOT_TOKEN,
+    SLACK_YOLTIK_OWNER_USER (el nombre en mayúsculas, sin guiones)."""
+    base = (creds.get("SLACK_WORKSPACE_NAME") or "kawiil").strip().lower()
+    spaces = {base: {"user": creds.get("SLACK_USER_TOKEN", ""), "bot": creds.get("SLACK_BOT_TOKEN", ""),
+                     "owner": creds.get("SLACK_OWNER_USER") or OWNER_ID_DEFAULT}}
+    campo = {"USER_TOKEN": "user", "BOT_TOKEN": "bot", "OWNER_USER": "owner"}
+    for k, v in creds.items():
+        m = re.match(r"^SLACK_([A-Z0-9]+)_(USER_TOKEN|BOT_TOKEN|OWNER_USER)$", k)
+        if not m:
+            continue
+        d = spaces.setdefault(m.group(1).lower(), {"user": "", "bot": "", "owner": ""})
+        d[campo[m.group(2)]] = v
+    return [(ws, d["user"], d["bot"], d["owner"]) for ws, d in spaces.items()]
+
+
 def _clients() -> list:
-    """[(etiqueta, WebClient)] según los tokens disponibles; el de usuario va primero."""
+    """[(etiqueta 'workspace:usuario|bot', WebClient)] según los tokens válidos; el de usuario va
+    primero dentro de cada workspace."""
     from slack_sdk import WebClient
     creds = core.load_env_file(SLACK_ENV)
     out = []
-    user = creds.get("SLACK_USER_TOKEN", "")
-    bot = creds.get("SLACK_BOT_TOKEN", "")
-    if user.startswith("xoxp-"):
-        out.append(("usuario", WebClient(token=user)))
-    if bot.startswith("xoxb-"):
-        out.append(("bot", WebClient(token=bot)))
+    for ws, user, bot, _owner in _workspaces(creds):
+        if user.startswith("xoxp-"):
+            out.append((f"{ws}:usuario", WebClient(token=user)))
+        if bot.startswith("xoxb-"):
+            out.append((f"{ws}:bot", WebClient(token=bot)))
     return out
 
 
@@ -221,7 +239,10 @@ def collect(since_ts: float) -> tuple:
 
     msgs, vistos = [], set()
     stats = {"tokens": [e for e, _ in clients], "convs": 0, "con_mensajes": 0, "vacias": 0, "errores": 0,
-             "hilos": 0, "mensajes": 0, "seguridad": [], "limitada": "usuario" not in [e for e, _ in clients]}
+             "hilos": 0, "mensajes": 0, "seguridad": [],
+             "limitada": sorted({e.split(":")[0] for e, _ in clients}
+                                - {e.split(":")[0] for e, _ in clients if e.endswith(":usuario")})}
+    varios = len({e.split(":")[0] for e, _ in clients}) > 1
     threads_left = MAX_THREADS
     for etiqueta, client in clients:
         names = _user_names(client)
@@ -245,6 +266,8 @@ def collect(since_ts: float) -> tuple:
             vistos.add(cid)
             stats["convs"] += 1
             canal = _label(c, names)
+            if varios:
+                canal = f"[{etiqueta.split(':')[0].title()}] {canal}"
             try:
                 got, cursor = [], None
                 for _ in range(MAX_PAGES):
@@ -419,8 +442,9 @@ def _cobertura_txt(stats: dict) -> str:
     base = (f"{stats['mensajes']} mensajes en {stats['con_mensajes']} de {stats['convs']} conversaciones"
             + (f", {stats['errores']} con error" if stats.get("errores") else ""))
     if stats.get("limitada"):
-        base += ("\n⚠️ Cobertura LIMITADA: solo veo canales donde Louis está invitado. Faltan los mensajes directos "
-                 "y grupos; para verlos hace falta SLACK_USER_TOKEN.")
+        ws = ", ".join(w.title() for w in stats["limitada"])
+        base += (f"\n⚠️ Cobertura LIMITADA en {ws}: solo veo canales donde Louis está invitado. Faltan los mensajes "
+                 "directos y grupos; para verlos hace falta el token de usuario (xoxp-) de ese workspace.")
     return base
 
 
