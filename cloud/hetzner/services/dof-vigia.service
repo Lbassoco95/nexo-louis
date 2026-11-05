@@ -1,0 +1,21 @@
+[Unit]
+Description=Louis DOF — entrega las notas nuevas del DOF al agente Vigía DOF (brief + tareas)
+After=network-online.target dof-harvest.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@@SYSTEM_USER@@
+Group=@@SYSTEM_USER@@
+WorkingDirectory=@@OPENCLAW_HOME@@/legal/dof
+EnvironmentFile=@@ENV_FILE@@
+Environment=DOF_DB_PATH=@@OPENCLAW_HOME@@/legal/dof/biblioteca_dof.db
+Environment=DOF_VIGIA_STATE=@@OPENCLAW_HOME@@/legal/dof/vigia_state.json
+Environment=CEREBRO_DIR=@@OPENCLAW_HOME@@/scripts
+# --max acota el costo por corrida (una llamada a Claude por nota); lo que sobre se atiende en los días siguientes (--dias 3).
+ExecStart=/usr/bin/python3 @@OPENCLAW_HOME@@/legal/dof/dof_vigia_dispatch.py --brief --dispatch --max 10 --dias 3
+StandardOutput=append:@@OPENCLAW_HOME@@/logs/dof-vigia.log
+StandardError=append:@@OPENCLAW_HOME@@/logs/dof-vigia.log
+SyslogIdentifier=louis-dof-vigia
+TimeoutStartSec=1200
+MemoryMax=256M

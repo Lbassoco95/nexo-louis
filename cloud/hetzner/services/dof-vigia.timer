@@ -1,0 +1,11 @@
+[Unit]
+Description=Entrega diaria de notas del DOF al Vigía DOF (lunes a viernes, después del harvest de las 18:00)
+
+[Timer]
+# El harvest corre 08:30 y 18:00 (dof-harvest.timer). A las 19:00 ya están bajadas y clasificadas la matutina y la vespertina.
+OnCalendar=Mon..Fri *-*-* 19:00:00 America/Mexico_City
+# Persistent: si louis-prod estuvo apagado a esa hora, corre al volver.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
