@@ -69,7 +69,7 @@ cerebro que Louis.
 
 ### Herramientas (tools MCP)
 - `agenda_leer`, `agenda_marcar_hecho`, `agenda_editar`
-- `legal_buscar` (SJF/DOF), `legal_estado`
+- `legal_buscar` (SJF/DOF), `legal_estado`, `legal_frescura` (última nota DOF, última tesis SJF y última corrida de cada scraper)
 - `entregables_listar`, `entregable_estado` (lo que Cowork ya hizo)
 - `dispatch_preparar_brief` (Louis arma el encargo para Cowork)
 

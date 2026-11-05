@@ -177,6 +177,7 @@ ss -tlnp | grep 4040
 | `agenda_pendientes()` | ~150 | Revisar tareas pendientes |
 | `entregables_listar()` | ~100 + 30/ítem | Ver estado de entregables |
 | `legal_estado()` | ~50 | Verificar disponibilidad |
+| `legal_frescura()` | ~120 | Fecha de la última nota DOF, última tesis SJF y última corrida de cada scraper |
 | `agenda_snapshot()` | ~500 | Contexto operativo completo |
 | `entregable_estado(completo=False)` | ~80 | Metadatos de un entregable |
 | `entregable_estado(completo=True)` | ~400-1500 | Leer el documento completo |

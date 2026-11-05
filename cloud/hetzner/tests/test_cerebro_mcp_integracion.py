@@ -83,3 +83,29 @@ def test_auditoria_no_da_por_enviado_el_oc006(cerebro):
     m, _ = cerebro
     out = m.entregables_auditar()
     assert "plazo vencido, sin evidencia de envío" in out and "OC-006" in out
+
+
+def test_legal_frescura(cerebro, tmp_path):
+    import json, sqlite3
+    m, _ = cerebro
+    dof, sjf = tmp_path / "dof.db", tmp_path / "sjf.db"
+    with sqlite3.connect(dof) as c:
+        c.execute("CREATE TABLE notas (cod_nota INTEGER, fecha TEXT)")
+        c.executemany("INSERT INTO notas VALUES (?,?)", [(1, "2026-07-28"), (2, "2026-04-01"), (3, None)])
+        c.execute("CREATE TABLE runs (id INTEGER PRIMARY KEY, started_at TEXT, finished_at TEXT, mode TEXT, notes TEXT)")
+        c.execute("INSERT INTO runs (started_at, finished_at, mode) VALUES ('2026-07-29T01:00:00', '2026-07-29T01:20:00', 'daily')")
+    with sqlite3.connect(sjf) as c:
+        c.execute("CREATE TABLE tesis (registro_digital INTEGER, fecha_publicacion TEXT)")
+        c.executemany("INSERT INTO tesis VALUES (?,?)", [(1, "2021-03-26 10:29:00.0"), (2, None), (3, "None"), (4, "1995")])
+    m.DOF_DB_PATH, m.SJF_DB_PATH = dof, sjf
+    out = json.loads(m.legal_frescura())
+    assert out["DOF"]["ultimo_contenido"] == "2026-07-28"
+    assert out["DOF"]["ultima_corrida"] == {"inicio": "2026-07-29T01:00:00", "fin": "2026-07-29T01:20:00", "modo": "daily", "terminada": True}
+    assert out["SJF"]["ultimo_contenido"] == "2021-03-26" and out["SJF"]["ultima_corrida"] is None
+
+
+def test_legal_frescura_sin_bases(cerebro, tmp_path):
+    import json
+    m, _ = cerebro
+    m.DOF_DB_PATH = m.SJF_DB_PATH = tmp_path / "no-existe.db"
+    assert json.loads(m.legal_frescura()) == {"DOF": {"disponible": False}, "SJF": {"disponible": False}}

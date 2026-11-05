@@ -635,6 +635,51 @@ def legal_estado() -> str:
     return " | ".join(partes)
 
 
+def _fecha_dia(valor) -> str | None:
+    """Primeros 10 caracteres si parecen AAAA-MM-DD (el SJF trae fechas con hora y algunas vacías)."""
+    v = str(valor or "")[:10]
+    return v if len(v) == 10 and v[:4].isdigit() and v[4] == "-" and v[7] == "-" else None
+
+
+def _frescura_db(db_path: Path, sql_ultimo: str) -> dict:
+    """Última fecha de contenido y última corrida del scraper de una base. Solo lectura; nunca lanza."""
+    if not db_path.exists():
+        return {"disponible": False}
+    try:
+        tablas = _tablas_db(db_path)
+        ultimo = _query_db(db_path, sql_ultimo) if sql_ultimo else []
+        corrida = None
+        if "runs" in tablas:
+            filas = _query_db(
+                db_path,
+                "SELECT started_at, finished_at, mode, notes FROM runs ORDER BY started_at DESC LIMIT 1",
+            )
+            if filas:
+                corrida = {"inicio": filas[0]["started_at"], "fin": filas[0]["finished_at"],
+                           "modo": filas[0]["mode"], "terminada": filas[0]["finished_at"] is not None}
+        return {"disponible": True, "ultimo_contenido": _fecha_dia(ultimo[0]["f"]) if ultimo else None,
+                "ultima_corrida": corrida}
+    except Exception as e:  # base bloqueada o corrupta: se reporta, no se rompe el MCP
+        return {"disponible": True, "error": type(e).__name__}
+
+
+@mcp.tool()
+def legal_frescura() -> str:
+    """[COMPACTO] Qué tan al día está el acervo: última nota del DOF, última tesis del SJF y
+    última corrida de cada scraper. JSON de una línea; solo fechas, sin contenido."""
+    import json as _json
+    dof = _frescura_db(
+        DOF_DB_PATH,
+        "SELECT MAX(fecha) AS f FROM notas WHERE fecha GLOB '[12][0-9][0-9][0-9]-[01][0-9]-[0-3][0-9]*'",
+    )
+    sjf = _frescura_db(
+        SJF_DB_PATH,
+        "SELECT MAX(fecha_publicacion) AS f FROM tesis "
+        "WHERE fecha_publicacion GLOB '[12][0-9][0-9][0-9]-[01][0-9]-[0-3][0-9]*'",
+    )
+    return _json.dumps({"DOF": dof, "SJF": sjf}, ensure_ascii=False, separators=(",", ":"))
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # WRITES — respuesta corta siempre
 # ══════════════════════════════════════════════════════════════════════════
