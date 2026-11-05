@@ -10270,10 +10270,20 @@ def call_llm(
                 except Exception:
                     log.warning("No pude guardar last-briefing.json", exc_info=True)
             return response, "deepseek"
-        # DeepSeek falló → briefing determinístico (NO caemos en Ollama lento de CPU).
-        log.warning(f"DeepSeek no respondió ({tag}) — fallback determinístico")
-        fb, _ = deterministic_operational_response(snapshot)
-        return fb, "deepseek-fallback"
+        # DeepSeek falló. NO se responde con el briefing (Polo no lo pidió): se intenta con Haiku
+        # (Claude, rápido y barato) y, si tampoco responde, se avisa con claridad. Sin Ollama lento.
+        log.warning(f"DeepSeek no respondió ({tag}) — fallback a Haiku")
+        try:
+            fb = _call_claude_with_billing_check(call_haiku, api_key, ds_system, history, user_message)
+        except Exception as e:
+            log.warning(f"Haiku (fallback de DeepSeek) falló: {e}")
+            fb = None
+        if fb and fb.strip() and not fb.lstrip().startswith(("(error", "(sin respuesta", "(respuesta vac")) \
+                and not _is_billing_error(fb):
+            _mark_last_route("haiku-fallback")
+            return fb, "haiku-fallback"
+        return ("⚠️ No pude contestar tu mensaje: el modelo de conversación no respondió. "
+                "Vuelve a escribirlo en un momento, o antepón /haiku para usar otro modelo."), "chat-error"
 
     if msg.startswith(OLLAMA_QUALITY_PREFIXES):
         return _ollama_route("override /oss")
