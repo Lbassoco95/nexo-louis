@@ -22,6 +22,7 @@ Garantías (están en el código, no solo en el prompt):
     registra canal y fecha en el hallazgo de seguridad.
 """
 
+import html as _hh
 import json
 import re
 import time
@@ -481,6 +482,16 @@ def _publicar_slack_dm(titulo: str, cuerpo: str) -> bool:
         return False
 
 
+def _mandar_reporte(send, titulo: str, caption_lineas: list, texto: str, prefijo: str) -> None:
+    """Reporte como documento HTML interactivo + resumen corto. Si el documento falla,
+    manda el texto largo de siempre (por trozos)."""
+    import html as _hh
+    cap = "\n".join(caption_lineas)
+    if core.enviar_reporte_dashboard(titulo, cap, texto, prefijo):
+        return
+    _mandar(send, texto)
+
+
 def _mandar(send, texto: str) -> None:
     for p in _split(texto, TG_CHUNK):
         send(p)
@@ -549,22 +560,27 @@ def run_digest(send, force: bool = False) -> str:
             L += [resumen, ""]
         if dg["fechas"]:
             L.append("⏰ *Fechas próximas:*")
-            L += [f"• {_fmt_fecha(f.get('fecha'))} — {f.get('que', '')}" for f in sorted(dg["fechas"], key=lambda x: str(x.get("fecha")))[:6]]
+            L += [f"• {_fmt_fecha(f.get('fecha'))} — {f.get('que', '')}" for f in sorted(dg["fechas"], key=lambda x: str(x.get("fecha")))]
             L.append("")
         if reg:
             L.append("⚠️ *Regulatorio / legal — verificar (no se da por cerrado sin confirmación):*")
-            L += [f"• {a['id']} {a.get('que', '')} ({_fmt_fecha(a.get('fecha'))}, {a.get('fuente', '')})" for a in reg[:6]]
+            L += [f"• {a['id']} {a.get('que', '')} ({_fmt_fecha(a.get('fecha'))}, {a.get('fuente', '')})" for a in reg]
             L.append("")
         if esperan:
             L.append(f"⏳ *Esperan algo de ti ({len(esperan)}):*")
-            L += [f"• {a['id']} {a.get('que', '')} — {a.get('de', '?')} ({_fmt_fecha(a.get('fecha'))})" for a in esperan[:8]]
+            L += [f"• {a['id']} {a.get('que', '')} — {a.get('de', '?')} ({_fmt_fecha(a.get('fecha'))})" for a in esperan]
             L.append("")
         seg = _seguridad_txt(stats)
         if seg:
             L += [seg, ""]
         L.append(f"_{len(dg['acciones'])} acciones abiertas guardadas; mañana a las 7:41 reviso cómo avanzaron. "
                  "Detalle completo en tu DM de Slack con Louis._")
-        _mandar(send, "\n".join(L))
+        _mandar_reporte(
+            send, f"Resumen de Slack — {_fmt_fecha(hoy.isoformat())}",
+            [f"🌆 <b>Resumen de Slack — {_fmt_fecha(hoy.isoformat())}</b>", _hh.escape(_cobertura_txt(stats)),
+             f"⏳ {len(esperan)} esperan algo de ti · ⚠️ {len(reg)} regulatorios · 📋 {len(dg['acciones'])} acciones abiertas",
+             "Ábrelo en Safari/Chrome para el detalle."],
+            "\n".join(L), "ResumenSlack")
 
         det = ["*Temas:*"] + [f"• *{t.get('tema', '')}* ({_fmt_fecha(t.get('fecha'))}, {t.get('fuente', '')}): {t.get('resumen', '')}"
                               for t in dg["temas"]]
@@ -683,25 +699,25 @@ def run_followup(send, force: bool = False) -> str:
         L.append("")
         if resueltas:
             L.append("✅ *Resueltas (con evidencia):*")
-            L += [f"• {a['id']} {a.get('que', '')} — {u.get('evidencia', '')}" for a, u in resueltas[:8]]
+            L += [f"• {a['id']} {a.get('que', '')} — {u.get('evidencia', '')}" for a, u in resueltas]
             L.append("")
         if avanzaron:
             L.append("↗️ *Avanzaron:*")
-            L += [f"• {a['id']} {a.get('que', '')} — {u.get('evidencia', '')}" for a, u in avanzaron[:8]]
+            L += [f"• {a['id']} {a.get('que', '')} — {u.get('evidencia', '')}" for a, u in avanzaron]
             L.append("")
         if sin_resp:
             L.append("⏳ *Sin respuesta:*")
             L += [f"• {a['id']} {a.get('que', '')} — espera a {a.get('para', '?')} desde hace {dh} días hábiles"
-                  for a, dh in sorted(sin_resp, key=lambda x: -x[1])[:8]]
+                  for a, dh in sorted(sin_resp, key=lambda x: -x[1])]
             L.append("")
         if nuevos:
             L.append("🆕 *Nuevo desde ayer:*")
-            L += [f"• {n.get('que', '')} ({n.get('de', '?')} → {n.get('para', '?')}, {n.get('fuente', '')})" for n in nuevos[:8]]
+            L += [f"• {n.get('que', '')} ({n.get('de', '?')} → {n.get('para', '?')}, {n.get('fuente', '')})" for n in nuevos]
             L.append("")
         reg = [a for a in acciones if a.get("regulatorio") and a not in [x for x, _ in resueltas]]
         if reg:
             L.append("⚠️ *Regulatorio / legal — verificar:*")
-            L += [f"• {a['id']} {a.get('que', '')}" for a in reg[:6]]
+            L += [f"• {a['id']} {a.get('que', '')}" for a in reg]
             L.append("")
         if altas:
             L.append("📋 *No están en la AGENDA — propongo agregarlas:*")
@@ -711,7 +727,14 @@ def run_followup(send, force: bool = False) -> str:
         seg = _seguridad_txt(stats)
         if seg:
             L += [seg, ""]
-        _mandar(send, "\n".join(L).strip())
+        cap = [f"🌅 <b>Seguimiento de Slack — {_fmt_fecha(hoy.isoformat())}</b>", _hh.escape(_cobertura_txt(stats)),
+               f"{len(acciones)} acciones de ayer: ✅ {len(resueltas)} · ↗️ {len(avanzaron)} · "
+               f"➖ {len(sin_cambio)} · ⏳ {len(sin_resp)} sin respuesta · 🆕 {len(nuevos)} nuevas"]
+        if altas:
+            cap.append(f"📋 {len(altas)} altas propuestas: responde «agrega altas 1, 3» o «agrega todas las altas».")
+        cap.append("Ábrelo en Safari/Chrome para el detalle.")
+        _mandar_reporte(send, f"Seguimiento de Slack — {_fmt_fecha(hoy.isoformat())}", cap,
+                        "\n".join(L).strip(), "SeguimientoSlack")
         _publicar_slack_dm(f"[Nexo · seguimiento] {_fmt_fecha(hoy.isoformat())}", "\n".join(L).strip())
         return f"OK slack_followup: {len(resueltas)} resueltas, {len(avanzaron)} avanzaron, {len(altas)} altas propuestas"
     except Exception as e:

@@ -2655,6 +2655,46 @@ def format_morning_briefing_deterministic(snapshot: str) -> str:
     )
 
 
+def _tg_md_a_md(texto: str) -> str:
+    """Texto estilo Telegram (*negrita*, _cursiva_, • viñetas) → markdown para louis_html:
+    las líneas que son solo un título en negrita pasan a '## ' (sección colapsable)."""
+    out = []
+    for ln in (texto or "").split("\n"):
+        t = ln.rstrip()
+        if not t.strip():
+            out.append("")
+            continue
+        m = re.match(r"^(\S{0,4}\s+)?\*([^*]+)\*:?\s*$", t.strip())
+        if m:
+            out.append(f"\n## {(m.group(1) or '')}{m.group(2)}".rstrip())
+            continue
+        m = re.match(r"^_(.+)_$", t.strip())
+        if m:
+            out.append(m.group(1))
+            continue
+        t = re.sub(r"^\s*•\s*", "- ", t)
+        if re.match(r"^\s*\d+\.\s", t):
+            t = "- " + t.strip()
+        t = re.sub(r"(?<![*\w])\*(?!\s|\*)([^*\n]+?)(?<!\s)\*(?![*\w])", r"**\1**", t)
+        out.append(t)
+    return "\n".join(out)
+
+
+def enviar_reporte_dashboard(titulo: str, caption_html: str, texto_tg: str, prefijo: str) -> bool:
+    """Manda un reporte automático como DOCUMENTO HTML interactivo (louis_html) con un
+    resumen corto como pie de foto. `texto_tg` es el reporte completo en estilo Telegram.
+    True si salió el documento; False → el llamador manda el texto largo de respaldo."""
+    try:
+        import louis_html as _LH
+        import briefing_doc as _BD
+        html_bytes = _LH.md_to_html(titulo, "Louis", _tg_md_a_md(texto_tg), con_chat=True)
+        fname = f"{prefijo}_{datetime.now(TZ_CDMX).strftime('%Y%m%d')}.html"
+        return bool(_BD.send_doc(html_bytes, fname, caption_html[:1000]))
+    except Exception as e:
+        log.warning(f"reporte dashboard ({prefijo}) falló, uso texto: {e}")
+        return False
+
+
 def enviar_briefing_dashboard(rango: str = "hoy") -> bool:
     """Manda el briefing como DASHBOARD HTML interactivo: corre briefing_doc.py, que arma
     el HTML (calendario M365 + pendientes de AGENDA.md) y lo envía por Telegram con su
@@ -8672,14 +8712,14 @@ def run_agenda_steward(force: bool = False) -> str:
         lines += [f"• {_cortar_frase(str(e), 220)}" for e in enf[:3]]
     if cerrar:
         lines.append(f"\n🧹 *Propongo cerrar ({len(cerrar)}) — con evidencia:*")
-        lines += [f"• {l}" for _, l in cerrar[:10]]
+        lines += [f"• {l}" for _, l in cerrar]
         lines.append("_Responde «cierra 3, 5» o «cierra todos los sugeridos». No cierro nada sin tu OK._")
     if verificar:
         lines.append(f"\n⚠️ *Regulatorio / legal — verificar antes de tocar ({len(verificar)}):*")
-        lines += [f"• {l}" for l in verificar[:8]]
+        lines += [f"• {l}" for l in verificar]
     if replantear:
         lines.append(f"\n🔁 *Para replantear ({len(replantear)}):*")
-        lines += [f"• {l}" for l in replantear[:8]]
+        lines += [f"• {l}" for l in replantear]
     if dups:
         lines.append("\n🔗 *Posibles duplicados:* " + ", ".join(f"{a} y {b}" for a, b in dups[:6]))
     if data.get("observaciones"):
@@ -8689,10 +8729,24 @@ def run_agenda_steward(force: bool = False) -> str:
         lines += [f"• {s}" for s in salud]
     if len(lines) <= 2:
         return f"OK steward: {len(items)} pendientes, nada que reportar"
-    try:
-        _encolar_notificacion("\n".join(lines)[:3800], canal="telegram")
-    except Exception as e:
-        log.warning(f"steward: no pude encolar el reporte: {e}")
+    import html as _hh
+    cap = [f"🧭 <b>Seguimiento diario — {now.strftime('%d %b')}</b>",
+           f"{len(items)} pendientes revisados",
+           f"🧹 {len(cerrar)} a cerrar · ⚠️ {len(verificar)} regulatorios · 🔁 {len(replantear)} por replantear"]
+    if data.get("enfoque"):
+        _e = data["enfoque"] if isinstance(data["enfoque"], list) else [str(data["enfoque"])]
+        cap.append("🎯 " + _hh.escape(_cortar_frase(str(_e[0]), 170)))
+    if cerrar:
+        cap.append("Responde «cierra 3, 5» o «cierra todos los sugeridos» (números del documento).")
+    if salud:
+        cap.append(f"🗂 Memoria: {len(salud)} archivo(s) por ordenar.")
+    cap.append("Ábrelo en Safari/Chrome para el detalle.")
+    if not enviar_reporte_dashboard(f"Seguimiento diario — {now.strftime('%d %b %Y')}", "\n".join(cap),
+                                    "\n".join(lines), "Seguimiento"):
+        try:
+            _encolar_notificacion("\n".join(lines)[:3800], canal="telegram")
+        except Exception as e:
+            log.warning(f"steward: no pude encolar el reporte: {e}")
     return (f"OK steward: {len(items)} pendientes, {len(cerrar)} a cerrar, {len(verificar)} a verificar, "
             f"{len(replantear)} a replantear, {len(dups)} duplicados")
 
