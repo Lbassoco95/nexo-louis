@@ -641,43 +641,94 @@ def _fecha_dia(valor) -> str | None:
     return v if len(v) == 10 and v[:4].isdigit() and v[4] == "-" and v[7] == "-" else None
 
 
-def _frescura_db(db_path: Path, sql_ultimo: str) -> dict:
-    """Última fecha de contenido y última corrida del scraper de una base. Solo lectura; nunca lanza."""
-    if not db_path.exists():
+def _hoy():
+    import datetime as _dt
+    return _dt.date.today()
+
+
+def _dias_sin_avance(fecha_iso):
+    """Días entre una fecha AAAA-MM-DD y hoy; None si no hay fecha."""
+    import datetime as _dt
+    try:
+        return (_hoy() - _dt.date.fromisoformat(fecha_iso)).days if fecha_iso else None
+    except ValueError:
+        return None
+
+
+_FECHA_GLOB = "'[12][0-9][0-9][0-9]-[01][0-9]-[0-3][0-9]*'"
+
+
+def _corridas(db_path: Path, tablas: list[str]) -> dict:
+    """Última corrida TERMINADA por modo y cuántas llevan más de un día sin terminar (trabajos colgados)."""
+    if "runs" not in tablas:
+        return {}
+    terminadas = _query_db(
+        db_path, "SELECT mode, MAX(finished_at) AS f FROM runs WHERE finished_at IS NOT NULL GROUP BY mode")
+    colgadas = _query_db(
+        db_path, "SELECT COUNT(*) AS n FROM runs WHERE finished_at IS NULL "
+                 "AND started_at >= strftime('%Y-%m-%dT%H:%M:%S','now','-1 day')")
+    return {"terminadas": {r["mode"]: str(r["f"])[:19] for r in terminadas},
+            "sin_terminar_24h": colgadas[0]["n"] if colgadas else 0}
+
+
+def _marcas_progress(db_path: Path, tablas: list[str], claves: tuple) -> dict:
+    """Solo las fechas de actualización de ciertas claves de `progress` (nunca su valor)."""
+    if "progress" not in tablas:
+        return {}
+    marcas = {}
+    for k in claves:
+        f = _query_db(db_path, "SELECT updated_at FROM progress WHERE key = ?", (k,))
+        if f:
+            marcas[k] = str(f[0]["updated_at"])[:19]
+    return marcas
+
+
+def _frescura_dof() -> dict:
+    """DOF: se mide por la última EDICIÓN descargada; las fechas futuras de algunas notas no cuentan como avance."""
+    if not DOF_DB_PATH.exists():
         return {"disponible": False}
     try:
-        tablas = _tablas_db(db_path)
-        ultimo = _query_db(db_path, sql_ultimo) if sql_ultimo else []
-        corrida = None
-        if "runs" in tablas:
-            filas = _query_db(
-                db_path,
-                "SELECT started_at, finished_at, mode, notes FROM runs ORDER BY started_at DESC LIMIT 1",
-            )
-            if filas:
-                corrida = {"inicio": filas[0]["started_at"], "fin": filas[0]["finished_at"],
-                           "modo": filas[0]["mode"], "terminada": filas[0]["finished_at"] is not None}
-        return {"disponible": True, "ultimo_contenido": _fecha_dia(ultimo[0]["f"]) if ultimo else None,
-                "ultima_corrida": corrida}
+        tablas = _tablas_db(DOF_DB_PATH)
+        ult, descarga = None, None
+        if "ediciones" in tablas:
+            f = _query_db(DOF_DB_PATH, "SELECT MAX(fecha) AS f, MAX(fetched_at) AS d FROM ediciones "
+                                       f"WHERE fecha GLOB {_FECHA_GLOB} AND fecha <= date('now')")
+            ult, descarga = (_fecha_dia(f[0]["f"]), str(f[0]["d"])[:19] if f[0]["d"] else None) if f else (None, None)
+        if not ult and "notas" in tablas:
+            f = _query_db(DOF_DB_PATH, f"SELECT MAX(fecha) AS f FROM notas WHERE fecha GLOB {_FECHA_GLOB} "
+                                       "AND fecha <= date('now')")
+            ult = _fecha_dia(f[0]["f"]) if f else None
+        return {"disponible": True, "ultimo_contenido": ult, "dias_sin_avance": _dias_sin_avance(ult),
+                "ultima_descarga": descarga, "corridas": _corridas(DOF_DB_PATH, tablas)}
     except Exception as e:  # base bloqueada o corrupta: se reporta, no se rompe el MCP
+        return {"disponible": True, "error": type(e).__name__}
+
+
+def _frescura_sjf() -> dict:
+    """SJF: última tesis publicada, corridas terminadas y marcas de progreso (actualización, cursor, bloqueo WAF)."""
+    if not SJF_DB_PATH.exists():
+        return {"disponible": False}
+    try:
+        tablas = _tablas_db(SJF_DB_PATH)
+        ult = None
+        if "tesis" in tablas:
+            f = _query_db(SJF_DB_PATH, "SELECT MAX(fecha_publicacion) AS f FROM tesis "
+                                       f"WHERE fecha_publicacion GLOB {_FECHA_GLOB} AND fecha_publicacion <= date('now')")
+            ult = _fecha_dia(f[0]["f"]) if f else None
+        return {"disponible": True, "ultimo_contenido": ult, "dias_sin_avance": _dias_sin_avance(ult),
+                "marcas": _marcas_progress(SJF_DB_PATH, tablas, ("last_update_at", "backfill_cursor", "waf_bloqueo")),
+                "corridas": _corridas(SJF_DB_PATH, tablas)}
+    except Exception as e:
         return {"disponible": True, "error": type(e).__name__}
 
 
 @mcp.tool()
 def legal_frescura() -> str:
-    """[COMPACTO] Qué tan al día está el acervo: última nota del DOF, última tesis del SJF y
-    última corrida de cada scraper. JSON de una línea; solo fechas, sin contenido."""
+    """[COMPACTO] Qué tan al día está el acervo: última edición del DOF y última tesis del SJF,
+    días sin avance, última corrida terminada por modo y trabajos colgados. JSON de una línea;
+    solo fechas y conteos, sin contenido."""
     import json as _json
-    dof = _frescura_db(
-        DOF_DB_PATH,
-        "SELECT MAX(fecha) AS f FROM notas WHERE fecha GLOB '[12][0-9][0-9][0-9]-[01][0-9]-[0-3][0-9]*'",
-    )
-    sjf = _frescura_db(
-        SJF_DB_PATH,
-        "SELECT MAX(fecha_publicacion) AS f FROM tesis "
-        "WHERE fecha_publicacion GLOB '[12][0-9][0-9][0-9]-[01][0-9]-[0-3][0-9]*'",
-    )
-    return _json.dumps({"DOF": dof, "SJF": sjf}, ensure_ascii=False, separators=(",", ":"))
+    return _json.dumps({"DOF": _frescura_dof(), "SJF": _frescura_sjf()}, ensure_ascii=False, separators=(",", ":"))
 
 
 # ══════════════════════════════════════════════════════════════════════════

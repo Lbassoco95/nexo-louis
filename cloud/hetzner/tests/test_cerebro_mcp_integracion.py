@@ -86,22 +86,31 @@ def test_auditoria_no_da_por_enviado_el_oc006(cerebro):
 
 
 def test_legal_frescura(cerebro, tmp_path):
-    import json, sqlite3
+    import datetime, json, sqlite3
     m, _ = cerebro
+    m._hoy = lambda: datetime.date(2026, 11, 5)
     dof, sjf = tmp_path / "dof.db", tmp_path / "sjf.db"
     with sqlite3.connect(dof) as c:
         c.execute("CREATE TABLE notas (cod_nota INTEGER, fecha TEXT)")
-        c.executemany("INSERT INTO notas VALUES (?,?)", [(1, "2026-07-28"), (2, "2026-04-01"), (3, None)])
+        c.executemany("INSERT INTO notas VALUES (?,?)", [(1, "2026-10-14"), (2, "2026-12-30"), (3, None)])
+        c.execute("CREATE TABLE ediciones (cod_diario INTEGER, fecha TEXT, fetched_at TEXT)")
+        c.executemany("INSERT INTO ediciones VALUES (?,?,?)", [(1, "2026-10-13", "2026-10-14T18:03:46"), (2, "2026-10-14", "2026-10-14T18:03:53")])
         c.execute("CREATE TABLE runs (id INTEGER PRIMARY KEY, started_at TEXT, finished_at TEXT, mode TEXT, notes TEXT)")
-        c.execute("INSERT INTO runs (started_at, finished_at, mode) VALUES ('2026-07-29T01:00:00', '2026-07-29T01:20:00', 'daily')")
+        c.execute("INSERT INTO runs (started_at, finished_at, mode) VALUES ('2026-10-14T18:00:00', '2026-10-14T18:05:00', 'daily')")
+        c.execute("INSERT INTO runs (started_at, finished_at, mode) VALUES (strftime('%Y-%m-%dT%H:%M:%S','now'), NULL, 'generate_pdfs')")
     with sqlite3.connect(sjf) as c:
         c.execute("CREATE TABLE tesis (registro_digital INTEGER, fecha_publicacion TEXT)")
-        c.executemany("INSERT INTO tesis VALUES (?,?)", [(1, "2021-03-26 10:29:00.0"), (2, None), (3, "None"), (4, "1995")])
+        c.executemany("INSERT INTO tesis VALUES (?,?)", [(1, "2026-08-28 10:29:00.0"), (2, None), (3, "None"), (4, "2027-01-01")])
+        c.execute("CREATE TABLE progress (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)")
+        c.execute("INSERT INTO progress VALUES ('waf_bloqueo', 'secreto', '2026-10-13T13:44:11')")
     m.DOF_DB_PATH, m.SJF_DB_PATH = dof, sjf
     out = json.loads(m.legal_frescura())
-    assert out["DOF"]["ultimo_contenido"] == "2026-07-28"
-    assert out["DOF"]["ultima_corrida"] == {"inicio": "2026-07-29T01:00:00", "fin": "2026-07-29T01:20:00", "modo": "daily", "terminada": True}
-    assert out["SJF"]["ultimo_contenido"] == "2021-03-26" and out["SJF"]["ultima_corrida"] is None
+    assert out["DOF"]["ultimo_contenido"] == "2026-10-14" and out["DOF"]["dias_sin_avance"] == 22   # ignora el 2026-12-30
+    assert out["DOF"]["ultima_descarga"] == "2026-10-14T18:03:53"
+    assert out["DOF"]["corridas"]["terminadas"] == {"daily": "2026-10-14T18:05:00"}
+    assert out["DOF"]["corridas"]["sin_terminar_24h"] == 1
+    assert out["SJF"]["ultimo_contenido"] == "2026-08-28" and out["SJF"]["dias_sin_avance"] == 69
+    assert out["SJF"]["marcas"] == {"waf_bloqueo": "2026-10-13T13:44:11"} and "secreto" not in json.dumps(out)
 
 
 def test_legal_frescura_sin_bases(cerebro, tmp_path):
