@@ -9,6 +9,11 @@ Type=oneshot
 User=@@SYSTEM_USER@@
 Group=@@SYSTEM_USER@@
 WorkingDirectory=@@OPENCLAW_HOME@@/legal/sjf
+Environment=SJF_DB_PATH=@@OPENCLAW_HOME@@/legal/sjf/biblioteca.db
+# Ritmo suave (defaults también en sjf_harvest.py). Override vía Environment=
+# si hace falta. No martillar: 1500 ms ≈ 2.4k req/h.
+Environment=SJF_THROTTLE_MS=1500
+Environment=SJF_THROTTLE_JITTER_MS=600
 ExecStart=/usr/bin/python3 @@OPENCLAW_HOME@@/legal/sjf/sjf_harvest.py
 StandardOutput=append:@@OPENCLAW_HOME@@/logs/sjf-update.log
 StandardError=append:@@OPENCLAW_HOME@@/logs/sjf-update.log
