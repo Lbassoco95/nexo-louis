@@ -45,10 +45,12 @@ cd /opt/louis && docker compose exec caddy caddy reload --config /etc/caddy/Cadd
 
 ## Backups
 
-Snapshots automáticos cada vez que el cron aplica un delta:
+Snapshots automáticos cada vez que el cron aplica un delta **con cambios reales de contenido** (una simple fecha de modificación nueva ya no cuenta):
 
 - Ubicación: `/opt/openclaw/backups/spaces-YYYYMMDDHHMMSS.tar.gz`
-- Retención: 14 días (los más viejos se borran solos)
+- Retención escalonada (`sync/prune-backups.sh`): últimas 24 h todos · de 1 a 7 días uno por hora · de 7 a 30 días uno por día · más de 30 días se borran. Antes eran 14 días completos (~4 000 archivos, ~53 GB).
+- Freno de espacio: con menos de 8 GB libres se poda en modo emergencia; con menos de 3 GB no se aplica el delta hasta liberar espacio (avisa en `/var/log/louis-sync.log`).
+- Detalle, diagnóstico y primera limpieza: `docs/respaldos-retencion.md`. Pruebas: `bash cloud/hetzner/tests/test_respaldos.sh`.
 
 Backup manual completo (antes de un cambio grande):
 
