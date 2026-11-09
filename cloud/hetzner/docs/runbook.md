@@ -178,6 +178,18 @@ Los bots de Telegram/Slack y la API de kawiil-agents NO deben quedar detrás
 de Access (siguen webhooks/HTTP de servicios). Por eso `agents.kawiil.mx`
 queda público (autenticado por token).
 
+## No desplegar servicios dentro de `/opt/openclaw/projects/`
+
+`/opt/openclaw/projects/` es el **destino del push de proyectos** de la Mac (`mac-push-projects.sh`, cada 30 min y al cargar el job) y ese push usa
+`rsync --delete` con una lista de extensiones (`*.md *.txt *.pdf *.docx *.json *.csv *.xlsx …`). Todo archivo con esas extensiones que esté ahí y **no exista
+en la Mac se borra**. Pasó con el despliegue de `kawiil-agents` (`/opt/openclaw/projects/kawiil-agents-main`): se perdieron `docx/templates/default.docx` y el
+`package.json` de Playwright dentro del `.venv`, y también `requirements*.txt` y los `.md` del repo.
+
+- El script ya excluye `.venv`, `site-packages`, `__pycache__` y `/kawiil-agents-main/` (un exclude no es `--delete-excluded`: lo excluido ni se sube ni se borra).
+- Un servicio nuevo debe vivir **fuera** de esa raíz (por ejemplo `/opt/<servicio>`), o agregarse como exclude anclado en el script.
+- Para aplicar un cambio del script en la Mac: `./mac-install-projects-sync.sh` (copia la versión nueva a `~/.openclaw/scripts/` y recarga el job `ai.kawiil.projects-sync`).
+- Prueba con rsync real, sin red: `bash tests/test_push_projects_filtros.sh`.
+
 ## Cuando algo se rompe
 
 1. `./verify.sh` — primera línea de diagnóstico.

@@ -86,6 +86,16 @@ igual "y el destino se actualizó" "$(cat "$D/agenda.md")" "contenido v2"
 sleep 1.1; echo "otro" > "$S/nuevo.md"; touch -d "+3 minutes" "$S/nuevo.md"; correr >/dev/null
 igual "archivo nuevo: otro snapshot" "$(snaps)" "3"; [[ -f "$D/nuevo.md" ]] && ok "y llegó al destino" || mal "no llegó"
 
+# origen VACÍO: el caso real de louis-prod (el sync desde la Mac dejó de entregar archivos). Antes: error de aritmética en
+# cada corrida + un snapshot completo cada 5 minutos para siempre. Ahora: no hace nada y no escribe nada en el log.
+S2="$TMP/vacio/spaces"; D2="$TMP/vacio-dst/spaces"; BK2="$TMP/vacio-bk"; mkdir -p "$S2" "$D2" "$BK2"; echo "estable" > "$D2/a.md"
+SALIDA=$(LOUIS_SYNC_SRC="$S2" LOUIS_SYNC_DST="$D2" LOUIS_BACKUPS="$BK2" LOUIS_SYNC_MARKER="$TMP/vacio/.last-apply" LOUIS_SYNC_LOCK="$TMP/lock-vacio" bash "$APPLY" 2>&1)
+igual "origen vacío: ningún snapshot" "$(find "$BK2" -name 'spaces-*.tar.gz' | wc -l)" "0"
+[[ -z "$SALIDA" ]] && ok "origen vacío: no escribe nada en el log (antes: error de aritmética cada 5 min)" || mal "origen vacío escribió: $SALIDA"
+for i in 1 2 3; do LOUIS_SYNC_SRC="$S2" LOUIS_SYNC_DST="$D2" LOUIS_BACKUPS="$BK2" LOUIS_SYNC_MARKER="$TMP/vacio/.last-apply" LOUIS_SYNC_LOCK="$TMP/lock-vacio" bash "$APPLY" >/dev/null 2>&1; sleep 0.2; done
+igual "origen vacío, 4 corridas seguidas: siguen sin snapshots" "$(find "$BK2" -name 'spaces-*.tar.gz' | wc -l)" "0"
+igual "origen vacío: el destino no se toca" "$(cat "$D2/a.md")" "estable"
+
 # freno de espacio
 sleep 1.1; echo "v3" > "$S/agenda.md"; touch -d "+4 minutes" "$S/agenda.md"
 SALIDA=$(LOUIS_FAKE_FREE_GB=1 correr)

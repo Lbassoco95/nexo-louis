@@ -54,11 +54,18 @@ ssh $SSH_OPTS "$REMOTE" "sudo mkdir -p $DEST && sudo chown -R ${LOUIS_REMOTE_USE
 # protege la carpeta pero NO su contenido, así que el --delete borraba los PDFs
 # que Louis genera (existen solo en Hetzner). El exclude anclado lo evita: los
 # archivos excluidos no se transfieren ni se eliminan (sin --delete-excluded).
+# --exclude='.venv' / 'site-packages' / '/kawiil-agents-main/' (nov 2026): el servicio de agentes (kawiil-agents) está DESPLEGADO en
+# /opt/openclaw/projects/kawiil-agents-main, que es la raíz de este push. Con --delete, rsync borraba de ahí todo archivo con extensión
+# incluida (*.docx, *.json, *.txt, *.md…) que no existiera en la Mac: se perdieron docx/templates/default.docx y el package.json de
+# Playwright en el entorno virtual, y también requirements*.txt y los .md del repo. El exclude anterior era 'venv' y el entorno se llama
+# '.venv'. Un exclude NO es --delete-excluded: lo excluido ni se sube ni se borra. Prueba: tests/test_push_projects_filtros.sh.
 rsync -rz --delete --prune-empty-dirs --partial \
   --exclude='/_Louis-Generados/' \
   --exclude='.git' --exclude='.git/' \
   --exclude='node_modules' --exclude='.cursor' --exclude='.vscode' \
   --exclude='.next' --exclude='dist' --exclude='build' --exclude='venv' \
+  --exclude='.venv' --exclude='site-packages' --exclude='__pycache__' \
+  --exclude='/kawiil-agents-main/' \
   --exclude='.DS_Store' \
   --include='*/' \
   --include='*.md' --include='*.markdown' --include='*.txt' \

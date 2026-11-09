@@ -44,7 +44,11 @@ if [[ ! -d "$SRC" ]]; then
 fi
 
 # Última mtime de cualquier archivo dentro de SRC
-LATEST_MTIME=$(find "$SRC" -type f -printf '%T@\n' 2>/dev/null | sort -n | tail -1 || echo 0)
+LATEST_MTIME=$(find "$SRC" -type f -printf '%T@\n' 2>/dev/null | sort -n | tail -1 || true)
+# Origen VACÍO (o ilegible): no hay ningún archivo, así que LATEST_MTIME queda en blanco. Antes ese blanco rompía la
+# comparación de abajo («((: <= LAST_APPLY_MTIME : syntax error»), la condición «no hay nada nuevo» fallaba sin detener el
+# script y se hacía un snapshot completo cada 5 minutos para siempre (en louis-prod: ~62 días, ~53 GB de copias idénticas).
+LATEST_MTIME="${LATEST_MTIME:-0}"
 LAST_APPLY_MTIME=0
 [[ -f "$MARKER" ]] && LAST_APPLY_MTIME=$(stat -c %Y "$MARKER" 2>/dev/null || echo 0)
 
