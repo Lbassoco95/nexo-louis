@@ -119,6 +119,8 @@ _APP_FILES = {
     "/app/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
     "/app/sw.js": ("sw.js", "application/javascript; charset=utf-8"),
     "/app/icon.svg": ("icon.svg", "image/svg+xml"),
+    # Script del widget para iPhone (app Scriptable). Público: NO contiene el token (lo pide una vez).
+    "/app/widget-scriptable.js": ("widget-scriptable.js", "text/javascript; charset=utf-8"),
 }
 
 
@@ -130,8 +132,19 @@ def _agent_name() -> str:
     return _NAME_SAFE.sub("", core.AGENT_NAME).strip() or "Asistente"
 
 
-def _app_file(ruta: str):
-    """(bytes, content-type) del cascarón de la app, o None. {{AGENT_NAME}} se sustituye al servir."""
+_HOST_SAFE = re.compile(r"^[A-Za-z0-9.\-]{1,100}(:\d{1,5})?$")
+
+
+def _base_url(host: str = "") -> str:
+    """https://<dominio>: LOUIS_DOMAIN (el de Caddy) y, si no está, el Host de la petición (validado)."""
+    dom = (os.environ.get("LOUIS_DOMAIN", "") or "").strip().strip("\"'")
+    if not dom and host and _HOST_SAFE.match(host):
+        dom = host
+    return "https://" + (dom or "donna.kawiil.mx")
+
+
+def _app_file(ruta: str, host: str = ""):
+    """(bytes, content-type) del cascarón de la app, o None. {{AGENT_NAME}} y {{BASE_URL}} se sustituyen al servir."""
     ent = _APP_FILES.get(ruta)
     if not ent:
         return None
@@ -139,7 +152,9 @@ def _app_file(ruta: str):
         raw = (_APP_DIR / ent[0]).read_bytes()
     except OSError:
         return None
-    return raw.replace(b"{{AGENT_NAME}}", _agent_name().encode("utf-8")), ent[1]
+    raw = raw.replace(b"{{AGENT_NAME}}", _agent_name().encode("utf-8"))
+    raw = raw.replace(b"{{BASE_URL}}", _base_url(host).encode("utf-8"))
+    return raw, ent[1]
 
 
 # ---- Chat en streaming (SSE) para la app móvil --------------------------------
@@ -224,6 +239,53 @@ def _push_answer(res: dict):
                                 tag="resp-" + res.get("rid", ""))
     except Exception:
         log.exception("push de respuesta falló")
+
+
+# ---- Acciones de confirmación de la bandeja (lista CERRADA: solo estas, nunca texto libre) ----------
+# Cada acción aplica algo que el asistente PROPUSO y que antes se confirmaba escribiendo «cierra todos los
+# sugeridos» / «agrega todas las altas». El botón solo funciona sobre la propuesta del MISMO DÍA que el aviso:
+# si ya hay una propuesta más nueva, se rechaza (no se cierra algo distinto de lo que se veía en pantalla).
+def _fecha_cdmx(ts: int) -> str:
+    from datetime import datetime
+    return datetime.fromtimestamp(ts, core.TZ_CDMX).strftime("%Y-%m-%d")
+
+
+def _estado_steward_fecha() -> str:
+    try:
+        return str(core._steward_load_state().get("date", ""))
+    except Exception:
+        return ""
+
+
+def _estado_altas_fecha() -> str:
+    try:
+        return str(json.loads(core.SLACK_FOLLOWUP_STATE.read_text()).get("fecha", ""))
+    except Exception:
+        return ""
+
+
+_ACTIONS = {
+    "steward_cerrar_sugeridos": (lambda: core.aplicar_cierres_steward("todos los sugeridos"), _estado_steward_fecha),
+    "altas_todas": (lambda: core.aplicar_altas_seguimiento("todas"), _estado_altas_fecha),
+}
+
+
+def _run_notif_action(nid: str, action_id: str):
+    """(código HTTP, dict). Valida: la acción existe, el aviso la ofrece, no se usó ya y la propuesta sigue vigente."""
+    import louis_push
+    rec = louis_push.inbox_get(nid)
+    if not rec:
+        return 404, {"error": "aviso no encontrado"}
+    if action_id not in _ACTIONS or action_id not in [a.get("id") for a in rec.get("actions") or []]:
+        return 400, {"error": "acción no permitida para este aviso"}
+    if action_id in (rec.get("done") or {}):
+        return 200, {"ok": True, "ya": True, "result": rec["done"][action_id].get("result", "")}
+    fn, fecha_estado = _ACTIONS[action_id]
+    if fecha_estado() != _fecha_cdmx(rec["ts"]):
+        return 409, {"error": "Esta propuesta ya no está vigente (hay una más reciente). Pídele a la asistente que la repita."}
+    result = str(fn())
+    louis_push.inbox_set_done(nid, action_id, result)
+    return 200, {"ok": True, "result": result}
 
 _AGENT_NAME_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,80}$")
 
@@ -674,7 +736,7 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             return
         if _r0 in _APP_FILES:
-            f = _app_file(_r0)
+            f = _app_file(_r0, self.headers.get("Host", ""))
             if not f:
                 self._send_json(404, {"error": "app no instalada"})
                 return
@@ -717,7 +779,20 @@ class Handler(BaseHTTPRequestHandler):
                     import louis_push
                     self._send_json(200, {"subs": louis_push.count()})
                 elif _r0 == "/v1/app/hoy":
-                    self._send_json(200, core.build_app_hoy())
+                    import louis_push
+                    d = core.build_app_hoy()
+                    d["sin_leer"] = louis_push.unread_count()                  # para la campana y el widget
+                    d["confirmaciones"] = louis_push.pending_confirmations()   # avisos con botón sin usar
+                    self._send_json(200, d)
+                elif _r0 == "/v1/app/notifs":
+                    import louis_push
+                    from urllib.parse import urlparse, parse_qs
+                    try:
+                        lim = int((parse_qs(urlparse(self.path).query).get("limit") or ["50"])[0])
+                    except ValueError:
+                        lim = 50
+                    self._send_json(200, {"items": louis_push.inbox_list(lim), "unread": louis_push.unread_count(),
+                                          "confirmaciones": louis_push.pending_confirmations()})
                 elif _r0 == "/v1/app/entregables":
                     self._send_json(200, {"entregables": core._entregables_lista_tablero()})
                 elif _r0 == "/v1/app/entregable":
@@ -995,6 +1070,22 @@ class Handler(BaseHTTPRequestHandler):
         # App móvil: chat en streaming (SSE)
         if self.path == "/v1/app/chat/stream":
             self._chat_stream(body)
+            return
+
+        # App móvil: bandeja de notificaciones (marcar leídas / ejecutar un botón de confirmación)
+        if self.path == "/v1/app/notifs/read":
+            import louis_push
+            ids = body.get("ids")
+            n = louis_push.inbox_mark_read(None if body.get("all") else set(map(str, ids or [])))
+            self._send_json(200, {"ok": True, "cambiadas": n, "unread": louis_push.unread_count()})
+            return
+        if self.path == "/v1/app/notifs/action":
+            try:
+                code, out = _run_notif_action(str(body.get("id", "")), str(body.get("action", "")))
+            except Exception as e:
+                log.exception("acción de bandeja falló")
+                code, out = 500, {"error": str(e)[:200]}
+            self._send_json(code, out)
             return
 
         # App móvil: notificaciones push

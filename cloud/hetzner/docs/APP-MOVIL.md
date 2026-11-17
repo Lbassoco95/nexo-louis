@@ -69,3 +69,26 @@ archivo internos ni el bot de Telegram (ese se cambia con @BotFather).
 Los documentos HTML nuevos toman la dirección de `LOUIS_DOMAIN` (o de `CHAT_ENDPOINT` si se define). Los
 generados ANTES del cambio llevan escrito `louis.kawiil.mx` en su botón de chat y dejarán de funcionar ahí.
 Cada dominio es un sitio distinto en Caddy; mantener los dos activos exige un bloque adicional en el Caddyfile.
+
+## Bandeja de notificaciones, confirmaciones y widget (v3)
+
+**Bandeja (🔔 en el encabezado).** Cada aviso (push, recordatorio, briefing, seguimiento) se guarda en
+`/opt/openclaw/state/notifs.json` (últimos 200) aunque la notificación se descarte. La campana muestra los no
+leídos y el mismo número aparece en el ícono de la app (Badge API: iOS 16.4+ instalada, Android). Tocar una
+notificación abre la bandeja en ese aviso. Endpoints (Bearer): `GET /v1/app/notifs`, `POST /v1/app/notifs/read`,
+`POST /v1/app/notifs/action`; `GET /v1/app/hoy` ahora incluye `sin_leer` y `confirmaciones`.
+
+**Botones de confirmación.** Los avisos que invitan a «cierra todos los sugeridos» (seguimiento de la agenda) o a
+«agrega todas las altas» (seguimiento de Slack) traen un botón que hace lo mismo que escribir esa frase. Reglas:
+lista cerrada de acciones (`_ACTIONS` en `openclaw_gateway.py`); la acción debe estar ofrecida por ese aviso; solo
+se ejecuta una vez (el segundo toque devuelve el resultado guardado); y solo aplica la propuesta del MISMO DÍA que el
+aviso (si ya hay una más reciente responde 409 y no toca la AGENDA). La app pide confirmación antes de ejecutar.
+Para agregar otra confirmación: una regla en `ACTION_RULES` (louis_push.py) y una entrada en `_ACTIONS`.
+
+**Widget (iPhone).** Una app web no puede crear widgets nativos. Alternativa: el script `app/widget-scriptable.js`
+para la app gratuita **Scriptable** (Ajustes → «Copiar script del widget»; se sirve en `/app/widget-scriptable.js`,
+sin token: lo pide una vez y lo guarda en el llavero del iPhone). Muestra urgentes, fechas, abiertos y
+confirmaciones pendientes; se refresca cada ~15 min y al tocarlo abre Hoy. Un widget nativo real exigiría una app
+nativa (Xcode + WidgetKit + cuenta de Apple Developer).
+Pruebas: `python3 cloud/hetzner/tests/test_notifs.py`, `node cloud/hetzner/tests/test_widget_scriptable.js` (con un
+simulador de la API de Scriptable; no sustituye probarlo en el iPhone).

@@ -51,6 +51,21 @@ nav .badge{position:absolute;margin:-2px 0 0 14px;background:var(--bad);color:#f
 .msg.live.has::after{content:"▍";color:var(--acc);animation:p 1s infinite;margin-left:1px}
 .msg .st{font-size:12px;color:var(--mut);margin-top:4px}
 .rb.stop{background:var(--bad)}
+header button{position:relative}
+.bbadge{position:absolute;top:-2px;right:-2px;background:var(--bad);color:#fff;border-radius:9px;font-size:10px;line-height:16px;min-width:16px;padding:0 4px;text-align:center;font-weight:700}
+.nitem{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;margin-bottom:10px}
+.nitem.new{border-left:4px solid var(--acc)}
+.nitem .nh{display:flex;justify-content:space-between;gap:10px;align-items:baseline}
+.nitem .nh b{font-size:14.5px}.nitem .nh span{font-size:11px;color:var(--mut);white-space:nowrap}
+.nitem .nb{margin-top:6px;font-size:13.5px;max-height:9.5em;overflow:hidden;position:relative}
+.nitem .nb.open{max-height:none}
+.nitem .nb.clip::after{content:"";position:absolute;left:0;right:0;bottom:0;height:2.2em;background:linear-gradient(transparent,var(--panel))}
+.nitem .nb.open::after{display:none}
+.nitem .more{background:none;border:0;color:var(--acc);font-size:12.5px;padding:6px 0 0}
+.nitem .acts{margin-top:10px;display:flex;flex-direction:column;gap:8px}
+.nitem .acts .btn{padding:10px 14px}
+.nitem .okline{font-size:12.5px;color:var(--ok);background:var(--panel2);border-radius:10px;padding:8px 10px}
+.nitem .errline{font-size:12.5px;color:var(--bad);margin-top:6px}
 .typing{display:inline-flex;gap:4px;padding:4px 0}
 .typing i{width:7px;height:7px;border-radius:50%;background:var(--mut);animation:b 1.1s infinite}
 .typing i:nth-child(2){animation-delay:.15s}.typing i:nth-child(3){animation-delay:.3s}
@@ -109,7 +124,7 @@ input.f{width:100%;background:var(--panel);color:var(--tx);border:1px solid var(
 </head>
 <body>
 <div id="app">
-  <header><span class="dot" id="dot"></span><h1 id="title">{{AGENT_NAME}}</h1><button id="refresh" aria-label="Actualizar">⟳</button></header>
+  <header><span class="dot" id="dot"></span><h1 id="title">{{AGENT_NAME}}</h1><button id="bell" aria-label="Notificaciones">🔔<span class="bbadge" id="bbadge" hidden></span></button><button id="refresh" aria-label="Actualizar">⟳</button></header>
   <div class="banner" id="banner">Sin conexión con {{AGENT_NAME}}. Reintentando…</div>
   <main>
     <section class="view on" id="v-chat">
@@ -160,7 +175,7 @@ function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('on');setT
 function md(src){
   const blocks=[];let s=esc(src).replace(/```(?:\w+)?\n?([\s\S]*?)```/g,(_,c)=>{blocks.push(c);return '\u0000'+(blocks.length-1)+'\u0000'});
   const inl=t=>t.replace(/`([^`\n]+)`/g,'<code>$1</code>').replace(/\*\*([^*\n]+)\*\*/g,'<b>$1</b>')
-    .replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,;:!?]|$)/g,'$1<i>$2</i>').replace(/(^|[\s(])_([^_\n]+)_(?=[\s).,;:!?]|$)/g,'$1<i>$2</i>')
+    .replace(/(^|[\s(>])\*([^*\n]+)\*(?=[\s).,;:!?<]|$)/g,'$1<i>$2</i>').replace(/(^|[\s(>])_([^_\n]+)_(?=[\s).,;:!?<]|$)/g,'$1<i>$2</i>')
     .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>')
     .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g,'$1<a href="$2" target="_blank" rel="noopener">$2</a>');
   const L=s.split('\n');let out='',i=0;
@@ -317,6 +332,44 @@ $('#mic').onclick=()=>{
   rec.start();
 };
 
+/* ---------- Bandeja de notificaciones ---------- */
+function setAppBadge(n){try{if(n>0&&navigator.setAppBadge)navigator.setAppBadge(n);else if(navigator.clearAppBadge)navigator.clearAppBadge()}catch(e){}}
+function paintBell(n){const b=$('#bbadge');b.hidden=!n;b.textContent=n>99?'99+':n;setAppBadge(n)}
+async function refreshBell(){try{const d=await api('/v1/app/notifs?limit=1');paintBell(d.unread);return d}catch(e){}}
+function fmtWhen(ts){
+  const d=new Date(ts*1000),n=new Date(),hm=d.toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'});
+  const same=(a,b)=>a.toDateString()===b.toDateString();
+  if(same(d,n))return 'hoy '+hm;if(same(d,new Date(n-864e5)))return 'ayer '+hm;
+  return d.toLocaleDateString('es-MX',{day:'numeric',month:'short'})+' '+hm}
+async function openInbox(focusId){
+  sheet('Notificaciones','<div class="empty">Cargando…</div>');
+  try{
+    const d=await api('/v1/app/notifs?limit=60');renderInbox(d.items,focusId);
+    if(d.unread)api('/v1/app/notifs/read',{method:'POST',body:JSON.stringify({all:true})}).then(()=>paintBell(0)).catch(()=>{});
+  }catch(e){sheet('Notificaciones','<div class="empty">No pude cargar. '+esc(e.message)+'</div>')}
+}
+function renderInbox(items,focusId){
+  if(!items.length){sheet('Notificaciones','<div class="empty">Aún no hay notificaciones.<br>Aquí verás los avisos, recordatorios y confirmaciones.</div>');return}
+  sheet('Notificaciones',items.map(r=>{
+    const acts=(r.actions||[]).map(a=>{const dn=(r.done||{})[a.id];
+      return dn?`<div class="okline">✓ ${esc(a.label)} — ${esc(dn.result||'hecho')}</div>`
+               :`<button class="btn" data-n="${esc(r.id)}" data-a="${esc(a.id)}" data-c="${esc(a.confirm||'')}">${esc(a.label)}</button>`}).join('');
+    return `<div class="nitem${r.read?'':' new'}" id="n-${esc(r.id)}"><div class="nh"><b>${esc(r.title)}</b><span>${fmtWhen(r.ts)}</span></div>
+      <div class="nb">${md(r.body||'')}</div><button class="more" hidden>Ver todo</button>${acts?`<div class="acts">${acts}</div>`:''}</div>`}).join(''));
+  $$('#sh-b .nitem').forEach(it=>{const nb=it.querySelector('.nb'),mo=it.querySelector('.more');
+    if(nb.scrollHeight>nb.clientHeight+4){nb.classList.add('clip');mo.hidden=false;
+      mo.onclick=()=>{const o=nb.classList.toggle('open');mo.textContent=o?'Ver menos':'Ver todo'}}});
+  $$('#sh-b .acts .btn').forEach(b=>b.onclick=async()=>{
+    if(!confirm(b.dataset.c||'¿Confirmar?'))return;
+    const lab=b.textContent,box=b.parentElement;b.disabled=true;b.textContent='Aplicando…';
+    box.querySelectorAll('.errline').forEach(x=>x.remove());
+    try{const r=await api('/v1/app/notifs/action',{method:'POST',body:JSON.stringify({id:b.dataset.n,action:b.dataset.a})});
+      b.outerHTML=`<div class="okline">✓ ${esc(lab)} — ${esc(r.result||'hecho')}</div>`;toast('Listo ✓');refreshBell();if(LS.get('tab')==='hoy')loadHoy()}
+    catch(e){b.disabled=false;b.textContent=lab;box.insertAdjacentHTML('beforeend',`<div class="errline">${esc(e.message)}</div>`)}});
+  if(focusId){const el=$('#n-'+focusId);if(el)el.scrollIntoView({block:'start'})}
+}
+$('#bell').onclick=()=>openInbox();
+
 /* ---------- Hoy ---------- */
 function taskHtml(t,i){return `<div class="card task${t.urgente?' hot':''}" data-i="${i}"><button class="ck" aria-label="Marcar hecho"></button><div class="tt">${esc(t.texto.replace(/\s*·?\s*\[(?:auto|visto|capturado)[^\]]*\]/g,'').trim())}</div></div>`}
 async function loadHoy(){
@@ -324,7 +377,9 @@ async function loadHoy(){
   try{
     const d=await api('/v1/app/hoy');online(true);window._hoy=d;
     const b=$('#b-hoy');b.hidden=!d.urgentes.length;b.textContent=d.urgentes.length;
-    let h=`<div class="stats"><div class="stat"><b>${d.abiertos}</b><span>Abiertos</span></div><div class="stat"><b>${d.urgentes.length}</b><span>Para hoy</span></div><div class="stat"><b>${d.cerrados}</b><span>Cerrados</span></div></div>`;
+    paintBell(d.sin_leer||0);
+    let h=d.confirmaciones?`<div class="card" id="confcard" style="border-left:4px solid var(--warn);cursor:pointer"><b>⚠️ ${d.confirmaciones} confirmación${d.confirmaciones>1?'es':''} pendiente${d.confirmaciones>1?'s':''}</b><div class="sub">Toca para revisar${d.confirmaciones>1?'las':'la'} y confirmar</div></div>`:'';
+    h+=`<div class="stats"><div class="stat"><b>${d.abiertos}</b><span>Abiertos</span></div><div class="stat"><b>${d.urgentes.length}</b><span>Para hoy</span></div><div class="stat"><b>${d.cerrados}</b><span>Cerrados</span></div></div>`;
     if(d.urgentes.length)h+='<div class="sec">Para hoy / urgente</div>'+d.urgentes.map((t,i)=>taskHtml({...t,urgente:true},'u'+i)).join('');
     if(d.vencimientos.length)h+='<div class="sec">Con fecha u hora</div>'+d.vencimientos.map((t,i)=>taskHtml(t,'v'+i)).join('');
     if(d.entregables_listos.length)h+='<div class="sec">Esperan tu Vo.Bo.</div>'+d.entregables_listos.map(e=>`<div class="card" data-f="${esc(e.archivo)}"><div class="row"><b>${esc(e.titulo)}</b><span class="pill listo">listo</span></div><div class="sub">${esc(e.cliente||'')}</div></div>`).join('');
@@ -334,6 +389,7 @@ async function loadHoy(){
     $$('#hoy .task').forEach(c=>c.querySelector('.ck').onclick=()=>{
       const i=c.dataset.i,t=i[0]==='u'?d.urgentes[+i.slice(1)]:d.vencimientos[+i.slice(1)];completar(t.texto,c)});
     $$('#hoy [data-f]').forEach(c=>c.onclick=()=>openEnt(c.dataset.f));
+    const cc=$('#confcard');if(cc)cc.onclick=()=>openInbox();
   }catch(e){online(false);if(!el.querySelector('.card'))el.innerHTML='<div class="empty">No pude cargar. Toca ⟳</div>'}
 }
 async function completar(texto,card){
@@ -382,10 +438,14 @@ function renderCfg(){
   $('#cfg').innerHTML=`<div class="sec">Conexión</div><div class="card"><div class="row"><span>Servidor</span><span class="sub">${esc(location.host)}</span></div><div class="row" style="margin-top:6px"><span>Estado</span><span class="sub" id="st">…</span></div></div>
   <div class="sec">Notificaciones</div><div class="card" id="pushcard"><div class="sub" id="pushst">…</div></div>
   <div class="sec">Chat</div><div class="card"><button class="btn ghost" id="clr" style="margin:0">Borrar historial de este teléfono</button></div>
+  <div class="sec">Widget de pendientes (iPhone)</div><div class="card"><div class="sub" style="margin-bottom:10px">Una app web no puede crear un widget nativo; esta alternativa usa la app gratuita <b>Scriptable</b>:<br>1) Instálala desde la App Store.<br>2) Toca «Copiar script» y en Scriptable crea un script nuevo (+) y pégalo.<br>3) Ejecútalo una vez (▶): te pide el token y lo guarda en tu iPhone.<br>4) Mantén presionada la pantalla de inicio → + → Scriptable → elige el script.</div><button class="btn ghost" id="wcopy" style="margin:0">Copiar script del widget</button></div>
   <div class="sec">Instalar</div><div class="card sub">iPhone: Safari → Compartir → <b>Agregar a pantalla de inicio</b>.<br>Android: Chrome → ⋮ → <b>Instalar app</b>.</div>
   <div class="sec">Sesión</div><div class="card"><button class="btn ghost" id="out" style="margin:0;color:var(--bad)">Cerrar sesión</button></div>`;
   $('#clr').onclick=()=>{if(confirm('¿Borrar la conversación guardada en este teléfono?')){chat=[];LS.set('chat',[]);renderChat();toast('Historial borrado')}};
   $('#out').onclick=()=>{if(confirm('¿Cerrar sesión?'))logout(false)};
+  $('#wcopy').onclick=async()=>{try{const t=await (await fetch('/app/widget-scriptable.js')).text();
+    await navigator.clipboard.writeText(t);toast('Script copiado ✓ — pégalo en Scriptable')}
+    catch(e){toast('No pude copiar. Abre /app/widget-scriptable.js y copia el texto')}};
   ping().then(ok=>{$('#st').textContent=ok?'🟢 Conectado':'🔴 Sin conexión'});
   renderPush();
 }
@@ -422,14 +482,18 @@ async function renderPush(){
 }
 // Si ya estaban concedidas, re-registra en silencio (por si el navegador rotó la suscripción).
 async function pushResync(){if(pushOK()&&Notification.permission==='granted'&&(!isIOS||standalone)){try{await pushEnable()}catch(e){}}}
-navigator.serviceWorker&&navigator.serviceWorker.addEventListener('message',e=>{if(e.data&&e.data.type==='tab'){go(e.data.tab);if(e.data.tab==='chat')recoverPending(true)}});
+navigator.serviceWorker&&navigator.serviceWorker.addEventListener('message',e=>{
+  const m=e.data||{};
+  if(m.type==='tab'){if(m.tab==='notifs')openInbox(m.nid);else{go(m.tab);if(m.tab==='chat')recoverPending(true)}}
+  else if(m.type==='push'){refreshBell();if(LS.get('tab')==='hoy')loadHoy()}});
 
 /* ---------- arranque ---------- */
 function boot(){renderChips();renderChat();ping();
-  const q=new URLSearchParams(location.search).get('tab');go(titles[q]?q:LS.get('tab','chat'));
+  const qs=new URLSearchParams(location.search),q=qs.get('tab');go(titles[q]?q:LS.get('tab','chat'));
+  refreshBell();if(q==='notifs')openInbox(qs.get('nid')||'');
   loadHoy().catch(()=>{});recoverPending(true);pushResync()}
 if('serviceWorker' in navigator)navigator.serviceWorker.register('/app/sw.js').catch(()=>{});
-document.addEventListener('visibilitychange',()=>{if(!document.hidden&&TOKEN){ping();recoverPending(true);if(LS.get('tab')==='hoy')loadHoy()}});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&TOKEN){ping();refreshBell();recoverPending(true);if(LS.get('tab')==='hoy')loadHoy()}});
 if(TOKEN){boot()}else{showLogin('')}
 </script>
 </body>

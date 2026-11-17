@@ -17,6 +17,9 @@ import time
 import base64
 import hashlib
 import logging
+import re
+import uuid
+import fcntl
 import threading
 import urllib.request
 import urllib.error
@@ -160,6 +163,129 @@ def count() -> int:
     return len(_read_subs())
 
 
+
+# ---------------------------------------------------------------- bandeja de notificaciones
+# Cada aviso (push, copia de Telegram, recordatorio, briefing…) se guarda aquí para poder verlo
+# en la app aunque la notificación se haya descartado. Algunos avisos traen BOTONES de confirmación
+# (cerrar los pendientes sugeridos, agregar las altas de Slack): se detectan por las frases fijas
+# con que el propio código invita a responder. Las acciones se ejecutan en el gateway, con lista cerrada.
+INBOX_FILE = STATE_DIR / "notifs.json"
+INBOX_LOCK_FILE = STATE_DIR / "notifs.lock"
+INBOX_MAX = 200
+_INBOX_TLOCK = threading.Lock()
+
+ACTION_RULES = [
+    (re.compile(r"cierra todos los sugeridos", re.I),
+     {"id": "steward_cerrar_sugeridos", "label": "Cerrar los sugeridos",
+      "confirm": "¿Cerrar todos los pendientes que propuse? Se mueven a AGENDA-ARCHIVO.md y se respalda la AGENDA."}),
+    (re.compile(r"agrega todas las altas", re.I),
+     {"id": "altas_todas", "label": "Agregar todas las altas",
+      "confirm": "¿Agregar a tu AGENDA todas las altas que propuse del seguimiento de Slack?"}),
+]
+
+
+def actions_for(text: str) -> list:
+    return [dict(a) for rx, a in ACTION_RULES if rx.search(text or "")]
+
+
+def tg_md_to_app(text: str) -> str:
+    """Los textos de Telegram usan *negrita* (un asterisco); la app usa Markdown estándar (**negrita**)."""
+    return re.sub(r"(?<![*\w])\*([^*\n]+)\*(?![*\w])", r"**\1**", text or "")
+
+
+class _InboxLock:
+    """Exclusión entre HILOS y entre PROCESOS (gateway y scheduler escriben el mismo archivo)."""
+    def __enter__(self):
+        _INBOX_TLOCK.acquire()
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        self._f = open(INBOX_LOCK_FILE, "a")
+        fcntl.flock(self._f, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            fcntl.flock(self._f, fcntl.LOCK_UN)
+            self._f.close()
+        finally:
+            _INBOX_TLOCK.release()
+
+
+def _inbox_read() -> list:
+    try:
+        d = json.loads(INBOX_FILE.read_text())
+        return d if isinstance(d, list) else []
+    except Exception:
+        return []
+
+
+def _inbox_write(items: list) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = INBOX_FILE.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(items[-INBOX_MAX:], f, ensure_ascii=False)
+    os.replace(tmp, INBOX_FILE)
+
+
+def inbox_add(title: str, body: str, tab: str = "chat", actions: list = None, kind: str = "") -> dict:
+    rec = {"id": uuid.uuid4().hex[:12], "ts": int(time.time()), "title": (title or AGENT_NAME)[:120],
+           "body": (body or "")[:4000], "tab": tab, "kind": kind, "read": False,
+           "actions": actions or [], "done": {}}
+    with _InboxLock():
+        items = _inbox_read()
+        items.append(rec)
+        _inbox_write(items)
+    return rec
+
+
+def inbox_list(limit: int = 50) -> list:
+    with _InboxLock():
+        return list(reversed(_inbox_read()))[:max(1, min(limit, INBOX_MAX))]
+
+
+def unread_count() -> int:
+    return sum(1 for r in _inbox_read() if not r.get("read"))
+
+
+def pending_confirmations() -> int:
+    """Avisos con un botón de confirmación que aún no se ha usado."""
+    return sum(1 for r in _inbox_read()
+               if any(a["id"] not in (r.get("done") or {}) for a in r.get("actions") or []))
+
+
+def inbox_mark_read(ids=None) -> int:
+    """ids=None → todas. Devuelve cuántas cambió."""
+    n = 0
+    with _InboxLock():
+        items = _inbox_read()
+        for r in items:
+            if not r.get("read") and (ids is None or r.get("id") in ids):
+                r["read"] = True
+                n += 1
+        if n:
+            _inbox_write(items)
+    return n
+
+
+def inbox_get(nid: str):
+    for r in _inbox_read():
+        if r.get("id") == nid:
+            return r
+    return None
+
+
+def inbox_set_done(nid: str, action_id: str, result: str) -> bool:
+    with _InboxLock():
+        items = _inbox_read()
+        for r in items:
+            if r.get("id") == nid:
+                r.setdefault("done", {})[action_id] = {"ts": int(time.time()), "result": (result or "")[:1500]}
+                r["read"] = True
+                _inbox_write(items)
+                return True
+    return False
+
+
 # ---------------------------------------------------------------- envío
 def _send_one(sub: dict, payload: bytes, ttl: int, urgency: str, topic: str = "") -> int:
     body = encrypt(payload, sub["keys"]["p256dh"], sub["keys"]["auth"])
@@ -176,14 +302,22 @@ def _send_one(sub: dict, payload: bytes, ttl: int, urgency: str, topic: str = ""
 
 
 def notify(title: str, body: str = "", tab: str = "chat", tag: str = "", ttl: int = 3600,
-           urgency: str = "normal") -> int:
-    """Envía a todos los teléfonos suscritos. Devuelve cuántos aceptaron. Nunca lanza."""
+           urgency: str = "normal", actions: list = None, full_body: str = None, kind: str = "") -> int:
+    """Guarda el aviso en la bandeja y lo envía a los teléfonos suscritos. Devuelve cuántos aceptaron.
+    Nunca lanza."""
     try:
+        try:
+            rec = inbox_add(title, full_body if full_body is not None else body, tab, actions, kind)
+        except Exception:
+            log.warning("no pude guardar en la bandeja", exc_info=True)
+            rec = {"id": ""}
         subs = _read_subs()
         if not subs:
             return 0
         payload = json.dumps({"title": (title or AGENT_NAME)[:80], "body": (body or "")[:300],
-                              "tab": tab, "tag": tag or hashlib.md5((title or "").encode()).hexdigest()[:8],
+                              "tab": "notifs" if rec.get("id") else tab, "nid": rec.get("id", ""),
+                              "badge": unread_count(),
+                              "tag": tag or hashlib.md5((title or "").encode()).hexdigest()[:8],
                               "ts": int(time.time())}, ensure_ascii=False).encode()
         ok, muertas = 0, []
         topic = _b64u(hashlib.sha256(tag.encode()).digest())[:32] if tag else ""
@@ -214,18 +348,22 @@ def notify_async(*a, **kw) -> None:
 
 def notify_text_async(text: str, tab: str = "") -> None:
     """Convierte un mensaje largo (briefing, recordatorio, alerta) en un push: 1ª línea = título,
-    resto = cuerpo. Quita el markdown/HTML. Se usa junto a cada envío por Telegram."""
-    import re
+    resto = cuerpo (recortado). El texto COMPLETO queda en la bandeja de la app, con botones de
+    confirmación si el mensaje invita a «cerrar los sugeridos» / «agregar las altas»."""
     clean = re.sub(r"<[^>]+>", "", text or "")
-    clean = re.sub(r"[*_`#>]+", "", clean).strip()
-    if not clean:
+    plain = re.sub(r"[*_`#>]+", "", clean).strip()
+    if not plain:
         return
-    lines = [l.strip() for l in clean.splitlines() if l.strip()]
+    lines = [l.strip() for l in plain.splitlines() if l.strip()]
     title, body = lines[0][:80], " · ".join(lines[1:])[:280]
     if not tab:
-        low = clean[:240].lower()
+        low = plain[:240].lower()
         tab = "hoy" if any(k in low for k in ("seguimiento", "cierre del día", "pendientes", "vence", "agenda")) else "chat"
-    notify_async(title, body, tab=tab)
+    # En la bandeja el título ya se muestra aparte: el cuerpo es el RESTO (sin repetir la 1ª línea).
+    raw = clean.splitlines()
+    i0 = next((i for i, l in enumerate(raw) if l.strip()), 0)
+    resto = tg_md_to_app("\n".join(raw[i0 + 1:]).strip())
+    notify_async(title, body, tab=tab, actions=actions_for(clean), full_body=resto, kind="mensaje")
 
 
 # ---------------------------------------------------------------- interruptor de Telegram
