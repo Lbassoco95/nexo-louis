@@ -850,6 +850,15 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "Si Polo pregunta 'cómo estás / qué tienes listo / qué falta / qué está instalado', PRIMERO "
         "llamas estas tools y reportas SOLO lo que devuelven. Si una pieza no la puedes verificar con "
         "ninguna tool, di 'no tengo cómo verificar X', NO inventes que está pendiente ni que funciona.\n"
+        "## ⛔ NUNCA INVENTES CIFRAS NI DIAGNÓSTICOS DEL NEGOCIO (Kawiil Central, tareas, proyectos)\n"
+        "Conteos de tareas/proyectos/vencidas, 'estado real', tablas de métricas, desgloses por proyecto "
+        "o cliente: SOLO pueden salir de la salida REAL de una tool `kawiil_central_*` llamada en ESTE "
+        "turno. Si la tool falló, devolvió ✗/❌ o no la llamaste, NO tienes esos datos: dilo así ('no pude "
+        "consultar Kawiil Central: <motivo que reportó la tool>') y propón el siguiente paso (revisar la "
+        "conexión). PROHIBIDO rellenar con cifras 'razonables', estimar, extrapolar de turnos anteriores o "
+        "de memoria, ni titular algo como 'ESTADO REAL' si no viene de una consulta. Una cifra inventada "
+        "presentada como real es el peor error posible: Polo toma decisiones con ella. Es mejor responder "
+        "'no tengo el dato' que una tabla bonita sin respaldo.\n"
         "## CUANDO LA BD NO TIENE EL TEXTO (ej: publicaciones recientes sin HTML descargado)\n"
         "Si `legal_buscar` no encuentra algo reciente (la BD tiene el índice pero no el texto "
         "completo), tienes DOS caminos REALES — y si ninguno funciona, lo dices claramente:\n"
@@ -6831,14 +6840,19 @@ KAWIIL_CENTRAL_AUDIT_LOG = HOME_OC / "logs" / "kawiil-central-ops.log"
 def _kawiil_central_creds() -> tuple[str, str, str, str]:
     """Devuelve (vercel_url, supabase_url, supabase_key, database_url). Soporta envs nuevas KAWIIL_CENTRAL_* y legacy KAWIIL_OS_*."""
     env = load_env_file(ANTHROPIC_ENV_FILE)
+    # Archivo propio de estas credenciales (lo escribe setup-kawiil-central-creds.sh, 0600). A diferencia de
+    # openclaw.env —que se regenera en cada deploy— este archivo SOBREVIVE, así que es la fuente de respaldo.
+    kc = load_env_file(HOME_OC / "credentials" / "kawiil-central.env")
     vercel_url = (
         os.environ.get("KAWIIL_CENTRAL_VERCEL_URL")
         or env.get("KAWIIL_CENTRAL_VERCEL_URL")
+        or kc.get("KAWIIL_CENTRAL_VERCEL_URL")
         or "https://www.kawiil-central.mx"
     )
     sup_url = (
         os.environ.get("KAWIIL_CENTRAL_SUPABASE_URL")
         or env.get("KAWIIL_CENTRAL_SUPABASE_URL")
+        or kc.get("KAWIIL_CENTRAL_SUPABASE_URL")
         or os.environ.get("KAWIIL_OS_SUPABASE_URL")  # legacy
         or env.get("KAWIIL_OS_SUPABASE_URL")
         or ""
@@ -6846,6 +6860,7 @@ def _kawiil_central_creds() -> tuple[str, str, str, str]:
     sup_key = (
         os.environ.get("KAWIIL_CENTRAL_SUPABASE_KEY")
         or env.get("KAWIIL_CENTRAL_SUPABASE_KEY")
+        or kc.get("KAWIIL_CENTRAL_SUPABASE_KEY")
         or os.environ.get("KAWIIL_OS_SUPABASE_KEY")
         or env.get("KAWIIL_OS_SUPABASE_KEY")
         or ""
@@ -6853,6 +6868,7 @@ def _kawiil_central_creds() -> tuple[str, str, str, str]:
     db_url = (
         os.environ.get("KAWIIL_CENTRAL_DATABASE_URL")
         or env.get("KAWIIL_CENTRAL_DATABASE_URL")
+        or kc.get("KAWIIL_CENTRAL_DATABASE_URL")
         or os.environ.get("KAWIIL_OS_DATABASE_URL")
         or env.get("KAWIIL_OS_DATABASE_URL")
         or ""
@@ -9596,6 +9612,56 @@ def _sanitize_tool_blocks(messages: list) -> list:
     return out
 
 
+# ===== Freno a datos inventados (cifras del negocio) =====
+# Herramientas usadas en el turno actual. call_claude las registra y call_llm las usa para
+# verificar, DESPUÉS de que el modelo responde, que una «diagnóstico/estado real» con cifras de
+# Kawiil Central venga de una consulta real. Si no, la respuesta lleva un aviso visible.
+_TURN = _threading.local()
+_TOOL_FAIL_PREFIXES = ("❌", "🔒", "⛔", "(error", "(Error", "Error:")
+_KC_MENTION_RE = re.compile(r"kawiil[\s-]*central", re.I)
+_BIZ_CLAIM_RE = re.compile(
+    r"estado real|datos reales|diagn[oó]stico ejecutivo|total (?:de )?tareas|"
+    r"tareas (?:vencidas|vivas)|proyectos activos", re.I)
+_NUM_RE = re.compile(r"\b\d{1,3}(?:[.,]\d{3})+\b|\b\d{2,}\b")
+
+
+def _tool_failed(result) -> bool:
+    """¿La salida de una tool es un fallo (❌/🔒/(error…) o un reporte con ✗ de algo caído/faltante)?"""
+    s = (result if isinstance(result, str) else str(result or "")).lstrip()
+    return s.startswith(_TOOL_FAIL_PREFIXES) or "✗" in s[:800]
+
+
+def _tool_fail_note(name: str) -> str:
+    return (f"\n\n⚠️ ESTA HERRAMIENTA ({name}) FALLÓ O DEVOLVIÓ DATOS INCOMPLETOS. NO tienes esos datos. "
+            "Prohibido inventar cifras, listas o estados, ni presentar estimaciones como datos reales. "
+            "Dile a Polo qué falló, tal cual lo reporta la herramienta, y qué haría falta para obtenerlos.")
+
+
+def _turn_track(kind: str, name: str) -> None:
+    lst = getattr(_TURN, kind, None)
+    if isinstance(lst, list):
+        lst.append(name)
+
+
+def guard_unverified_business_data(text, ok_tools, failed_tools):
+    """Si la respuesta presenta un diagnóstico/tabla con cifras atribuidas a Kawiil Central y en este turno
+    NINGUNA tool kawiil_central_* devolvió datos, antepone un aviso visible. No altera el resto del texto."""
+    if not text or not isinstance(text, str):
+        return text
+    if not (_KC_MENTION_RE.search(text) and _BIZ_CLAIM_RE.search(text) and len(_NUM_RE.findall(text)) >= 6):
+        return text
+    if any(n.startswith("kawiil_central_") for n in ok_tools):
+        return text
+    caidas = sorted({n for n in failed_tools if n.startswith("kawiil_central_")})
+    if caidas:
+        aviso = (f"⚠️ **No pude consultar Kawiil Central** ({', '.join(caidas)} falló). "
+                 "Las cifras de abajo NO son datos verificados: no las uses.\n\n")
+    else:
+        aviso = ("⚠️ **Esta respuesta no consultó Kawiil Central.** Las cifras de abajo no vienen de la base "
+                 "de datos y pueden ser inventadas: no las uses.\n\n")
+    return aviso + text
+
+
 def call_claude(api_key: str, system_prompt: str, history: list, user_message: str,
                 model: str | None = None) -> str:
     """Llama Claude con tools. Loop hasta que termine.
@@ -9749,6 +9815,10 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
             result = execute_tool(tc["name"], tc.get("input", {}))
             if tc["name"] in ("append_to_memory", "write_memory"):
                 memory_tool_results.append(result)
+            fallo = _tool_failed(result)
+            _turn_track("failed" if fallo else "ok", tc["name"])
+            if fallo:  # el modelo debe VER que falló y no rellenar el hueco con datos inventados
+                result = f"{result}{_tool_fail_note(tc['name'])}"
             tool_results.append({"type": "tool_result", "tool_use_id": tc["id"], "content": result})
         messages.append({"role": "user", "content": tool_results})
 
@@ -9776,6 +9846,26 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
 
 
 def call_llm(
+    api_key: str,
+    system_prompt: str,
+    history: list,
+    user_message: str,
+    history_file: Path | None = None,
+) -> tuple:
+    """Punto de entrada único (Telegram, Slack, app, API). Enruta con `_call_llm_impl` y después verifica que
+    las cifras de Kawiil Central de la respuesta vengan de una consulta real (ver guard_unverified_business_data).
+    Returns: (response, model_used)."""
+    _TURN.ok, _TURN.failed = [], []
+    response, model_used = _call_llm_impl(api_key, system_prompt, history, user_message, history_file=history_file)
+    try:
+        response = guard_unverified_business_data(
+            response, list(getattr(_TURN, "ok", [])), list(getattr(_TURN, "failed", [])))
+    except Exception:
+        log.warning("guard_unverified_business_data falló", exc_info=True)
+    return response, model_used
+
+
+def _call_llm_impl(
     api_key: str,
     system_prompt: str,
     history: list,

@@ -30,6 +30,29 @@ n=$(cnt '^ANTHROPIC_API_KEY=.' "$OC/openclaw.env"); [[ "${n:-0}" -ge 1 ]] && ok 
 TOKEN=$($SUDO grep -m1 '^OPENCLAW_GATEWAY_TOKEN=' "$OC/openclaw.env" 2>/dev/null | cut -d= -f2-)
 [[ -n "$TOKEN" ]] && ok "token del gateway presente" || bad "no hay OPENCLAW_GATEWAY_TOKEN"
 
+echo "3b) Kawiil Central (de aquí salen las cifras de tareas y proyectos)"
+kc_has() { local v="$1" f n; for f in "$OC/openclaw.env" "$OC/.env" "$OC/credentials/kawiil-central.env"; do
+             n=$(cnt "^$v=." "$f"); [[ "${n:-0}" -ge 1 ]] && return 0; done; return 1; }
+for v in KAWIIL_CENTRAL_SUPABASE_URL KAWIIL_CENTRAL_SUPABASE_KEY KAWIIL_CENTRAL_DATABASE_URL; do
+  if kc_has "$v"; then ok "$v presente"
+  else bad "$v NO está en ningún archivo → sudo bash /opt/louis/scripts/setup-kawiil-central-creds.sh"; fi
+done
+python3 -c "import psycopg2" 2>/dev/null && ok "psycopg2 instalado" \
+  || bad "falta psycopg2 (sin él no hay consultas SQL) → pip3 install --break-system-packages psycopg2-binary"
+if [[ -n "$TOKEN" ]]; then
+  KC=$(curl -s --max-time 40 -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"args":{}}' \
+        "$URL/v1/tools/kawiil_central_estado" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("result",""))' 2>/dev/null)
+  [[ -n "$KC" ]] && echo "$KC" | sed 's/^/  | /'
+  if [[ -z "$KC" ]]; then bad "la consulta a Kawiil Central no devolvió nada"
+  elif echo "$KC" | grep -q "✗\|❌"; then bad "Kawiil Central NO responde completo (revisa los ✗ de arriba): Donna no puede dar cifras reales"
+  else ok "Kawiil Central responde con datos reales"; fi
+fi
+
+echo "3c) Otras integraciones (informativo: · = no configurada en este servidor)"
+for v in TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN M365_KAWIIL_CLIENT_ID OP_SERVICE_ACCOUNT_TOKEN BITWARDEN_ENV_FILE PLAYWRIGHT_BROWSERS_PATH; do
+  n=$(cnt "^$v=." "$OC/openclaw.env"); [[ "${n:-0}" -ge 1 ]] && ok "$v" || info "$v: no configurada"
+done
+
 echo "4) Conversación real (¿Ya estás ahí?)"
 if [[ -n "$TOKEN" ]]; then
   ERR=$(mktemp); OUT=$(DONNA_URL="$URL" DONNA_TOKEN="$TOKEN" python3 "$HERE/donna-chat.py" "¿Ya estás ahí?" 2>"$ERR")

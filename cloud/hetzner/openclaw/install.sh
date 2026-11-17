@@ -114,6 +114,14 @@ if [[ -z "${KEEP[OPENCLAW_GATEWAY_TOKEN]}" ]]; then
   KEEP[OPENCLAW_GATEWAY_TOKEN]="$(openssl rand -hex 32)"
   GEN_GATEWAY_TOKEN=1
 fi
+# Este archivo se regenera, pero OTROS scripts le inyectan variables (Kawiil Central, 1Password, Bitwarden,
+# Playwright…). Antes cada deploy las borraba y las herramientas dejaban de funcionar sin avisar.
+# Ahora: copia fechada del anterior (5 más recientes) y, tras generar, se conserva todo lo que no regeneramos.
+# shellcheck source=envmerge.sh
+source "$SCRIPT_DIR/envmerge.sh"
+OLD_ENV="$(mktemp)"
+[[ -f "$ENV_OUT" ]] && cp "$ENV_OUT" "$OLD_ENV"
+envmerge_backup "$ENV_OUT"
 log "Generando $ENV_OUT (consumido por openclaw.service Y telegram-bridge.service)"
 {
   echo "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}"
@@ -144,8 +152,11 @@ log "Generando $ENV_OUT (consumido por openclaw.service Y telegram-bridge.servic
     [[ -n "${KEEP[$k]}" ]] && echo "${k}=${KEEP[$k]}"
   done
 } > "$ENV_OUT"
+KEPT="$(envmerge_keep "$OLD_ENV" "$ENV_OUT" | tr '\n' ' ')"
+rm -f -- "$OLD_ENV"
 chmod 600 "$ENV_OUT"
 chown "$SYSTEM_USER":"$SYSTEM_USER" "$ENV_OUT"
+[[ -n "${KEPT// /}" ]] && log "Conservé de la versión anterior (inyectadas por otros scripts): ${KEPT}"
 log "openclaw.env generado ($(wc -l < "$ENV_OUT") variables)"
 if [[ "${GEN_GATEWAY_TOKEN:-}" == "1" ]]; then
   warn "No había OPENCLAW_GATEWAY_TOKEN: generé uno nuevo. Léelo con: sudo grep ^OPENCLAW_GATEWAY_TOKEN= $ENV_OUT"
