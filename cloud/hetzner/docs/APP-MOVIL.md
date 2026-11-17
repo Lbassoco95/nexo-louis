@@ -58,3 +58,14 @@ El asistente se llama **Donna** (antes Louis). Un solo punto de configuración: 
 push, el briefing/recordatorios y un bloque de identidad al inicio del system prompt que prevalece sobre las
 menciones viejas de «Louis» en `AGENTS.md`/memoria. No se renombran el dominio `louis.kawiil.mx`, los nombres de
 archivo internos ni el bot de Telegram (ese se cambia con @BotFather).
+
+## Cambiar el link a `donna.kawiil.mx`
+1. DNS: crear un registro `A` de `donna` → IP del servidor (donde se administra `kawiil.mx`).
+2. En `/opt/louis/.env`: `LOUIS_DOMAIN="donna.kawiil.mx"` (el nombre de la variable no cambia).
+3. `cd /opt/louis && sudo ./deploy.sh --skip-bootstrap` (Caddy saca el certificado solo, 1–2 min).
+4. En el celular: abrir `https://donna.kawiil.mx/app`, pegar el token y reactivar notificaciones. Es otro
+   origen: el token, el historial local y el permiso de push no se transfieren; en iPhone hay que reinstalar
+   el ícono desde el link nuevo.
+Los documentos HTML nuevos toman la dirección de `LOUIS_DOMAIN` (o de `CHAT_ENDPOINT` si se define). Los
+generados ANTES del cambio llevan escrito `louis.kawiil.mx` en su botón de chat y dejarán de funcionar ahí.
+Cada dominio es un sitio distinto en Caddy; mantener los dos activos exige un bloque adicional en el Caddyfile.

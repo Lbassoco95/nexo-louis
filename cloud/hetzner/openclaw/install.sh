@@ -101,7 +101,7 @@ ENV_OUT="$OPENCLAW_HOME/openclaw.env"
 # Variables de ACCESO del gateway/app: antes se perdían en cada deploy porque este archivo se
 # reescribe completo (el gateway arrancaba sin token y rechazaba todo, app incluida).
 # Prioridad: valor del .env → valor que ya tenía openclaw.env → (solo el token) uno nuevo aleatorio.
-KEEP_VARS=(OPENCLAW_GATEWAY_TOKEN DOC_CHAT_TOKEN TABLERO_USER TABLERO_PASSWORD VAPID_SUBJECT AGENT_NAME)
+KEEP_VARS=(OPENCLAW_GATEWAY_TOKEN DOC_CHAT_TOKEN TABLERO_USER TABLERO_PASSWORD VAPID_SUBJECT AGENT_NAME LOUIS_DOMAIN CHAT_ENDPOINT)
 declare -A KEEP
 for k in "${KEEP_VARS[@]}"; do
   v="${!k:-}"
