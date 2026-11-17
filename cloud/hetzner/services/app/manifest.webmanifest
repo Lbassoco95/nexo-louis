@@ -1,6 +1,6 @@
 {
-  "name": "Louis — Nexo de Polo",
-  "short_name": "Louis",
+  "name": "{{AGENT_NAME}} — Nexo de Polo",
+  "short_name": "{{AGENT_NAME}}",
   "description": "Tu Jarvis: chat, agenda y entregables en un solo lugar.",
   "start_url": "/app",
   "scope": "/",

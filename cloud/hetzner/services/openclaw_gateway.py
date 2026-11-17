@@ -123,15 +123,24 @@ _APP_FILES = {
 }
 
 
+_NAME_SAFE = re.compile(r"[^\w .\-]", re.UNICODE)
+
+
+def _agent_name() -> str:
+    """Nombre del asistente para la interfaz (solo letras, espacios, punto y guion: va dentro de HTML/JS/JSON)."""
+    return _NAME_SAFE.sub("", core.AGENT_NAME).strip() or "Asistente"
+
+
 def _app_file(ruta: str):
-    """(bytes, content-type) del cascarón de la app, o None."""
+    """(bytes, content-type) del cascarón de la app, o None. {{AGENT_NAME}} se sustituye al servir."""
     ent = _APP_FILES.get(ruta)
     if not ent:
         return None
     try:
-        return (_APP_DIR / ent[0]).read_bytes(), ent[1]
+        raw = (_APP_DIR / ent[0]).read_bytes()
     except OSError:
         return None
+    return raw.replace(b"{{AGENT_NAME}}", _agent_name().encode("utf-8")), ent[1]
 
 
 # ---- Chat en streaming (SSE) para la app móvil --------------------------------
@@ -194,7 +203,7 @@ def _push_answer(res: dict):
     try:
         import louis_push
         txt = res.get("text") or ("⚠️ " + (res.get("error") or "error"))
-        louis_push.notify_async("Louis respondió", re.sub(r"[*_`#>]+", "", txt).strip()[:200], tab="chat",
+        louis_push.notify_async(f"{core.AGENT_NAME} respondió", re.sub(r"[*_`#>]+", "", txt).strip()[:200], tab="chat",
                                 tag="resp-" + res.get("rid", ""))
     except Exception:
         log.exception("push de respuesta falló")
@@ -243,7 +252,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Louis · Agentes en vivo</title>
+<title>@@AGENT_NAME@@ · Agentes en vivo</title>
 <style>
   :root { --bg:#0b0f1a; --panel:#131a2b; --txt:#e6ecf5; --dim:#8a96ad;
           --idle:#2b3650; --active:#27e0a0; --line:#1f2a44; }
@@ -706,7 +715,7 @@ class Handler(BaseHTTPRequestHandler):
 
         # Dashboard visual de agentes — solo lectura, con usuario y contraseña.
         if self.path in ("/", "/dashboard", "/agentes"):
-            self._send_html(200, _DASHBOARD_HTML)
+            self._send_html(200, _DASHBOARD_HTML.replace("@@AGENT_NAME@@", _agent_name()))
             return
 
         # Feed de actividad de agentes (JSON) que consume el dashboard.
@@ -971,7 +980,7 @@ class Handler(BaseHTTPRequestHandler):
                 louis_push.remove_sub(str(body.get("endpoint", "")))
                 self._send_json(200, {"ok": True, "subs": louis_push.count()})
             elif op == "test":
-                n = louis_push.notify("Louis", "Notificación de prueba ✅ — todo funciona.", tab="chat",
+                n = louis_push.notify(core.AGENT_NAME, "Notificación de prueba ✅ — todo funciona.", tab="chat",
                                       tag="prueba", ttl=300)
                 self._send_json(200, {"ok": n > 0, "enviadas": n, "subs": louis_push.count()})
             else:

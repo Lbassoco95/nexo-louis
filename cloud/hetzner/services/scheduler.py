@@ -163,7 +163,7 @@ def enrich_with_ollama(raw_message: str) -> str:
     """Reformula recordatorio en tono Louis vía Ollama local. Si Ollama devuelve un
     rechazo/basura (o algo demasiado distinto/largo), manda el mensaje ORIGINAL."""
     sys_prompt = (
-        "Eres Louis, asistente ejecutivo de Polo. Reformula este recordatorio en tono "
+        f"Eres {core.AGENT_NAME}, asistente ejecutivo de Polo. Reformula este recordatorio en tono "
         "directo y cálido, 1-2 líneas, en español. Telegram *negrita* legacy. NO inventes "
         "hechos, NO pidas permiso, NO te disculpes: SOLO devuelve el recordatorio reformulado."
     )

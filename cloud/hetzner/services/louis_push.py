@@ -35,6 +35,7 @@ STATE_DIR = Path(os.environ.get("PUSH_STATE_DIR", "/opt/openclaw/state"))
 VAPID_FILE = STATE_DIR / "push_vapid.json"
 SUBS_FILE = STATE_DIR / "push_subs.json"
 VAPID_SUB = os.environ.get("VAPID_SUBJECT", "https://louis.kawiil.mx")
+AGENT_NAME = os.environ.get("AGENT_NAME", "Doña").strip() or "Doña"
 MAX_SUBS = 10
 _LOCK = threading.Lock()
 
@@ -181,7 +182,7 @@ def notify(title: str, body: str = "", tab: str = "chat", tag: str = "", ttl: in
         subs = _read_subs()
         if not subs:
             return 0
-        payload = json.dumps({"title": (title or "Louis")[:80], "body": (body or "")[:300],
+        payload = json.dumps({"title": (title or AGENT_NAME)[:80], "body": (body or "")[:300],
                               "tab": tab, "tag": tag or hashlib.md5((title or "").encode()).hexdigest()[:8],
                               "ts": int(time.time())}, ensure_ascii=False).encode()
         ok, muertas = 0, []

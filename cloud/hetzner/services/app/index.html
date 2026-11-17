@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
-<title>Louis</title>
+<title>{{AGENT_NAME}}</title>
 <link rel="manifest" href="/app/manifest.webmanifest">
 <link rel="icon" href="/app/icon.svg">
 <link rel="apple-touch-icon" href="/app/icon.svg">
@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Louis">
+<meta name="apple-mobile-web-app-title" content="{{AGENT_NAME}}">
 <style>
 :root{--bg:#0b1220;--panel:#121a2c;--panel2:#18233a;--line:#243049;--tx:#e8edf7;--mut:#8b97b3;--acc:#4f8cff;--acc2:#7c3aed;--ok:#34d399;--warn:#fbbf24;--bad:#f87171;--r:16px}
 @media (prefers-color-scheme:light){:root{--bg:#f4f6fb;--panel:#fff;--panel2:#eef2fa;--line:#dde3f0;--tx:#111a2e;--mut:#5d6985}}
@@ -109,15 +109,15 @@ input.f{width:100%;background:var(--panel);color:var(--tx);border:1px solid var(
 </head>
 <body>
 <div id="app">
-  <header><span class="dot" id="dot"></span><h1 id="title">Louis</h1><button id="refresh" aria-label="Actualizar">⟳</button></header>
-  <div class="banner" id="banner">Sin conexión con Louis. Reintentando…</div>
+  <header><span class="dot" id="dot"></span><h1 id="title">{{AGENT_NAME}}</h1><button id="refresh" aria-label="Actualizar">⟳</button></header>
+  <div class="banner" id="banner">Sin conexión con {{AGENT_NAME}}. Reintentando…</div>
   <main>
     <section class="view on" id="v-chat">
       <div class="scroll" id="log"></div>
       <div class="chips" id="chips"></div>
       <div class="composer">
         <button class="rb mic" id="mic" aria-label="Dictar">🎙</button>
-        <textarea id="inp" rows="1" placeholder="Habla con Louis…" enterkeyhint="send"></textarea>
+        <textarea id="inp" rows="1" placeholder="Habla con {{AGENT_NAME}}…" enterkeyhint="send"></textarea>
         <button class="rb" id="send" aria-label="Enviar">➤</button>
       </div>
     </section>
@@ -126,7 +126,7 @@ input.f{width:100%;background:var(--panel);color:var(--tx);border:1px solid var(
     <section class="view" id="v-cfg"><div class="scroll" id="cfg"></div></section>
   </main>
   <nav>
-    <button data-v="chat" class="on"><span class="i">💬</span>Louis</button>
+    <button data-v="chat" class="on"><span class="i">💬</span>{{AGENT_NAME}}</button>
     <button data-v="hoy"><span class="i">✅</span>Hoy<span class="badge" id="b-hoy" hidden></span></button>
     <button data-v="ent"><span class="i">📦</span>Entregables</button>
     <button data-v="cfg"><span class="i">⚙️</span>Ajustes</button>
@@ -138,7 +138,7 @@ input.f{width:100%;background:var(--panel);color:var(--tx);border:1px solid var(
 
 <div id="login">
   <img src="/app/icon.svg" alt="">
-  <h2>Louis</h2><p>Pega tu token de acceso. Se guarda solo en este teléfono.</p>
+  <h2>{{AGENT_NAME}}</h2><p>Pega tu token de acceso. Se guarda solo en este teléfono.</p>
   <input class="f" id="tok" type="password" placeholder="Token de acceso" autocomplete="off" autocapitalize="off" autocorrect="off">
   <div class="err" id="lerr"></div>
   <button class="btn" id="lgo" style="margin-top:12px">Entrar</button>
@@ -203,12 +203,12 @@ $('#lgo').onclick=async()=>{
     if(r.status===401){$('#lerr').textContent='Token incorrecto.';return}
     if(!r.ok)throw 0;
     TOKEN=t;LS.set('token',t);$('#tok').value='';$('#login').classList.remove('on');boot();
-  }catch(e){$('#lerr').textContent='No pude conectar con Louis.'}
+  }catch(e){$('#lerr').textContent='No pude conectar con {{AGENT_NAME}}.'}
 };
 $('#tok').addEventListener('keydown',e=>{if(e.key==='Enter')$('#lgo').click()});
 
 /* ---------- navegación ---------- */
-const titles={chat:'Louis',hoy:'Hoy',ent:'Entregables',cfg:'Ajustes'};
+const titles={chat:'{{AGENT_NAME}}',hoy:'Hoy',ent:'Entregables',cfg:'Ajustes'};
 function go(v){
   $$('.view').forEach(x=>x.classList.toggle('on',x.id==='v-'+v));
   $$('nav button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
@@ -328,7 +328,7 @@ async function loadHoy(){
     if(d.urgentes.length)h+='<div class="sec">Para hoy / urgente</div>'+d.urgentes.map((t,i)=>taskHtml({...t,urgente:true},'u'+i)).join('');
     if(d.vencimientos.length)h+='<div class="sec">Con fecha u hora</div>'+d.vencimientos.map((t,i)=>taskHtml(t,'v'+i)).join('');
     if(d.entregables_listos.length)h+='<div class="sec">Esperan tu Vo.Bo.</div>'+d.entregables_listos.map(e=>`<div class="card" data-f="${esc(e.archivo)}"><div class="row"><b>${esc(e.titulo)}</b><span class="pill listo">listo</span></div><div class="sub">${esc(e.cliente||'')}</div></div>`).join('');
-    if(!d.urgentes.length&&!d.vencimientos.length&&!d.entregables_listos.length)h+='<div class="empty">🎉 Nada urgente. Pregúntale a Louis qué sigue.</div>';
+    if(!d.urgentes.length&&!d.vencimientos.length&&!d.entregables_listos.length)h+='<div class="empty">🎉 Nada urgente. Pregúntale a {{AGENT_NAME}} qué sigue.</div>';
     h+=`<div class="sub" style="text-align:center;margin-top:14px">Actualizado ${esc(d.generado)}</div>`;
     el.innerHTML=h;
     $$('#hoy .task').forEach(c=>c.querySelector('.ck').onclick=()=>{
@@ -369,7 +369,7 @@ async function openEnt(f){
     if(!d.ok)throw new Error(d.error||'no encontrado');
     const m=d.meta||{};
     sheet(m.titulo||f,`<div class="sub" style="margin-bottom:10px"><span class="pill ${esc(m.estado||'')}">${esc(m.estado||'?')}</span>${esc(m.cliente||'')}</div>`+md(d.cuerpo)+
-      `<button class="btn ghost" id="ask">💬 Preguntarle a Louis sobre esto</button>`);
+      `<button class="btn ghost" id="ask">💬 Preguntarle a {{AGENT_NAME}} sobre esto</button>`);
     $('#ask').onclick=()=>{closeSheet();go('chat');$('#inp').value='Sobre el entregable «'+(m.titulo||f)+'»: ';$('#inp').focus()};
   }catch(e){sheet('Error',esc(e.message))}
 }
@@ -399,7 +399,7 @@ const u8=b=>{const p='='.repeat((4-b.length%4)%4),s=(b+p).replace(/-/g,'+').repl
 async function pushSub(){const reg=await navigator.serviceWorker.ready;return reg.pushManager.getSubscription()}
 async function pushEnable(){
   const perm=await Notification.requestPermission();
-  if(perm!=='granted')throw new Error('Permiso denegado. Actívalo en Ajustes del teléfono → Louis → Notificaciones.');
+  if(perm!=='granted')throw new Error('Permiso denegado. Actívalo en Ajustes del teléfono → {{AGENT_NAME}} → Notificaciones.');
   const reg=await navigator.serviceWorker.ready;
   let sub=await reg.pushManager.getSubscription();
   if(!sub){const {key}=await api('/v1/app/push/key');sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:u8(key)})}
@@ -409,14 +409,14 @@ async function renderPush(){
   const c=$('#pushcard');if(!c)return;
   if(isIOS&&!standalone){c.innerHTML='<div class="sub">En iPhone primero instala la app: Safari → Compartir → <b>Agregar a pantalla de inicio</b>, ábrela desde el ícono y regresa aquí.</div>';return}
   if(!pushOK()){c.innerHTML='<div class="sub">Este navegador no soporta notificaciones push.</div>';return}
-  if(Notification.permission==='denied'){c.innerHTML='<div class="sub">Bloqueadas. Actívalas en los Ajustes del teléfono → Louis → Notificaciones.</div>';return}
+  if(Notification.permission==='denied'){c.innerHTML='<div class="sub">Bloqueadas. Actívalas en los Ajustes del teléfono → {{AGENT_NAME}} → Notificaciones.</div>';return}
   const sub=await pushSub().catch(()=>null);
   if(sub&&Notification.permission==='granted'){
     c.innerHTML='<div class="row"><span>🔔 Activadas</span><span class="sub">en este teléfono</span></div><button class="btn ghost" id="ptest">Enviar notificación de prueba</button><button class="btn ghost" id="poff" style="color:var(--bad)">Desactivar</button>';
     $('#ptest').onclick=async()=>{try{const r=await api('/v1/app/push/test',{method:'POST',body:'{}'});toast(r.ok?'Enviada — debe llegar en segundos':'El servicio de push no la aceptó')}catch(e){toast('⚠️ '+e.message)}};
     $('#poff').onclick=async()=>{try{const e=sub.endpoint;await sub.unsubscribe();await api('/v1/app/push/unsubscribe',{method:'POST',body:JSON.stringify({endpoint:e})});toast('Desactivadas')}catch(e){toast('⚠️ '+e.message)}renderPush()};
   }else{
-    c.innerHTML='<div class="sub" style="margin-bottom:10px">Recibe en el teléfono tus recordatorios, el seguimiento del día y las respuestas largas de Louis aunque tengas la app cerrada.</div><button class="btn" id="pon">Activar notificaciones</button>';
+    c.innerHTML='<div class="sub" style="margin-bottom:10px">Recibe en el teléfono tus recordatorios, el seguimiento del día y las respuestas largas de {{AGENT_NAME}} aunque tengas la app cerrada.</div><button class="btn" id="pon">Activar notificaciones</button>';
     $('#pon').onclick=async()=>{try{await pushEnable();toast('Activadas ✓')}catch(e){toast('⚠️ '+e.message)}renderPush()};
   }
 }

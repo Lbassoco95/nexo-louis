@@ -35,6 +35,22 @@ if Path("/opt/openclaw").exists():
 else:
     HOME_OC = HOME / ".openclaw"
 SPACE = HOME_OC / "spaces" / "general"
+
+# Nombre del asistente (antes "Louis"). Un solo lugar: AGENT_NAME en el .env lo cambia en todo.
+AGENT_NAME = (os.environ.get("AGENT_NAME", "Doña").strip() or "Doña")
+
+
+def _identity_block() -> str:
+    """Bloque de identidad al INICIO del system prompt. Prevalece sobre cualquier mención vieja
+    del nombre en AGENTS.md o en los archivos de memoria (que aún dicen «Louis»)."""
+    if AGENT_NAME.lower() == "louis":
+        return ""
+    return (f"# IDENTIDAD (PREVALECE sobre cualquier otra mención de tu nombre más abajo)\n"
+            f"Tu nombre es {AGENT_NAME}. Antes te llamabas Louis: ese nombre ya no se usa. "
+            f"Preséntate y firma como {AGENT_NAME}. Si Polo o los documentos te llaman «Louis», "
+            f"eres tú: respóndele con naturalidad y sin corregirlo. Eres la misma asistente "
+            f"con la misma memoria, agenda y herramientas.\n\n")
+
 AGENTS_DIR = SPACE / "agents"   # sub-agentes ligeros (prompts especializados)
 ANTHROPIC_ENV_FILE = HOME_OC / ".env"
 # Bitácora de actividad de agentes — la consume el dashboard visual del gateway.
@@ -550,7 +566,7 @@ def _budget_memory(fname: str, text: str) -> str:
 
 def load_system_prompt(channel: str = "telegram") -> str:
     """Concatena AGENTS.md + memoria estructurada. Adapta por canal."""
-    parts = []
+    parts = [_identity_block()] if _identity_block() else []
     agents = SPACE / "AGENTS.md"
     if agents.exists():
         parts.append(agents.read_text())
@@ -594,8 +610,8 @@ def load_system_prompt(channel: str = "telegram") -> str:
 
     parts.append(
         "\n\n# IDENTIDAD Y TONO (Ollama / chat normal)\n"
-        "Eres Louis (Nexo), asistente ejecutivo DE Polo Bassoco (CEO Kawiil/Yoltik). "
-        "Hablas A Polo en segunda persona — NUNCA te llames Louis ni le digas 'Hola Louis'.\n"
+        f"Eres {AGENT_NAME} (Nexo), asistente ejecutivo DE Polo Bassoco (CEO Kawiil/Yoltik). "
+        f"Hablas A Polo en segunda persona — NUNCA le digas 'Hola {AGENT_NAME}' ni uses tu propio nombre para dirigirte a él.\n"
         "Español mexicano profesional. Conciso: máx. 3 párrafos salvo que pida detalle.\n"
         "NO describas tu pipeline interno (no digas 'revisando snapshot', 'según instrucción', etc.).\n"
         "Si falta un dato en memoria/snapshot, dilo; no inventes plazos, casos ni placeholders.\n"
@@ -2606,7 +2622,7 @@ def _reason_briefing(snapshot: str) -> str | None:
         return None
     hoy = _fmt_dt_es(datetime.now(get_active_tz()))
     sys = (
-        "Eres Louis, asistente ejecutivo de Polo (CEO de Kawiil). Redacta su BRIEFING "
+        f"Eres {AGENT_NAME}, asistente ejecutivo de Polo (CEO de Kawiil). Redacta su BRIEFING "
         "matutino a partir de los datos de AGENDA/IMPORTANT/JOURNAL/CLIENTES de abajo. "
         "REGLAS: saluda en 1 línea; PRIORIZA lo crítico de hoy en máx. 5 viñetas, agrupando "
         "y descartando duplicados, ruido y entradas viejas; sé conciso y accionable; resalta "
