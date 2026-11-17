@@ -9,6 +9,7 @@ delgada que envuelve `louis_core` y expone tres rutas:
   GET  /v1/status                  → estado del gateway + routing
   POST /v1/chat/completions        → endpoint compatible con OpenAI (usa louis_core)
   POST /v1/tools/{name}            → ejecutar tool directamente (debug)
+  GET  /app                        → app móvil (PWA); datos en /v1/app/* (Bearer)
 
 Diseñado para correr en 127.0.0.1:3000 detrás de Caddy en louis.kawiil.mx.
 
@@ -104,6 +105,31 @@ def _require_dashboard_auth(handler) -> bool:
         return False
     return _same(user, DASH_USER) and _same(pw, DASH_PASS)
 
+
+
+# ---- App móvil (PWA) --------------------------------------------------------
+# El cascarón (HTML/manifest/sw/icono) es público y NO contiene datos ni secretos:
+# el token se escribe una vez en el teléfono. Todos los datos van por /v1/app/* con Bearer.
+_APP_DIR = next((d for d in (Path(__file__).resolve().parent / "app", Path("/opt/openclaw/scripts/app")) if d.is_dir()),
+                Path(__file__).resolve().parent / "app")
+_APP_FILES = {
+    "/app": ("index.html", "text/html; charset=utf-8"),
+    "/app/": ("index.html", "text/html; charset=utf-8"),
+    "/app/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
+    "/app/sw.js": ("sw.js", "application/javascript; charset=utf-8"),
+    "/app/icon.svg": ("icon.svg", "image/svg+xml"),
+}
+
+
+def _app_file(ruta: str):
+    """(bytes, content-type) del cascarón de la app, o None."""
+    ent = _APP_FILES.get(ruta)
+    if not ent:
+        return None
+    try:
+        return (_APP_DIR / ent[0]).read_bytes(), ent[1]
+    except OSError:
+        return None
 
 _AGENT_NAME_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,80}$")
 
@@ -540,6 +566,50 @@ class Handler(BaseHTTPRequestHandler):
                                   "version": "1.0", "uptime_started": getattr(self.server, "started_at", 0)})
             return
 
+        _r0 = self.path.split("?", 1)[0]
+        if _r0 in _APP_FILES:
+            f = _app_file(_r0)
+            if not f:
+                self._send_json(404, {"error": "app no instalada"})
+                return
+            body, ctype = f
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Referrer-Policy", "no-referrer")
+                if ctype.startswith("text/html"):
+                    self.send_header("X-Frame-Options", "DENY")
+                self.end_headers()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                return
+            self._safe_write(body)
+            return
+
+        if _r0.startswith("/v1/app/"):
+            if not _require_auth(self):
+                self._send_json(401, {"error": "unauthorized"})
+                return
+            try:
+                if _r0 == "/v1/app/ping":
+                    self._send_json(200, {"ok": True})
+                elif _r0 == "/v1/app/hoy":
+                    self._send_json(200, core.build_app_hoy())
+                elif _r0 == "/v1/app/entregables":
+                    self._send_json(200, {"entregables": core._entregables_lista_tablero()})
+                elif _r0 == "/v1/app/entregable":
+                    from urllib.parse import urlparse, parse_qs
+                    q = parse_qs(urlparse(self.path).query)
+                    self._send_json(200, core._entregable_detalle((q.get("f") or [""])[0]))
+                else:
+                    self._send_json(404, {"error": "no encontrado"})
+            except Exception as e:
+                log.exception("/v1/app falló")
+                self._send_json(500, {"error": str(e)[:200]})
+            return
+
         # Todo lo que muestra datos (dashboard, tablero, entregables) exige usuario y
         # contraseña AQUÍ, sin depender de que Caddy lo haga: en producción se vio que
         # el tráfico llegaba al gateway sin pasar por esa protección.
@@ -735,6 +805,19 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json()
         except Exception as e:
             self._send_json(400, {"error": f"JSON inválido: {e}"})
+            return
+
+        # App móvil: marcar un pendiente de la AGENDA como hecho (misma tool que usa Louis).
+        if self.path == "/v1/app/agenda/hecho":
+            texto = str(body.get("texto", "")).strip()
+            if not texto:
+                self._send_json(400, {"error": "texto requerido"})
+                return
+            try:
+                self._send_json(200, {"ok": True, "result": core.execute_tool("completar_pendiente", {"texto": texto})})
+            except Exception as e:
+                log.exception("completar_pendiente falló")
+                self._send_json(500, {"error": str(e)[:200]})
             return
 
         # OpenAI-compatible chat completions

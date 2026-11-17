@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="es-MX">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
+<title>Louis</title>
+<link rel="manifest" href="/app/manifest.webmanifest">
+<link rel="icon" href="/app/icon.svg">
+<link rel="apple-touch-icon" href="/app/icon.svg">
+<meta name="theme-color" content="#0b1220">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Louis">
+<style>
+:root{--bg:#0b1220;--panel:#121a2c;--panel2:#18233a;--line:#243049;--tx:#e8edf7;--mut:#8b97b3;--acc:#4f8cff;--acc2:#7c3aed;--ok:#34d399;--warn:#fbbf24;--bad:#f87171;--r:16px}
+@media (prefers-color-scheme:light){:root{--bg:#f4f6fb;--panel:#fff;--panel2:#eef2fa;--line:#dde3f0;--tx:#111a2e;--mut:#5d6985}}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--tx);font:16px/1.45 -apple-system,system-ui,Segoe UI,Roboto,sans-serif;overscroll-behavior:none}
+#app{height:100dvh;display:flex;flex-direction:column;padding-top:env(safe-area-inset-top)}
+header{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line)}
+header .dot{width:10px;height:10px;border-radius:50%;background:var(--mut)}
+header .dot.on{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+header h1{font-size:18px;margin:0;flex:1;letter-spacing:.3px}
+header button{background:none;border:0;color:var(--mut);font-size:20px;padding:4px 8px}
+main{flex:1;min-height:0;position:relative}
+.view{position:absolute;inset:0;display:none;flex-direction:column}
+.view.on{display:flex}
+.scroll{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 16px}
+nav{display:flex;border-top:1px solid var(--line);background:var(--panel);padding-bottom:env(safe-area-inset-bottom)}
+nav button{flex:1;background:none;border:0;color:var(--mut);padding:9px 0 7px;font-size:11px;display:flex;flex-direction:column;align-items:center;gap:2px}
+nav button .i{font-size:21px;line-height:1}
+nav button.on{color:var(--acc)}
+nav .badge{position:absolute;margin:-2px 0 0 14px;background:var(--bad);color:#fff;border-radius:9px;font-size:10px;padding:0 5px;min-width:16px;text-align:center}
+/* chat */
+.msg{max-width:88%;margin:0 0 10px;padding:10px 13px;border-radius:var(--r);word-wrap:break-word;overflow-wrap:anywhere}
+.msg.u{margin-left:auto;background:linear-gradient(135deg,var(--acc),var(--acc2));color:#fff;border-bottom-right-radius:4px;white-space:pre-wrap}
+.msg.a{background:var(--panel);border:1px solid var(--line);border-bottom-left-radius:4px}
+.msg .meta{font-size:11px;color:var(--mut);margin-top:6px;display:flex;gap:12px}
+.msg .meta button{background:none;border:0;color:var(--mut);padding:0;font-size:11px}
+.msg p{margin:.35em 0}.msg p:first-child{margin-top:0}.msg p:last-child{margin-bottom:0}
+.msg ul,.msg ol{margin:.35em 0;padding-left:1.25em}
+.msg h3,.msg h4{margin:.6em 0 .25em;font-size:15px}
+.msg code{background:var(--panel2);padding:1px 5px;border-radius:5px;font-size:13px}
+.msg pre{background:var(--panel2);padding:10px;border-radius:10px;overflow-x:auto;font-size:12.5px}
+.msg pre code{background:none;padding:0}
+.msg table{border-collapse:collapse;font-size:13px;display:block;overflow-x:auto}
+.msg th,.msg td{border:1px solid var(--line);padding:4px 8px;text-align:left}
+.msg th{background:var(--panel2)}
+.msg a{color:var(--acc)}
+.typing{display:inline-flex;gap:4px;padding:4px 0}
+.typing i{width:7px;height:7px;border-radius:50%;background:var(--mut);animation:b 1.1s infinite}
+.typing i:nth-child(2){animation-delay:.15s}.typing i:nth-child(3){animation-delay:.3s}
+@keyframes b{0%,60%,100%{opacity:.25;transform:none}30%{opacity:1;transform:translateY(-3px)}}
+.chips{display:flex;gap:8px;overflow-x:auto;padding:8px 16px 2px;scrollbar-width:none}
+.chips::-webkit-scrollbar{display:none}
+.chip{flex:none;background:var(--panel);border:1px solid var(--line);color:var(--tx);border-radius:999px;padding:7px 13px;font-size:13px}
+.composer{display:flex;align-items:flex-end;gap:8px;padding:8px 12px 10px}
+.composer textarea{flex:1;resize:none;max-height:140px;background:var(--panel);color:var(--tx);border:1px solid var(--line);border-radius:22px;padding:10px 15px;font:inherit;outline:none}
+.composer textarea:focus{border-color:var(--acc)}
+.rb{width:44px;height:44px;border-radius:50%;border:0;color:#fff;font-size:19px;flex:none;background:linear-gradient(135deg,var(--acc),var(--acc2))}
+.rb.mic{background:var(--panel);border:1px solid var(--line);color:var(--tx)}
+.rb.mic.rec{background:var(--bad);color:#fff;animation:p 1s infinite}
+@keyframes p{50%{opacity:.6}}
+.rb:disabled{opacity:.4}
+/* cards */
+.sec{font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.8px;margin:18px 2px 8px}
+.sec:first-child{margin-top:2px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;margin-bottom:8px}
+.task{display:flex;gap:12px;align-items:flex-start}
+.task .ck{flex:none;width:26px;height:26px;border-radius:8px;border:2px solid var(--mut);background:none;color:#fff;font-size:15px;padding:0;margin-top:1px}
+.task.done{opacity:.45}.task.done .ck{background:var(--ok);border-color:var(--ok)}.task.done .tt{text-decoration:line-through}
+.task .tt{flex:1;font-size:14.5px}
+.task.hot{border-left:4px solid var(--bad)}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:10px;text-align:center}
+.stat b{display:block;font-size:22px}.stat span{font-size:11px;color:var(--mut)}
+.pill{display:inline-block;font-size:11px;border-radius:999px;padding:2px 9px;background:var(--panel2);color:var(--mut);margin-right:6px}
+.pill.listo{background:#064e3b;color:#6ee7b7}.pill.en_vobo{background:#78350f;color:#fcd34d}.pill.brief{background:#1e3a8a;color:#93c5fd}
+.row{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.sub{font-size:12px;color:var(--mut);margin-top:3px}
+.filters{display:flex;gap:8px;overflow-x:auto;margin-bottom:10px;scrollbar-width:none}
+.filters .chip.on{background:var(--acc);border-color:var(--acc);color:#fff}
+input.search{width:100%;background:var(--panel);color:var(--tx);border:1px solid var(--line);border-radius:12px;padding:10px 14px;font:inherit;margin-bottom:10px;outline:none}
+.sheet{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:flex-end;z-index:20}
+.sheet.on{display:flex}
+.sheet .in{background:var(--bg);width:100%;max-height:88dvh;border-radius:22px 22px 0 0;display:flex;flex-direction:column;padding-bottom:env(safe-area-inset-bottom)}
+.sheet .hd{display:flex;align-items:center;gap:8px;padding:14px 16px;border-bottom:1px solid var(--line)}
+.sheet .hd b{flex:1}.sheet .hd button{background:none;border:0;color:var(--mut);font-size:22px}
+.sheet .bd{overflow-y:auto;padding:14px 16px}
+.btn{background:linear-gradient(135deg,var(--acc),var(--acc2));color:#fff;border:0;border-radius:12px;padding:12px 16px;font:inherit;font-weight:600;width:100%}
+.btn.ghost{background:var(--panel);color:var(--tx);border:1px solid var(--line);font-weight:400;margin-top:8px}
+label{display:block;font-size:13px;color:var(--mut);margin:14px 0 6px}
+input.f{width:100%;background:var(--panel);color:var(--tx);border:1px solid var(--line);border-radius:12px;padding:12px 14px;font:inherit;outline:none}
+.empty{text-align:center;color:var(--mut);padding:40px 20px}
+.toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--line);padding:9px 16px;border-radius:999px;font-size:13px;z-index:50;opacity:0;pointer-events:none;transition:opacity .2s}
+.toast.on{opacity:1}
+#login{position:fixed;inset:0;background:var(--bg);z-index:40;display:none;flex-direction:column;justify-content:center;padding:28px}
+#login.on{display:flex}
+#login img{width:84px;height:84px;margin:0 auto 14px;display:block}
+#login h2{text-align:center;margin:0 0 4px}#login p{text-align:center;color:var(--mut);margin:0 0 18px;font-size:14px}
+.err{color:var(--bad);font-size:13px;margin-top:10px;min-height:18px;text-align:center}
+.banner{background:#78350f;color:#fde68a;font-size:12.5px;padding:8px 16px;display:none}
+.banner.on{display:block}
+</style>
+</head>
+<body>
+<div id="app">
+  <header><span class="dot" id="dot"></span><h1 id="title">Louis</h1><button id="refresh" aria-label="Actualizar">⟳</button></header>
+  <div class="banner" id="banner">Sin conexión con Louis. Reintentando…</div>
+  <main>
+    <section class="view on" id="v-chat">
+      <div class="scroll" id="log"></div>
+      <div class="chips" id="chips"></div>
+      <div class="composer">
+        <button class="rb mic" id="mic" aria-label="Dictar">🎙</button>
+        <textarea id="inp" rows="1" placeholder="Habla con Louis…" enterkeyhint="send"></textarea>
+        <button class="rb" id="send" aria-label="Enviar">➤</button>
+      </div>
+    </section>
+    <section class="view" id="v-hoy"><div class="scroll" id="hoy"></div></section>
+    <section class="view" id="v-ent"><div class="scroll" id="ent"></div></section>
+    <section class="view" id="v-cfg"><div class="scroll" id="cfg"></div></section>
+  </main>
+  <nav>
+    <button data-v="chat" class="on"><span class="i">💬</span>Louis</button>
+    <button data-v="hoy"><span class="i">✅</span>Hoy<span class="badge" id="b-hoy" hidden></span></button>
+    <button data-v="ent"><span class="i">📦</span>Entregables</button>
+    <button data-v="cfg"><span class="i">⚙️</span>Ajustes</button>
+  </nav>
+</div>
+
+<div class="sheet" id="sheet"><div class="in"><div class="hd"><b id="sh-t"></b><button id="sh-x">✕</button></div><div class="bd" id="sh-b"></div></div></div>
+<div class="toast" id="toast"></div>
+
+<div id="login">
+  <img src="/app/icon.svg" alt="">
+  <h2>Louis</h2><p>Pega tu token de acceso. Se guarda solo en este teléfono.</p>
+  <input class="f" id="tok" type="password" placeholder="Token de acceso" autocomplete="off" autocapitalize="off" autocorrect="off">
+  <div class="err" id="lerr"></div>
+  <button class="btn" id="lgo" style="margin-top:12px">Entrar</button>
+</div>
+
+<script>
+'use strict';
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+const LS={get(k,d){try{const v=localStorage.getItem(k);return v==null?d:JSON.parse(v)}catch(e){return d}},
+          set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}},del(k){try{localStorage.removeItem(k)}catch(e){}}};
+let TOKEN=LS.get('token','');
+let chat=LS.get('chat',[]);          // [{r:'u'|'a', t:'texto', ts, model}]
+let busy=false;
+
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('on');setTimeout(()=>t.classList.remove('on'),1800)}
+
+/* ---------- markdown liviano y seguro (todo se escapa primero) ---------- */
+function md(src){
+  const blocks=[];let s=esc(src).replace(/```(?:\w+)?\n?([\s\S]*?)```/g,(_,c)=>{blocks.push(c);return '\u0000'+(blocks.length-1)+'\u0000'});
+  const inl=t=>t.replace(/`([^`\n]+)`/g,'<code>$1</code>').replace(/\*\*([^*\n]+)\*\*/g,'<b>$1</b>')
+    .replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,;:!?]|$)/g,'$1<i>$2</i>').replace(/(^|[\s(])_([^_\n]+)_(?=[\s).,;:!?]|$)/g,'$1<i>$2</i>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g,'$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+  const L=s.split('\n');let out='',i=0;
+  while(i<L.length){
+    const l=L[i];
+    if(/^\s*$/.test(l)){i++;continue}
+    if(/^\u0000\d+\u0000$/.test(l.trim())){out+='<pre><code>'+blocks[+l.trim().slice(1,-1)]+'</code></pre>';i++;continue}
+    let m;
+    if((m=l.match(/^#{1,4}\s+(.*)/))){out+='<h3>'+inl(m[1])+'</h3>';i++;continue}
+    if(/^\s*\|.*\|\s*$/.test(l)&&i+1<L.length&&/^\s*\|[\s:|-]+\|\s*$/.test(L[i+1])){
+      const row=r=>r.trim().replace(/^\||\|$/g,'').split('|').map(c=>c.trim());
+      let h='<table><tr>'+row(l).map(c=>'<th>'+inl(c)+'</th>').join('')+'</tr>';i+=2;
+      while(i<L.length&&/^\s*\|.*\|\s*$/.test(L[i])){h+='<tr>'+row(L[i]).map(c=>'<td>'+inl(c)+'</td>').join('')+'</tr>';i++}
+      out+=h+'</table>';continue}
+    if(/^\s*[-*•]\s+/.test(l)){let h='<ul>';while(i<L.length&&/^\s*[-*•]\s+/.test(L[i])){h+='<li>'+inl(L[i].replace(/^\s*[-*•]\s+/,''))+'</li>';i++}out+=h+'</ul>';continue}
+    if(/^\s*\d+[.)]\s+/.test(l)){let h='<ol>';while(i<L.length&&/^\s*\d+[.)]\s+/.test(L[i])){h+='<li>'+inl(L[i].replace(/^\s*\d+[.)]\s+/,''))+'</li>';i++}out+=h+'</ol>';continue}
+    let p=[];while(i<L.length&&!/^\s*$/.test(L[i])&&!/^(#{1,4}\s|\s*[-*•]\s|\s*\d+[.)]\s|\s*\|)/.test(L[i])&&!/^\u0000\d+\u0000$/.test(L[i].trim())){p.push(L[i]);i++}
+    if(p.length)out+='<p>'+inl(p.join('<br>'))+'</p>';else i++;
+  }
+  return out;
+}
+
+/* ---------- red ---------- */
+async function api(path,opt={}){
+  const r=await fetch(path,{...opt,headers:{'Content-Type':'application/json',...(opt.headers||{}),Authorization:'Bearer '+TOKEN}});
+  if(r.status===401){logout(true);throw new Error('Token inválido')}
+  if(!r.ok){let m='';try{m=(await r.json()).error}catch(e){}throw new Error(m||('Error '+r.status))}
+  return r.json();
+}
+function online(ok){$('#dot').classList.toggle('on',ok);$('#banner').classList.toggle('on',!ok)}
+
+/* ---------- login ---------- */
+function showLogin(msg){$('#login').classList.add('on');$('#lerr').textContent=msg||''}
+function logout(expired){TOKEN='';LS.del('token');showLogin(expired?'Token inválido o vencido.':'')}
+$('#lgo').onclick=async()=>{
+  const t=$('#tok').value.trim();if(!t)return;
+  $('#lerr').textContent='Verificando…';
+  try{
+    const r=await fetch('/v1/app/ping',{headers:{Authorization:'Bearer '+t}});
+    if(r.status===401){$('#lerr').textContent='Token incorrecto.';return}
+    if(!r.ok)throw 0;
+    TOKEN=t;LS.set('token',t);$('#tok').value='';$('#login').classList.remove('on');boot();
+  }catch(e){$('#lerr').textContent='No pude conectar con Louis.'}
+};
+$('#tok').addEventListener('keydown',e=>{if(e.key==='Enter')$('#lgo').click()});
+
+/* ---------- navegación ---------- */
+const titles={chat:'Louis',hoy:'Hoy',ent:'Entregables',cfg:'Ajustes'};
+function go(v){
+  $$('.view').forEach(x=>x.classList.toggle('on',x.id==='v-'+v));
+  $$('nav button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
+  $('#title').textContent=titles[v];LS.set('tab',v);
+  if(v==='hoy')loadHoy();if(v==='ent')loadEnt();if(v==='cfg')renderCfg();
+  if(v==='chat')scrollDown();
+}
+$$('nav button').forEach(b=>b.onclick=()=>go(b.dataset.v));
+$('#refresh').onclick=()=>{const v=LS.get('tab','chat');if(v==='hoy')loadHoy();else if(v==='ent')loadEnt();else ping();toast('Actualizado')};
+
+/* ---------- chat ---------- */
+const CHIPS=['¿Qué tengo hoy?','Resumen de mis pendientes','¿Qué entregables esperan mi Vo.Bo.?','¿Qué vence esta semana?','Prepárame el cierre del día'];
+function renderChips(){$('#chips').innerHTML=CHIPS.map(c=>`<button class="chip">${esc(c)}</button>`).join('');
+  $$('#chips .chip').forEach(b=>b.onclick=()=>sendMsg(b.textContent))}
+function fmtTime(ts){try{return new Date(ts).toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'})}catch(e){return ''}}
+function bubble(m,i){
+  const d=document.createElement('div');d.className='msg '+m.r;
+  if(m.r==='u'){d.textContent=m.t}
+  else{d.innerHTML=md(m.t)+`<div class="meta"><span>${fmtTime(m.ts)}${m.model?' · '+esc(m.model):''}</span><button data-c="${i}">Copiar</button></div>`;
+    d.querySelector('[data-c]').onclick=()=>{navigator.clipboard&&navigator.clipboard.writeText(m.t).then(()=>toast('Copiado'))}}
+  return d;
+}
+function renderChat(){
+  const log=$('#log');log.innerHTML='';
+  if(!chat.length){log.innerHTML='<div class="empty"><div style="font-size:42px">🧠</div><b>Listo, Polo.</b><br>Pregúntame lo que sea de tu agenda, entregables o clientes.</div>'}
+  chat.forEach((m,i)=>log.appendChild(bubble(m,i)));scrollDown();
+}
+function scrollDown(){const l=$('#log');requestAnimationFrame(()=>l.scrollTop=l.scrollHeight)}
+async function sendMsg(text){
+  text=(text||'').trim();if(!text||busy)return;
+  busy=true;$('#send').disabled=true;$('#inp').value='';autosize();
+  chat.push({r:'u',t:text,ts:Date.now()});LS.set('chat',chat.slice(-200));renderChat();
+  const log=$('#log'),ty=document.createElement('div');ty.className='msg a';ty.innerHTML='<span class="typing"><i></i><i></i><i></i></span>';log.appendChild(ty);scrollDown();
+  const hist=chat.slice(0,-1).slice(-16).map(m=>({role:m.r==='u'?'user':'assistant',content:m.t}));
+  try{
+    const r=await api('/v1/chat/completions',{method:'POST',body:JSON.stringify({messages:[...hist,{role:'user',content:text}]})});
+    const c=r.choices&&r.choices[0]&&r.choices[0].message.content||'(sin respuesta)';
+    chat.push({r:'a',t:c,ts:Date.now(),model:r.model});online(true);
+    if(navigator.vibrate)navigator.vibrate(15);
+  }catch(e){chat.push({r:'a',t:'⚠️ '+e.message+'. Toca ⟳ o vuelve a enviar.',ts:Date.now()});online(false)}
+  LS.set('chat',chat.slice(-200));busy=false;$('#send').disabled=false;renderChat();
+}
+function autosize(){const t=$('#inp');t.style.height='auto';t.style.height=Math.min(t.scrollHeight,140)+'px'}
+$('#inp').addEventListener('input',autosize);
+$('#inp').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&matchMedia('(hover:hover)').matches){e.preventDefault();sendMsg($('#inp').value)}});
+$('#send').onclick=()=>sendMsg($('#inp').value);
+
+/* voz → texto (Web Speech; en iPhone usa también el micrófono del teclado) */
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;let rec=null;
+$('#mic').onclick=()=>{
+  if(!SR){toast('Usa el micrófono del teclado 🎙');$('#inp').focus();return}
+  if(rec){rec.stop();return}
+  rec=new SR();rec.lang='es-MX';rec.interimResults=true;rec.continuous=false;
+  const base=$('#inp').value;$('#mic').classList.add('rec');
+  rec.onresult=e=>{let t='';for(const r of e.results)t+=r[0].transcript;$('#inp').value=(base?base+' ':'')+t;autosize()};
+  rec.onend=()=>{rec=null;$('#mic').classList.remove('rec')};rec.onerror=()=>{rec=null;$('#mic').classList.remove('rec')};
+  rec.start();
+};
+
+/* ---------- Hoy ---------- */
+function taskHtml(t,i){return `<div class="card task${t.urgente?' hot':''}" data-i="${i}"><button class="ck" aria-label="Marcar hecho"></button><div class="tt">${esc(t.texto.replace(/\s*·?\s*\[(?:auto|visto|capturado)[^\]]*\]/g,'').trim())}</div></div>`}
+async function loadHoy(){
+  const el=$('#hoy');if(!el.innerHTML)el.innerHTML='<div class="empty">Cargando…</div>';
+  try{
+    const d=await api('/v1/app/hoy');online(true);window._hoy=d;
+    const b=$('#b-hoy');b.hidden=!d.urgentes.length;b.textContent=d.urgentes.length;
+    let h=`<div class="stats"><div class="stat"><b>${d.abiertos}</b><span>Abiertos</span></div><div class="stat"><b>${d.urgentes.length}</b><span>Para hoy</span></div><div class="stat"><b>${d.cerrados}</b><span>Cerrados</span></div></div>`;
+    if(d.urgentes.length)h+='<div class="sec">Para hoy / urgente</div>'+d.urgentes.map((t,i)=>taskHtml({...t,urgente:true},'u'+i)).join('');
+    if(d.vencimientos.length)h+='<div class="sec">Con fecha u hora</div>'+d.vencimientos.map((t,i)=>taskHtml(t,'v'+i)).join('');
+    if(d.entregables_listos.length)h+='<div class="sec">Esperan tu Vo.Bo.</div>'+d.entregables_listos.map(e=>`<div class="card" data-f="${esc(e.archivo)}"><div class="row"><b>${esc(e.titulo)}</b><span class="pill listo">listo</span></div><div class="sub">${esc(e.cliente||'')}</div></div>`).join('');
+    if(!d.urgentes.length&&!d.vencimientos.length&&!d.entregables_listos.length)h+='<div class="empty">🎉 Nada urgente. Pregúntale a Louis qué sigue.</div>';
+    h+=`<div class="sub" style="text-align:center;margin-top:14px">Actualizado ${esc(d.generado)}</div>`;
+    el.innerHTML=h;
+    $$('#hoy .task').forEach(c=>c.querySelector('.ck').onclick=()=>{
+      const i=c.dataset.i,t=i[0]==='u'?d.urgentes[+i.slice(1)]:d.vencimientos[+i.slice(1)];completar(t.texto,c)});
+    $$('#hoy [data-f]').forEach(c=>c.onclick=()=>openEnt(c.dataset.f));
+  }catch(e){online(false);if(!el.querySelector('.card'))el.innerHTML='<div class="empty">No pude cargar. Toca ⟳</div>'}
+}
+async function completar(texto,card){
+  card.classList.add('done');
+  try{const r=await api('/v1/app/agenda/hecho',{method:'POST',body:JSON.stringify({texto})});toast(r.result?String(r.result).slice(0,60):'Marcado ✓');setTimeout(loadHoy,700)}
+  catch(e){card.classList.remove('done');toast('⚠️ '+e.message)}
+}
+
+/* ---------- Entregables ---------- */
+let entData=[],entFilter='todos';
+async function loadEnt(){
+  const el=$('#ent');if(!el.innerHTML)el.innerHTML='<div class="empty">Cargando…</div>';
+  try{const d=await api('/v1/app/entregables');online(true);entData=d.entregables;renderEnt()}
+  catch(e){online(false);if(!entData.length)el.innerHTML='<div class="empty">No pude cargar. Toca ⟳</div>'}
+}
+function renderEnt(){
+  const q=($('#q')&&$('#q').value||'').toLowerCase();
+  const est=['todos','listo','en_vobo','borrador','brief','aprobado'];
+  const rank={listo:0,en_vobo:1,brief:2,borrador:3,aprobado:4,archivado:5};
+  let l=entData.filter(e=>(entFilter==='todos'?e.estado!=='archivado':e.estado===entFilter)&&(!q||(e.titulo+' '+e.cliente).toLowerCase().includes(q)));
+  l.sort((a,b)=>(rank[a.estado]??9)-(rank[b.estado]??9)||String(b.fecha).localeCompare(String(a.fecha)));
+  const cnt=s=>s==='todos'?entData.filter(e=>e.estado!=='archivado').length:entData.filter(e=>e.estado===s).length;
+  $('#ent').innerHTML=`<input class="search" id="q" placeholder="Buscar título o cliente" value="${esc(q)}"><div class="filters">${est.map(s=>`<button class="chip${entFilter===s?' on':''}" data-s="${s}">${s.replace('_',' ')} ${cnt(s)}</button>`).join('')}</div>`+
+   (l.length?l.slice(0,120).map(e=>`<div class="card" data-f="${esc(e.archivo)}"><div class="row"><b style="font-size:14.5px">${esc(e.titulo)}</b><span class="pill ${esc(e.estado)}">${esc(e.estado.replace('_',' '))}</span></div><div class="sub">${esc(e.cliente||'—')} · ${esc(e.fecha||'')}</div></div>`).join(''):'<div class="empty">Sin resultados</div>');
+  $$('#ent .filters .chip').forEach(b=>b.onclick=()=>{entFilter=b.dataset.s;renderEnt()});
+  const qi=$('#q');qi.oninput=()=>{const p=qi.selectionStart;renderEnt();const n=$('#q');n.focus();n.setSelectionRange(p,p)};
+  $$('#ent [data-f]').forEach(c=>c.onclick=()=>openEnt(c.dataset.f));
+}
+async function openEnt(f){
+  sheet('Cargando…','');
+  try{
+    const d=await api('/v1/app/entregable?f='+encodeURIComponent(f));
+    if(!d.ok)throw new Error(d.error||'no encontrado');
+    const m=d.meta||{};
+    sheet(m.titulo||f,`<div class="sub" style="margin-bottom:10px"><span class="pill ${esc(m.estado||'')}">${esc(m.estado||'?')}</span>${esc(m.cliente||'')}</div>`+md(d.cuerpo)+
+      `<button class="btn ghost" id="ask">💬 Preguntarle a Louis sobre esto</button>`);
+    $('#ask').onclick=()=>{closeSheet();go('chat');$('#inp').value='Sobre el entregable «'+(m.titulo||f)+'»: ';$('#inp').focus()};
+  }catch(e){sheet('Error',esc(e.message))}
+}
+function sheet(t,b){$('#sh-t').textContent=t;$('#sh-b').innerHTML=b;$('#sheet').classList.add('on')}
+function closeSheet(){$('#sheet').classList.remove('on')}
+$('#sh-x').onclick=closeSheet;$('#sheet').onclick=e=>{if(e.target.id==='sheet')closeSheet()};
+
+/* ---------- Ajustes ---------- */
+function renderCfg(){
+  $('#cfg').innerHTML=`<div class="sec">Conexión</div><div class="card"><div class="row"><span>Servidor</span><span class="sub">${esc(location.host)}</span></div><div class="row" style="margin-top:6px"><span>Estado</span><span class="sub" id="st">…</span></div></div>
+  <div class="sec">Chat</div><div class="card"><button class="btn ghost" id="clr" style="margin:0">Borrar historial de este teléfono</button></div>
+  <div class="sec">Instalar</div><div class="card sub">iPhone: Safari → Compartir → <b>Agregar a pantalla de inicio</b>.<br>Android: Chrome → ⋮ → <b>Instalar app</b>.</div>
+  <div class="sec">Sesión</div><div class="card"><button class="btn ghost" id="out" style="margin:0;color:var(--bad)">Cerrar sesión</button></div>`;
+  $('#clr').onclick=()=>{if(confirm('¿Borrar la conversación guardada en este teléfono?')){chat=[];LS.set('chat',[]);renderChat();toast('Historial borrado')}};
+  $('#out').onclick=()=>{if(confirm('¿Cerrar sesión?'))logout(false)};
+  ping().then(ok=>{$('#st').textContent=ok?'🟢 Conectado':'🔴 Sin conexión'});
+}
+async function ping(){try{await api('/v1/app/ping');online(true);return true}catch(e){online(false);return false}}
+
+/* ---------- arranque ---------- */
+function boot(){renderChips();renderChat();ping();go(LS.get('tab','chat'));
+  loadHoy().catch(()=>{})}
+if('serviceWorker' in navigator)navigator.serviceWorker.register('/app/sw.js').catch(()=>{});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&TOKEN){ping();if(LS.get('tab')==='hoy')loadHoy()}});
+if(TOKEN){boot()}else{showLogin('')}
+</script>
+</body>
+</html>

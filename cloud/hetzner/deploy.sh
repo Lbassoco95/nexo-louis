@@ -164,6 +164,11 @@ for svc in louis_core.py telegram-bridge.py slack-bridge.py scheduler.py \
     install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" "services/${svc}" "/opt/openclaw/scripts/${svc}"
   fi
 done
+# App móvil de Louis (PWA servida por el gateway en /app).
+if [[ -d services/app ]]; then
+  mkdir -p /opt/openclaw/scripts/app
+  install -m 0644 -o "$SYSTEM_USER" -g "$SYSTEM_USER" services/app/* /opt/openclaw/scripts/app/
+fi
 # Puente Gather (Smart Object Bot Status Monitor): helper Node + SDK oficial.
 if [[ -d services/gather ]]; then
   mkdir -p /opt/openclaw/scripts/gather

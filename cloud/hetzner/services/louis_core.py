@@ -1726,6 +1726,27 @@ def build_tablero_data() -> dict:
     }
 
 
+def build_app_hoy() -> dict:
+    """Datos para la pestaña «Hoy» de la app móvil (/v1/app/hoy): urgentes, con fecha/hora,
+    conteos de la AGENDA y entregables LISTO esperando Vo.Bo."""
+    agenda = _read_space_file("AGENDA.md")
+    abiertos = sum(1 for l in agenda.splitlines() if re.match(r"^\s*-\s*\[\s*\]\s+", l))
+    cerrados = sum(1 for l in agenda.splitlines() if re.match(r"^\s*-\s*\[[xX]\]", l))
+    ds = _extract_deadlines(agenda, 40)
+    def _urg(d):
+        low = d.lower()
+        return ("vence hoy" in low or "urgente" in low or bool(re.search(r"\bhoy\b", low)))
+    urgentes = [{"texto": d} for d in ds if _urg(d)][:15]
+    resto = [{"texto": d} for d in ds if not _urg(d)][:20]
+    listos = [e for e in _entregables_lista_tablero() if e.get("estado") == "listo"][:15]
+    return {
+        "generado": datetime.now(TZ_CDMX).strftime("%d %b %H:%M"),
+        "abiertos": abiertos, "cerrados": cerrados,
+        "urgentes": urgentes, "vencimientos": resto,
+        "entregables_listos": listos,
+    }
+
+
 def build_intraday_nudge(slot: str = "tarde") -> str | None:
     """Fase 3 — Chequeo intradía. Devuelve un mensaje CORTO de seguimiento SOLO si hay
     algo accionable hoy (vencimientos abiertos, entregables LISTO esperando Vo.Bo.,
