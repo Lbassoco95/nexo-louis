@@ -35,7 +35,7 @@ STATE_DIR = Path(os.environ.get("PUSH_STATE_DIR", "/opt/openclaw/state"))
 VAPID_FILE = STATE_DIR / "push_vapid.json"
 SUBS_FILE = STATE_DIR / "push_subs.json"
 VAPID_SUB = os.environ.get("VAPID_SUBJECT", "https://louis.kawiil.mx")
-AGENT_NAME = os.environ.get("AGENT_NAME", "Doña").strip() or "Doña"
+AGENT_NAME = os.environ.get("AGENT_NAME", "Donna").strip() or "Donna"
 MAX_SUBS = 10
 _LOCK = threading.Lock()
 

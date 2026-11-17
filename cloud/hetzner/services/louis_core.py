@@ -37,7 +37,7 @@ else:
 SPACE = HOME_OC / "spaces" / "general"
 
 # Nombre del asistente (antes "Louis"). Un solo lugar: AGENT_NAME en el .env lo cambia en todo.
-AGENT_NAME = (os.environ.get("AGENT_NAME", "Doña").strip() or "Doña")
+AGENT_NAME = (os.environ.get("AGENT_NAME", "Donna").strip() or "Donna")
 
 
 def _identity_block() -> str:

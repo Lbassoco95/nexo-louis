@@ -51,3 +51,10 @@ sudo rm /opt/openclaw/state/telegram_off && sudo systemctl enable --now telegram
 ```
 Red de seguridad: la bandera solo surte efecto si hay al menos un teléfono suscrito al push; si no
 hay ninguno, Telegram sigue enviando. Slack no se ve afectado.
+
+## Nombre del asistente (Donna)
+El asistente se llama **Donna** (antes Louis). Un solo punto de configuración: `AGENT_NAME` en el `.env`
+(por defecto `Donna`; se conserva entre deploys). Lo usan la app (título, manifest, textos), las notificaciones
+push, el briefing/recordatorios y un bloque de identidad al inicio del system prompt que prevalece sobre las
+menciones viejas de «Louis» en `AGENTS.md`/memoria. No se renombran el dominio `louis.kawiil.mx`, los nombres de
+archivo internos ni el bot de Telegram (ese se cambia con @BotFather).
