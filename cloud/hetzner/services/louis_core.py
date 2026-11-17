@@ -653,6 +653,18 @@ def load_system_prompt(channel: str = "telegram") -> str:
             "- Listas con `•` o `-`, sin headers Markdown.\n"
             "- Mencionar usuarios con `<@USERID>`."
         )
+    elif channel == "api":
+        canal_text = (
+            f"\n\n# CANAL ACTUAL: app móvil de {AGENT_NAME}\n"
+            "Estás conversando con Polo en la app de su celular: es una conversación, no un reporte. "
+            "Responde como un asistente personal que ya lo conoce: natural, directo y breve por default "
+            "(1–4 líneas si es una pregunta simple o un saludo; más solo cuando Polo pida detalle o análisis). "
+            "NO vuelques el briefing, la agenda ni listas largas a menos que te los pida o sea de verdad "
+            "lo que necesita para decidir. Un «hola» o «¿ya estás ahí?» se contesta en una línea. "
+            "Si hay algo urgente que Polo debe saber, menciónalo en una frase y ofrece ampliarlo.\n"
+            "**FORMATO APP:** Markdown estándar: **negrita** con dos asteriscos, *cursiva*, listas con `-`, "
+            "tablas con `|`, bloques de código con triple backtick. Encabezados cortos solo si el texto es largo."
+        )
     parts.append(canal_text)
 
     parts.append(
@@ -8024,8 +8036,9 @@ _DISTILL_TARGETS = {
 }
 
 _DISTILL_SYSTEM = (
-    "Eres el módulo de memoria de Louis, asistente ejecutivo de Polo (Kawiil, despacho "
-    "legal/tech en México). Te paso la conversación de HOY entre Polo y Louis. Extrae SOLO "
+    "Eres el módulo de memoria de " + AGENT_NAME + ", asistente ejecutivo de Polo (Kawiil, despacho "
+    "legal/tech en México). Te paso la conversación de HOY entre Polo y " + AGENT_NAME + " "
+    "(antes se llamaba Louis; es la misma asistente). Extrae SOLO "
     "hechos DURABLES y ESPECÍFICOS que valga la pena recordar a largo plazo y clasifícalos. "
     "Devuelve EXCLUSIVAMENTE un JSON válido con estas llaves (arrays de strings, una frase "
     'corta por hecho; usa [] si no hay nada):\n'
@@ -8068,9 +8081,9 @@ def _distill_save_state(today: str, resumen: str):
 
 
 def _distill_collect_today(today: str, max_chars: int = 18000) -> str:
-    """Junta los turnos de HOY (telegram+slack) en un transcript para destilar."""
+    """Junta los turnos de HOY (telegram+slack+app) en un transcript para destilar."""
     turns = []
-    for fname in ("telegram-history.jsonl", "slack-history.jsonl"):
+    for fname in ("telegram-history.jsonl", "slack-history.jsonl", "app-history.jsonl"):
         p = SPACE / fname
         if not p.exists():
             continue
@@ -8086,7 +8099,7 @@ def _distill_collect_today(today: str, max_chars: int = 18000) -> str:
                 continue
             content = (d.get("content") or "").strip()
             if content:
-                quien = "Polo" if d.get("role") == "user" else "Louis"
+                quien = "Polo" if d.get("role") == "user" else AGENT_NAME
                 turns.append((str(d.get("ts", "")), f"{quien}: {content}"))
     turns.sort(key=lambda t: t[0])
     txt = "\n".join(t[1] for t in turns)

@@ -176,12 +176,30 @@ def _gc_results():
             _RESULTS.pop(k, None)
 
 
+# Historial persistente de la app (igual que telegram-history.jsonl / slack-history.jsonl). Sirve para
+# dos cosas: (1) que call_llm sepa si ya hubo conversación hoy — SIN archivo trata TODO mensaje como
+# «primera conversación del día» y responde con el briefing completo cada vez; (2) que la destilación
+# nocturna de memoria (run_memory_distillation) también aprenda de lo conversado por la app.
+APP_HISTORY_FILE = core.SPACE / "app-history.jsonl"
+
+
+def _hist_append(role: str, content: str):
+    try:
+        core.append_history(APP_HISTORY_FILE, role, content)
+    except Exception:
+        log.warning("no pude escribir app-history.jsonl", exc_info=True)
+
+
 def _chat_worker(rid: str, user_msg: str, history: list):
     res = _RESULTS[rid]
     try:
         api_key = core.load_anthropic_key()
         sys_prompt = core.load_system_prompt(channel="api")
-        text, model = core.call_llm(api_key, sys_prompt, history, user_msg)
+        # Mismo orden que telegram-bridge: el mensaje entra al historial ANTES de call_llm.
+        _hist_append("user", user_msg)
+        text, model = core.call_llm(api_key, sys_prompt, history, user_msg, history_file=APP_HISTORY_FILE)
+        if text:
+            _hist_append("assistant", text)
         out = {"text": text or "(sin respuesta)", "model": model, "error": None}
     except Exception as e:
         log.exception("chat stream falló")
