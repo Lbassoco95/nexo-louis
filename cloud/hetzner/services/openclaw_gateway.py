@@ -115,7 +115,6 @@ def _require_dashboard_auth(handler) -> bool:
 _APP_DIR = next((d for d in (Path(__file__).resolve().parent / "app", Path("/opt/openclaw/scripts/app")) if d.is_dir()),
                 Path(__file__).resolve().parent / "app")
 _APP_FILES = {
-    "/app": ("index.html", "text/html; charset=utf-8"),
     "/app/": ("index.html", "text/html; charset=utf-8"),
     "/app/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
     "/app/sw.js": ("sw.js", "application/javascript; charset=utf-8"),
@@ -644,6 +643,18 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         _r0 = self.path.split("?", 1)[0]
+        if _r0 == "/app":
+            # El service worker (alcance /app/) solo controla /app/…: sin la diagonal final la
+            # app no queda bajo su control y las notificaciones push nunca se registran.
+            _q = self.path[len("/app"):]
+            try:
+                self.send_response(302)
+                self.send_header("Location", "/app/" + (_q if _q.startswith("?") else ""))
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass
+            return
         if _r0 in _APP_FILES:
             f = _app_file(_r0)
             if not f:

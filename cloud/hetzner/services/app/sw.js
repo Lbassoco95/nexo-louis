@@ -1,6 +1,6 @@
 // Service worker: solo cachea el cascarón de la app (nunca datos). Los datos siempre van a la red.
-const V = 'louis-app-v4';
-const SHELL = ['/app', '/app/manifest.webmanifest', '/app/icon.svg'];
+const V = 'louis-app-v5';
+const SHELL = ['/app/', '/app/manifest.webmanifest', '/app/icon.svg'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(V).then(c => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener('activate', e => {
   e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== V).map(k => caches.delete(k)))));
@@ -27,6 +27,6 @@ self.addEventListener('notificationclick', e => {
   const tab = (e.notification.data && e.notification.data.tab) || 'chat';
   e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(cs => {
     for (const c of cs) { if ('focus' in c) { c.postMessage({ type: 'tab', tab }); return c.focus(); } }
-    return self.clients.openWindow('/app?tab=' + tab);
+    return self.clients.openWindow('/app/?tab=' + tab);
   }));
 });
