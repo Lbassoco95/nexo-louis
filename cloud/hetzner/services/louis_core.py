@@ -5068,6 +5068,13 @@ def _mac_wake_request(razon: str) -> str:
 def _send_telegram_direct(text: str) -> None:
     """Envía un mensaje directo por Telegram usando las creds del env."""
     try:
+        import louis_push
+        if louis_push.telegram_muted():  # Telegram apagado → solo push
+            louis_push.notify_text_async(text)
+            return
+    except Exception:
+        pass
+    try:
         env = load_env_file(ANTHROPIC_ENV_FILE)
         token = os.environ.get("TELEGRAM_BOT_TOKEN") or env.get("TELEGRAM_BOT_TOKEN")
         chat_id = os.environ.get("TELEGRAM_ALLOWED_CHAT_ID") or env.get("TELEGRAM_ALLOWED_CHAT_ID")

@@ -40,3 +40,14 @@ Tests: `python3 cloud/hetzner/tests/test_louis_push.py` (incluye el vector ofici
 
 Endpoints nuevos (Bearer): `POST /v1/app/chat/stream` · `GET /v1/app/chat/result` · `GET /v1/app/push/key` ·
 `GET /v1/app/push/status` · `POST /v1/app/push/{subscribe,unsubscribe,test}`
+
+## Apagar Telegram (cuando el push esté confirmado)
+Interruptor por archivo-bandera, sin reiniciar servicios y reversible:
+```bash
+sudo touch /opt/openclaw/state/telegram_off        # apaga Telegram saliente (avisos solo por push)
+sudo systemctl disable --now telegram-bridge       # deja de atender chats entrantes de Telegram
+# Revertir:
+sudo rm /opt/openclaw/state/telegram_off && sudo systemctl enable --now telegram-bridge
+```
+Red de seguridad: la bandera solo surte efecto si hay al menos un teléfono suscrito al push; si no
+hay ninguno, Telegram sigue enviando. Slack no se ve afectado.

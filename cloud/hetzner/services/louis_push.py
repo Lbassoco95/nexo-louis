@@ -225,3 +225,17 @@ def notify_text_async(text: str, tab: str = "") -> None:
         low = clean[:240].lower()
         tab = "hoy" if any(k in low for k in ("seguimiento", "cierre del día", "pendientes", "vence", "agenda")) else "chat"
     notify_async(title, body, tab=tab)
+
+
+# ---------------------------------------------------------------- interruptor de Telegram
+TELEGRAM_OFF_FLAG = STATE_DIR / "telegram_off"
+
+
+def telegram_muted() -> bool:
+    """True si Telegram está apagado para envíos salientes (archivo-bandera, sin reiniciar nada).
+    Red de seguridad: solo cuenta como apagado si hay al menos un teléfono suscrito al push;
+    si no hay ninguno, Telegram sigue enviando para que no se pierda ningún aviso."""
+    try:
+        return TELEGRAM_OFF_FLAG.exists() and count() > 0
+    except Exception:
+        return False

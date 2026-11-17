@@ -84,6 +84,13 @@ def _push_copia(text: str):
 
 
 def send_telegram(text: str):
+    try:
+        import louis_push
+        if louis_push.telegram_muted():  # Telegram apagado (touch /opt/openclaw/state/telegram_off)
+            louis_push.notify_text_async(text)
+            return True
+    except Exception:
+        log.exception("chequeo de telegram_off falló; se envía por Telegram")
     creds = core.load_env_file(CREDS_TELEGRAM)
     token = creds.get("TELEGRAM_BOT_TOKEN")
     chat_id = creds.get("TELEGRAM_CHAT_ID")
