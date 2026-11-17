@@ -2735,6 +2735,12 @@ def _trim_history_for_ollama(history: list) -> list:
     return history[-OLLAMA_MAX_HISTORY_TURNS:]
 
 
+def _chat_unavailable_msg() -> str:
+    """Aviso corto cuando ningún modelo de conversación respondió (en lugar de volcar el briefing)."""
+    return ("No pude contestarte en este momento: el modelo de conversación no respondió. "
+            "Inténtalo de nuevo en un minuto. Si sigue igual, dímelo y revisamos la conexión con el modelo.")
+
+
 def _ollama_unavailable_msg(reason: str = "") -> str:
     extra = f" Detalle: {reason}" if reason else ""
     return (
@@ -9900,10 +9906,26 @@ def call_llm(
                 except Exception:
                     log.warning("No pude guardar last-briefing.json", exc_info=True)
             return response, "deepseek"
-        # DeepSeek falló → briefing determinístico (NO caemos en Ollama lento de CPU).
-        log.warning(f"DeepSeek no respondió ({tag}) — fallback determinístico")
-        fb, _ = deterministic_operational_response(snapshot)
-        return fb, "deepseek-fallback"
+        # DeepSeek falló (sin llave, sin saldo, caído…). Antes se respondía con el briefing completo a
+        # CUALQUIER mensaje («¿ya estás ahí?» recibía la agenda entera). Ahora: 1) Haiku conversacional
+        # (barato, sin tools; se apaga con CHAT_FALLBACK_HAIKU=0), 2) si pidió agenda/pendientes, el
+        # briefing sí sirve, 3) si no, un aviso honesto y corto. NO caemos en Ollama lento de CPU.
+        log.warning(f"DeepSeek no respondió ({tag}) — intento con Haiku")
+        hk = None
+        if os.environ.get("CHAT_FALLBACK_HAIKU", "1") != "0":
+            try:
+                hk = call_haiku(load_anthropic_key(), ds_system, history, user_message, max_tokens=1024, timeout=45)
+            except Exception as e:
+                log.warning(f"Haiku de respaldo falló ({e})")
+        if hk and hk.strip() and not hk.lstrip().startswith(("(error", "(sin respuesta", "(respuesta vac")):
+            _mark_last_route("haiku-fallback")
+            return hk, "haiku-fallback"
+        if needs_operational_context(user_message):
+            log.warning(f"Sin modelo ({tag}) — pidió contexto operativo: briefing determinístico")
+            fb, _ = deterministic_operational_response(snapshot)
+            return fb, "deepseek-fallback"
+        log.warning(f"Sin modelo de conversación disponible ({tag})")
+        return _chat_unavailable_msg(), "chat-error"
 
     if msg.startswith(OLLAMA_QUALITY_PREFIXES):
         return _ollama_route("override /oss")

@@ -12,6 +12,7 @@ import louis_core as core
 core.SPACE = TMP
 import openclaw_gateway as g
 g.APP_HISTORY_FILE = TMP / "app-history.jsonl"
+REAL_CALL_LLM = core.call_llm  # las pruebas del chat lo sustituyen; las de respaldo necesitan el real
 
 
 class T(unittest.TestCase):
@@ -42,6 +43,44 @@ class T(unittest.TestCase):
         tr = core._distill_collect_today(hoy)
         self.assertIn("Polo: ¿Ya estás ahí?", tr)
         self.assertIn(core.AGENT_NAME + ": Aquí estoy.", tr)
+
+
+
+class FallbackTest(unittest.TestCase):
+    """Si DeepSeek falla, «¿Ya estás ahí?» NO debe recibir el briefing completo."""
+    def setUp(self):
+        core.call_llm = REAL_CALL_LLM
+        core.load_anthropic_key = lambda: "k"
+        core.build_operational_snapshot = lambda compact=True: "SNAPSHOT con pendientes"
+        core.call_deepseek = lambda *a, **k: "(error DeepSeek HTTP 402: Insufficient Balance)"
+        core.should_deterministic_operational_response = lambda m, h=None: False
+        core.try_deterministic_reminder = lambda m: None
+        core.try_deterministic_memory_write = lambda m, strict=True: None
+        core.try_deterministic_task_capture = lambda m: None
+        core.try_deterministic_coach_capture = lambda m: None
+
+    def _call(self, msg):
+        # la ruta por defecto es DeepSeek (gateway /v1/status: default_chat=deepseek)
+        return core.call_llm("k", "SYS", [], msg, history_file=g.APP_HISTORY_FILE)
+
+    def test_haiku_responde_si_deepseek_falla(self):
+        core.call_haiku = lambda *a, **k: "Aquí estoy, Polo."
+        resp, model = self._call("¿Ya estás ahí?")
+        self.assertEqual((resp, model), ("Aquí estoy, Polo.", "haiku-fallback"))
+
+    def test_sin_ningun_modelo_aviso_corto_no_briefing(self):
+        def boom(*a, **k): raise RuntimeError("sin créditos")
+        core.call_haiku = boom
+        resp, model = self._call("¿Ya estás ahí?")
+        self.assertEqual(model, "chat-error")
+        self.assertIn("no respondió", resp)
+        self.assertNotIn("VENCE", resp)
+
+    def test_si_pidio_pendientes_el_briefing_si_sirve(self):
+        def boom(*a, **k): raise RuntimeError("sin créditos")
+        core.call_haiku = boom
+        resp, model = self._call("Resumen de mis pendientes")
+        self.assertEqual(model, "deepseek-fallback")
 
 
 if __name__ == "__main__":

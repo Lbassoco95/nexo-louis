@@ -64,7 +64,7 @@ def ask(token: str, history: list, text: str) -> str:
 
     th = threading.Thread(target=spinner, daemon=True)
     th.start()
-    out, ev, err = [], None, None
+    out, ev, err, model = [], None, None, ""
     try:
         with urllib.request.urlopen(req, timeout=300) as resp:
             for raw in resp:
@@ -85,6 +85,8 @@ def ask(token: str, history: list, text: str) -> str:
                         sys.stdout.flush()
                     elif ev == "fail":
                         err = d.get("error", "error")
+                    elif ev == "done":
+                        model = d.get("model", "")
     except urllib.error.HTTPError as e:
         started.set()
         if e.code == 401:
@@ -103,6 +105,8 @@ def ask(token: str, history: list, text: str) -> str:
     if err:
         sys.stdout.write(f"\n⚠️  {err}")
     sys.stdout.write("\n")
+    if model:  # qué ruta respondió (deepseek, haiku-fallback, deepseek-fallback, chat-error…)
+        sys.stderr.write(f"\033[2m(modelo: {model})\033[0m\n")
     return "".join(out)
 
 
