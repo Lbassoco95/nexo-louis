@@ -10,6 +10,8 @@ delgada que envuelve `louis_core` y expone tres rutas:
   POST /v1/chat/completions        → endpoint compatible con OpenAI (usa louis_core)
   POST /v1/tools/{name}            → ejecutar tool directamente (debug)
   GET  /app                        → app móvil (PWA); datos en /v1/app/* (Bearer)
+  POST /v1/app/chat/stream         → chat en streaming (SSE) · GET /v1/app/chat/result?rid=
+  *    /v1/app/push/*              → notificaciones push (key, subscribe, unsubscribe, test)
 
 Diseñado para correr en 127.0.0.1:3000 detrás de Caddy en louis.kawiil.mx.
 
@@ -130,6 +132,72 @@ def _app_file(ruta: str):
         return (_APP_DIR / ent[0]).read_bytes(), ent[1]
     except OSError:
         return None
+
+
+# ---- Chat en streaming (SSE) para la app móvil --------------------------------
+# call_llm devuelve la respuesta completa (enrutado + tools + varios modelos), así que el
+# streaming es a nivel de servicio: la respuesta se calcula en un hilo mientras el cliente
+# recibe latidos de progreso, y al terminar se emite en fragmentos. El resultado queda
+# guardado 1 h por `rid`: si el teléfono se bloquea a media respuesta, la app lo recupera
+# (/v1/app/chat/result) y, si el cliente ya no estaba, se avisa por push.
+_RID_OK = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+_RESULTS: dict = {}
+_RESULTS_LOCK = threading.Lock()
+_CHAT_SLOTS = threading.BoundedSemaphore(4)
+
+
+def _split_messages(messages: list):
+    """(último mensaje de usuario, historial previo) — misma lógica que /v1/chat/completions."""
+    user_msg, history = "", []
+    for m in messages or []:
+        role, content = m.get("role"), m.get("content", "")
+        text = content if isinstance(content, str) else json.dumps(content)
+        if role == "user":
+            if user_msg:
+                history.append({"role": "user", "content": user_msg})
+            user_msg = text
+        elif role == "assistant":
+            history.append({"role": "assistant", "content": text})
+    return user_msg, history
+
+
+def _gc_results():
+    now = time.time()
+    with _RESULTS_LOCK:
+        for k in [k for k, v in _RESULTS.items() if now - v["t0"] > 3600]:
+            _RESULTS.pop(k, None)
+
+
+def _chat_worker(rid: str, user_msg: str, history: list):
+    res = _RESULTS[rid]
+    try:
+        api_key = core.load_anthropic_key()
+        sys_prompt = core.load_system_prompt(channel="api")
+        text, model = core.call_llm(api_key, sys_prompt, history, user_msg)
+        out = {"text": text or "(sin respuesta)", "model": model, "error": None}
+    except Exception as e:
+        log.exception("chat stream falló")
+        out = {"text": "", "model": "", "error": str(e)[:200] or "error"}
+    with _RESULTS_LOCK:
+        res.update(out, done=True)
+        gone = res.get("client_gone")
+    _CHAT_SLOTS.release()
+    if gone:
+        _push_answer(res)
+
+
+def _push_answer(res: dict):
+    """El cliente se fue antes de recibir la respuesta → avisa por push (si hay suscripciones)."""
+    if res.get("pushed"):
+        return
+    res["pushed"] = True
+    try:
+        import louis_push
+        txt = res.get("text") or ("⚠️ " + (res.get("error") or "error"))
+        louis_push.notify_async("Louis respondió", re.sub(r"[*_`#>]+", "", txt).strip()[:200], tab="chat",
+                                tag="resp-" + res.get("rid", ""))
+    except Exception:
+        log.exception("push de respuesta falló")
 
 _AGENT_NAME_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,80}$")
 
@@ -595,6 +663,21 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 if _r0 == "/v1/app/ping":
                     self._send_json(200, {"ok": True})
+                elif _r0 == "/v1/app/chat/result":
+                    from urllib.parse import urlparse, parse_qs
+                    rid = (parse_qs(urlparse(self.path).query).get("rid") or [""])[0]
+                    _gc_results()
+                    with _RESULTS_LOCK:
+                        r = _RESULTS.get(rid) if _RID_OK.match(rid) else None
+                        out = ({"found": True, "done": bool(r.get("done")), "text": r.get("text", ""),
+                                "model": r.get("model", ""), "error": r.get("error")} if r else {"found": False})
+                    self._send_json(200, out)
+                elif _r0 == "/v1/app/push/key":
+                    import louis_push
+                    self._send_json(200, {"key": louis_push.public_key()})
+                elif _r0 == "/v1/app/push/status":
+                    import louis_push
+                    self._send_json(200, {"subs": louis_push.count()})
                 elif _r0 == "/v1/app/hoy":
                     self._send_json(200, core.build_app_hoy())
                 elif _r0 == "/v1/app/entregables":
@@ -792,6 +875,70 @@ class Handler(BaseHTTPRequestHandler):
                          "finish_reason": "stop"}],
         })
 
+    def _sse(self, event: str, data: dict) -> bool:
+        try:
+            self.wfile.write(f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8"))
+            self.wfile.flush()
+            return True
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+            return False
+
+    def _chat_stream(self, body: dict):
+        rid = str(body.get("rid", ""))
+        user_msg, history = _split_messages(body.get("messages", []))
+        if not _RID_OK.match(rid) or not user_msg:
+            self._send_json(400, {"error": "rid y mensaje de usuario requeridos"})
+            return
+        _gc_results()
+        with _RESULTS_LOCK:
+            if rid in _RESULTS:
+                self._send_json(409, {"error": "rid repetido"})
+                return
+        if not _CHAT_SLOTS.acquire(blocking=False):
+            self._send_json(429, {"error": "Louis está atendiendo otras consultas; reintenta en un momento"})
+            return
+        res = {"rid": rid, "t0": time.time(), "done": False, "client_gone": False}
+        with _RESULTS_LOCK:
+            _RESULTS[rid] = res
+        threading.Thread(target=_chat_worker, args=(rid, user_msg, history), daemon=True).start()
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-transform")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "close")
+            self.end_headers()
+        except OSError:
+            res["client_gone"] = True
+        alive = not res["client_gone"]
+        last = 0.0
+        while alive and not res["done"]:
+            time.sleep(0.25)
+            if time.time() - last >= 2:
+                last = time.time()
+                alive = self._sse("status", {"s": int(time.time() - res["t0"])})
+        if alive and res["done"]:
+            if res.get("error"):
+                alive = self._sse("fail", {"error": res["error"]})
+            else:
+                text = res["text"]
+                parts = re.findall(r"\S+\s*|\s+", text)
+                chunks = ["".join(parts[i:i + 3]) for i in range(0, len(parts), 3)]
+                delay = min(0.03, 3.5 / max(len(chunks), 1))  # toda la animación ≤ ~3.5 s
+                for c in chunks:
+                    if not self._sse("delta", {"d": c}):
+                        alive = False
+                        break
+                    time.sleep(delay)
+                if alive:
+                    alive = self._sse("done", {"model": res["model"]})
+        if not alive:
+            with _RESULTS_LOCK:
+                res["client_gone"] = True
+                finished = res["done"]
+            if finished:
+                _push_answer(res)
+
     def do_POST(self):
         if self.path == "/v1/doc-chat":
             self._doc_chat()
@@ -805,6 +952,30 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json()
         except Exception as e:
             self._send_json(400, {"error": f"JSON inválido: {e}"})
+            return
+
+        # App móvil: chat en streaming (SSE)
+        if self.path == "/v1/app/chat/stream":
+            self._chat_stream(body)
+            return
+
+        # App móvil: notificaciones push
+        if self.path.startswith("/v1/app/push/"):
+            import louis_push
+            op = self.path[len("/v1/app/push/"):]
+            if op == "subscribe":
+                ok = louis_push.add_sub(body.get("subscription") or {}, str(body.get("label", "")))
+                self._send_json(200 if ok else 400, {"ok": ok, "subs": louis_push.count()} if ok
+                                else {"error": "suscripción inválida"})
+            elif op == "unsubscribe":
+                louis_push.remove_sub(str(body.get("endpoint", "")))
+                self._send_json(200, {"ok": True, "subs": louis_push.count()})
+            elif op == "test":
+                n = louis_push.notify("Louis", "Notificación de prueba ✅ — todo funciona.", tab="chat",
+                                      tag="prueba", ttl=300)
+                self._send_json(200, {"ok": n > 0, "enviadas": n, "subs": louis_push.count()})
+            else:
+                self._send_json(404, {"error": "no encontrado"})
             return
 
         # App móvil: marcar un pendiente de la AGENDA como hecho (misma tool que usa Louis).

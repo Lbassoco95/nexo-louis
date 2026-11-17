@@ -5078,6 +5078,11 @@ def _send_telegram_direct(text: str) -> None:
         body = json.dumps({"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}).encode("utf-8")
         req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
         urllib.request.urlopen(req, timeout=10).read()
+        try:
+            import louis_push
+            louis_push.notify_text_async(text)
+        except Exception:
+            pass
     except Exception:
         log.exception("_send_telegram_direct falló")
 

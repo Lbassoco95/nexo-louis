@@ -48,6 +48,9 @@ nav .badge{position:absolute;margin:-2px 0 0 14px;background:var(--bad);color:#f
 .msg th,.msg td{border:1px solid var(--line);padding:4px 8px;text-align:left}
 .msg th{background:var(--panel2)}
 .msg a{color:var(--acc)}
+.msg.live.has::after{content:"▍";color:var(--acc);animation:p 1s infinite;margin-left:1px}
+.msg .st{font-size:12px;color:var(--mut);margin-top:4px}
+.rb.stop{background:var(--bad)}
 .typing{display:inline-flex;gap:4px;padding:4px 0}
 .typing i{width:7px;height:7px;border-radius:50%;background:var(--mut);animation:b 1.1s infinite}
 .typing i:nth-child(2){animation-delay:.15s}.typing i:nth-child(3){animation-delay:.3s}
@@ -234,24 +237,73 @@ function renderChat(){
   chat.forEach((m,i)=>log.appendChild(bubble(m,i)));scrollDown();
 }
 function scrollDown(){const l=$('#log');requestAnimationFrame(()=>l.scrollTop=l.scrollHeight)}
+let ctl=null;
+const rid=()=>(crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random().toString(36).slice(2)).replace(/[^A-Za-z0-9_-]/g,'');
+function setBusy(b){busy=b;const s=$('#send');s.classList.toggle('stop',b);s.textContent=b?'■':'➤';s.setAttribute('aria-label',b?'Detener':'Enviar')}
+function finishMsg(t,model){chat.push({r:'a',t,ts:Date.now(),model});LS.set('chat',chat.slice(-200));LS.del('pending')}
 async function sendMsg(text){
   text=(text||'').trim();if(!text||busy)return;
-  busy=true;$('#send').disabled=true;$('#inp').value='';autosize();
+  setBusy(true);$('#inp').value='';autosize();
   chat.push({r:'u',t:text,ts:Date.now()});LS.set('chat',chat.slice(-200));renderChat();
-  const log=$('#log'),ty=document.createElement('div');ty.className='msg a';ty.innerHTML='<span class="typing"><i></i><i></i><i></i></span>';log.appendChild(ty);scrollDown();
+  const id=rid();LS.set('pending',{id,ts:Date.now()});
+  const log=$('#log'),d=document.createElement('div');d.className='msg a live';
+  d.innerHTML='<span class="typing"><i></i><i></i><i></i></span><div class="st"></div>';log.appendChild(d);scrollDown();
   const hist=chat.slice(0,-1).slice(-16).map(m=>({role:m.r==='u'?'user':'assistant',content:m.t}));
+  let acc='',model='',gotDone=false,failed='',raf=0;
+  const paint=()=>{raf=0;d.classList.add('has');d.innerHTML=md(acc);scrollDown()};
+  ctl=new AbortController();
   try{
-    const r=await api('/v1/chat/completions',{method:'POST',body:JSON.stringify({messages:[...hist,{role:'user',content:text}]})});
-    const c=r.choices&&r.choices[0]&&r.choices[0].message.content||'(sin respuesta)';
-    chat.push({r:'a',t:c,ts:Date.now(),model:r.model});online(true);
-    if(navigator.vibrate)navigator.vibrate(15);
-  }catch(e){chat.push({r:'a',t:'⚠️ '+e.message+'. Toca ⟳ o vuelve a enviar.',ts:Date.now()});online(false)}
-  LS.set('chat',chat.slice(-200));busy=false;$('#send').disabled=false;renderChat();
+    const r=await fetch('/v1/app/chat/stream',{method:'POST',signal:ctl.signal,
+      headers:{'Content-Type':'application/json',Authorization:'Bearer '+TOKEN},
+      body:JSON.stringify({rid:id,messages:[...hist,{role:'user',content:text}]})});
+    if(r.status===401){logout(true);throw new Error('Token inválido')}
+    if(!r.ok){let m='';try{m=(await r.json()).error}catch(e){}throw new Error(m||('Error '+r.status))}
+    online(true);
+    const onEv=(ev,data)=>{
+      if(ev==='status'){const st=d.querySelector('.st');if(st&&!acc)st.textContent='Pensando… '+data.s+' s'}
+      else if(ev==='delta'){acc+=data.d;if(!raf)raf=requestAnimationFrame(paint)}
+      else if(ev==='done'){gotDone=true;model=data.model}
+      else if(ev==='fail'){failed=data.error}
+    };
+    if(!r.body){const t=await r.text();parseSSE(t,onEv)}
+    else{const rd=r.body.getReader(),dec=new TextDecoder();let buf='';
+      for(;;){const {done,value}=await rd.read();if(done)break;buf+=dec.decode(value,{stream:true});
+        const k=buf.lastIndexOf('\n\n');if(k>=0){parseSSE(buf.slice(0,k+2),onEv);buf=buf.slice(k+2)}}}
+    if(failed)throw new Error(failed);
+    if(!gotDone&&!acc)throw new Error('conexión interrumpida');
+    finishMsg(acc,model);if(navigator.vibrate)navigator.vibrate(15);
+  }catch(e){
+    if(e.name==='AbortError'){ if(acc)finishMsg(acc+'\n\n_(detenido)_',model); else {LS.del('pending');chat.push({r:'a',t:'_(detenido)_',ts:Date.now()})} LS.set('chat',chat.slice(-200)) }
+    else if(!acc&&!failed&&LS.get('pending')){ // se cortó la conexión: la respuesta puede seguir en el servidor
+      online(false);setBusy(false);ctl=null;renderChat();recoverPending(true);return}
+    else{chat.push({r:'a',t:acc?acc+'\n\n⚠️ '+e.message:'⚠️ '+e.message+'. Vuelve a enviar.',ts:Date.now()});LS.del('pending');LS.set('chat',chat.slice(-200));online(false)}
+  }
+  ctl=null;setBusy(false);renderChat();
+}
+function parseSSE(txt,cb){for(const blk of txt.split('\n\n')){if(!blk.trim())continue;let ev='message',data='';
+  for(const l of blk.split('\n')){if(l.startsWith('event:'))ev=l.slice(6).trim();else if(l.startsWith('data:'))data+=l.slice(5).trim()}
+  try{cb(ev,JSON.parse(data||'{}'))}catch(e){}}}
+/* Si el teléfono se bloqueó a media respuesta, el servidor la guardó: la recuperamos al volver. */
+let recovering=false;
+async function recoverPending(show){
+  const p=LS.get('pending');if(!p||recovering||busy||!TOKEN)return;
+  if(Date.now()-p.ts>3600e3){LS.del('pending');return}
+  recovering=true;
+  if(show){const l=$('#log'),d=document.createElement('div');d.className='msg a';d.id='rec';d.innerHTML='<span class="typing"><i></i><i></i><i></i></span><div class="st">Recuperando la respuesta…</div>';l.appendChild(d);scrollDown()}
+  try{
+    for(let n=0;n<90;n++){
+      const r=await api('/v1/app/chat/result?rid='+encodeURIComponent(p.id));online(true);
+      if(!r.found){LS.del('pending');break}
+      if(r.done){finishMsg(r.error?'⚠️ '+r.error:r.text,r.model);break}
+      await new Promise(ok=>setTimeout(ok,2000));if(document.hidden)break;
+    }
+  }catch(e){}
+  recovering=false;renderChat();
 }
 function autosize(){const t=$('#inp');t.style.height='auto';t.style.height=Math.min(t.scrollHeight,140)+'px'}
 $('#inp').addEventListener('input',autosize);
 $('#inp').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&matchMedia('(hover:hover)').matches){e.preventDefault();sendMsg($('#inp').value)}});
-$('#send').onclick=()=>sendMsg($('#inp').value);
+$('#send').onclick=()=>{if(busy&&ctl)ctl.abort();else sendMsg($('#inp').value)};
 
 /* voz → texto (Web Speech; en iPhone usa también el micrófono del teclado) */
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;let rec=null;
@@ -328,20 +380,56 @@ $('#sh-x').onclick=closeSheet;$('#sheet').onclick=e=>{if(e.target.id==='sheet')c
 /* ---------- Ajustes ---------- */
 function renderCfg(){
   $('#cfg').innerHTML=`<div class="sec">Conexión</div><div class="card"><div class="row"><span>Servidor</span><span class="sub">${esc(location.host)}</span></div><div class="row" style="margin-top:6px"><span>Estado</span><span class="sub" id="st">…</span></div></div>
+  <div class="sec">Notificaciones</div><div class="card" id="pushcard"><div class="sub" id="pushst">…</div></div>
   <div class="sec">Chat</div><div class="card"><button class="btn ghost" id="clr" style="margin:0">Borrar historial de este teléfono</button></div>
   <div class="sec">Instalar</div><div class="card sub">iPhone: Safari → Compartir → <b>Agregar a pantalla de inicio</b>.<br>Android: Chrome → ⋮ → <b>Instalar app</b>.</div>
   <div class="sec">Sesión</div><div class="card"><button class="btn ghost" id="out" style="margin:0;color:var(--bad)">Cerrar sesión</button></div>`;
   $('#clr').onclick=()=>{if(confirm('¿Borrar la conversación guardada en este teléfono?')){chat=[];LS.set('chat',[]);renderChat();toast('Historial borrado')}};
   $('#out').onclick=()=>{if(confirm('¿Cerrar sesión?'))logout(false)};
   ping().then(ok=>{$('#st').textContent=ok?'🟢 Conectado':'🔴 Sin conexión'});
+  renderPush();
 }
 async function ping(){try{await api('/v1/app/ping');online(true);return true}catch(e){online(false);return false}}
 
+/* ---------- Push ---------- */
+const isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+const standalone=matchMedia('(display-mode: standalone)').matches||navigator.standalone===true;
+const pushOK=()=>'serviceWorker' in navigator&&'PushManager' in window&&'Notification' in window;
+const u8=b=>{const p='='.repeat((4-b.length%4)%4),s=(b+p).replace(/-/g,'+').replace(/_/g,'/'),r=atob(s);return Uint8Array.from([...r].map(c=>c.charCodeAt(0)))};
+async function pushSub(){const reg=await navigator.serviceWorker.ready;return reg.pushManager.getSubscription()}
+async function pushEnable(){
+  const perm=await Notification.requestPermission();
+  if(perm!=='granted')throw new Error('Permiso denegado. Actívalo en Ajustes del teléfono → Louis → Notificaciones.');
+  const reg=await navigator.serviceWorker.ready;
+  let sub=await reg.pushManager.getSubscription();
+  if(!sub){const {key}=await api('/v1/app/push/key');sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:u8(key)})}
+  await api('/v1/app/push/subscribe',{method:'POST',body:JSON.stringify({subscription:sub.toJSON(),label:(isIOS?'iPhone':/Android/.test(navigator.userAgent)?'Android':'Navegador')})});
+}
+async function renderPush(){
+  const c=$('#pushcard');if(!c)return;
+  if(isIOS&&!standalone){c.innerHTML='<div class="sub">En iPhone primero instala la app: Safari → Compartir → <b>Agregar a pantalla de inicio</b>, ábrela desde el ícono y regresa aquí.</div>';return}
+  if(!pushOK()){c.innerHTML='<div class="sub">Este navegador no soporta notificaciones push.</div>';return}
+  if(Notification.permission==='denied'){c.innerHTML='<div class="sub">Bloqueadas. Actívalas en los Ajustes del teléfono → Louis → Notificaciones.</div>';return}
+  const sub=await pushSub().catch(()=>null);
+  if(sub&&Notification.permission==='granted'){
+    c.innerHTML='<div class="row"><span>🔔 Activadas</span><span class="sub">en este teléfono</span></div><button class="btn ghost" id="ptest">Enviar notificación de prueba</button><button class="btn ghost" id="poff" style="color:var(--bad)">Desactivar</button>';
+    $('#ptest').onclick=async()=>{try{const r=await api('/v1/app/push/test',{method:'POST',body:'{}'});toast(r.ok?'Enviada — debe llegar en segundos':'El servicio de push no la aceptó')}catch(e){toast('⚠️ '+e.message)}};
+    $('#poff').onclick=async()=>{try{const e=sub.endpoint;await sub.unsubscribe();await api('/v1/app/push/unsubscribe',{method:'POST',body:JSON.stringify({endpoint:e})});toast('Desactivadas')}catch(e){toast('⚠️ '+e.message)}renderPush()};
+  }else{
+    c.innerHTML='<div class="sub" style="margin-bottom:10px">Recibe en el teléfono tus recordatorios, el seguimiento del día y las respuestas largas de Louis aunque tengas la app cerrada.</div><button class="btn" id="pon">Activar notificaciones</button>';
+    $('#pon').onclick=async()=>{try{await pushEnable();toast('Activadas ✓')}catch(e){toast('⚠️ '+e.message)}renderPush()};
+  }
+}
+// Si ya estaban concedidas, re-registra en silencio (por si el navegador rotó la suscripción).
+async function pushResync(){if(pushOK()&&Notification.permission==='granted'&&(!isIOS||standalone)){try{await pushEnable()}catch(e){}}}
+navigator.serviceWorker&&navigator.serviceWorker.addEventListener('message',e=>{if(e.data&&e.data.type==='tab'){go(e.data.tab);if(e.data.tab==='chat')recoverPending(true)}});
+
 /* ---------- arranque ---------- */
-function boot(){renderChips();renderChat();ping();go(LS.get('tab','chat'));
-  loadHoy().catch(()=>{})}
+function boot(){renderChips();renderChat();ping();
+  const q=new URLSearchParams(location.search).get('tab');go(titles[q]?q:LS.get('tab','chat'));
+  loadHoy().catch(()=>{});recoverPending(true);pushResync()}
 if('serviceWorker' in navigator)navigator.serviceWorker.register('/app/sw.js').catch(()=>{});
-document.addEventListener('visibilitychange',()=>{if(!document.hidden&&TOKEN){ping();if(LS.get('tab')==='hoy')loadHoy()}});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&TOKEN){ping();recoverPending(true);if(LS.get('tab')==='hoy')loadHoy()}});
 if(TOKEN){boot()}else{showLogin('')}
 </script>
 </body>

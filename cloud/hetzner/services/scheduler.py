@@ -73,6 +73,16 @@ log = logging.getLogger("scheduler")
 
 
 # ===== Send helpers =====
+def _push_copia(text: str):
+    """Todo lo que el scheduler manda por Telegram (briefings, recordatorios, seguimientos)
+    también llega como notificación push a la app. Best-effort: nunca rompe el envío."""
+    try:
+        import louis_push
+        louis_push.notify_text_async(text)
+    except Exception:
+        log.exception("push (copia de Telegram) falló")
+
+
 def send_telegram(text: str):
     creds = core.load_env_file(CREDS_TELEGRAM)
     token = creds.get("TELEGRAM_BOT_TOKEN")
@@ -90,6 +100,7 @@ def send_telegram(text: str):
     body = {"chat_id": chat_id, "text": formatted[:4000], "parse_mode": "HTML", "disable_web_page_preview": True}
     try:
         core.http_post_json(url, headers={}, body=body, timeout=15)
+        _push_copia(text)
         return True
     except urllib.error.HTTPError:
         # Fallback: quitar tags HTML y desescapar → texto plano legible (NO el markdown crudo).
@@ -98,6 +109,7 @@ def send_telegram(text: str):
         body["text"] = raw[:4000]
         try:
             core.http_post_json(url, headers={}, body=body, timeout=15)
+            _push_copia(text)
             return True
         except Exception as e:
             log.error(f"Telegram send falló: {e}")
