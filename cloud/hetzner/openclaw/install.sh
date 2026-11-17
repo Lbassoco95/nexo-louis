@@ -98,6 +98,22 @@ fi
 
 # ── 5) Env file (SIEMPRE — telegram-bridge.service lo necesita) ──────
 ENV_OUT="$OPENCLAW_HOME/openclaw.env"
+# Variables de ACCESO del gateway/app: antes se perdían en cada deploy porque este archivo se
+# reescribe completo (el gateway arrancaba sin token y rechazaba todo, app incluida).
+# Prioridad: valor del .env → valor que ya tenía openclaw.env → (solo el token) uno nuevo aleatorio.
+KEEP_VARS=(OPENCLAW_GATEWAY_TOKEN DOC_CHAT_TOKEN TABLERO_USER TABLERO_PASSWORD VAPID_SUBJECT)
+declare -A KEEP
+for k in "${KEEP_VARS[@]}"; do
+  v="${!k:-}"
+  if [[ -z "$v" && -f "$ENV_OUT" ]]; then
+    v="$(grep -m1 "^${k}=" "$ENV_OUT" 2>/dev/null | cut -d= -f2- || true)"
+  fi
+  KEEP[$k]="$v"
+done
+if [[ -z "${KEEP[OPENCLAW_GATEWAY_TOKEN]}" ]]; then
+  KEEP[OPENCLAW_GATEWAY_TOKEN]="$(openssl rand -hex 32)"
+  GEN_GATEWAY_TOKEN=1
+fi
 log "Generando $ENV_OUT (consumido por openclaw.service Y telegram-bridge.service)"
 {
   echo "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}"
@@ -124,10 +140,17 @@ log "Generando $ENV_OUT (consumido por openclaw.service Y telegram-bridge.servic
   echo "KAWIIL_AGENTS_URL=http://127.0.0.1:8000"
   [[ -n "${KAWIIL_DISPATCH_TOKEN:-}" ]]   && echo "KAWIIL_DISPATCH_TOKEN=${KAWIIL_DISPATCH_TOKEN}"
   [[ -n "${DEEPSEEK_API_KEY:-}" ]]        && echo "DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}"
+  for k in "${KEEP_VARS[@]}"; do
+    [[ -n "${KEEP[$k]}" ]] && echo "${k}=${KEEP[$k]}"
+  done
 } > "$ENV_OUT"
 chmod 600 "$ENV_OUT"
 chown "$SYSTEM_USER":"$SYSTEM_USER" "$ENV_OUT"
 log "openclaw.env generado ($(wc -l < "$ENV_OUT") variables)"
+if [[ "${GEN_GATEWAY_TOKEN:-}" == "1" ]]; then
+  warn "No había OPENCLAW_GATEWAY_TOKEN: generé uno nuevo. Léelo con: sudo grep ^OPENCLAW_GATEWAY_TOKEN= $ENV_OUT"
+fi
+[[ -n "${KEEP[TABLERO_PASSWORD]}" ]] || warn "Sin TABLERO_PASSWORD: el tablero/dashboard (Basic) seguirá rechazando hasta que lo agregues a .env"
 
 # ── 5b) Credenciales por-canal (las que leen los bridges) ───
 # telegram-bridge.py y scheduler.py NO leen openclaw.env: leen
