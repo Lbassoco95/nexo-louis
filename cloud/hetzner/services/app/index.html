@@ -106,6 +106,10 @@ input.search{width:100%;background:var(--panel);color:var(--tx);border:1px solid
 .sheet .hd{display:flex;align-items:center;gap:8px;padding:14px 16px;border-bottom:1px solid var(--line)}
 .sheet .hd b{flex:1}.sheet .hd button{background:none;border:0;color:var(--mut);font-size:22px}
 .sheet .bd{overflow-y:auto;padding:14px 16px}
+.artcard{display:inline-block;margin:4px 0;background:var(--acc,#4f7cff);color:#fff;border:0;border-radius:12px;padding:9px 14px;font-size:14px;font-weight:600}
+.artframe{width:100%;height:68dvh;border:1px solid var(--line);border-radius:12px;background:#fff}
+.artrow{display:block;width:100%;text-align:left;background:var(--card,transparent);border:1px solid var(--line);border-radius:12px;color:inherit;padding:10px 12px;margin:0 0 8px;font-size:14px}
+.artrow small{display:block;color:var(--mut)}
 .btn{background:linear-gradient(135deg,var(--acc),var(--acc2));color:#fff;border:0;border-radius:12px;padding:12px 16px;font:inherit;font-weight:600;width:100%}
 .btn.ghost{background:var(--panel);color:var(--tx);border:1px solid var(--line);font-weight:400;margin-top:8px}
 label{display:block;font-size:13px;color:var(--mut);margin:14px 0 6px}
@@ -129,7 +133,7 @@ input.f{width:100%;background:var(--panel);color:var(--tx);border:1px solid var(
 </head>
 <body>
 <div id="app">
-  <header><span class="dot" id="dot"></span><h1 id="title">{{AGENT_NAME}}</h1><button id="bell" aria-label="Notificaciones">🔔<span class="bbadge" id="bbadge" hidden></span></button><button id="refresh" aria-label="Actualizar">⟳</button></header>
+  <header><span class="dot" id="dot"></span><h1 id="title">{{AGENT_NAME}}</h1><button id="bell" aria-label="Notificaciones">🔔<span class="bbadge" id="bbadge" hidden></span></button><button id="arts" aria-label="Tableros">🧩</button><button id="refresh" aria-label="Actualizar">⟳</button></header>
   <div class="banner" id="banner">Sin conexión con {{AGENT_NAME}}. Reintentando…</div>
   <main>
     <section class="view on" id="v-chat">
@@ -187,7 +191,7 @@ function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('on');setT
 /* ---------- markdown liviano y seguro (todo se escapa primero) ---------- */
 function md(src){
   const blocks=[];let s=esc(src).replace(/```(?:\w+)?\n?([\s\S]*?)```/g,(_,c)=>{blocks.push(c);return '\u0000'+(blocks.length-1)+'\u0000'});
-  const inl=t=>t.replace(/`([^`\n]+)`/g,'<code>$1</code>').replace(/\*\*([^*\n]+)\*\*/g,'<b>$1</b>')
+  const inl=t=>t.replace(/\[\[artefacto:(a[0-9a-f]{10})\]\]/g,'<button class="artcard" data-art="$1">🧩 Abrir tablero</button>').replace(/`([^`\n]+)`/g,'<code>$1</code>').replace(/\*\*([^*\n]+)\*\*/g,'<b>$1</b>')
     .replace(/(^|[\s(>])\*([^*\n]+)\*(?=[\s).,;:!?<]|$)/g,'$1<i>$2</i>').replace(/(^|[\s(>])_([^_\n]+)_(?=[\s).,;:!?<]|$)/g,'$1<i>$2</i>')
     .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>')
     .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g,'$1<a href="$2" target="_blank" rel="noopener">$2</a>');
@@ -405,6 +409,26 @@ function renderInbox(items,focusId){
   if(focusId){const el=$('#n-'+focusId);if(el)el.scrollIntoView({block:'start'})}
 }
 $('#bell').onclick=()=>openInbox();
+/* ---------- tableros (artefactos): iframe sandbox="" = sin scripts, sin red, sin acceso a tu sesión ---------- */
+async function openArt(id){
+  sheet('Tablero…','<div class="empty">Cargando…</div>');
+  try{
+    const a=await api('/v1/app/artefacto?id='+encodeURIComponent(id));
+    sheet(a.titulo||'Tablero','<iframe class="artframe" sandbox="" referrerpolicy="no-referrer" title="Tablero"></iframe>'+
+      '<div class="sub" style="margin-top:8px">v'+esc(String(a.version))+' · '+(a.verificado?'✓ ':'⚠️ ')+esc(a.procedencia||'')+'</div>');
+    $('#sh-b iframe').srcdoc=a.doc;
+  }catch(e){sheet('Tablero','<div class="empty">No pude abrirlo. '+esc(e.message)+'</div>')}
+}
+async function openArtList(){
+  sheet('Tableros','<div class="empty">Cargando…</div>');
+  try{
+    const d=await api('/v1/app/artefactos');
+    if(!d.items.length){sheet('Tableros','<div class="empty">Aún no hay tableros.<br>Pídele a Donna: «hazme un tablero de seguimiento de…».</div>');return}
+    sheet('Tableros',d.items.map(i=>'<button class="artrow" data-art="'+esc(i.id)+'"><b>'+esc(i.titulo)+'</b><small>'+(i.verificado?'':'⚠️ sin verificar · ')+esc(i.proyecto||'')+' · v'+esc(String(i.version))+'</small></button>').join(''));
+  }catch(e){sheet('Tableros','<div class="empty">No pude cargar. '+esc(e.message)+'</div>')}
+}
+$('#arts').onclick=openArtList;
+document.addEventListener('click',e=>{const b=e.target.closest&&e.target.closest('[data-art]');if(b){e.preventDefault();openArt(b.dataset.art)}});
 
 /* ---------- Hoy ---------- */
 function taskHtml(t,i){return `<div class="card task${t.urgente?' hot':''}" data-i="${i}"><button class="ck" aria-label="Marcar hecho"></button><div class="tt">${esc(t.texto.replace(/\s*·?\s*\[(?:auto|visto|capturado)[^\]]*\]/g,'').trim())}</div></div>`}

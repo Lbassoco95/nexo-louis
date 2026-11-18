@@ -61,6 +61,11 @@ if [[ -z "$NU" ]]; then bad "no está instalado app_auth.py en $OC/scripts (la a
 elif [[ "$NU" -ge 1 ]]; then ok "$NU usuario(s) con contraseña (se guardan solo como hash)"
 else bad "no hay ningún usuario con contraseña → python3 /opt/louis/tools/donna-passwd.py polo"; fi
 
+echo "3e) Tableros (artefactos)"
+[[ "$(cnt 'crear_artefacto' "$OC/scripts/louis_core.py")" -ge 1 && -f "$OC/scripts/app_artifacts.py" ]] \
+  && ok "tableros instalados (app_artifacts.py + herramientas)" || bad "faltan los tableros → instalar app_artifacts.py y louis_core.py"
+[[ "$(cnt 'v1/app/artefacto' "$OC/scripts/openclaw_gateway.py")" -ge 1 ]] && ok "endpoints de tableros" || bad "gateway sin endpoints de tableros → reinstalar openclaw_gateway.py"
+
 echo "4) Conversación real (¿Ya estás ahí?)"
 if [[ -n "$TOKEN" ]]; then
   ERR=$(mktemp); OUT=$(DONNA_URL="$URL" DONNA_TOKEN="$TOKEN" python3 "$HERE/donna-chat.py" "¿Ya estás ahí?" 2>"$ERR")

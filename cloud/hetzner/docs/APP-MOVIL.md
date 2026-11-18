@@ -111,3 +111,18 @@ maestro. Cerrar sesión la invalida en el servidor; «Cerrar sesión en todos lo
 (también `donna-passwd.py --cerrar-sesiones` si pierdes un teléfono). Endpoints: `POST /v1/app/login`,
 `/v1/app/logout`, `/v1/app/sessions/revoke-all`, `GET /v1/app/sessions`.
 Pruebas: `python3 cloud/hetzner/tests/test_app_auth.py` (22 casos, incluye el servidor HTTP real).
+
+## Tableros / artefactos (v5)
+
+Donna puede crear **tableros visuales** (seguimiento de un proyecto sin dashboard, KPIs, tablas) y verlos en la app:
+botón 🧩 del encabezado = lista; en el chat aparece una tarjeta «🧩 Abrir tablero».
+
+- Herramientas de Donna: `crear_artefacto`, `actualizar_artefacto` (guarda 5 versiones), `listar_artefactos`.
+- **Seguridad:** el HTML pasa por un sanitizador de lista permitida (sin scripts, formularios, enlaces, imágenes remotas ni
+  `url()` externos) y se muestra en `<iframe sandbox="">` con CSP `default-src 'none'`: no corre código, no sale a la red,
+  no ve tu sesión. Importa porque el contenido puede venir de mensajes de Slack o correos.
+- **Veracidad:** al pie de cada tablero el **servidor** (no el modelo) escribe de qué herramientas salieron los datos y cuándo;
+  si Donna no consultó datos, dice «cifras NO verificadas» (⚠️ en la lista).
+- Archivos: `/opt/openclaw/state/artefactos/*.json` (0600). Tope 300 KB c/u, 200 en total.
+- Endpoints: `GET /v1/app/artefactos`, `GET /v1/app/artefacto?id=…`.
+- Pruebas: `python3 -m unittest tests.test_artefactos`.

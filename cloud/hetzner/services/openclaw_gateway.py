@@ -828,6 +828,18 @@ class Handler(BaseHTTPRequestHandler):
                         lim = 50
                     self._send_json(200, {"items": louis_push.inbox_list(lim), "unread": louis_push.unread_count(),
                                           "confirmaciones": louis_push.pending_confirmations()})
+                elif _r0 == "/v1/app/artefactos":
+                    import app_artifacts
+                    self._send_json(200, {"items": app_artifacts.listar()})
+                elif _r0 == "/v1/app/artefacto":
+                    import app_artifacts
+                    from urllib.parse import urlparse, parse_qs
+                    aid = (parse_qs(urlparse(self.path).query).get("id") or [""])[0]
+                    try:
+                        art = app_artifacts.obtener(aid)
+                    except ValueError:
+                        art = None
+                    self._send_json(200 if art else 404, art or {"error": "no existe ese artefacto"})
                 elif _r0 == "/v1/app/entregables":
                     self._send_json(200, {"entregables": core._entregables_lista_tablero()})
                 elif _r0 == "/v1/app/entregable":

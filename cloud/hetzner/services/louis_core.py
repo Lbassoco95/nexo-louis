@@ -663,7 +663,12 @@ def load_system_prompt(channel: str = "telegram") -> str:
             "lo que necesita para decidir. Un «hola» o «¿ya estás ahí?» se contesta en una línea. "
             "Si hay algo urgente que Polo debe saber, menciónalo en una frase y ofrece ampliarlo.\n"
             "**FORMATO APP:** Markdown estándar: **negrita** con dos asteriscos, *cursiva*, listas con `-`, "
-            "tablas con `|`, bloques de código con triple backtick. Encabezados cortos solo si el texto es largo."
+            "tablas con `|`, bloques de código con triple backtick. Encabezados cortos solo si el texto es largo.\n"
+            "**TABLEROS:** si Polo pide un dashboard, tablero o seguimiento (sobre todo de un proyecto sin dashboard), o "
+            "algo se lee mucho mejor visual, usa `crear_artefacto` DESPUÉS de consultar datos reales, y pon en tu respuesta "
+            "el marcador `[[artefacto:ID]]` que te devuelva la herramienta (la app lo muestra como tarjeta). "
+            "Antes de crear, `listar_artefactos`: si ya existe uno del proyecto, `actualizar_artefacto`. "
+            "Un tablero nunca lleva cifras inventadas: lo que no sepas va como «por definir»."
         )
     parts.append(canal_text)
 
@@ -2911,6 +2916,45 @@ TOOLS_DEFINITION = [
             },
             "required": ["text", "datetime"],
         },
+    },
+    {
+        "name": "crear_artefacto",
+        "description": ("Crea un TABLERO/ARTEFACTO visual que Polo ve en la app (seguimiento de un proyecto, tabla, KPIs, "
+                        "checklist). Úsalo cuando Polo pida un dashboard/tablero/seguimiento de algo que no tiene uno, o cuando "
+                        "una tabla grande se lee mejor visual. PRIMERO consulta los datos reales con tus herramientas (Kawiil "
+                        "Central, Slack, etc.); NUNCA inventes cifras: si no tienes el dato, escribe «por definir». "
+                        "HTML sencillo SIN JavaScript, sin enlaces, sin imágenes remotas, sin formularios (se eliminan). "
+                        "Clases listas: .kpis>.kpi(.v valor,.l etiqueta), .card, .grid2, .tag(.ok/.warn/.bad/.info), "
+                        ".bar(.ok/.warn/.bad)>i style=width:60%, table, details>summary. Responde después con una frase y el "
+                        "marcador exacto que devuelve esta herramienta."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "titulo": {"type": "string"},
+                "proyecto": {"type": "string", "description": "Proyecto al que pertenece (para agrupar)"},
+                "html": {"type": "string", "description": "Fragmento HTML del cuerpo (sin <html>/<head>)"},
+            },
+            "required": ["titulo", "html"],
+        },
+    },
+    {
+        "name": "actualizar_artefacto",
+        "description": "Reemplaza el contenido de un artefacto existente (misma regla: datos reales, HTML sin JS). Guarda la versión anterior.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "html": {"type": "string"},
+                "titulo": {"type": "string"},
+                "nota": {"type": "string", "description": "Qué cambió"},
+            },
+            "required": ["id", "html"],
+        },
+    },
+    {
+        "name": "listar_artefactos",
+        "description": "Lista los artefactos/tableros ya creados (id, título, proyecto). Úsalo antes de crear uno nuevo para no duplicar.",
+        "input_schema": {"type": "object", "properties": {"proyecto": {"type": "string"}}},
     },
     {
         "name": "save_learning",
@@ -9110,6 +9154,8 @@ def execute_tool(name: str, args: dict) -> str:
             if r.returncode == 0:
                 return f"OK recordatorio creado: {r.stdout.strip()}"
             return f"ERROR creando recordatorio: {r.stderr.strip()}"
+        elif name in ("crear_artefacto", "actualizar_artefacto", "listar_artefactos"):
+            return _tool_artefacto(name, args)
         elif name == "save_learning":
             path = SPACE / "LEARNINGS.md"
             entry = (
@@ -9612,6 +9658,52 @@ def _sanitize_tool_blocks(messages: list) -> list:
     return out
 
 
+# ===== Artefactos (tableros visuales en la app) =====
+_ART_NON_DATA = {"crear_artefacto", "actualizar_artefacto", "listar_artefactos", "save_learning"}
+
+
+def _artefacto_procedencia():
+    """Sello que pone el SERVIDOR (no el modelo): de qué herramientas de datos salió este turno."""
+    ok = sorted({n for n in getattr(_TURN, "ok", []) if n not in _ART_NON_DATA})
+    fail = sorted({n for n in getattr(_TURN, "failed", []) if n not in _ART_NON_DATA})
+    stamp = datetime.now(timezone(timedelta(hours=-6))).strftime("%d/%m/%Y %H:%M")
+    if ok:
+        txt = f"Datos consultados el {stamp} (CDMX) con: {', '.join(ok)}."
+        if fail:
+            txt += f" Fallaron: {', '.join(fail)}; lo que dependa de ellas puede estar incompleto."
+        return txt, True
+    return (f"Sin consulta de datos al crear este tablero ({stamp}): las cifras NO están verificadas."), False
+
+
+def _tool_artefacto(name, args):
+    try:
+        import app_artifacts as _A
+    except Exception as e:
+        return f"❌ módulo de artefactos no disponible: {e}"
+    try:
+        if name == "listar_artefactos":
+            items = _A.listar(args.get("proyecto"))
+            if not items:
+                return "(no hay artefactos todavía)"
+            return "\n".join(f"- [[artefacto:{i['id']}]] {i['titulo']}"
+                             + (f" · {i['proyecto']}" if i["proyecto"] else "") + f" · v{i['version']}" for i in items)
+        prov, verif = _artefacto_procedencia()
+        if name == "crear_artefacto":
+            r = _A.crear(args.get("titulo", ""), args.get("html", ""), args.get("proyecto", ""), prov, verif)
+        else:
+            r = _A.actualizar(args.get("id", ""), args.get("html", ""), args.get("titulo"), prov, verif, args.get("nota", ""))
+        msg = f"OK artefacto «{r['titulo']}» v{r['version']} guardado. Incluye EXACTAMENTE este marcador en tu respuesta: [[artefacto:{r['id']}]]"
+        if r["quitado"]:
+            msg += f" (el sistema quitó por seguridad: {', '.join(r['quitado'])}; no uses scripts, enlaces ni imágenes remotas)"
+        if not verif:
+            msg += " AVISO: no consultaste datos en este turno; el tablero lleva sello de «no verificado». Díselo a Polo."
+        return msg
+    except ValueError as e:
+        return f"❌ no se pudo guardar el artefacto: {e}"
+    except Exception as e:
+        return f"❌ error con artefactos: {e}"
+
+
 # ===== Freno a datos inventados (cifras del negocio) =====
 # Herramientas usadas en el turno actual. call_claude las registra y call_llm las usa para
 # verificar, DESPUÉS de que el modelo responde, que una «diagnóstico/estado real» con cifras de
@@ -9745,7 +9837,7 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
     for _loop_i in range(max_loops):  # noqa: B007
         body = {
             "model": model,
-            "max_tokens": 4096,
+            "max_tokens": 8192,
             "system": _system_cached,
             "tools": _tools_cached,
             "messages": _sanitize_tool_blocks(messages),
