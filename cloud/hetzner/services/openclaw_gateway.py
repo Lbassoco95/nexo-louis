@@ -48,11 +48,35 @@ if SCRIPTS_DIR.exists():
 
 import louis_core as core  # noqa: E402
 import app_auth  # noqa: E402  (usuario/contraseña de la app, sesiones propias)
-import app_media  # noqa: E402  (adjuntos, grabaciones y archivos de la app)
-import app_translate  # noqa: E402  (traductor español/inglés/chino de la app)
-import ws_lite  # noqa: E402  (WebSocket mínimo: traductor en vivo)
-import donna_voz  # noqa: E402  (acciones directas por voz: guardar, reglas, recordatorios)
-import app_trabajos  # noqa: E402  (trabajos grandes de Donna: plan por pasos con avance visible)
+import importlib as _il  # noqa: E402
+
+
+class _Faltante:
+    """Marcador de un módulo OPCIONAL que no está instalado. El servidor SIGUE arrancando (login, chat y tablero funcionan) y solo falla,
+    con un mensaje claro, lo que use ese módulo. Así una instalación a medias nunca deja a Polo sin poder conectarse."""
+    def __init__(self, nombre, err):
+        self._n, self._e = nombre, err
+
+    def __getattr__(self, k):
+        raise RuntimeError(f"falta el módulo {self._n} en /opt/openclaw/scripts (reinstala los archivos de Donna): {self._e}")
+
+    def __bool__(self):
+        return False
+
+
+def _opcional(nombre):
+    try:
+        return _il.import_module(nombre)
+    except Exception as e:
+        logging.getLogger("openclaw-gateway").error("MÓDULO OPCIONAL FALTANTE: %s (%s)", nombre, e)
+        return _Faltante(nombre, e)
+
+
+app_media = _opcional("app_media")            # adjuntos, grabaciones y archivos de la app
+app_translate = _opcional("app_translate")    # traductor español/inglés/chino
+ws_lite = _opcional("ws_lite")                # WebSocket mínimo: traducción en vivo y Donna en tiempo real
+donna_voz = _opcional("donna_voz")            # acciones directas por voz: guardar, reglas, recordatorios
+app_trabajos = _opcional("app_trabajos")      # trabajos grandes de Donna: plan por pasos con avance visible
 
 # Solo StreamHandler: el servicio de systemd ya redirige stdout/stderr al log
 # (StandardOutput=append:.../openclaw-gateway.log). Con FileHandler además, cada
@@ -333,7 +357,10 @@ def _trabajo_notificar(titulo: str, cuerpo: str, link: str, completo: str) -> No
     louis_push.notify_async(titulo, cuerpo.replace("*", ""), tab="chat", tag="trab-" + link.split(":")[-1], full_body=completo, kind="trabajo", link=link)
 
 
-app_trabajos.configurar(planear=_trabajo_planear, ejecutar=_trabajo_ejecutar, resumir=_trabajo_resumir, notificar=_trabajo_notificar)
+try:
+    app_trabajos.configurar(planear=_trabajo_planear, ejecutar=_trabajo_ejecutar, resumir=_trabajo_resumir, notificar=_trabajo_notificar)
+except RuntimeError:
+    pass                                                    # módulo no instalado: el módulo Trabajos no estará disponible, lo demás sí
 
 
 def _guardar_conversacion_voz(hist: list, t0: float) -> None:
