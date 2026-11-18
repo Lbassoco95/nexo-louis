@@ -37,6 +37,13 @@ class Workspaces(unittest.TestCase):
         self.assertIsNone(c); self.assertIn("setup-slack-yoltik", err)
         core._slack_ws_set(None)
 
+    def test_yoltik_prefiere_token_de_usuario(self):
+        ENV.write_text("SLACK_BOT_TOKEN=xoxb-kawiil\nSLACK_BOT_TOKEN_YOLTIK=xoxb-yoltik\nSLACK_USER_TOKEN_YOLTIK=xoxp-polo\n")
+        core._slack_ws_set("yoltik")
+        self.assertEqual(core._slack_client()[0].token, "xoxp-polo")
+        core._slack_ws_set(None)
+        self.assertEqual(core._slack_client()[0].token, "xoxb-kawiil")      # Kawiil no cambia
+
     def test_workspace_desconocido(self):
         core._slack_ws_set("otro")
         self.assertIn("desconocido", core._slack_client()[1])
@@ -53,7 +60,9 @@ class Digest(unittest.TestCase):
         import slack_digest as D
         D.SLACK_ENV = ENV
         ENV.write_text("SLACK_BOT_TOKEN=xoxb-kawiil\nSLACK_BOT_TOKEN_YOLTIK=xoxb-yoltik\n")
-        self.assertEqual([e for e, _ in D._clients()], ["bot", "yoltik"])
+        self.assertEqual([e for e, _ in D._clients()], ["bot", "yoltik-bot"])
+        ENV.write_text("SLACK_BOT_TOKEN=xoxb-kawiil\nSLACK_USER_TOKEN_YOLTIK=xoxp-p\nSLACK_BOT_TOKEN_YOLTIK=xoxb-y\n")
+        self.assertEqual([e for e, _ in D._clients()], ["bot", "yoltik", "yoltik-bot"])   # usuario antes que bot
         ENV.write_text("SLACK_BOT_TOKEN=xoxb-kawiil\n")
         self.assertEqual([e for e, _ in D._clients()], ["bot"])
 

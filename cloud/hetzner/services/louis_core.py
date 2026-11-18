@@ -5296,6 +5296,10 @@ def _slack_client():
     creds_path = HOME_OC / "credentials" / "slack.env"
     creds = load_env_file(creds_path)
     token = creds.get(var) or os.environ.get(var, "")
+    if ws == "yoltik":                       # con token de usuario (xoxp-) Donna ve todo lo que ve Polo en Yoltik
+        utok = creds.get("SLACK_USER_TOKEN_YOLTIK") or os.environ.get("SLACK_USER_TOKEN_YOLTIK", "")
+        if utok.startswith("xoxp-"):
+            return WebClient(token=utok), None
     if not token.startswith("xoxb-"):
         extra = " → corre setup-slack-yoltik.sh en el servidor" if ws == "yoltik" else ""
         return None, f"ERROR: {var} no configurado o inválido en {creds_path}{extra}"

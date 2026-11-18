@@ -78,7 +78,7 @@ if [[ -n "$TOKEN" && -f "$PY" ]]; then
 fi
 
 echo "3g) Slack de Yoltik"
-if $SUDO grep -q "^SLACK_BOT_TOKEN_YOLTIK=xoxb-" /opt/openclaw/credentials/slack.env 2>/dev/null; then ok "SLACK_BOT_TOKEN_YOLTIK presente"
+if $SUDO grep -q "^SLACK_\(USER\|BOT\)_TOKEN_YOLTIK=xox" /opt/openclaw/credentials/slack.env 2>/dev/null; then ok "token de Yoltik presente"
 else info "Slack de Yoltik sin configurar → sudo bash /opt/louis/scripts/setup-slack-yoltik.sh"; fi
 
 echo "4) Conversación real (¿Ya estás ahí?)"

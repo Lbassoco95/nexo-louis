@@ -139,7 +139,8 @@ Pruebas: `python3 -m unittest tests.test_patio_yoltik`.
 
 ## Slack de Yoltik (v7)
 
-Segundo workspace: la app «Donna Yoltik» (permisos de bot: `channels:read/history`, `groups:read/history`, `users:read`, `chat:write`).
+Segundo workspace: la app «Donna Yoltik». Para que Donna vea TODO lo que ve Polo (privados, DMs, grupos) se usa el token de usuario
+`SLACK_USER_TOKEN_YOLTIK` (xoxp-; User Token Scopes: channels/groups/im/mpim `:read` y `:history`, users:read). Sin él, el de bot (permisos de bot: `channels:read/history`, `groups:read/history`, `users:read`, `chat:write`).
 Token en `/opt/openclaw/credentials/slack.env` como `SLACK_BOT_TOKEN_YOLTIK` (`sudo bash scripts/setup-slack-yoltik.sh`, que prueba el token).
 Donna solo ve los canales donde la invites (`/invite @Donna`). Las herramientas `slack_resumen/canales/leer/dm_leer` aceptan
 `workspace: "yoltik"` (default kawiil). El resumen de las 18:17 y el seguimiento de las 07:41 incluyen Yoltik con etiqueta `[Yoltik]`.
