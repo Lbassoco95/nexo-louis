@@ -2,6 +2,7 @@
 # setup-patio-yoltik-creds.sh — guarda en el servidor las cadenas de conexión de Patio Yoltik (sin mostrarlas).
 # Uso:  sudo bash setup-patio-yoltik-creds.sh
 # Cuando pida la cadena: PEGA y presiona Enter (no se ve lo que pegas; te dirá cuántos caracteres recibió).
+# Si el pegado no entra (campo invisible): sudo VISIBLE=1 bash setup-patio-yoltik-creds.sh  (muestra lo que pegas).
 # NO la escribas como comando en la terminal: se guardaría en el historial.
 set -uo pipefail
 SYSTEM_USER="${SYSTEM_USER:-polo}"; DIR=/opt/openclaw/credentials; F="$DIR/patio-yoltik.env"
@@ -9,7 +10,9 @@ mkdir -p "$DIR"; [[ -f "$F" ]] && { set -a; source "$F"; set +a; }
 TTY=/dev/tty; [[ -r $TTY ]] || TTY=/dev/stdin
 
 pedir() {  # $1=etiqueta  $2=variable
-  local v; read -rsp "$1 [Enter = conservar lo actual]: " v < "$TTY"; echo >&2
+  local v
+  if [[ "${VISIBLE:-0}" == "1" ]]; then read -rp "$1 [Enter = conservar lo actual]: " v < "$TTY"
+  else read -rsp "$1 [Enter = conservar lo actual]: " v < "$TTY"; echo >&2; fi
   v="${v//[$'\r\n ']/}"
   if [[ -z "$v" ]]; then echo "  · sin cambios (no recibí nada)" >&2; return; fi
   echo "  · recibí ${#v} caracteres" >&2
