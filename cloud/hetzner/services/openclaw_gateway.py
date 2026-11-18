@@ -51,6 +51,7 @@ import app_auth  # noqa: E402  (usuario/contraseña de la app, sesiones propias)
 import app_media  # noqa: E402  (adjuntos, grabaciones y archivos de la app)
 import app_translate  # noqa: E402  (traductor español/inglés/chino de la app)
 import ws_lite  # noqa: E402  (WebSocket mínimo: traductor en vivo)
+import donna_voz  # noqa: E402  (acciones directas por voz: guardar, reglas, recordatorios)
 
 # Solo StreamHandler: el servicio de systemd ya redirige stdout/stderr al log
 # (StandardOutput=append:.../openclaw-gateway.log). Con FileHandler además, cada
@@ -289,6 +290,54 @@ def _ask_donna_voice(user_msg: str, history: list, registrar: bool = True):
     return out.get("text", ""), out.get("model", ""), out.get("error")
 
 
+def _guardar_conversacion_voz(hist: list, t0: float) -> None:
+    try:
+        import app_media as _M
+        texto = "\n".join(("Polo: " if h["role"] == "user" else "Donna: ") + h["content"] for h in hist)
+        nombre = "Conversación con Donna " + time.strftime("%Y-%m-%d %H:%M", time.localtime(t0))
+        _M.register_text(nombre, texto, tipo="conversacion", resumen=_M.summarize(texto), origen="donna-voz")
+    except Exception:
+        log.exception("no pude guardar la conversación por voz")
+
+
+def _bg_lanzar(pedido: str, notificar: bool = True, historial: list = None, tarea: bool = False) -> dict:
+    """Corre el cerebro completo de Donna en un hilo, sin el tope de la conversación. Al terminar, si `notificar`, manda una notificación con el resultado."""
+    bid = "b" + secrets.token_hex(4)
+    rec = {"id": bid, "estado": "en curso", "pedido": pedido[:300], "t0": time.time(), "resultado": "", "error": "",
+           "notificar": notificar, "evento": threading.Event()}
+    with _BG_LOCK:
+        for k in [k for k, v in _BG.items() if time.time() - v["t0"] > 6 * 3600]:
+            _BG.pop(k, None)
+        _BG[bid] = rec
+    ext = pedido if not tarea else (pedido + "\n\n(Tarea pedida POR VOZ y ejecutada en segundo plano: haz el trabajo completo con tus herramientas y termina con un resumen breve y VERAZ: "
+                                    "qué hiciste, cuántos elementos, y qué quedó pendiente o falló. No digas que hiciste algo que no hiciste.)")
+
+    def correr():
+        texto, err = "", ""
+        for intento in range(4):
+            texto, _m, err = _ask_donna_voice(ext, list(historial or []), registrar=False)
+            if not (err and "atendiendo otras consultas" in str(err)):
+                break
+            time.sleep(20)
+        with _BG_LOCK:
+            rec["estado"] = "error" if err or not (texto or "").strip() else "lista"
+            rec["resultado"], rec["error"] = (texto or "")[:6000], str(err or "")[:200]
+            avisar = rec["notificar"]
+        rec["evento"].set()
+        if avisar:
+            try:
+                import louis_push
+                ok = rec["estado"] == "lista"
+                louis_push.notify_async(("✅ Tarea lista: " if ok else "⚠️ Tarea con problema: ") + rec["pedido"][:50],
+                                        (rec["resultado"] or rec["error"] or "sin resultado")[:220].replace("*", ""), tab="chat",
+                                        tag="bg-" + bid, full_body=(rec["resultado"] or rec["error"] or "sin resultado"), kind="tarea")
+            except Exception:
+                log.exception("no pude avisar que terminó la tarea en segundo plano")
+
+    threading.Thread(target=correr, daemon=True).start()
+    return rec
+
+
 def _push_answer(res: dict):
     """El cliente se fue antes de recibir la respuesta → avisa por push (si hay suscripciones)."""
     if res.get("pushed"):
@@ -385,14 +434,40 @@ LIVE_IDLE_SECONDS = int(os.environ.get("LIVE_IDLE_SECONDS", "90"))
 _LIVE_LANGS = {"es": "es", "en": "en", "zh": os.environ.get("LIVE_ZH_CODE", "zh")}
 _DONNA_TOOLS = [
     {"type": "function", "name": "consultar_donna",
-     "description": "Pásale a Donna (tu cerebro completo: agenda, tareas, Kawiil Central, Patio Yoltik, Slack, correo, documentos, grabaciones, tableros, memoria) "
-                    "CUALQUIER consulta o acción de Polo, con el pedido completo y claro. Devuelve el resultado real para que lo digas. "
+     "description": "Pásale a Donna (tu cerebro completo: agenda, tareas, Kawiil Central, Patio Yoltik, Slack, correo, documentos, grabaciones, tableros, transcripciones, memoria) "
+                    "CUALQUIER consulta o acción compleja de Polo, con el pedido completo y claro. Devuelve el resultado REAL para que lo digas. "
                     "Si el pedido CAMBIA algo, antes confirma con Polo y escribe «Polo ya confirmó» en el pedido.",
      "parameters": {"type": "object", "properties": {"pedido": {"type": "string", "description": "Lo que Polo pidió, completo y con contexto"}}, "required": ["pedido"]}},
+    {"type": "function", "name": "guardar_nota",
+     "description": "Guarda AHORA una nota, dato o pendiente que Polo dictó en su memoria. Úsala siempre que diga «anota», «guarda», «apunta», «recuerda que…» (un dato, no un aviso futuro). "
+                    "Devuelve ✅ solo si de verdad quedó guardado.",
+     "parameters": {"type": "object", "properties": {
+         "texto": {"type": "string", "description": "La nota, completa y autocontenida"},
+         "archivo": {"type": "string", "description": "agenda (por defecto), importante, personal, academico, familia, salud, proyectos, clientes, finanzas, viajes, bitacora"}},
+         "required": ["texto"]}},
+    {"type": "function", "name": "recordar_regla",
+     "description": "Fija una regla o preferencia PERMANENTE de Polo («a partir de ahora…», «siempre que…», «nunca…»). Se guarda para siempre y Donna la aplica en adelante.",
+     "parameters": {"type": "object", "properties": {"regla": {"type": "string"}, "contexto": {"type": "string"}}, "required": ["regla"]}},
+    {"type": "function", "name": "crear_recordatorio",
+     "description": "Crea un recordatorio/aviso futuro que llegará como notificación. Da `en_minutos` (p. ej. 30) o `fecha_hora` ISO 8601 en hora de Ciudad de México (p. ej. 2026-11-19T09:00).",
+     "parameters": {"type": "object", "properties": {"mensaje": {"type": "string"}, "en_minutos": {"type": "integer"}, "fecha_hora": {"type": "string"}}, "required": ["mensaje"]}},
+    {"type": "function", "name": "tarea_en_segundo_plano",
+     "description": "Para trabajo LARGO (cargar o procesar muchas cosas, revisar cientos de datos, preparar un informe): lo deja corriendo en segundo plano y te avisa por notificación al terminar. "
+                    "Úsala cuando el pedido tome más de medio minuto. Responde de inmediato.",
+     "parameters": {"type": "object", "properties": {"pedido": {"type": "string"}}, "required": ["pedido"]}},
     {"type": "function", "name": "terminar_conversacion",
      "description": "Cierra la conversación por voz cuando Polo se despide o dice que eso es todo.",
      "parameters": {"type": "object", "properties": {}, "required": []}},
 ]
+
+# Promesas de acción dichas en voz alta («ya lo guardé», «voy a agendarlo»): si no hubo herramienta, se corrige al modelo.
+_PROMESA_RE = re.compile(
+    r"\b(ya (lo |la |los |las |te lo |te la )?(guard|agend|cerr|envi|cre|mov|anot|registr|actualiz|program|carg|sub|borr)\w*"
+    r"|(lo|la|los|las|te lo|te la) (guard|agend|cerr|envi|cre|anot|registr|actualiz|program|carg|sub|borr)\w*"
+    r"|(voy a|déjame|dejame|me encargo de|te lo|ahora mismo) ?(lo |la )?(guardar|agendar|cerrar|enviar|crear|mover|anotar|registrar|actualizar|programar|cargar|subir|borrar)\w*)\b", re.I)
+_CONSULTA_ESPERA = int(os.environ.get("DONNA_CONSULTA_ESPERA", "40"))     # segundos que consultar_donna espera antes de pasar a segundo plano
+_BG: dict = {}                         # id -> tarea en segundo plano {estado, pedido, t0, resultado, error, notificar, evento}
+_BG_LOCK = threading.Lock()
 _SHARE_MISS: dict = {}                 # ip -> intentos fallidos a /s/<token> en el último minuto
 _SHARE_LOCK = threading.Lock()
 _VSESS: dict = {}                      # vsid -> {"h": [{role, content}], "t": última actividad}: contexto SOLO de esta conversación por voz
@@ -1416,7 +1491,7 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 pass
 
-        up, t0 = None, time.time()
+        up, t0, hist = None, time.time(), []
         try:
             import app_media as _M
             apikey = _M.openai_key()
@@ -1436,37 +1511,55 @@ class Handler(BaseHTTPRequestHandler):
                                                        "create_response": True, "interrupt_response": True}},
                           "output": {"voice": os.environ.get("LIVE_DONNA_VOICE", "marin")}},
                 "tools": _DONNA_TOOLS, "tool_choice": "auto"}}, ensure_ascii=False))
-            stop, hist, hl = threading.Event(), [], threading.Lock()
-            estado = {"cerrar": False}
+            stop, hl = threading.Event(), threading.Lock()
+            estado = {"cerrar": False, "accion_t": 0.0, "tool_resp": False, "texto_resp": "", "corregido": False}
 
             def herramienta(call_id, name, args_json):
                 aviso("tool", name=name)
-                salida = ""
                 try:
                     a = json.loads(args_json or "{}")
                 except ValueError:
                     a = {}
-                if name == "consultar_donna":
-                    pedido = str(a.get("pedido", "")).strip()
-                    with hl:
-                        h = list(hist[-8:])
-                    caja = {}
-                    th = threading.Thread(target=lambda: caja.update(r=_ask_donna_voice(pedido, h, registrar=False)), daemon=True)
-                    th.start()
-                    th.join(60)
-                    if "r" not in caja:
-                        salida = "Donna tardó demasiado en responder; dile a Polo que lo intente de nuevo."
-                    else:
-                        texto, _modelo, err = caja["r"]
-                        salida = ("No pude consultarlo: " + str(err)) if err else (texto or "(sin respuesta)")
-                    salida = salida[:7000]
-                elif name == "terminar_conversacion":
-                    estado["cerrar"] = True
-                    salida = "Listo. Despídete en una frase corta."
-                else:
-                    salida = "herramienta desconocida"
                 try:
-                    up.send_text(json.dumps({"type": "conversation.item.create", "item": {"type": "function_call_output", "call_id": call_id, "output": salida}}, ensure_ascii=False))
+                    if name == "consultar_donna":
+                        pedido = str(a.get("pedido", "")).strip()
+                        with hl:
+                            h = list(hist[-8:])
+                        bg = _bg_lanzar(pedido, notificar=False, historial=h)
+                        if not bg["evento"].wait(_CONSULTA_ESPERA):
+                            with _BG_LOCK:
+                                if bg["estado"] == "en curso":
+                                    bg["notificar"] = True              # sigue solo y avisa por notificación al terminar
+                            salida = ("Sigue en proceso en segundo plano (tarea %s). Dile a Polo que le avisarás por notificación en cuanto termine y que puede seguir "
+                                      "con otra cosa." % bg["id"]) if bg["estado"] == "en curso" else bg["resultado"]
+                        else:
+                            salida = (("No pude consultarlo: " + bg["error"]) if bg["estado"] == "error" else bg["resultado"]) or "(sin respuesta)"
+                    elif name == "guardar_nota":
+                        salida = donna_voz.guardar_nota(a.get("texto", ""), a.get("archivo", "agenda"))
+                    elif name == "recordar_regla":
+                        salida = donna_voz.recordar_regla(a.get("regla", ""), a.get("contexto", ""))
+                    elif name == "crear_recordatorio":
+                        salida = donna_voz.crear_recordatorio(a.get("mensaje", ""), a.get("fecha_hora", ""), a.get("en_minutos", 0))
+                    elif name == "tarea_en_segundo_plano":
+                        pedido = str(a.get("pedido", "")).strip()
+                        if len(pedido) < 5:
+                            salida = "❌ Falta el pedido de la tarea."
+                        else:
+                            with hl:
+                                h2 = list(hist[-8:])
+                            bg = _bg_lanzar(pedido, notificar=True, historial=h2, tarea=True)
+                            salida = ("✅ Quedó corriendo en segundo plano (tarea %s). Le llegará una notificación con el resultado en cuanto termine." % bg["id"])
+                    elif name == "terminar_conversacion":
+                        estado["cerrar"] = True
+                        salida = "Listo. Despídete en una frase corta."
+                    else:
+                        salida = "❌ herramienta desconocida"
+                except Exception as e:
+                    log.exception("donna live: herramienta %s falló", name)
+                    salida = "❌ La herramienta falló: " + str(e)[:150]
+                estado["accion_t"] = time.time()
+                try:
+                    up.send_text(json.dumps({"type": "conversation.item.create", "item": {"type": "function_call_output", "call_id": call_id, "output": str(salida)[:7000]}}, ensure_ascii=False))
                     up.send_text(json.dumps({"type": "response.create"}))
                 except OSError:
                     pass
@@ -1488,12 +1581,15 @@ class Handler(BaseHTTPRequestHandler):
                         except ValueError:
                             continue
                         tp = ev.get("type", "")
-                        if tp == "response.output_audio.delta":
+                        if tp == "response.created":
+                            estado["tool_resp"], estado["texto_resp"] = False, ""
+                        elif tp == "response.output_audio.delta":
                             cli.send_binary(b"\x01" + _b64.b64decode(ev.get("delta", "")))
                         elif tp == "response.output_audio_transcript.delta":
                             aviso("out", d=ev.get("delta", ""))
                         elif tp == "response.output_audio_transcript.done":
                             txt = ev.get("transcript", "")
+                            estado["texto_resp"] += " " + txt
                             aviso("out_done", text=txt)
                             if txt.strip():
                                 with hl:
@@ -1503,6 +1599,7 @@ class Handler(BaseHTTPRequestHandler):
                             aviso("in", d=ev.get("delta", ""))
                         elif tp == "conversation.item.input_audio_transcription.completed":
                             txt = ev.get("transcript", "")
+                            estado["corregido"] = False
                             aviso("in_done", text=txt)
                             if txt.strip():
                                 with hl:
@@ -1511,12 +1608,29 @@ class Handler(BaseHTTPRequestHandler):
                         elif tp == "input_audio_buffer.speech_started":
                             aviso("speech")
                         elif tp == "response.function_call_arguments.done":
+                            estado["tool_resp"] = True
                             threading.Thread(target=herramienta, args=(ev.get("call_id"), ev.get("name"), ev.get("arguments")), daemon=True).start()
                         elif tp == "response.done":
                             aviso("turn_done")
-                            if estado["cerrar"] and not any((o or {}).get("type") == "function_call" for o in (ev.get("response", {}).get("output") or [])):
+                            llamo = estado["tool_resp"] or any((o or {}).get("type") == "function_call" for o in (ev.get("response", {}).get("output") or []))
+                            estado["tool_resp"] = False                      # la siguiente respuesta empieza limpia aunque no llegue response.created
+                            if estado["cerrar"] and not llamo:
                                 aviso("end", m="Conversación terminada")
                                 break
+                            # VIGILANTE DE PROMESAS: si dijo que hizo o hará algo y no llamó ninguna herramienta, no ha pasado nada → se le corrige
+                            if (not llamo and not estado["corregido"] and time.time() - estado["accion_t"] > 25
+                                    and _PROMESA_RE.search(estado["texto_resp"] or "")):
+                                estado["corregido"] = True
+                                log.warning("donna live: promesa sin herramienta: %s", estado["texto_resp"][:120])
+                                aviso("warn", m="Donna dijo que haría algo sin ejecutarlo; la corregí para que lo haga de verdad")
+                                try:
+                                    up.send_text(json.dumps({"type": "conversation.item.create", "item": {"type": "message", "role": "system", "content": [{"type": "input_text", "text":
+                                        "CORRECCIÓN DEL SISTEMA: acabas de decir que hiciste o harás una acción, pero NO llamaste ninguna herramienta, así que NO ha ocurrido nada. "
+                                        "Llama ahora la herramienta que corresponde (guardar_nota, recordar_regla, crear_recordatorio, tarea_en_segundo_plano o consultar_donna) y SOLO después "
+                                        "di el resultado real. Si no puedes hacerlo, dile a Polo con claridad que no se hizo."}]}}, ensure_ascii=False))
+                                    up.send_text(json.dumps({"type": "response.create"}))
+                                except OSError:
+                                    pass
                         elif tp == "error":
                             e = ev.get("error") or {}
                             if "cancel" in str(e.get("code", "")) + str(e.get("message", "")).lower():
@@ -1572,6 +1686,8 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             cli.close()
             log.info("donna live: sesión de %.0f s", time.time() - t0)
+            if len(hist) >= 2:                                  # lo conversado queda guardado, con resumen, y pasa a la base de Donna
+                threading.Thread(target=_guardar_conversacion_voz, args=(list(hist), t0), daemon=True).start()
 
     # ---- conversación por voz con Donna ----
     def _voice_post(self, path: str, body: dict) -> bool:

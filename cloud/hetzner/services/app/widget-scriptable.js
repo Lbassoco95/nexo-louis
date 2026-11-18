@@ -99,6 +99,12 @@ async function construir() {
   let resumen = (v.hoy ? "🔴 " + v.hoy + " hoy · " : "") + v.abiertos + " abiertos";
   if (v.conf) resumen += " · ⚠️ " + v.conf + " por confirmar";
   linea(resumen, 11, "#8b97b3", false, 1);
+  // Un toque aquí abre {{AGENT_NAME}} directo en modo voz (sin entrar, buscar ni picar nada)
+  const hab = w.addStack();
+  hab.url = BASE + "/app/?hablar=1";
+  const th = hab.addText("🎙 Hablar con {{AGENT_NAME}}");
+  th.font = Font.boldSystemFont(12);
+  th.textColor = new Color("#9db6ff");
   w.addSpacer(6);
   if (!v.items.length) linea("🎉 Nada urgente", 13, "#34d399", false, 1);
   v.items.forEach((it) => {

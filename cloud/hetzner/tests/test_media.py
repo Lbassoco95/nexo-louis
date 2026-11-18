@@ -4,7 +4,7 @@ from pathlib import Path
 from http.server import ThreadingHTTPServer
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "services"))
 TMP = Path(tempfile.mkdtemp())
-os.environ.update(PUSH_STATE_DIR=str(TMP / "st"), OPENCLAW_GATEWAY_TOKEN="master-secret-123", TZ="America/Mexico_City",
+os.environ.update(OPENCLAW_SPACES=str(TMP / "spaces"), PUSH_STATE_DIR=str(TMP / "st"), OPENCLAW_GATEWAY_TOKEN="master-secret-123", TZ="America/Mexico_City",
                   OPENCLAW_HOME=str(TMP / "oc"))
 import app_media as M
 import louis_core as core
@@ -165,6 +165,63 @@ class Proceso(unittest.TestCase):
         self.assertIn("Minuta.txt", core.execute_tool("adjuntos_listar", {}))
         self.assertTrue(core.needs_tools("[ADJUNTO m123 «x»]"))
         self.assertTrue(core.needs_tools("¿qué dijimos en la grabación de ayer?"))
+
+
+class Ingestion(unittest.TestCase):
+    def setUp(self):
+        self.f = Path(os.environ["OPENCLAW_SPACES"]) / "TRANSCRIPCIONES.md"
+        self.f.unlink(missing_ok=True)
+
+    def _audio(self, texto):
+        orig = M.transcribe
+        M.transcribe = lambda path, prog=None: (texto, "openai")
+        try:
+            mid, _ = subir("reunion.m4a", b"x", "audio/mp4")
+            M.process(mid)
+        finally:
+            M.transcribe = orig
+        return mid
+
+    def test_cada_transcripcion_pasa_sola_a_la_base(self):
+        mid = self._audio("hablamos del contrato con Kailash y del plazo del jueves. " * 6)
+        t = self.f.read_text()
+        self.assertIn(f"[{mid}]", t); self.assertIn("audio", t); self.assertTrue(M.get(mid)["estado"] == "listo")
+        self.assertTrue(M._meta(mid).get("ingerido"))
+
+    def test_es_idempotente(self):
+        mid = self._audio("acordamos revisar el presupuesto de Patio el lunes. " * 6)
+        self.assertTrue(M.ingerir(mid).get("ya"))
+        self.assertEqual(self.f.read_text().count(f"[{mid}]"), 1)
+
+    def test_conversaciones_guardadas_tambien_y_documentos_no(self):
+        c = M.register_text("Conversación traducida X", "Español: hola\n → English: hello " * 5, tipo="conversacion", resumen="**Resumen** saludo")
+        d = M.register_text("Acta.txt", "texto de un documento " * 10, tipo="documento")
+        t = self.f.read_text()
+        self.assertIn(f"[{c['id']}]", t); self.assertIn("**Resumen** saludo", t); self.assertNotIn(f"[{d['id']}]", t)
+
+    def test_cargar_en_bloque_las_que_faltaban(self):
+        mid = M.register_text("Vieja", "contenido viejo " * 20, tipo="conversacion")["id"]
+        m = M._meta(mid); m.pop("ingerido", None); M._write_json(M._dir(mid) / "meta.json", m)           # como una anterior a esta función
+        txt = self.f.read_text().replace(f"[{mid}]", "[quitado]"); self.f.write_text(txt)
+        r = M.ingerir_todo()
+        self.assertGreaterEqual(r["nuevas"], 1); self.assertEqual(r["errores"], 0)
+        self.assertEqual(M.ingerir_todo()["nuevas"], 0)                                                   # la 2.ª vez ya no hay nada nuevo
+        self.assertIn("nuevas", core.execute_tool("adjuntos_ingerir", {}))
+
+    def test_credenciales_no_pasan_a_la_base(self):
+        mid = M.register_text("Llamada", "La contraseña: Prueba7Clave42 se la di a Marco.", tipo="conversacion", resumen="Se compartió la contraseña: Prueba7Clave42 con Marco")["id"]
+        self.assertNotIn("Prueba7Clave42", self.f.read_text())
+
+    def test_rotacion_archiva_lo_viejo(self):
+        o = (M.TRANS_MAX, M.TRANS_KEEP); M.TRANS_MAX, M.TRANS_KEEP = 2500, 1200
+        try:
+            for i in range(12):
+                M.register_text(f"Conv {i:02d}", "texto " * 40, tipo="conversacion", resumen=f"resumen largo de la conversación número {i:02d} " * 6)
+        finally:
+            M.TRANS_MAX, M.TRANS_KEEP = o
+        arch = self.f.with_name("TRANSCRIPCIONES-ARCHIVO.md")
+        self.assertTrue(arch.exists()); self.assertLess(len(self.f.read_text()), 4000)
+        self.assertIn("conversación número 00", arch.read_text())                                          # nada se pierde
 
 
 class Gateway(unittest.TestCase):

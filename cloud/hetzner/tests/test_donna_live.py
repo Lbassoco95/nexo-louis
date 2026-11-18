@@ -4,7 +4,7 @@ from pathlib import Path
 from http.server import ThreadingHTTPServer
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "services"))
 TMP = Path(tempfile.mkdtemp())
-os.environ.update(PUSH_STATE_DIR=str(TMP / "st"), OPENCLAW_GATEWAY_TOKEN="master-secret-123", TZ="America/Mexico_City",
+os.environ.update(OPENCLAW_SPACES=str(TMP / "spaces"), PUSH_STATE_DIR=str(TMP / "st"), OPENCLAW_GATEWAY_TOKEN="master-secret-123", TZ="America/Mexico_City",
                   OPENCLAW_HOME=str(TMP / "oc"), OPENAI_API_KEY="sk-test", LIVE_IDLE_SECONDS="30")
 import ws_lite as W
 import app_auth as A
@@ -70,16 +70,31 @@ class RealtimeDeMentira:
                     self.evento(ws, type="conversation.item.input_audio_transcription.completed", transcript="¿Qué tengo hoy?")
                     self.evento(ws, type="response.output_audio_transcript.delta", delta="Déjame")
                     self.evento(ws, type="response.output_audio.delta", delta=base64.b64encode(b"\x01\x02" * 2400).decode())
+                    self.evento(ws, type="response.created", response={})
                     self.evento(ws, type="response.output_audio_transcript.done", transcript="Déjame revisar.")
-                    nombre, args = ("consultar_donna", json.dumps({"pedido": "agenda de hoy de Polo"})) if self.modo == "agenda" else ("terminar_conversacion", "{}")
+                    if self.modo == "promesa":                     # dice que lo hizo SIN llamar ninguna herramienta
+                        self.evento(ws, type="response.created", response={})
+                        self.evento(ws, type="response.output_audio_transcript.done", transcript="Claro, ya lo guardé en tu agenda.")
+                        self.evento(ws, type="response.done", response={"output": [{"type": "message"}]})
+                        continue
+                    nombre, args = {"agenda": ("consultar_donna", json.dumps({"pedido": "agenda de hoy de Polo"})),
+                                    "nota": ("guardar_nota", json.dumps({"texto": "Llamar a Kailash el jueves a las 10", "archivo": "agenda"})),
+                                    "regla": ("recordar_regla", json.dumps({"regla": "Siempre responderme primero con la cifra"})),
+                                    "recordatorio": ("crear_recordatorio", json.dumps({"mensaje": "Revisar contrato", "en_minutos": 30})),
+                                    "largo": ("consultar_donna", json.dumps({"pedido": "carga todas las transcripciones"})),
+                                    "segundo_plano": ("tarea_en_segundo_plano", json.dumps({"pedido": "carga todas las transcripciones a tu base"}))
+                                    }.get(self.modo, ("terminar_conversacion", "{}"))
                     self.evento(ws, type="response.function_call_arguments.done", call_id="call_1", name=nombre, arguments=args)
                     self.evento(ws, type="response.done", response={"output": [{"type": "function_call"}]})
             elif t == "conversation.item.create":
                 self.items.append(ev["item"])
             elif t == "response.create":
                 self.respuestas += 1
+                self.evento(ws, type="response.created", response={})
                 if self.items and self.items[-1].get("type") == "function_call_output" or self.modo == "texto":
-                    txt = "Tienes una junta con Dazon a las diez." if self.modo != "terminar" else "Hasta luego, Polo."
+                    txt = {"terminar": "Hasta luego, Polo.", "nota": "Listo, ya lo guardé en tu agenda.", "regla": "Listo, ya lo guardé como regla.",
+                           "recordatorio": "Listo, ya quedó el recordatorio.", "segundo_plano": "Va corriendo; te aviso al terminar."
+                           }.get(self.modo, "Tienes una junta con Dazon a las diez.")
                     self.evento(ws, type="response.output_audio.delta", delta=base64.b64encode(b"\x03\x04" * 2400).decode())
                     self.evento(ws, type="response.output_audio_transcript.done", transcript=txt)
                     self.evento(ws, type="response.done", response={"output": [{"type": "message"}]})
@@ -157,7 +172,9 @@ class Donna(Base):
         self.assertEqual(s["audio"]["output"]["voice"], "marin")
         self.assertEqual(s["audio"]["input"]["turn_detection"]["type"], "server_vad")
         self.assertTrue(s["audio"]["input"]["turn_detection"]["interrupt_response"])
-        self.assertEqual([t["name"] for t in s["tools"]], ["consultar_donna", "terminar_conversacion"])
+        self.assertEqual([t["name"] for t in s["tools"]], ["consultar_donna", "guardar_nota", "recordar_regla", "crear_recordatorio",
+                                                          "tarea_en_segundo_plano", "terminar_conversacion"])
+        self.assertIn("REGLA DE ORO", s["instructions"])
         self.assertIn("/v1/realtime?model=gpt-realtime-2.1", fake.ruta)
 
     def test_interrumpir_y_escribir(self):
@@ -185,6 +202,105 @@ class Donna(Base):
         for tok in ("malo", A.login("atajo-polo", "otra frase larga y segura 2026", "127.0.0.1")["token"]):
             fake, c = self.sesion("agenda", tok)
             self.assertTrue(self.hay(self.leer(c, 2), "error", m="No autorizado"))
+
+
+class AccionesPorVoz(Base):
+    def setUp(self):
+        self.space = TMP / "space"
+        self.space.mkdir(exist_ok=True)
+        for n in ("AGENDA.md", "LEARNINGS.md"):
+            (self.space / n).write_text("# " + n + "\n")
+        self._o = (core.SPACE, core._agendar_recordatorio, g._ask_donna_voice, g._CONSULTA_ESPERA)
+        core.SPACE = self.space
+        self.avisos = []
+        import louis_push
+        self._np = louis_push.notify_async
+        louis_push.notify_async = lambda *a, **k: self.avisos.append((a, k))
+        self.pedidos = []
+        core._agendar_recordatorio = lambda m, fh="", canal="telegram", modo="raw", rec=None, en_min=0: self.pedidos.append((m, fh, en_min)) or f"OK recordatorio creado en {en_min} min"
+        del CONSULTAS[:]
+
+    def tearDown(self):
+        core.SPACE, core._agendar_recordatorio, g._ask_donna_voice, g._CONSULTA_ESPERA = self._o
+        import louis_push
+        louis_push.notify_async = self._np
+
+    def _correr(self, modo, hasta=6.0, quiero=None):
+        fake, c = self.sesion(modo)
+        self.leer(c, 2, lambda o: self.hay(o, "listo"))
+        for _ in range(4):
+            c.send_binary(b"\x00\x01" * 2400)
+        ms = self.leer(c, hasta, quiero or (lambda o: self.hay(o, "tool_done")))
+        time.sleep(0.4)
+        c.close()
+        return fake, ms
+
+    def test_guardar_nota_se_ejecuta_de_verdad_y_se_verifica(self):
+        fake, ms = self._correr("nota", quiero=lambda o: self.hay(o, "out_done", text="Listo, ya lo guardé en tu agenda."))
+        self.assertIn("Llamar a Kailash el jueves a las 10", (self.space / "AGENDA.md").read_text())             # quedó escrito en la memoria
+        self.assertTrue(fake.items[-1]["output"].startswith("✅ Guardado en AGENDA.md"))
+        self.assertFalse(any(i.get("role") == "system" for i in fake.items))                                      # no hizo falta corregirla
+
+    def test_regla_permanente(self):
+        fake, ms = self._correr("regla")
+        self.assertIn("Siempre responderme primero con la cifra", (self.space / "LEARNINGS.md").read_text())
+        self.assertTrue(fake.items[-1]["output"].startswith("✅ Regla guardada"))
+
+    def test_recordatorio_real(self):
+        fake, ms = self._correr("recordatorio")
+        self.assertEqual(self.pedidos, [("Revisar contrato", "", 30)])
+        self.assertTrue(fake.items[-1]["output"].startswith("✅ Recordatorio creado"))
+
+    def test_si_la_accion_falla_se_le_dice_la_verdad(self):
+        (self.space / "AGENDA.md").unlink()
+        os.chmod(self.space, 0o500)
+        try:
+            if os.geteuid() == 0:                                     # como root no hay permisos que negar: se simula el fallo
+                orig = core.execute_tool
+                core.execute_tool = lambda n, a: "ERROR: disco lleno" if n == "append_to_memory" else orig(n, a)
+            fake, ms = self._correr("nota")
+            self.assertTrue(fake.items[-1]["output"].startswith("❌"))
+        finally:
+            os.chmod(self.space, 0o700)
+            if os.geteuid() == 0:
+                core.execute_tool = orig
+
+    def test_vigilante_corrige_promesas_sin_accion(self):
+        fake, ms = self._correr("promesa", hasta=4, quiero=lambda o: self.hay(o, "warn"))
+        self.assertTrue(self.hay(ms, "warn"))
+        time.sleep(0.5)
+        sis = [i for i in fake.items if i.get("role") == "system"]
+        self.assertEqual(len(sis), 1); self.assertIn("NO llamaste ninguna herramienta", sis[0]["content"][0]["text"])
+        self.assertGreaterEqual(fake.respuestas, 1)                    # y le pidió responder de nuevo ya con herramienta
+
+    def test_consulta_larga_pasa_a_segundo_plano_y_avisa(self):
+        g._CONSULTA_ESPERA = 1
+        g._ask_donna_voice = lambda m, h, registrar=True: (time.sleep(2.5) or ("Cargué 14 transcripciones a mi base.", "deepseek", None))
+        fake, ms = self._correr("largo", quiero=lambda o: self.hay(o, "tool_done"))
+        self.assertIn("segundo plano", fake.items[-1]["output"])                                                  # no se queda trabada
+        time.sleep(3.5)
+        self.assertTrue(any("Tarea lista" in a[0][0] and "14 transcripciones" in a[1]["full_body"] for a in self.avisos), self.avisos)
+
+    def test_tarea_en_segundo_plano_responde_al_instante(self):
+        g._ask_donna_voice = lambda m, h, registrar=True: (CONSULTAS.append(("bg", m, registrar)) or time.sleep(1) or ("Listo: 14 cargadas.", "deepseek", None))
+        t0 = time.time()
+        fake, ms = self._correr("segundo_plano", quiero=lambda o: self.hay(o, "tool_done"))
+        self.assertLess(time.time() - t0, 6)
+        self.assertTrue(fake.items[-1]["output"].startswith("✅ Quedó corriendo"))
+        time.sleep(2)
+        bg = [x for x in CONSULTAS if x[0] == "bg"]
+        self.assertIn("segundo plano", bg[0][1]); self.assertFalse(bg[0][2])
+        self.assertTrue(any("Tarea lista" in a[0][0] for a in self.avisos))
+
+    def test_la_conversacion_queda_guardada_y_en_la_base(self):
+        import app_media as M
+        M.summarize = lambda t: "**Resumen** de la plática"
+        fake, ms = self._correr("agenda", quiero=lambda o: self.hay(o, "out_done", text="Tienes una junta con Dazon a las diez."))
+        time.sleep(1.5)
+        convs = [i for i in M.listar(50) if i["origen"] == "donna-voz"]
+        self.assertTrue(convs)
+        self.assertIn("Polo: ¿Qué tengo hoy?", M.leer_texto(convs[0]["id"]))
+        self.assertIn(f"[{convs[0]['id']}]", (Path(os.environ["OPENCLAW_SPACES"]) / "TRANSCRIPCIONES.md").read_text())
 
 
 class Resumen(unittest.TestCase):

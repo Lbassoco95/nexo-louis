@@ -141,6 +141,9 @@ input.search{width:100%;background:var(--panel);color:var(--tx);border:1px solid
 .orb[data-s=speak]{animation:speak 1.2s infinite;background:radial-gradient(circle at 35% 30%,#a7f0cf,#34d399 55%,#0f8a5f)}
 @keyframes speak{50%{transform:scale(1.12)}}
 .vmst{font-size:18px;font-weight:600;text-align:center;min-height:26px}.vmtx{max-height:26dvh;overflow-y:auto;font-size:15px;color:#c9d3ea;text-align:center;margin:10px 0;line-height:1.45;width:100%}
+#fab{position:fixed;right:16px;bottom:calc(150px + env(safe-area-inset-bottom));width:58px;height:58px;border-radius:50%;border:0;font-size:26px;color:#fff;z-index:15;
+  background:linear-gradient(135deg,var(--acc),var(--acc2));box-shadow:0 6px 22px #4f7cff66}
+#fab:active{transform:scale(.94)}
 .vmms{font-size:11px;color:#8b97b3;min-height:14px;margin-bottom:6px}
 .vmhalf{display:flex;gap:8px;align-items:flex-start;font-size:12px;color:#c9d3ea;margin:4px 0 8px;line-height:1.35}
 .vmlink{background:none;border:0;color:#9db6ff;text-decoration:underline;font-size:12px;padding:0}
@@ -191,6 +194,7 @@ input.f{width:100%;background:var(--panel);color:var(--tx);border:1px solid var(
     <section class="view" id="v-ent"><div class="scroll" id="ent"></div></section>
     <section class="view" id="v-cfg"><div class="scroll" id="cfg"></div></section>
   </main>
+  <button id="fab" aria-label="Hablar con {{AGENT_NAME}}">🎙</button>
   <nav>
     <button data-v="chat" class="on"><span class="i">💬</span>{{AGENT_NAME}}</button>
     <button data-v="hoy"><span class="i">✅</span>Hoy<span class="badge" id="b-hoy" hidden></span></button>
@@ -923,7 +927,15 @@ async function vmLoop(){
   }
 }
 function vmStart(){VM.on=true;VM.silent=0;VM.log=[];VM.sid=rid();$('#vm-go').hidden=true;vmUnlock();vmLoop()}
-$('#vmbtn').onclick=()=>{$('#vm').classList.add('on');$('#vm-tx').innerHTML='';$('#vm-ms').textContent='';VM.log=[];$('#vm-go').hidden=false;$('#vm-go').textContent='🎙 Empezar';vmSet('idle','Habla con naturalidad; te contesto en voz alta')};
+/* abrir la voz: desde el botón flotante o el 🎧 empieza a escuchar en el MISMO toque; con el enlace ?hablar=1 (widget, Atajos) queda lista con un botón grande */
+function abrirVoz(iniciar){
+  $('#vm').classList.add('on');$('#vm-tx').innerHTML='';$('#vm-ms').textContent='';VM.log=[];
+  $('#vm-go').hidden=false;$('#vm-go').textContent='🎙 Toca para hablar con '+AGENT;
+  vmSet('idle','Listo para escucharte');
+  if(iniciar)dlStart();
+}
+$('#vmbtn').onclick=()=>abrirVoz(true);
+$('#fab').onclick=()=>abrirVoz(true);
 /* ---------- Donna EN TIEMPO REAL: voz de OpenAI (gpt-realtime-2.1) + el cerebro completo de Donna como herramienta ---------- */
 const DL={ws:null,on:false,half:LS.get('dl_half',true),t0:0,max:1800,tick:0,tool:false};
 function dlStop(){
@@ -1153,7 +1165,7 @@ navigator.serviceWorker&&navigator.serviceWorker.addEventListener('message',e=>{
 /* ---------- arranque ---------- */
 function boot(){renderChips();renderChat();ping();
   const qs=new URLSearchParams(location.search),q=qs.get('tab');go(titles[q]?q:LS.get('tab','chat'));
-  refreshBell();if(qs.get('link'))openLink(qs.get('link'));else if(q==='notifs')openInbox(qs.get('nid')||'');
+  refreshBell();if(qs.get('hablar'))abrirVoz(false);else if(qs.get('link'))openLink(qs.get('link'));else if(q==='notifs')openInbox(qs.get('nid')||'');
   loadHoy().catch(()=>{});recoverPending(true);pushResync()}
 if('serviceWorker' in navigator)navigator.serviceWorker.register('/app/sw.js').catch(()=>{});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&TOKEN){ping();refreshBell();recoverPending(true);if(LS.get('tab')==='hoy')loadHoy()}});

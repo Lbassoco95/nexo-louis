@@ -536,6 +536,7 @@ MEMORY_FILES = [
     "COACH.md",         # Briefing de coach ejecutivo: perfil psicométrico de Polo + prioridades de desarrollo
     "COWORK.md",        # Lo que Polo trabaja con Claude en Cowork (decisiones, entregables, pendientes, aprendizajes)
     "ACADEMICO.md",     # Diplomados en curso, entregas y fechas, y el plan del doctorado (programas, requisitos, convocatorias)
+    "TRANSCRIPCIONES.md",  # Resumen de cada reunión/audio/conversación traducida (se llena sola al terminar cada transcripción)
 ]
 
 
@@ -552,6 +553,7 @@ CLAUDE_MEMORY_LIMITS = {
     "PROJECTS.md": 10000,
     "PEOPLE.md": 6000,
     "COWORK.md": 7000,
+    "TRANSCRIPCIONES.md": 6000,
 }
 CLAUDE_MEMORY_DEFAULT_LIMIT = 4000
 
@@ -564,7 +566,7 @@ def _budget_memory(fname: str, text: str) -> str:
         return text
     omitted = len(text) - limit
     nota = f"\n…[{omitted} chars omitidos — usa la tool memoria_leer('{fname}') para el archivo completo]…\n"
-    if fname in ("JOURNAL.md", "COWORK.md"):          # bitácoras: lo más reciente está al final
+    if fname in ("JOURNAL.md", "COWORK.md", "TRANSCRIPCIONES.md"):          # bitácoras: lo más reciente está al final
         return nota + text[-limit:]
     mitad = limit // 2
     return text[:mitad] + nota + text[-mitad:]
@@ -582,6 +584,11 @@ def build_realtime_brief(max_chars: int = 15000) -> str:
         "DATOS Y ACCIONES: no tienes acceso directo a datos. Para CUALQUIER dato o acción (agenda, tareas, proyectos, Kawiil Central, Patio Yoltik, Slack, "
         "correo, documentos, grabaciones, tableros, recordatorios, memoria) llama a `consultar_donna` con el pedido completo y di con tus palabras, breve, lo que te "
         "devuelva. NUNCA inventes cifras, nombres, fechas ni estados: si la herramienta falla o no trae el dato, dilo tal cual.",
+        "REGLA DE ORO — HACER, NO PROMETER: nunca digas que guardaste, anotaste, agendaste, enviaste, cerraste, creaste o cargaste algo (ni que lo harás) si no llamaste "
+        "a una herramienta y te devolvió ✅. Si Polo pide algo, llama la herramienta EN ESE MOMENTO y después di el resultado real; si devuelve ❌ o falla, díselo claro. "
+        "Herramientas: `guardar_nota` (anota/guarda/apunta un dato o pendiente), `recordar_regla` (a partir de ahora… / siempre… / nunca…, preferencias permanentes), "
+        "`crear_recordatorio` (avisos con hora o «en X minutos»), `tarea_en_segundo_plano` (trabajo largo: cargar o procesar muchas cosas, informes; avisa al terminar) y "
+        "`consultar_donna` (todo lo demás: agenda, tareas, Patio, Slack, correo, documentos, transcripciones).",
         "CONFIRMA ANTES DE CAMBIAR: antes de cerrar o actualizar tareas, enviar mensajes o correos, crear o mover eventos, o borrar algo, repite en una frase lo que "
         "entendiste y pide confirmación. Llama a la herramienta solo cuando Polo diga que sí, e incluye en el pedido «Polo ya confirmó». Las consultas "
         "(solo mirar) no necesitan confirmación.",
@@ -600,7 +607,8 @@ def build_realtime_brief(max_chars: int = 15000) -> str:
 
     mem = []
     for titulo, txt in (("PERFIL", cabeza("USER.md", 3500)), ("DIPLOMADOS Y DOCTORADO", cabeza("ACADEMICO.md", 2500)),
-                        ("PREFERENCIAS APRENDIDAS", cola("LEARNINGS.md", 2500)), ("LO QUE POLO TRABAJA CON CLAUDE EN COWORK (reciente)", cola("COWORK.md", 2500))):
+                        ("PREFERENCIAS APRENDIDAS", cola("LEARNINGS.md", 2500)), ("LO QUE POLO TRABAJA CON CLAUDE EN COWORK (reciente)", cola("COWORK.md", 2500)),
+                        ("REUNIONES Y CONVERSACIONES RECIENTES (resúmenes)", cola("TRANSCRIPCIONES.md", 2500))):
         if txt:
             mem.append(f"## {titulo}\n{txt}")
     if mem:
@@ -746,6 +754,8 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "- PROSPECTOS.md: pipeline comercial — quién, qué necesita, próximo paso, fecha de seguimiento\n"
         "- PERSONAL.md: vida personal de Polo — agenda no-oficina, hobbies, planes\n"
         "- FAMILIA.md: familia + cumpleaños + aniversarios (recordatorios anuales)\n"
+        "- TRANSCRIPCIONES.md: resumen de cada reunión, audio o conversación traducida que Polo grabó (se llena sola; el texto completo se busca con `adjuntos_buscar` / `adjuntos_leer`). "
+        "Si Polo pide «cargar las transcripciones a tu base», usa `adjuntos_ingerir` (todas las que falten).\n"
         "- ACADEMICO.md: los diplomados de Polo (institución, fechas, entregas, calificaciones) y su futuro doctorado (programas candidatos, requisitos, "
         "convocatorias, documentos, asesores, línea de investigación). Cuando mencione clases, tareas, lecturas, entregas, becas o el doctorado, "
         "captúralo ahí sin que lo pida, y agenda recordatorios con `agendar_recordatorio` para cada entrega o fecha límite. Si el archivo está vacío "
@@ -2993,6 +3003,11 @@ TOOLS_DEFINITION = [
         "name": "adjuntos_leer",
         "description": "Lee el texto completo (por tramos) de un adjunto: transcripción de una reunión/audio, texto de un documento o lectura de una foto. `desde` = posición en caracteres para continuar un texto largo.",
         "input_schema": {"type": "object", "properties": {"id": {"type": "string"}, "desde": {"type": "integer"}, "limite": {"type": "integer"}}, "required": ["id"]},
+    },
+    {
+        "name": "adjuntos_ingerir",
+        "description": "Carga a tu BASE (memoria TRANSCRIPCIONES.md) las transcripciones y conversaciones traducidas que aún no estén ahí: guarda un resumen de cada una con fecha e id. Sin argumentos carga TODAS las que falten; con `id` solo esa. Devuelve cuántas cargó. Las nuevas ya se cargan solas.",
+        "input_schema": {"type": "object", "properties": {"id": {"type": "string"}}},
     },
     {
         "name": "adjuntos_compartir",
@@ -9314,7 +9329,7 @@ def execute_tool(name: str, args: dict) -> str:
             return f"ERROR creando recordatorio: {r.stderr.strip()}"
         elif name.startswith("patio_"):
             return _tool_patio(name, args)
-        elif name in ("adjuntos_buscar", "adjuntos_leer", "adjuntos_listar", "adjuntos_compartir"):
+        elif name in ("adjuntos_buscar", "adjuntos_leer", "adjuntos_listar", "adjuntos_compartir", "adjuntos_ingerir"):
             return _tool_adjuntos(name, args)
         elif name in ("crear_artefacto", "actualizar_artefacto", "listar_artefactos"):
             return _tool_artefacto(name, args)
@@ -9865,6 +9880,13 @@ def _tool_adjuntos(name, args):
             return _M.buscar(args.get("consulta", ""), int(args.get("limite") or 8))
         if name == "adjuntos_leer":
             return _M.leer_texto(args.get("id", ""), int(args.get("desde") or 0), int(args.get("limite") or 8000))
+        if name == "adjuntos_ingerir":
+            if args.get("id"):
+                r = _M.ingerir(args["id"])
+                return ("✅ cargada a TRANSCRIPCIONES.md" + (" (ya estaba)" if r.get("ya") else "")) if r.get("ok") else "❌ " + r.get("motivo", "no se pudo")
+            r = _M.ingerir_todo()
+            return (f"✅ Transcripciones cargadas a mi base: {r['nuevas']} nuevas, {r['ya']} ya estaban"
+                    + (f", {r['errores']} con error" if r["errores"] else "") + f" (de {r['total']} listas).")
         if name == "adjuntos_compartir":
             if args.get("revocar"):
                 return f"✅ enlaces revocados: {_M.share_revoke(args.get('id', ''))}"

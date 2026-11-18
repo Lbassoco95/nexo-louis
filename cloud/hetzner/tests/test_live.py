@@ -4,7 +4,7 @@ from pathlib import Path
 from http.server import ThreadingHTTPServer
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "services"))
 TMP = Path(tempfile.mkdtemp())
-os.environ.update(PUSH_STATE_DIR=str(TMP / "st"), OPENCLAW_GATEWAY_TOKEN="master-secret-123", TZ="America/Mexico_City",
+os.environ.update(OPENCLAW_SPACES=str(TMP / "spaces"), PUSH_STATE_DIR=str(TMP / "st"), OPENCLAW_GATEWAY_TOKEN="master-secret-123", TZ="America/Mexico_City",
                   OPENCLAW_HOME=str(TMP / "oc"), OPENAI_API_KEY="sk-test", LIVE_IDLE_SECONDS="3")
 import ws_lite as W
 import app_auth as A

@@ -12,5 +12,9 @@
   "icons": [
     {"src": "/app/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"},
     {"src": "/app/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable"}
+  ],
+  "shortcuts": [
+    {"name": "Hablar con {{AGENT_NAME}}", "short_name": "Hablar", "description": "Abre {{AGENT_NAME}} listo para conversar por voz",
+     "url": "/app/?hablar=1", "icons": [{"src": "/app/icon.svg", "sizes": "any", "type": "image/svg+xml"}]}
   ]
 }

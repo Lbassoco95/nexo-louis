@@ -16,7 +16,8 @@ async function correr({ keychain = {}, fetchImpl, runsInWidget = true, family = 
     Alert: class { addSecureTextField() {} addAction() {} addCancelAction() {} async present() { return -1; } },
     Request: class { constructor(u) { this.u = u; this.response = {}; } async loadJSON() { const r = await fetchImpl(this.u, this.headers); this.response = { statusCode: r.status }; return r.json; } },
     ListWidget: class { constructor() { out.w = this; }
-      addText(t) { const o = { t }; out.lines.push(o); return o; } addSpacer() {} set url(v) { out.url = v; } get url() { return out.url; } },
+      addText(t) { const o = { t }; out.lines.push(o); return o; } addSpacer() {} set url(v) { out.url = v; } get url() { return out.url; }
+      addStack() { return { addText: t => ({ t }), set url(v) { out.hablarUrl = v; } }; } },
     Script: { setWidget: () => { out.setWidget = true; }, complete: () => {} },
   };
   const AsyncFn = Object.getPrototypeOf(async function () {}).constructor;
@@ -33,6 +34,7 @@ const HOY = { generado: '16 Nov 23:50', abiertos: 105, cerrados: 3, confirmacion
   let r = await correr({ keychain: { donna_token: 'tok' }, fetchImpl: async (u, h) => { assert.equal(u, 'https://donna.kawiil.mx/v1/app/hoy'); assert.equal(h.Authorization, 'Bearer tok'); return { status: 200, json: HOY }; } });
   assert.ok(r.setWidget); assert.equal(r.url, 'https://donna.kawiil.mx/app/?tab=hoy');
   assert.equal(r.text[0], 'Donna · Pendientes');
+  assert.equal(r.hablarUrl, 'https://donna.kawiil.mx/app/?hablar=1');          // el widget trae un toque directo a «hablar con Donna»
   assert.match(r.text[1], /🔴 2 hoy · 105 abiertos · ⚠️ 2 por confirmar/);
   assert.equal(r.text[2], '• HOY 17-nov · Enviar carta a Vizum');              // quita la etiqueta [auto …]
   assert.equal(r.text.filter(t => /^[•◦] /.test(t)).length, 5);                // máx 5 en mediano

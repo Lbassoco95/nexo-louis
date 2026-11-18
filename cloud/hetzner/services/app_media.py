@@ -460,6 +460,11 @@ def process(mid: str) -> None:
         with os.fdopen(fd, "w") as f:
             f.write(texto)
         _update(mid, estado="listo", texto_chars=len(texto), resumen=resumen, motor=motor, progreso="")
+        if tipo in INGESTIBLES:
+            try:
+                ingerir(mid)                                              # «todo lo que son transcripciones» pasa solo a la base de Donna
+            except Exception:
+                pass
         if tipo in ("audio", "video"):
             try:
                 import louis_push
@@ -494,7 +499,82 @@ def register_text(nombre: str, texto: str, tipo: str = "documento", resumen: str
            "partes": 0, "texto_chars": len(texto), "resumen": resumen or "", "error": "", "motor": "texto"}
     with _LOCK:
         _write_json(d / "meta.json", rec)
+    if tipo == "conversacion":
+        try:
+            ingerir(mid)                                                  # las conversaciones guardadas también pasan a la base de Donna
+        except Exception:
+            pass
     return public(rec)
+
+
+# ------------------------------------------------------------------ ingestión a la memoria de Donna (TRANSCRIPCIONES.md)
+INGESTIBLES = {"audio", "video", "conversacion"}
+TRANS_MAX, TRANS_KEEP = 120_000, 80_000
+
+
+def _space_dir() -> Path:
+    env = os.environ.get("OPENCLAW_SPACES")
+    if env:
+        return Path(env)
+    import louis_core as core
+    return Path(core.SPACE)
+
+
+def ingerir(mid: str) -> dict:
+    """Carga UNA transcripción/conversación a la memoria de Donna (TRANSCRIPCIONES.md): fecha, nombre, id y resumen (o el inicio del texto).
+    Idempotente (marca `ingerido`). Se llama sola al terminar cada transcripción; también en bloque con ingerir_todo()."""
+    m = _meta(mid)
+    if not m or m.get("estado") != "listo" or m.get("tipo") not in INGESTIBLES:
+        return {"ok": False, "motivo": "no es una transcripción lista"}
+    if m.get("ingerido"):
+        return {"ok": True, "ya": True}
+    try:
+        texto = (_dir(mid) / "text.txt").read_text()
+    except OSError:
+        return {"ok": False, "motivo": "sin texto"}
+    cuerpo = (m.get("resumen") or "").strip() or re.sub(r"\s+", " ", texto[:900]).strip()
+    try:
+        import cerebro_calidad as cc
+        cuerpo = cc.redactar_credenciales(cuerpo)[0]
+    except Exception:
+        pass
+    fecha = time.strftime("%Y-%m-%d %H:%M", time.localtime(m.get("creado", time.time())))
+    entrada = f"\n### {fecha} · {m['tipo']} · {m['nombre'][:80]} [{mid}]\n{cuerpo[:2500]}\n"
+    d = _space_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / "TRANSCRIPCIONES.md"
+    with _LOCK:
+        actual = f.read_text(encoding="utf-8") if f.exists() else "# TRANSCRIPCIONES — resumen de cada reunión, audio y conversación traducida (más reciente al final)\n"
+        if f"[{mid}]" in actual:
+            _update(mid, ingerido=int(time.time()))
+            return {"ok": True, "ya": True}
+        actual += entrada
+        if len(actual) > TRANS_MAX:                                   # rotación: lo viejo pasa a un archivo, nada se pierde
+            corte = actual.find("\n### ", len(actual) - TRANS_KEEP)
+            corte = corte if corte > 0 else len(actual) - TRANS_KEEP
+            with open(d / "TRANSCRIPCIONES-ARCHIVO.md", "a", encoding="utf-8") as af:
+                af.write(actual[actual.find("\n### "):corte].rstrip() + "\n")
+            actual = "# TRANSCRIPCIONES — resumen de cada reunión, audio y conversación traducida (más reciente al final)\n" + actual[corte:]
+        f.write_text(actual, encoding="utf-8")
+        _update(mid, ingerido=int(time.time()))
+    return {"ok": True, "ya": False}
+
+
+def ingerir_todo(limite: int = 500) -> dict:
+    """Carga a la memoria TODAS las transcripciones listas que aún no estaban. → {nuevas, ya, errores, total}"""
+    nuevas = ya = err = 0
+    items = [i for i in listar(limite) if i["tipo"] in INGESTIBLES and i["estado"] == "listo"]
+    for i in sorted(items, key=lambda x: x["creado"]):
+        try:
+            r = ingerir(i["id"])
+            if r.get("ok"):
+                ya += 1 if r.get("ya") else 0
+                nuevas += 0 if r.get("ya") else 1
+            else:
+                err += 1
+        except Exception:
+            err += 1
+    return {"nuevas": nuevas, "ya": ya, "errores": err, "total": len(items)}
 
 
 # ------------------------------------------------------------------ consulta

@@ -232,3 +232,17 @@ Servidor: WebSocket `/v1/app/donna` (mismo esquema que el traductor en vivo; la 
 confirma contigo en voz. Las transcripciones (lo que dijiste y lo que dijo) van al historial → memoria de las 23:00. Protocolo verificado con `tools/probar-donna-realtime.py`.
 «Modo clásico (por turnos)» queda como respaldo. Con bocina el micrófono se pausa mientras habla; con audífonos se puede interrumpir hablando; tocar el círculo siempre interrumpe.
 Variables: `LIVE_DONNA_MODEL` (gpt-realtime-2.1), `LIVE_DONNA_VOICE` (marin), `LIVE_MAX_SECONDS`. Pruebas: `python3 -m unittest tests.test_donna_live`.
+
+## Donna que HACE lo que dice, transcripciones en su base y acceso directo (v16)
+
+- **Acciones reales por voz:** herramientas directas `guardar_nota`, `recordar_regla`, `crear_recordatorio` (módulo `donna_voz.py`): cada una VERIFICA el resultado (relee el archivo) y devuelve ✅ solo si quedó hecho,
+  ❌ con el motivo si no. Instrucción de «hacer, no prometer» + **vigilante de promesas**: si Donna dice «ya lo guardé / voy a agendarlo» sin haber llamado una herramienta en esa respuesta, el servidor le inyecta una
+  corrección del sistema y le pide actuar (se avisa a la app con `warn`).
+- **Trabajo largo → segundo plano:** `consultar_donna` espera 40 s (`DONNA_CONSULTA_ESPERA`); si no termina, sigue solo y manda notificación con el resultado. `tarea_en_segundo_plano` lo deja corriendo de inmediato (sin tope de la conversación).
+- **Transcripciones en su base:** cada audio/video transcrito y cada conversación traducida o por voz se carga SOLA a `TRANSCRIPCIONES.md` (resumen, fecha, id; sin credenciales; rota a `TRANSCRIPCIONES-ARCHIVO.md`);
+  Donna la lee en su memoria y en su resumen de voz. Las que ya existían: `python3 tools/cargar-transcripciones.py` o «carga las transcripciones a tu base» (`adjuntos_ingerir`).
+- **Conversaciones por voz guardadas:** al terminar 🎧 la conversación queda como adjunto «Conversación con Donna …» con resumen (buscable, compartible) y pasa a la base.
+- **Acceso directo:** 🎙 flotante en todas las pantallas (un toque = abre y escucha); enlace `/app/?hablar=1` (pantalla de voz lista, un toque); atajo al mantener el icono (Android); el widget de Scriptable trae «🎙 Hablar con Donna».
+  iPhone: Atajos → «Abrir URL» `https://donna.kawiil.mx/app/?hablar=1`, ponle de nombre «Hablar con Donna» y asígnalo a: Botón de Acción (Ajustes → Botón de Acción → Atajo), Toque trasero (Accesibilidad → Tocar → Toque trasero),
+  Pantalla de bloqueo / Centro de control (control de Atajos), widget de Atajos, o por voz: «Oye Siri, hablar con Donna».
+- Pruebas: `python3 -m unittest tests.test_donna_live tests.test_media`.
