@@ -2918,6 +2918,51 @@ TOOLS_DEFINITION = [
         },
     },
     {
+        "name": "patio_estado",
+        "description": "Estado de Patio Yoltik (la app de operación/CRM de Yoltik, patio-yoltik.mx): conexión y conteos reales de proyectos, tareas, deals, prospectos, leads y clientes. Úsalo para «cómo va Patio/Yoltik» y para verificar la conexión.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "patio_tablas",
+        "description": "Lista las tablas legibles de Patio Yoltik.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "patio_describir",
+        "description": "Columnas de una tabla de Patio Yoltik (descubre el modelo antes de consultar; no asumas nombres).",
+        "input_schema": {"type": "object", "properties": {"tabla": {"type": "string"}}, "required": ["tabla"]},
+    },
+    {
+        "name": "patio_query",
+        "description": "SELECT de solo lectura (una sentencia, máx 100 filas) sobre Patio Yoltik. Para ver CUALQUIER dato: leads, deals, clientes, RH, etc.",
+        "input_schema": {"type": "object", "properties": {"sql": {"type": "string"}, "razon": {"type": "string"}}, "required": ["sql"]},
+    },
+    {
+        "name": "patio_tareas",
+        "description": "Lista tareas de Patio Yoltik con su UUID (necesario para actualizar). Filtros: estatus (pendiente, en_progreso, revision, en_revision, bloqueada, completada, cancelada) y proyecto (parte del nombre).",
+        "input_schema": {"type": "object", "properties": {"estatus": {"type": "string"}, "proyecto": {"type": "string"}, "limit": {"type": "integer"}}},
+    },
+    {
+        "name": "patio_proyectos",
+        "description": "Lista proyectos de Patio Yoltik.",
+        "input_schema": {"type": "object", "properties": {"limit": {"type": "integer"}}},
+    },
+    {
+        "name": "patio_tarea_detalle",
+        "description": "Detalle completo de una tarea de Patio Yoltik (UUID completo) con sus últimos comentarios.",
+        "input_schema": {"type": "object", "properties": {"tarea_id": {"type": "string"}}, "required": ["tarea_id"]},
+    },
+    {
+        "name": "patio_actualizar_tarea",
+        "description": "ESCRIBE en Patio Yoltik: cambia una tarea (UUID completo). Campos: estatus, prioridad (baja/media/alta/urgente), fecha_vencimiento (YYYY-MM-DD), asignado_a (UUID de team_members), titulo, descripcion. Para CERRAR: {\"estatus\": \"completada\"}. Úsala solo cuando Polo lo pida o lo confirme; di exactamente qué cambiaste y reporta el resultado real de la herramienta. No puede borrar.",
+        "input_schema": {"type": "object", "properties": {"tarea_id": {"type": "string"}, "cambios": {"type": "object"}}, "required": ["tarea_id", "cambios"]},
+    },
+    {
+        "name": "patio_avance",
+        "description": "ESCRIBE en Patio Yoltik: agrega un comentario/avance a una tarea (UUID completo).",
+        "input_schema": {"type": "object", "properties": {"tarea_id": {"type": "string"}, "texto": {"type": "string"}}, "required": ["tarea_id", "texto"]},
+    },
+    {
         "name": "crear_artefacto",
         "description": ("Crea un TABLERO/ARTEFACTO visual que Polo ve en la app (seguimiento de un proyecto, tabla, KPIs, "
                         "checklist). Úsalo cuando Polo pida un dashboard/tablero/seguimiento de algo que no tiene uno, o cuando "
@@ -9154,6 +9199,8 @@ def execute_tool(name: str, args: dict) -> str:
             if r.returncode == 0:
                 return f"OK recordatorio creado: {r.stdout.strip()}"
             return f"ERROR creando recordatorio: {r.stderr.strip()}"
+        elif name.startswith("patio_"):
+            return _tool_patio(name, args)
         elif name in ("crear_artefacto", "actualizar_artefacto", "listar_artefactos"):
             return _tool_artefacto(name, args)
         elif name == "save_learning":
@@ -9656,6 +9703,35 @@ def _sanitize_tool_blocks(messages: list) -> list:
             content = new_content
         out.append({**m, "content": content})
     return out
+
+
+def _tool_patio(name, args):
+    try:
+        import patio_yoltik as P
+    except Exception as e:
+        return f"❌ módulo patio_yoltik no disponible: {e}"
+    try:
+        if name == "patio_estado":
+            return P.estado()
+        if name == "patio_tablas":
+            return P.tablas()
+        if name == "patio_describir":
+            return P.describir(args.get("tabla", ""))
+        if name == "patio_query":
+            return P.query(args.get("sql", ""), args.get("razon", ""))
+        if name == "patio_tareas":
+            return P.tareas(args.get("estatus", ""), args.get("proyecto", ""), args.get("limit", 30))
+        if name == "patio_proyectos":
+            return P.proyectos(args.get("limit", 30))
+        if name == "patio_tarea_detalle":
+            return P.tarea_detalle(args.get("tarea_id", ""))
+        if name == "patio_actualizar_tarea":
+            return P.actualizar_tarea(args.get("tarea_id", ""), args.get("cambios") or {})
+        if name == "patio_avance":
+            return P.avance(args.get("tarea_id", ""), args.get("texto", ""))
+    except Exception as e:
+        return f"❌ error con Patio Yoltik: {e}"
+    return f"❌ herramienta desconocida: {name}"
 
 
 # ===== Artefactos (tableros visuales en la app) =====

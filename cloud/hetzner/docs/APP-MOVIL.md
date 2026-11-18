@@ -126,3 +126,13 @@ botón 🧩 del encabezado = lista; en el chat aparece una tarjeta «🧩 Abrir 
 - Archivos: `/opt/openclaw/state/artefactos/*.json` (0600). Tope 300 KB c/u, 200 en total.
 - Endpoints: `GET /v1/app/artefactos`, `GET /v1/app/artefacto?id=…`.
 - Pruebas: `python3 -m unittest tests.test_artefactos`.
+
+## Patio Yoltik (v6)
+
+Donna lee y modifica Patio Yoltik (Supabase `udqkldwxforwgncinkrr`) con DOS roles distintos de Postgres:
+`patio_lectura` (lee todo, solo SELECT) y `patio_escritura` (solo UPDATE de tareas e INSERT de comentarios; no borra).
+SQL: `scripts/patio-yoltik-rol-lectura.sql` y `scripts/patio-yoltik-rol-escritura.sql`. Credenciales en el servidor:
+`sudo bash /opt/louis/scripts/setup-patio-yoltik-creds.sh` → `/opt/openclaw/credentials/patio-yoltik.env` (0600).
+Herramientas: `patio_estado/tablas/describir/query/tareas/proyectos/tarea_detalle` (lectura),
+`patio_actualizar_tarea` (cerrar = `{"estatus":"completada"}`) y `patio_avance` (escritura, auditada en `logs/patio-yoltik-ops.log`).
+Pruebas: `python3 -m unittest tests.test_patio_yoltik`.

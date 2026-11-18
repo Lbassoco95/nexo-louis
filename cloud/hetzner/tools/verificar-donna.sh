@@ -66,6 +66,17 @@ echo "3e) Tableros (artefactos)"
   && ok "tableros instalados (app_artifacts.py + herramientas)" || bad "faltan los tableros → instalar app_artifacts.py y louis_core.py"
 [[ "$(cnt 'v1/app/artefacto' "$OC/scripts/openclaw_gateway.py")" -ge 1 ]] && ok "endpoints de tableros" || bad "gateway sin endpoints de tableros → reinstalar openclaw_gateway.py"
 
+echo "3f) Patio Yoltik"
+PY="$OC/credentials/patio-yoltik.env"
+if [[ -f "$PY" ]] && $SUDO grep -q "^PATIO_YOLTIK_DATABASE_URL=.\+" "$PY"; then ok "lectura configurada"; else info "Patio Yoltik sin configurar → sudo bash /opt/louis/scripts/setup-patio-yoltik-creds.sh"; fi
+if [[ -f "$PY" ]] && $SUDO grep -q "^PATIO_YOLTIK_DATABASE_URL_WRITE='\?[a-z]" "$PY"; then ok "escritura (tareas) configurada"; else info "escritura de Patio no configurada (solo lectura)"; fi
+if [[ -n "$TOKEN" && -f "$PY" ]]; then
+  PE=$(curl -s --max-time 40 -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"args":{}}' \
+        "$URL/v1/tools/patio_estado" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("result",""))' 2>/dev/null)
+  [[ -n "$PE" ]] && echo "$PE" | sed 's/^/  | /'
+  echo "$PE" | grep -q "✗\|❌" && bad "Patio Yoltik no responde completo" || { [[ -n "$PE" ]] && ok "Patio Yoltik responde con datos reales"; }
+fi
+
 echo "4) Conversación real (¿Ya estás ahí?)"
 if [[ -n "$TOKEN" ]]; then
   ERR=$(mktemp); OUT=$(DONNA_URL="$URL" DONNA_TOKEN="$TOKEN" python3 "$HERE/donna-chat.py" "¿Ya estás ahí?" 2>"$ERR")
