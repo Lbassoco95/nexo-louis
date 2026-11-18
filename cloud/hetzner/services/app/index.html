@@ -110,6 +110,17 @@ input.search{width:100%;background:var(--panel);color:var(--tx);border:1px solid
 .artframe{width:100%;height:68dvh;border:1px solid var(--line);border-radius:12px;background:#fff}
 .artrow{display:block;width:100%;text-align:left;background:var(--card,transparent);border:1px solid var(--line);border-radius:12px;color:inherit;padding:10px 12px;margin:0 0 8px;font-size:14px}
 .artrow small{display:block;color:var(--mut)}
+.atts{display:flex;gap:6px;flex-wrap:wrap;padding:6px 14px 0}
+.att{display:flex;align-items:center;gap:6px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:5px 6px 5px 10px;font-size:12.5px;max-width:100%}
+.att b{font-weight:600;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.att i{font-style:normal;color:var(--mut)}.att.err{border-color:#dc2626;color:#dc2626}.att.ok i{color:#16a34a}
+.att button{background:none;border:0;color:var(--mut);font-size:15px;padding:0 4px}
+.recbar{display:none;align-items:center;gap:10px;margin:6px 14px 0;padding:8px 12px;border-radius:14px;background:#dc262620;border:1px solid #dc2626}
+.recbar.on{display:flex}.recbar .dotr{width:10px;height:10px;border-radius:50%;background:#dc2626;animation:pl 1s infinite}
+@keyframes pl{50%{opacity:.25}}.recbar b{flex:1;font-variant-numeric:tabular-nums}
+.recbar button{border:0;border-radius:10px;padding:7px 12px;font-weight:600;background:#dc2626;color:#fff}.recbar button.g{background:var(--panel);color:var(--tx);border:1px solid var(--line)}
+.menurow{display:flex;align-items:center;gap:12px;width:100%;text-align:left;background:var(--panel);border:1px solid var(--line);border-radius:14px;color:inherit;padding:13px;margin:0 0 8px;font-size:15px}
+.menurow small{display:block;color:var(--mut);font-size:12px}
 .btn{background:linear-gradient(135deg,var(--acc),var(--acc2));color:#fff;border:0;border-radius:12px;padding:12px 16px;font:inherit;font-weight:600;width:100%}
 .btn.ghost{background:var(--panel);color:var(--tx);border:1px solid var(--line);font-weight:400;margin-top:8px}
 label{display:block;font-size:13px;color:var(--mut);margin:14px 0 6px}
@@ -139,7 +150,12 @@ input.f{width:100%;background:var(--panel);color:var(--tx);border:1px solid var(
     <section class="view on" id="v-chat">
       <div class="scroll" id="log"></div>
       <div class="chips" id="chips"></div>
+      <div class="recbar" id="recbar"><span class="dotr"></span><b id="rectime">00:00</b><button class="g" id="reccancel">Descartar</button><button id="recstop">Detener y guardar</button></div>
+      <div class="atts" id="atts"></div>
+      <input type="file" id="f-any" multiple hidden>
+      <input type="file" id="f-cam" accept="image/*" capture="environment" hidden>
       <div class="composer">
+        <button class="rb mic" id="clip" aria-label="Adjuntar" style="background:var(--panel);color:var(--tx);border:1px solid var(--line)">📎</button>
         <button class="rb mic" id="mic" aria-label="Dictar">🎙</button>
         <textarea id="inp" rows="1" placeholder="Habla con {{AGENT_NAME}}…" enterkeyhint="send"></textarea>
         <button class="rb" id="send" aria-label="Enviar">➤</button>
@@ -297,7 +313,14 @@ const rid=()=>(crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.ran
 function setBusy(b){busy=b;const s=$('#send');s.classList.toggle('stop',b);s.textContent=b?'■':'➤';s.setAttribute('aria-label',b?'Detener':'Enviar')}
 function finishMsg(t,model){chat.push({r:'a',t,ts:Date.now(),model});LS.set('chat',chat.slice(-200));LS.del('pending')}
 async function sendMsg(text){
-  text=(text||'').trim();if(!text||busy)return;
+  text=(text||'').trim();
+  if(PEND.some(a=>a.state==='subiendo')){toast('Espera a que termine de subir el adjunto');return}
+  const atts=PEND.filter(a=>a.id&&a.state!=='error');
+  if((!text&&!atts.length)||busy)return;
+  if(!text)text='Revisa lo que te mando.';
+  const attIds=atts.map(a=>a.id);
+  if(atts.length)text+='\n'+atts.map(a=>'📎 '+a.name).join('\n');
+  PEND=[];paintPend();
   setBusy(true);$('#inp').value='';autosize();
   chat.push({r:'u',t:text,ts:Date.now()});LS.set('chat',chat.slice(-200));renderChat();
   const id=rid();LS.set('pending',{id,ts:Date.now()});
@@ -310,7 +333,7 @@ async function sendMsg(text){
   try{
     const r=await fetch('/v1/app/chat/stream',{method:'POST',signal:ctl.signal,
       headers:{'Content-Type':'application/json',Authorization:'Bearer '+TOKEN},
-      body:JSON.stringify({rid:id,messages:[...hist,{role:'user',content:text}]})});
+      body:JSON.stringify({rid:id,attachments:attIds,messages:[...hist,{role:'user',content:text}]})});
     if(r.status===401){logout(true);throw new Error('Sesión vencida')}
     if(!r.ok){let m='';try{m=(await r.json()).error}catch(e){}throw new Error(m||('Error '+r.status))}
     online(true);
@@ -371,6 +394,138 @@ $('#mic').onclick=()=>{
   rec.onend=()=>{rec=null;$('#mic').classList.remove('rec')};rec.onerror=()=>{rec=null;$('#mic').classList.remove('rec')};
   rec.start();
 };
+
+
+/* ---------- adjuntos: fotos, archivos y grabaciones (subida por partes, sin tope de tamaño) ---------- */
+const CHB=8*1024*1024, sleep=ms=>new Promise(r=>setTimeout(r,ms));
+let PEND=[];
+const fmtB=n=>n>=1e9?(n/1e9).toFixed(1)+' GB':n>=1e6?(n/1e6).toFixed(1)+' MB':Math.max(1,Math.round(n/1e3))+' KB';
+function paintPend(){
+  $('#atts').innerHTML=PEND.map((a,i)=>`<div class="att ${a.state==='error'?'err':a.state==='listo'?'ok':''}"><b>${esc(a.name)}</b><i>${esc(a.label||'')}</i><button data-x="${i}" aria-label="Quitar">✕</button></div>`).join('');
+  $('#atts').querySelectorAll('[data-x]').forEach(b=>b.onclick=()=>{PEND.splice(+b.dataset.x,1);paintPend()});
+}
+async function shrinkImg(file){
+  if(!/^image\/(jpeg|png|webp|heic|heif)$/i.test(file.type)&&!/\.(jpe?g|png|webp|heic|heif)$/i.test(file.name))return file;
+  try{
+    const bmp=await createImageBitmap(file),k=Math.min(1,2048/Math.max(bmp.width,bmp.height));
+    const c=document.createElement('canvas');c.width=Math.round(bmp.width*k);c.height=Math.round(bmp.height*k);
+    c.getContext('2d').drawImage(bmp,0,0,c.width,c.height);
+    const b=await new Promise(r=>c.toBlob(r,'image/jpeg',.88));
+    return b?new File([b],(file.name.replace(/\.[^.]+$/,'')||'foto')+'.jpg',{type:'image/jpeg'}):file;
+  }catch(e){return file}
+}
+async function putPart(id,i,blob){
+  let last='';
+  for(let t=0;t<6;t++){
+    try{
+      const r=await fetch('/v1/app/media/'+id+'/chunk?i='+i,{method:'PUT',headers:{Authorization:'Bearer '+TOKEN},body:blob});
+      if(r.status===401){logout(true);throw new Error('Sesión vencida')}
+      if(r.ok)return;
+      let m='';try{m=(await r.json()).error}catch(e){}
+      if(r.status===400)throw Object.assign(new Error(m||'rechazado'),{fatal:true});
+      last=m||('Error '+r.status);
+    }catch(e){if(e.fatal)throw e;last=e.message}
+    await sleep(1500*(t+1));
+  }
+  throw new Error('sin conexión: '+last);
+}
+async function pollMedia(it){
+  for(let n=0;n<4000;n++){
+    await sleep(n<10?2500:8000);
+    try{
+      const m=await api('/v1/app/media/'+it.id);
+      it.label=m.estado==='listo'?'✓ lista':m.estado==='error'?'⚠️ '+(m.error||'error'):'procesando'+(m.progreso?' '+m.progreso:'')+'…';
+      it.state=m.estado==='listo'?'listo':m.estado==='error'?'error':'procesando';paintPend();
+      if(m.estado==='listo'||m.estado==='error')return;
+    }catch(e){}
+  }
+}
+async function uploadFile(file,origen){
+  const it={name:file.name||'archivo',state:'subiendo',label:'0%'};PEND.push(it);paintPend();
+  try{
+    if(/^image\//.test(file.type)||/\.(jpe?g|png|webp|heic|heif)$/i.test(file.name))file=await shrinkImg(file);
+    it.name=file.name;
+    const r=await api('/v1/app/media/init',{method:'POST',body:JSON.stringify({nombre:file.name,mime:file.type,tamano:file.size,origen})});
+    it.id=r.id;const n=Math.max(1,Math.ceil(file.size/CHB));
+    for(let i=0;i<n;i++){await putPart(r.id,i,file.slice(i*CHB,(i+1)*CHB));it.label=Math.round((i+1)/n*100)+'% · '+fmtB(file.size);paintPend()}
+    await api('/v1/app/media/'+r.id+'/finish',{method:'POST',body:JSON.stringify({partes:n})});
+    it.state='procesando';it.label='procesando…';paintPend();pollMedia(it);
+  }catch(e){it.state='error';it.label='⚠️ '+e.message;paintPend()}
+}
+$('#f-any').onchange=e=>{[...e.target.files].forEach(f=>uploadFile(f,'archivo'));e.target.value=''};
+$('#f-cam').onchange=e=>{[...e.target.files].forEach(f=>uploadFile(f,'camara'));e.target.value=''};
+
+/* grabación larga: sube por partes MIENTRAS graba (no se pierde si se corta la red; pesa lo que pese) */
+let REC=null;
+function recName(mime){const d=new Date(),p=n=>String(n).padStart(2,'0');
+  return 'grabacion-'+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'-'+p(d.getHours())+p(d.getMinutes())+(/mp4/.test(mime)?'.m4a':/ogg/.test(mime)?'.ogg':'.webm')}
+async function startRec(){
+  if(REC)return;
+  if(!navigator.mediaDevices||!window.MediaRecorder){toast('Este navegador no puede grabar audio');return}
+  let stream;try{stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}})}catch(e){toast('Permiso de micrófono denegado');return}
+  const mime=['audio/mp4','audio/webm;codecs=opus','audio/webm','audio/ogg'].find(m=>MediaRecorder.isTypeSupported(m))||'';
+  const mr=new MediaRecorder(stream,mime?{mimeType:mime,audioBitsPerSecond:48000}:{audioBitsPerSecond:48000});
+  const it={name:recName(mr.mimeType||'audio/webm'),state:'subiendo',label:'grabando…'};PEND.push(it);paintPend();
+  const R=REC={mr,stream,it,buf:[],bytes:0,idx:0,total:0,q:Promise.resolve(),t0:Date.now(),cancelled:false,lock:null,id:null};
+  try{const r=await api('/v1/app/media/init',{method:'POST',body:JSON.stringify({nombre:it.name,mime:mr.mimeType,tamano:0,origen:'grabacion'})});R.id=r.id;it.id=r.id}
+  catch(e){it.state='error';it.label='⚠️ '+e.message;paintPend();stream.getTracks().forEach(t=>t.stop());REC=null;return}
+  const flush=(force)=>{if(!R.buf.length||(!force&&R.bytes<1024*1024))return;const blob=new Blob(R.buf,{type:mr.mimeType}),i=R.idx++;R.buf=[];R.bytes=0;
+    R.q=R.q.then(()=>putPart(R.id,i,blob)).then(()=>{it.label='grabando · '+fmtB(R.total)}).catch(e=>{R.err=e;it.label='⚠️ '+e.message});};
+  mr.ondataavailable=e=>{if(e.data&&e.data.size){R.buf.push(e.data);R.bytes+=e.data.size;R.total+=e.data.size;flush(false)}};
+  mr.onstop=async()=>{
+    clearInterval(R.tick);stream.getTracks().forEach(t=>t.stop());try{R.lock&&R.lock.release()}catch(e){}
+    $('#recbar').classList.remove('on');
+    if(R.cancelled){PEND=PEND.filter(x=>x!==it);paintPend();REC=null;return}
+    flush(true);await R.q;
+    if(R.err){it.state='error';paintPend();REC=null;toast('No se pudo subir la grabación');return}
+    try{await api('/v1/app/media/'+R.id+'/finish',{method:'POST',body:JSON.stringify({partes:R.idx})});
+      it.state='procesando';it.label='transcribiendo…';paintPend();pollMedia(it);toast('Grabación guardada: se transcribe sola')}
+    catch(e){it.state='error';it.label='⚠️ '+e.message;paintPend()}
+    REC=null;
+  };
+  try{R.lock=await navigator.wakeLock.request('screen')}catch(e){}
+  document.addEventListener('visibilitychange',R.vis=async()=>{if(REC&&document.visibilityState==='visible'){try{R.lock=await navigator.wakeLock.request('screen')}catch(e){}}});
+  mr.start(5000);$('#recbar').classList.add('on');
+  R.tick=setInterval(()=>{const s=Math.floor((Date.now()-R.t0)/1000);$('#rectime').textContent=(s>=3600?String(Math.floor(s/3600)).padStart(2,'0')+':':'')+String(Math.floor(s%3600/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')},500);
+}
+$('#recstop').onclick=()=>{if(REC&&REC.mr.state!=='inactive')REC.mr.stop()};
+$('#reccancel').onclick=()=>{if(REC&&confirm('¿Descartar la grabación?')){REC.cancelled=true;if(REC.mr.state!=='inactive')REC.mr.stop()}};
+window.addEventListener('beforeunload',e=>{if(REC){e.preventDefault();e.returnValue=''}});
+
+$('#clip').onclick=()=>sheet('Adjuntar',
+  '<button class="menurow" id="m-cam"><span style="font-size:24px">📷</span><span><b>Tomar foto</b><small>La leo y extraigo su texto</small></span></button>'+
+  '<button class="menurow" id="m-file"><span style="font-size:24px">📄</span><span><b>Fotos, archivos o documentos</b><small>PDF, Word, Excel, audio, video… sin límite de tamaño</small></span></button>'+
+  '<button class="menurow" id="m-rec"><span style="font-size:24px">🔴</span><span><b>Grabar reunión o nota de voz</b><small>Se sube mientras grabas y se transcribe. Mantén la app abierta y la pantalla encendida (en iPhone, si bloqueas el teléfono la grabación se corta)</small></span></button>'+
+  '<button class="menurow" id="m-list"><span style="font-size:24px">🗂️</span><span><b>Mis adjuntos y transcripciones</b><small>Lo que ya subiste</small></span></button>');
+document.addEventListener('click',e=>{
+  const b=e.target.closest&&e.target.closest('#m-cam,#m-file,#m-rec,#m-list,[data-media]');if(!b)return;
+  if(b.id==='m-cam'){closeSheet();$('#f-cam').click()}
+  else if(b.id==='m-file'){closeSheet();$('#f-any').click()}
+  else if(b.id==='m-rec'){closeSheet();startRec()}
+  else if(b.id==='m-list')openMediaList();
+  else if(b.dataset.media)openMedia(b.dataset.media);
+});
+async function openMediaList(){
+  sheet('Mis adjuntos','<div class="empty">Cargando…</div>');
+  try{
+    const d=await api('/v1/app/media?limit=60');
+    if(!d.items.length){sheet('Mis adjuntos','<div class="empty">Aún no hay adjuntos.</div>');return}
+    const ic={imagen:'🖼️',audio:'🎙️',video:'🎬',documento:'📄'};
+    sheet('Mis adjuntos',d.items.map(i=>'<button class="artrow" data-media="'+esc(i.id)+'"><b>'+(ic[i.tipo]||'📎')+' '+esc(i.nombre)+'</b><small>'+esc(i.estado)+' · '+fmtB(i.tamano||0)+' · '+new Date(i.creado*1000).toLocaleDateString('es-MX',{day:'numeric',month:'short'})+(i.error?' · ⚠️ '+esc(i.error):'')+'</small></button>').join('')+
+      '<div class="sub" style="margin-top:8px">Espacio libre en el servidor: '+Math.round((d.libre_mb||0)/1024)+' GB</div>');
+  }catch(e){sheet('Mis adjuntos','<div class="empty">No pude cargar. '+esc(e.message)+'</div>')}
+}
+async function openMedia(id){
+  sheet('Adjunto','<div class="empty">Cargando…</div>');
+  try{
+    const m=await api('/v1/app/media/'+id),t=m.estado==='listo'?(await api('/v1/app/media/'+id+'/text')).texto:'';
+    sheet(m.nombre,'<div class="sub">'+esc(m.tipo)+' · '+esc(m.estado)+(m.motor?' · '+esc(m.motor):'')+'</div>'+
+      (m.resumen?'<div class="card" style="margin:10px 0">'+md(m.resumen)+'</div>':'')+
+      (t?'<details><summary>Texto completo</summary><pre style="white-space:pre-wrap;font-size:13px">'+esc(t)+'</pre></details>':'<div class="empty">'+esc(m.error||'Procesando…')+'</div>')+
+      '<button class="artcard" id="m-ask" style="margin-top:12px">💬 Preguntarle a Donna sobre esto</button>');
+    const a=$('#m-ask');if(a)a.onclick=()=>{closeSheet();go('chat');$('#inp').value='Sobre mi adjunto «'+m.nombre+'»: ';PEND.push({name:m.nombre,state:'listo',label:'✓',id:m.id});paintPend();$('#inp').focus()};
+  }catch(e){sheet('Adjunto','<div class="empty">'+esc(e.message)+'</div>')}
+}
 
 /* ---------- Bandeja de notificaciones ---------- */
 function setAppBadge(n){try{if(n>0&&navigator.setAppBadge)navigator.setAppBadge(n);else if(navigator.clearAppBadge)navigator.clearAppBadge()}catch(e){}}

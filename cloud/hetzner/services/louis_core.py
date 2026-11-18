@@ -433,6 +433,7 @@ TOOL_KEYWORDS = [
     r"\b(supabase|vercel|postgres|base\s+de\s+datos|database)\b",
     # Patio Yoltik y tableros (artefactos): requieren herramientas; sin ellas el modelo inventaría
     r"\b(patio|yoltik|tablero|tableros|dashboard|dashboards|artefacto|artefactos)\b",
+    r"\[ADJUNTO\b", r"\b(adjunto|adjuntos|grabaci[oó]n|grabaciones|transcripci[oó]n|transcribe|transcribir|audio|nota de voz)\b",
     # Browser / navegación / vault
     r"\b(navega|abre\s+(?:la\s+)?(?:p[aá]gina|web|sitio|url)|chrome|browser|click|llena|completa\s+(?:el\s+)?formulario|login\s+en|sesi[oó]n\s+en)\b",
     r"\b(screenshot|captura\s+de\s+pantalla|extrae\s+de\s+la\s+p[aá]gina)\b",
@@ -670,7 +671,12 @@ def load_system_prompt(channel: str = "telegram") -> str:
             "algo se lee mucho mejor visual, usa `crear_artefacto` DESPUÉS de consultar datos reales, y pon en tu respuesta "
             "el marcador `[[artefacto:ID]]` que te devuelva la herramienta (la app lo muestra como tarjeta). "
             "Antes de crear, `listar_artefactos`: si ya existe uno del proyecto, `actualizar_artefacto`. "
-            "Un tablero nunca lleva cifras inventadas: lo que no sepas va como «por definir»."
+            "Un tablero nunca lleva cifras inventadas: lo que no sepas va como «por definir».\n"
+            "**ADJUNTOS:** Polo te manda fotos, audios, grabaciones de reuniones y archivos desde la app. Su contenido ya viene en el mensaje como "
+            "bloques `[ADJUNTO id «nombre»]` (fotos = lo que se ve; audios = transcripción; documentos = su texto). Úsalo tal cual; si dice que el resto "
+            "se lee con `adjuntos_leer`, léelo antes de resumir. Para «¿qué dijimos de X?» usa `adjuntos_buscar`. De una reunión o nota de voz propón "
+            "acuerdos y pendientes (quién · qué · cuándo, «por definir» si no se dijo) y ofrece crear las tareas; nunca inventes lo que no está en el texto. "
+            "Si un adjunto falló o sigue procesándose, díselo con sinceridad."
         )
     parts.append(canal_text)
 
@@ -2926,6 +2932,21 @@ TOOLS_DEFINITION = [
             },
             "required": ["text", "datetime"],
         },
+    },
+    {
+        "name": "adjuntos_buscar",
+        "description": "Busca en TODO lo que Polo ha subido a la app (fotos leídas, grabaciones y reuniones transcritas, PDFs, Word, Excel…). Úsala cuando pregunte «¿qué dijimos de…?», «busca en mis grabaciones…», «¿qué decía el documento…?». Devuelve coincidencias con el id del adjunto.",
+        "input_schema": {"type": "object", "properties": {"consulta": {"type": "string"}, "limite": {"type": "integer"}}, "required": ["consulta"]},
+    },
+    {
+        "name": "adjuntos_leer",
+        "description": "Lee el texto completo (por tramos) de un adjunto: transcripción de una reunión/audio, texto de un documento o lectura de una foto. `desde` = posición en caracteres para continuar un texto largo.",
+        "input_schema": {"type": "object", "properties": {"id": {"type": "string"}, "desde": {"type": "integer"}, "limite": {"type": "integer"}}, "required": ["id"]},
+    },
+    {
+        "name": "adjuntos_listar",
+        "description": "Lista los adjuntos recientes de la app (id, nombre, tipo, estado, resumen). tipo: imagen, audio, video o documento.",
+        "input_schema": {"type": "object", "properties": {"tipo": {"type": "string"}, "limite": {"type": "integer"}}},
     },
     {
         "name": "patio_estado",
@@ -9237,6 +9258,8 @@ def execute_tool(name: str, args: dict) -> str:
             return f"ERROR creando recordatorio: {r.stderr.strip()}"
         elif name.startswith("patio_"):
             return _tool_patio(name, args)
+        elif name in ("adjuntos_buscar", "adjuntos_leer", "adjuntos_listar"):
+            return _tool_adjuntos(name, args)
         elif name in ("crear_artefacto", "actualizar_artefacto", "listar_artefactos"):
             return _tool_artefacto(name, args)
         elif name == "save_learning":
@@ -9774,6 +9797,25 @@ def _tool_patio(name, args):
     except Exception as e:
         return f"❌ error con Patio Yoltik: {e}"
     return f"❌ herramienta desconocida: {name}"
+
+
+def _tool_adjuntos(name, args):
+    try:
+        import app_media as _M
+    except Exception as e:
+        return f"❌ módulo de adjuntos no disponible: {e}"
+    try:
+        if name == "adjuntos_buscar":
+            return _M.buscar(args.get("consulta", ""), int(args.get("limite") or 8))
+        if name == "adjuntos_leer":
+            return _M.leer_texto(args.get("id", ""), int(args.get("desde") or 0), int(args.get("limite") or 8000))
+        items = _M.listar(int(args.get("limite") or 20), args.get("tipo", ""))
+        if not items:
+            return "(no hay adjuntos todavía)"
+        return "\n".join(f"- {i['id']} «{i['nombre']}» · {i['tipo']} · {i['estado']}"
+                         + (f" · {i['resumen'][:120]}" if i.get("resumen") else "") for i in items)
+    except Exception as e:
+        return f"❌ error con adjuntos: {e}"
 
 
 # ===== Artefactos (tableros visuales en la app) =====

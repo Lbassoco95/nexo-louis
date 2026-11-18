@@ -47,6 +47,7 @@ if SCRIPTS_DIR.exists():
 
 import louis_core as core  # noqa: E402
 import app_auth  # noqa: E402  (usuario/contraseña de la app, sesiones propias)
+import app_media  # noqa: E402  (adjuntos, grabaciones y archivos de la app)
 
 # Solo StreamHandler: el servicio de systemd ya redirige stdout/stderr al log
 # (StandardOutput=append:.../openclaw-gateway.log). Con FileHandler además, cada
@@ -702,7 +703,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.send_response(204)
             self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
             self.send_header("Content-Length", "0")
             self.end_headers()
@@ -840,6 +841,8 @@ class Handler(BaseHTTPRequestHandler):
                     except ValueError:
                         art = None
                     self._send_json(200 if art else 404, art or {"error": "no existe ese artefacto"})
+                elif _r0 == "/v1/app/media" or _r0.startswith("/v1/app/media/"):
+                    self._media_get(_r0)
                 elif _r0 == "/v1/app/entregables":
                     self._send_json(200, {"entregables": core._entregables_lista_tablero()})
                 elif _r0 == "/v1/app/entregable":
@@ -1043,9 +1046,109 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
             return False
 
+    # ---- adjuntos (fotos, audios, videos, archivos) ----
+    def _media_user(self) -> str:
+        kind, ses = getattr(self, "_auth", (None, None))
+        return (ses or {}).get("user", "") if kind == "sesion" else "admin"
+
+    def _media_get(self, path: str):
+        from urllib.parse import urlparse, parse_qs
+        parts = [x for x in path.split("/") if x]          # v1 app media [id] [accion]
+        if len(parts) == 3:
+            q = parse_qs(urlparse(self.path).query)
+            self._send_json(200, {"items": app_media.listar(int((q.get("limit") or ["50"])[0] or 50), (q.get("tipo") or [""])[0]),
+                                  "libre_mb": app_media.free_bytes() // 1024 ** 2})
+            return
+        mid = parts[3]
+        if not app_media.ID_RE.match(mid) or not app_media.get(mid):
+            self._send_json(404, {"error": "no existe ese adjunto"})
+            return
+        if len(parts) == 4:
+            self._send_json(200, app_media.get(mid))
+        elif parts[4] == "parts":
+            self._send_json(200, {"partes": app_media.parts_have(mid)})
+        elif parts[4] == "text":
+            self._send_json(200, {"texto": app_media.leer_texto(mid, 0, 30000)})
+        elif parts[4] == "file":
+            fp, m = app_media.file_path(mid)
+            if not fp:
+                self._send_json(404, {"error": "archivo no disponible"})
+                return
+            size = fp.stat().st_size
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", m.get("mime") or "application/octet-stream")
+                self.send_header("Content-Disposition", 'attachment; filename="%s"' % app_media.safe_name(m["nombre"]).encode("ascii", "replace").decode())
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Content-Security-Policy", "sandbox")
+                self.send_header("Content-Length", str(size))
+                self.end_headers()
+                with open(fp, "rb") as f:
+                    while True:
+                        blk = f.read(1024 * 1024)
+                        if not blk:
+                            break
+                        self.wfile.write(blk)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+        else:
+            self._send_json(404, {"error": "ruta desconocida"})
+
+    def _media_post(self, path: str, body: dict) -> bool:
+        parts = [x for x in path.split("/") if x]
+        try:
+            if parts == ["v1", "app", "media", "init"]:
+                r = app_media.init(str(body.get("nombre", "")), str(body.get("mime", "")), int(body.get("tamano") or 0),
+                                   self._media_user(), str(body.get("origen", "")))
+                self._send_json(200, r)
+                return True
+            if len(parts) == 5 and parts[:3] == ["v1", "app", "media"] and parts[4] == "finish":
+                if not app_media.ID_RE.match(parts[3]):
+                    raise ValueError("id inválido")
+                m = app_media.finish(parts[3], int(body.get("partes") or 0))
+                self._send_json(200, app_media.public(m))
+                return True
+        except ValueError as e:
+            self._send_json(400, {"error": str(e)})
+            return True
+        except Exception as e:
+            log.exception("media falló")
+            self._send_json(500, {"error": str(e)[:200]})
+            return True
+        return False
+
+    def do_PUT(self):
+        """PUT /v1/app/media/<id>/chunk?i=N — cuerpo binario de una parte, escrito directo a disco (sin tope de 1 MB)."""
+        from urllib.parse import urlparse, parse_qs
+        if not self.path.startswith("/v1/app/media/"):
+            self._send_json(404, {"error": "no encontrado"})
+            return
+        if not _require_app_auth(self):
+            self._send_json(401, {"error": "unauthorized"})
+            return
+        u = urlparse(self.path)
+        parts = [x for x in u.path.split("/") if x]
+        if len(parts) != 5 or parts[4] != "chunk" or not app_media.ID_RE.match(parts[3]):
+            self._send_json(404, {"error": "ruta inválida"})
+            return
+        try:
+            idx = int((parse_qs(u.query).get("i") or ["-1"])[0])
+            n = int(self.headers.get("Content-Length", "0"))
+            self._send_json(200, app_media.save_chunk(parts[3], idx, self.rfile, n))
+        except ValueError as e:
+            self._send_json(400, {"error": str(e)})
+        except Exception as e:
+            log.exception("chunk falló")
+            self._send_json(500, {"error": str(e)[:200]})
+
     def _chat_stream(self, body: dict):
         rid = str(body.get("rid", ""))
         user_msg, history = _split_messages(body.get("messages", []))
+        adj = body.get("attachments")
+        if isinstance(adj, list) and adj:
+            ctx = app_media.contexto_para_chat([str(x) for x in adj])
+            if ctx:
+                user_msg = f"{user_msg}\n\n{ctx}"
         if not _RID_OK.match(rid) or not user_msg:
             self._send_json(400, {"error": "rid y mensaje de usuario requeridos"})
             return
@@ -1138,6 +1241,9 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json()
         except Exception as e:
             self._send_json(400, {"error": f"JSON inválido: {e}"})
+            return
+
+        if self.path.startswith("/v1/app/media/") and self._media_post(self.path.split("?", 1)[0], body):
             return
 
         # App móvil: chat en streaming (SSE)
@@ -1332,6 +1438,12 @@ def main():
     log.info("Arrancando openclaw-gateway en %s:%d", HOST, PORT)
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     srv.started_at = int(time.time())
+    try:
+        n = app_media.resume_pending()
+        if n:
+            log.info("Adjuntos pendientes retomados: %d", n)
+    except Exception:
+        log.exception("no pude retomar adjuntos pendientes")
     log.info("Tools cargados: %d", len(core.TOOLS_DEFINITION))
     log.info("Memory files: %s", ", ".join(core.MEMORY_FILES))
     log.info("Auth API (Bearer): %s", "activa" if TOKEN else ("DESACTIVADA (OPENCLAW_ALLOW_NO_AUTH=1)" if ALLOW_NO_AUTH else "sin token → todo rechazado"))

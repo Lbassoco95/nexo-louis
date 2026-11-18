@@ -81,6 +81,15 @@ echo "3g) Slack de Yoltik"
 if $SUDO grep -q "^SLACK_\(USER\|BOT\)_TOKEN_YOLTIK=xox" /opt/openclaw/credentials/slack.env 2>/dev/null; then ok "token de Yoltik presente"
 else info "Slack de Yoltik sin configurar → sudo bash /opt/louis/scripts/setup-slack-yoltik.sh"; fi
 
+echo "3h) Adjuntos y grabaciones"
+[[ -f "$OC/scripts/app_media.py" ]] && ok "app_media.py instalado" || bad "falta app_media.py → reinstalar (deploy o install)"
+command -v ffmpeg >/dev/null && ok "ffmpeg instalado" || bad "falta ffmpeg (sin él no se transcribe audio/video) → sudo apt install -y ffmpeg"
+command -v pdftotext >/dev/null && ok "pdftotext instalado (leer PDFs)" || info "falta pdftotext → sudo apt install -y poppler-utils (para leer PDFs)"
+if $SUDO grep -qs "^OPENAI_API_KEY=." "$OC/credentials/openai.env" "$OC/openclaw.env" "$OC/.env"; then ok "OPENAI_API_KEY presente (transcripción en la nube)"
+elif [[ -x /usr/local/bin/whisper-cli ]]; then info "sin OPENAI_API_KEY: usará whisper local (más lento)"
+else bad "no hay motor de transcripción: define OPENAI_API_KEY en $OC/credentials/openai.env o instala whisper"; fi
+info "espacio libre para adjuntos: $(df -h --output=avail "$OC/state" 2>/dev/null | tail -1 | tr -d ' ')"
+
 echo "4) Conversación real (¿Ya estás ahí?)"
 if [[ -n "$TOKEN" ]]; then
   ERR=$(mktemp); OUT=$(DONNA_URL="$URL" DONNA_TOKEN="$TOKEN" python3 "$HERE/donna-chat.py" "¿Ya estás ahí?" 2>"$ERR")

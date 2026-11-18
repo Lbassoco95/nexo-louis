@@ -145,3 +145,18 @@ Token en `/opt/openclaw/credentials/slack.env` como `SLACK_BOT_TOKEN_YOLTIK` (`s
 Donna solo ve los canales donde la invites (`/invite @Donna`). Las herramientas `slack_resumen/canales/leer/dm_leer` aceptan
 `workspace: "yoltik"` (default kawiil). El resumen de las 18:17 y el seguimiento de las 07:41 incluyen Yoltik con etiqueta `[Yoltik]`.
 Pruebas: `python3 -m unittest tests.test_slack_workspaces`.
+
+## Adjuntos y grabaciones (v8)
+
+📎 en el chat: tomar foto, subir archivos (PDF, Word, Excel, PowerPoint, audio, video…) o **grabar** reuniones/notas de voz.
+- **Sin tope de tamaño propio:** la subida es por partes de 8 MB escritas directo a disco y reanudable; el único límite es el espacio libre
+  del servidor (`MEDIA_MIN_FREE_GB`, 3 GB de reserva por defecto). Las fotos se reducen a 2048 px antes de subir.
+- **Grabación larga:** sube mientras graba; mantiene la pantalla encendida (Wake Lock). En iPhone la grabación se corta si bloqueas el teléfono o
+  sales de la app: es una limitación de iOS para apps web.
+- **Procesamiento** (en el servidor, 2 a la vez): foto → lectura con visión de Claude; audio/video → transcripción por tramos de 10 min con marcas de
+  tiempo (OpenAI si hay `OPENAI_API_KEY` en `credentials/openai.env`; si no, whisper local) + resumen/acuerdos/pendientes; documentos → texto.
+  Requiere `ffmpeg` (y `poppler-utils` para PDF). Aviso a la bandeja cuando termina una transcripción.
+- **Donna los consulta:** el contenido va en el mensaje; para el resto y para búsquedas usa `adjuntos_buscar`, `adjuntos_leer`, `adjuntos_listar`.
+- Archivos en `/opt/openclaw/state/media/<id>/` (0700/0600). Endpoints: `POST /v1/app/media/init`, `PUT …/<id>/chunk?i=N`, `POST …/<id>/finish`,
+  `GET /v1/app/media`, `GET …/<id>`, `…/<id>/text`, `…/<id>/file`.
+- Pruebas: `python3 -m unittest tests.test_media`.
