@@ -141,6 +141,7 @@ input.search{width:100%;background:var(--panel);color:var(--tx);border:1px solid
 .orb[data-s=speak]{animation:speak 1.2s infinite;background:radial-gradient(circle at 35% 30%,#a7f0cf,#34d399 55%,#0f8a5f)}
 @keyframes speak{50%{transform:scale(1.12)}}
 .vmst{font-size:18px;font-weight:600;text-align:center;min-height:26px}.vmtx{max-height:26dvh;overflow-y:auto;font-size:15px;color:#c9d3ea;text-align:center;margin:10px 0;line-height:1.45;width:100%}
+.pbar{height:8px;border-radius:999px;background:var(--line);overflow:hidden;margin:6px 0}.pbar>i{display:block;height:100%;background:linear-gradient(90deg,var(--acc),var(--acc2));transition:width .4s}
 #fab{position:fixed;right:16px;bottom:calc(150px + env(safe-area-inset-bottom));width:58px;height:58px;border-radius:50%;border:0;font-size:26px;color:#fff;z-index:15;
   background:linear-gradient(135deg,var(--acc),var(--acc2));box-shadow:0 6px 22px #4f7cff66}
 #fab:active{transform:scale(.94)}
@@ -191,6 +192,7 @@ input.f{width:100%;background:var(--panel);color:var(--tx);border:1px solid var(
       </div>
     </section>
     <section class="view" id="v-hoy"><div class="scroll" id="hoy"></div></section>
+    <section class="view" id="v-trab"><div class="scroll" id="trab"></div></section>
     <section class="view" id="v-ent"><div class="scroll" id="ent"></div></section>
     <section class="view" id="v-cfg"><div class="scroll" id="cfg"></div></section>
   </main>
@@ -198,6 +200,7 @@ input.f{width:100%;background:var(--panel);color:var(--tx);border:1px solid var(
   <nav>
     <button data-v="chat" class="on"><span class="i">💬</span>{{AGENT_NAME}}</button>
     <button data-v="hoy"><span class="i">✅</span>Hoy<span class="badge" id="b-hoy" hidden></span></button>
+    <button data-v="trab"><span class="i">🛠️</span>Trabajos<span class="badge" id="b-trab" hidden></span></button>
     <button data-v="ent"><span class="i">📦</span>Entregables</button>
     <button data-v="cfg"><span class="i">⚙️</span>Ajustes</button>
   </nav>
@@ -209,6 +212,7 @@ input.f{width:100%;background:var(--panel);color:var(--tx);border:1px solid var(
   <div class="vmst" id="vm-st">Habla con naturalidad; te contesto en voz alta</div>
   <div class="vmtx" id="vm-tx"></div><div class="vmms" id="vm-ms"></div>
   <button class="artcard" id="vm-go">🎙 Empezar</button>
+  <button class="artcard" id="vm-trab" hidden style="margin:6px 0"></button>
   <label class="vmhalf"><input type="checkbox" id="vm-half" checked> Uso la bocina (pausa el micrófono mientras Donna habla; con audífonos, desmárcalo para poder interrumpirla hablando)</label>
   <div class="vmhint">Di «adiós» para terminar · toca el círculo para interrumpirla · <button id="vm-classic" class="vmlink">modo clásico (por turnos)</button></div>
 </div></div>
@@ -247,7 +251,7 @@ function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('on');setT
 /* ---------- markdown liviano y seguro (todo se escapa primero) ---------- */
 function md(src){
   const blocks=[];let s=esc(src).replace(/```(?:\w+)?\n?([\s\S]*?)```/g,(_,c)=>{blocks.push(c);return '\u0000'+(blocks.length-1)+'\u0000'});
-  const inl=t=>t.replace(/\[\[artefacto:(a[0-9a-f]{10})\]\]/g,'<button class="artcard" data-art="$1">🧩 Abrir tablero</button>').replace(/`([^`\n]+)`/g,'<code>$1</code>').replace(/\*\*([^*\n]+)\*\*/g,'<b>$1</b>')
+  const inl=t=>t.replace(/\[\[trabajo:(j[0-9a-f]{10})\]\]/g,'<button class="artcard" data-link="trabajo:$1">🛠️ Ver trabajo</button>').replace(/\[\[artefacto:(a[0-9a-f]{10})\]\]/g,'<button class="artcard" data-art="$1">🧩 Abrir tablero</button>').replace(/`([^`\n]+)`/g,'<code>$1</code>').replace(/\*\*([^*\n]+)\*\*/g,'<b>$1</b>')
     .replace(/(^|[\s(>])\*([^*\n]+)\*(?=[\s).,;:!?<]|$)/g,'$1<i>$2</i>').replace(/(^|[\s(>])_([^_\n]+)_(?=[\s).,;:!?<]|$)/g,'$1<i>$2</i>')
     .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>')
     .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g,'$1<a href="$2" target="_blank" rel="noopener">$2</a>');
@@ -319,16 +323,16 @@ $('#ltok').onclick=async()=>{
 $('#tok').addEventListener('keydown',e=>{if(e.key==='Enter')$('#ltok').click()});
 
 /* ---------- navegación ---------- */
-const titles={chat:'{{AGENT_NAME}}',hoy:'Hoy',ent:'Entregables',cfg:'Ajustes'};
+const titles={chat:'{{AGENT_NAME}}',hoy:'Hoy',trab:'Trabajos',ent:'Entregables',cfg:'Ajustes'};
 function go(v){
   $$('.view').forEach(x=>x.classList.toggle('on',x.id==='v-'+v));
   $$('nav button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
   $('#title').textContent=titles[v];LS.set('tab',v);
-  if(v==='hoy')loadHoy();if(v==='ent')loadEnt();if(v==='cfg')renderCfg();
+  if(v==='hoy')loadHoy();if(v==='ent')loadEnt();if(v==='cfg')renderCfg();if(v==='trab')loadTrab();
   if(v==='chat')scrollDown();
 }
 $$('nav button').forEach(b=>b.onclick=()=>go(b.dataset.v));
-$('#refresh').onclick=()=>{const v=LS.get('tab','chat');if(v==='hoy')loadHoy();else if(v==='ent')loadEnt();else ping();toast('Actualizado')};
+$('#refresh').onclick=()=>{const v=LS.get('tab','chat');if(v==='hoy')loadHoy();else if(v==='ent')loadEnt();else if(v==='trab')loadTrab();else ping();toast('Actualizado')};
 
 /* ---------- chat ---------- */
 const CHIPS=['¿Qué tengo hoy?','Resumen de mis pendientes','¿Qué entregables esperan mi Vo.Bo.?','¿Qué vence esta semana?','Prepárame el cierre del día'];
@@ -545,7 +549,7 @@ document.addEventListener('click',e=>{
   else if(b.id==='m-list')openMediaList();
   else if(b.dataset.media)openMedia(b.dataset.media);
 });
-function openLink(l){const [k,id]=String(l||'').split(':');if(k==='media'&&id)openMedia(id);else if(k==='tablero'&&id)openArt(id)}
+function openLink(l){const [k,id]=String(l||'').split(':');if(k==='media'&&id)openMedia(id);else if(k==='tablero'&&id)openArt(id);else if(k==='trabajo'&&id)openTrabajo(id)}
 document.addEventListener('click',e=>{const b=e.target.closest&&e.target.closest('[data-link]');if(b){e.preventDefault();openLink(b.dataset.link)}});
 const MIC_ICON={imagen:'🖼️',audio:'🎙️',video:'🎬',documento:'📄',conversacion:'🌐'};
 async function openMediaList(){
@@ -931,7 +935,7 @@ function vmStart(){VM.on=true;VM.silent=0;VM.log=[];VM.sid=rid();$('#vm-go').hid
 function abrirVoz(iniciar){
   $('#vm').classList.add('on');$('#vm-tx').innerHTML='';$('#vm-ms').textContent='';VM.log=[];
   $('#vm-go').hidden=false;$('#vm-go').textContent='🎙 Toca para hablar con '+AGENT;
-  vmSet('idle','Listo para escucharte');
+  vmSet('idle','Listo para escucharte');VM.trabajo='';const bt=$('#vm-trab');if(bt)bt.hidden=true;
   if(iniciar)dlStart();
 }
 $('#vmbtn').onclick=()=>abrirVoz(true);
@@ -960,6 +964,8 @@ async function dlStart(){
     else if(m.t==='out_done'){if(m.text&&m.text.trim()){vmShow(AGENT,m.text.trim());chat.push({r:'a',t:m.text.trim(),ts:Date.now(),model:'realtime'});LS.set('chat',chat.slice(-200))}}
     else if(m.t==='tool'){DL.tool=true;if(!laSpeaking())vmSet('think','🔎 Consultando…')}
     else if(m.t==='tool_done'){DL.tool=false}
+    else if(m.t==='trabajo'){VM.trabajo=m.id;const bt=$('#vm-trab');if(bt){bt.hidden=false;bt.textContent='🛠️ Ver el trabajo: '+(m.titulo||'').slice(0,40)}trabBadge()}
+    else if(m.t==='warn'){toast('⚠️ '+m.m)}
     else if(m.t==='error'){vmSet('think','⚠️ '+m.m);clog('donna live: '+m.m)}
     else if(m.t==='end'){vmStop(m.m||'Conversación terminada')}
   };
@@ -975,6 +981,7 @@ async function dlStart(){
   },250);
 }
 $('#vm-go').onclick=dlStart;
+$('#vm-trab').onclick=()=>{const id=VM.trabajo;vmStop();$('#vm').classList.remove('on');renderChat();if(id)openTrabajo(id)};
 $('#vm-classic').onclick=()=>{$('#vm-go').hidden=true;vmStart()};
 $('#vm-half').onchange=e=>{DL.half=e.target.checked;LS.set('dl_half',DL.half)};
 $('#vm-x').onclick=()=>{vmStop();$('#vm').classList.remove('on');renderChat()};
@@ -983,10 +990,70 @@ $('#vm-orb').onclick=()=>{
   if(VM.on&&$('#vm-orb').dataset.s!=='listen'){if(VM.ctl)VM.ctl.abort();if(VM.pl)VM.pl.stop()}
 };
 
+/* ---------- TRABAJOS: lo grande que Donna lleva con un plan por pasos (qué hace, qué cumplió, qué queda pendiente) ---------- */
+const TB_IC={hecho:'✅','en curso':'🔄',pendiente:'⏳','falló':'❌',espera:'🕓',omitido:'➖'};
+const TB_EST={planeando:'🧠 Planeando','en curso':'🔄 En curso',terminado:'✅ Terminado','con pendientes':'⚠️ Con pendientes','espera confirmación':'🕓 Espera tu confirmación',pausado:'⏸ En pausa',cancelado:'🚫 Cancelado',error:'❌ Error'};
+const tbActivo=e=>e==='planeando'||e==='en curso';
+async function trabBadge(){
+  try{
+    const d=await api('/v1/app/trabajos'),n=d.items.filter(i=>tbActivo(i.estado)||i.estado==='espera confirmación').length,b=$('#b-trab');
+    if(b){b.textContent=n;b.hidden=!n}return d;
+  }catch(e){}
+}
+async function loadTrab(){
+  const box=$('#trab');if(!box)return;
+  const d=await trabBadge();
+  const nuevo='<div class="card"><b>＋ Nuevo trabajo</b><div class="sub" style="margin:4px 0 8px">Pídele algo grande: lo divide en un plan, lo va resolviendo solo y aquí ves el avance.</div>'+
+    '<textarea id="tb-new" rows="3" placeholder="Ej.: Revisa todas las tareas vencidas de Yoltik, agrúpalas por responsable y prepárame un informe…" style="width:100%;padding:10px;border-radius:12px;border:1px solid var(--line);background:var(--bg);color:var(--tx);font:inherit"></textarea>'+
+    '<button class="artcard" id="tb-go" style="margin-top:8px">🛠️ Crear trabajo</button></div>';
+  const items=d?d.items:[];
+  box.innerHTML=nuevo+(items.length?items.map(i=>'<button class="artrow" data-link="trabajo:'+esc(i.id)+'"><b>'+esc(i.titulo)+'</b>'+
+      '<div class="pbar"><i style="width:'+i.progreso+'%"></i></div><small>'+esc(TB_EST[i.estado]||i.estado)+' · '+i.progreso+'% · '+i.pasos+' pasos'+(i.espera?' · 🕓 '+i.espera+' esperan tu confirmación':'')+' · '+fmtWhen(i.actualizado)+'</small></button>').join('')
+    :'<div class="empty">Aún no hay trabajos.<br>Cuando le pidas a Donna algo grande, aparece aquí con su plan.</div>');
+  $('#tb-go').onclick=async()=>{
+    const v=$('#tb-new').value.trim();if(v.length<8){toast('Escribe qué necesitas');return}
+    $('#tb-go').disabled=true;$('#tb-go').textContent='Armando el plan…';
+    try{const t=await api('/v1/app/trabajos/crear',{method:'POST',body:JSON.stringify({pedido:v,esperar:25})});openTrabajo(t.id)}
+    catch(e){toast(e.message)}
+    $('#tb-go').disabled=false;$('#tb-go').textContent='🛠️ Crear trabajo';
+  };
+}
+let TBT=0;
+async function openTrabajo(id){
+  clearInterval(TBT);
+  const pintar=async()=>{
+    let t;try{t=await api('/v1/app/trabajo?id='+encodeURIComponent(id))}catch(e){clearInterval(TBT);sheet('Trabajo','<div class="empty">'+esc(e.message)+'</div>');return}
+    const bd=$('#sh-b'),sc=bd?bd.scrollTop:0,abiertos=[...document.querySelectorAll('#sh-b details[open]')].map(d=>d.dataset.k);
+    const pasos=t.pasos.map((p,i)=>'<details data-k="p'+i+'"'+(p.estado==='en curso'||p.estado==='espera'||abiertos.includes('p'+i)?' open':'')+'><summary>'+(TB_IC[p.estado]||'·')+' <b>'+(i+1)+'. '+esc(p.titulo)+'</b> <small>('+esc(p.estado)+(p.tipo==='cambio'?' · cambia cosas':'')+')</small></summary>'+
+      (p.detalle?'<div class="sub" style="margin:6px 0">'+esc(p.detalle)+'</div>':'')+
+      (p.resultado?'<div class="card" style="margin:6px 0">'+md(p.resultado)+'</div>':'<div class="sub">'+(p.estado==='espera'?'Cambia sistemas externos: no se ejecuta sin tu confirmación.':'Todavía sin resultado.')+'</div>')+
+      (p.estado==='espera'?'<button class="artcard" data-conf="'+(i+1)+'" style="margin:6px 0">✔ Confirmar y ejecutar este paso</button>':'')+'</details>').join('');
+    const activo=tbActivo(t.estado)||t.corriendo;
+    sheet(t.titulo,'<div class="sub">'+esc(TB_EST[t.estado]||t.estado)+' · '+t.progreso+'%'+(activo?' · se actualiza solo':'')+'</div><div class="pbar" style="margin:8px 0"><i style="width:'+t.progreso+'%"></i></div>'+
+      '<div class="sub" style="margin-bottom:8px"><b>Pedido:</b> '+esc(t.pedido.slice(0,300))+'</div>'+
+      (t.resumen?'<div class="card" style="margin:8px 0"><b>Resumen</b><br>'+md(t.resumen)+'</div>':'')+
+      (t.pendientes.length?'<div class="card" style="margin:8px 0;border-color:#d97706"><b>⚠️ Pendiente</b><ul style="margin:6px 0 0 18px">'+t.pendientes.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul></div>':'')+
+      '<div style="margin:10px 0 4px"><b>Plan</b></div>'+(pasos||'<div class="empty">Armando el plan…</div>')+
+      '<div class="trtalk" style="margin-top:10px">'+(activo?'<button data-ac="pausar">⏸ Pausar</button>':(t.estado!=='terminado'&&t.estado!=='cancelado'?'<button data-ac="reanudar">▶ Continuar</button>':''))+
+      (t.estado!=='cancelado'&&t.estado!=='terminado'?'<button data-ac="cancelar" style="background:#6b7280">🚫 Cancelar</button>':'')+'</div>'+
+      '<details style="margin-top:10px"><summary>Bitácora ('+t.bitacora.length+')</summary><div class="sub" style="line-height:1.5">'+t.bitacora.slice().reverse().map(b=>new Date(b.ts*1000).toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'})+' · '+esc(b.t)).join('<br>')+'</div></details>');
+    const nb=$('#sh-b');if(nb)nb.scrollTop=sc;
+    $$('#sh-b [data-ac]').forEach(b=>b.onclick=async()=>{
+      if(b.dataset.ac==='cancelar'&&!confirm('¿Cancelar este trabajo?'))return;
+      try{await api('/v1/app/trabajo/accion',{method:'POST',body:JSON.stringify({id,accion:b.dataset.ac})});toast('Listo');openTrabajo(id);trabBadge()}catch(e){toast(e.message)}});
+    $$('#sh-b [data-conf]').forEach(b=>b.onclick=async()=>{
+      if(!confirm('¿Confirmas que Donna ejecute este paso? Cambiará información real.'))return;
+      try{await api('/v1/app/trabajo/accion',{method:'POST',body:JSON.stringify({id,accion:'confirmar',paso:+b.dataset.conf})});toast('Confirmado: se está ejecutando');openTrabajo(id);trabBadge()}catch(e){toast(e.message)}});
+    if(!activo&&t.estado!=='planeando')clearInterval(TBT);
+  };
+  await pintar();
+  TBT=setInterval(()=>{if(!$('#sheet').classList.contains('on')){clearInterval(TBT);return}pintar()},3000);
+}
+
 /* ---------- Bandeja de notificaciones ---------- */
 function setAppBadge(n){try{if(n>0&&navigator.setAppBadge)navigator.setAppBadge(n);else if(navigator.clearAppBadge)navigator.clearAppBadge()}catch(e){}}
 function paintBell(n){const b=$('#bbadge');b.hidden=!n;b.textContent=n>99?'99+':n;setAppBadge(n)}
-async function refreshBell(){try{const d=await api('/v1/app/notifs?limit=1');paintBell(d.unread);return d}catch(e){}}
+async function refreshBell(){trabBadge();try{const d=await api('/v1/app/notifs?limit=1');paintBell(d.unread);return d}catch(e){}}
 function fmtWhen(ts){
   const d=new Date(ts*1000),n=new Date(),hm=d.toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'});
   const same=(a,b)=>a.toDateString()===b.toDateString();
@@ -1101,7 +1168,7 @@ async function openEnt(f){
   }catch(e){sheet('Error',esc(e.message))}
 }
 function sheet(t,b){$('#sh-t').textContent=t;$('#sh-b').innerHTML=b;$('#sheet').classList.add('on')}
-function closeSheet(){$('#sheet').classList.remove('on')}
+function closeSheet(){$('#sheet').classList.remove('on');clearInterval(TBT);if(LS.get('tab','chat')==='trab')loadTrab()}
 $('#sh-x').onclick=closeSheet;$('#sheet').onclick=e=>{if(e.target.id==='sheet')closeSheet()};
 
 /* ---------- Ajustes ---------- */

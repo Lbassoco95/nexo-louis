@@ -587,7 +587,8 @@ def build_realtime_brief(max_chars: int = 15000) -> str:
         "REGLA DE ORO — HACER, NO PROMETER: nunca digas que guardaste, anotaste, agendaste, enviaste, cerraste, creaste o cargaste algo (ni que lo harás) si no llamaste "
         "a una herramienta y te devolvió ✅. Si Polo pide algo, llama la herramienta EN ESE MOMENTO y después di el resultado real; si devuelve ❌ o falla, díselo claro. "
         "Herramientas: `guardar_nota` (anota/guarda/apunta un dato o pendiente), `recordar_regla` (a partir de ahora… / siempre… / nunca…, preferencias permanentes), "
-        "`crear_recordatorio` (avisos con hora o «en X minutos»), `tarea_en_segundo_plano` (trabajo largo: cargar o procesar muchas cosas, informes; avisa al terminar) y "
+        "`crear_recordatorio` (avisos con hora o «en X minutos»), `tarea_en_segundo_plano` (trabajo GRANDE o ambicioso: varios pasos o fuentes, cargar o limpiar muchas cosas, informes; lo conviertes en un TRABAJO con plan y se lo avisas a Polo: "
+        "«es un trabajo grande, armé un plan de N pasos y lo ves en el módulo Trabajos; los que cambian cosas te piden confirmación») y "
         "`consultar_donna` (todo lo demás: agenda, tareas, Patio, Slack, correo, documentos, transcripciones).",
         "CONFIRMA ANTES DE CAMBIAR: antes de cerrar o actualizar tareas, enviar mensajes o correos, crear o mover eventos, o borrar algo, repite en una frase lo que "
         "entendiste y pide confirmación. Llama a la herramienta solo cuando Polo diga que sí, e incluye en el pedido «Polo ya confirmó». Las consultas "
@@ -716,6 +717,9 @@ def load_system_prompt(channel: str = "telegram") -> str:
             "Si hay algo urgente que Polo debe saber, menciónalo en una frase y ofrece ampliarlo.\n"
             "**FORMATO APP:** Markdown estándar: **negrita** con dos asteriscos, *cursiva*, listas con `-`, "
             "tablas con `|`, bloques de código con triple backtick. Encabezados cortos solo si el texto es largo.\n"
+            "**TRABAJOS GRANDES:** si el pedido es grande o ambicioso (varios pasos o fuentes, revisar, cargar o limpiar muchas cosas, armar un informe completo), NO intentes resolverlo "
+            "todo en esta respuesta: usa `trabajo_crear`, di que lo llevas con un plan por pasos que Polo ve en el módulo Trabajos (qué haces, qué cumpliste, qué queda pendiente) y pon "
+            "el marcador `[[trabajo:ID]]`. Para ver cómo va uno usa `trabajo_estado`.\n"
             "**TABLEROS:** si Polo pide un dashboard, tablero o seguimiento (sobre todo de un proyecto sin dashboard), o "
             "algo se lee mucho mejor visual, usa `crear_artefacto` DESPUÉS de consultar datos reales, y pon en tu respuesta "
             "el marcador `[[artefacto:ID]]` que te devuelva la herramienta (la app lo muestra como tarjeta). "
@@ -3003,6 +3007,16 @@ TOOLS_DEFINITION = [
         "name": "adjuntos_leer",
         "description": "Lee el texto completo (por tramos) de un adjunto: transcripción de una reunión/audio, texto de un documento o lectura de una foto. `desde` = posición en caracteres para continuar un texto largo.",
         "input_schema": {"type": "object", "properties": {"id": {"type": "string"}, "desde": {"type": "integer"}, "limite": {"type": "integer"}}, "required": ["id"]},
+    },
+    {
+        "name": "trabajo_crear",
+        "description": "Convierte un pedido GRANDE o ambicioso (varios pasos o fuentes, revisar o cargar o limpiar muchas cosas, armar un informe) en un TRABAJO con plan de pasos que Donna resuelve sola en segundo plano; Polo lo ve en el módulo Trabajos (lo que hace, lo cumplido, lo pendiente) y recibe notificación al terminar. Los pasos que cambian sistemas externos esperan su confirmación. Úsalo en lugar de intentar resolver todo en esta respuesta; luego pon en tu respuesta el marcador `[[trabajo:ID]]` que devuelve. NO se puede usar dentro de un paso de otro trabajo.",
+        "input_schema": {"type": "object", "properties": {"pedido": {"type": "string", "description": "El pedido completo con contexto y criterios"}, "titulo": {"type": "string"}}, "required": ["pedido"]},
+    },
+    {
+        "name": "trabajo_estado",
+        "description": "Estado de un trabajo (pasos hechos, en curso, en espera de confirmación, pendientes) o, sin id, la lista de los recientes.",
+        "input_schema": {"type": "object", "properties": {"id": {"type": "string"}}},
     },
     {
         "name": "adjuntos_ingerir",
@@ -9329,6 +9343,8 @@ def execute_tool(name: str, args: dict) -> str:
             return f"ERROR creando recordatorio: {r.stderr.strip()}"
         elif name.startswith("patio_"):
             return _tool_patio(name, args)
+        elif name in ("trabajo_crear", "trabajo_estado"):
+            return _tool_trabajo(name, args)
         elif name in ("adjuntos_buscar", "adjuntos_leer", "adjuntos_listar", "adjuntos_compartir", "adjuntos_ingerir"):
             return _tool_adjuntos(name, args)
         elif name in ("crear_artefacto", "actualizar_artefacto", "listar_artefactos"):
@@ -9868,6 +9884,26 @@ def _tool_patio(name, args):
     except Exception as e:
         return f"❌ error con Patio Yoltik: {e}"
     return f"❌ herramienta desconocida: {name}"
+
+
+def _tool_trabajo(name, args):
+    try:
+        import app_trabajos as _T
+    except Exception as e:
+        return f"❌ módulo de trabajos no disponible: {e}"
+    try:
+        if name == "trabajo_estado":
+            return _T.resumen_texto(str(args.get("id", "")).strip())
+        if _T.en_trabajo():
+            return "❌ Ya estás dentro de un paso de un trabajo: resuelve este paso directamente, no crees otro trabajo."
+        t = _T.crear(str(args.get("pedido", "")), str(args.get("titulo", "")), "donna", esperar_plan=20)
+        pasos = "\n".join(f"  {i + 1}. {p['titulo']} ({p['tipo']})" for i, p in enumerate(t["pasos"])) or "  (armando el plan…)"
+        return (f"✅ Trabajo creado [[trabajo:{t['id']}]] «{t['titulo']}» con {len(t['pasos'])} paso(s):\n{pasos}\n"
+                "Ya corre solo; los pasos de «cambio» esperan la confirmación de Polo. Dile que lo ve en el módulo Trabajos y pon el marcador en tu respuesta.")
+    except ValueError as e:
+        return "❌ No pude crear el trabajo: " + str(e)
+    except Exception as e:
+        return "❌ error con trabajos: " + str(e)[:150]
 
 
 def _tool_adjuntos(name, args):

@@ -246,3 +246,16 @@ Variables: `LIVE_DONNA_MODEL` (gpt-realtime-2.1), `LIVE_DONNA_VOICE` (marin), `L
   iPhone: Atajos → «Abrir URL» `https://donna.kawiil.mx/app/?hablar=1`, ponle de nombre «Hablar con Donna» y asígnalo a: Botón de Acción (Ajustes → Botón de Acción → Atajo), Toque trasero (Accesibilidad → Tocar → Toque trasero),
   Pantalla de bloqueo / Centro de control (control de Atajos), widget de Atajos, o por voz: «Oye Siri, hablar con Donna».
 - Pruebas: `python3 -m unittest tests.test_donna_live tests.test_media`.
+
+## Trabajos: lo grande se lleva con un plan y avance visible (v17)
+
+Cuando un pedido es demasiado grande para contestarlo en la conversación (voz o chat), Donna lo registra como **TRABAJO** (`app_trabajos.py`) y lo ves en la pestaña **🛠️ Trabajos**:
+1. **Planea:** un modelo lo divide en 3-8 pasos concretos, cada uno `leer` (consultar/analizar), `memoria` (guardar, informe, tablero) o `cambio` (modifica sistemas externos).
+2. **Ejecuta solo**, paso por paso, con el cerebro completo de Donna (sus herramientas y protecciones anti-invención); cada paso recibe lo que dieron los anteriores y su resultado queda guardado.
+3. **No cambia nada sin ti:** los pasos `cambio` quedan en «🕓 espera tu confirmación» y solo corren cuando los confirmas en el módulo.
+4. **Resume** (hecho · hallazgos · pendiente), **notifica** (toca el aviso → abre el trabajo) y se puede **Continuar** para reintentar lo que falló; **Pausar** y **Cancelar** disponibles. Si el servidor se reinicia, retoma solo.
+- En la voz: `tarea_en_segundo_plano` crea el trabajo y Donna dice «armé un plan de N pasos y lo ves en el módulo Trabajos»; en la pantalla de voz aparece el botón «🛠️ Ver el trabajo».
+  En el chat: herramienta `trabajo_crear` (+ marcador `[[trabajo:ID]]` → botón «Ver trabajo») y `trabajo_estado`. Dentro de un paso no se pueden crear trabajos nuevos.
+- También puedes crear uno directo desde la pestaña Trabajos. Límites: 3 corriendo a la vez, 8 pasos, 100 guardados. Estado en `/opt/openclaw/state/trabajos/*.json`.
+- API: `GET /v1/app/trabajos`, `GET /v1/app/trabajo?id=`, `POST /v1/app/trabajos/crear`, `POST /v1/app/trabajo/accion` (`pausar|reanudar|cancelar|confirmar`+`paso`).
+- Pruebas: `python3 -m unittest tests.test_trabajos`.

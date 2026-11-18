@@ -52,6 +52,7 @@ import app_media  # noqa: E402  (adjuntos, grabaciones y archivos de la app)
 import app_translate  # noqa: E402  (traductor español/inglés/chino de la app)
 import ws_lite  # noqa: E402  (WebSocket mínimo: traductor en vivo)
 import donna_voz  # noqa: E402  (acciones directas por voz: guardar, reglas, recordatorios)
+import app_trabajos  # noqa: E402  (trabajos grandes de Donna: plan por pasos con avance visible)
 
 # Solo StreamHandler: el servicio de systemd ya redirige stdout/stderr al log
 # (StandardOutput=append:.../openclaw-gateway.log). Con FileHandler además, cada
@@ -276,7 +277,7 @@ def _chat_worker(rid: str, user_msg: str, history: list, voz: bool = False, regi
         _push_answer(res)
 
 
-def _ask_donna_voice(user_msg: str, history: list, registrar: bool = True):
+def _ask_donna_voice(user_msg: str, history: list, registrar: bool = True, voz: bool = True):
     """Pregunta al cerebro completo de Donna en modo voz (bloquea). → (texto, modelo, error)."""
     if not _CHAT_SLOTS.acquire(blocking=False):
         return "", "", "Donna está atendiendo otras consultas; reintenta en un momento"
@@ -284,10 +285,55 @@ def _ask_donna_voice(user_msg: str, history: list, registrar: bool = True):
     res = {"rid": rid, "t0": time.time(), "done": False, "client_gone": False}
     with _RESULTS_LOCK:
         _RESULTS[rid] = res
-    _chat_worker(rid, user_msg, history, voz=True, registrar=registrar)          # libera el cupo al terminar
+    _chat_worker(rid, user_msg, history, voz=voz, registrar=registrar)          # libera el cupo al terminar
     with _RESULTS_LOCK:
         out = _RESULTS.pop(rid, res)
     return out.get("text", ""), out.get("model", ""), out.get("error")
+
+
+_PLAN_SYS = (
+    "Eres la planeadora de Donna, la asistente ejecutiva de Polo (CEO de Kawiil y Yoltik). Recibes un pedido grande o ambicioso y lo divides en un PLAN de 3 a 8 pasos "
+    "concretos, en orden, que Donna ejecutará una por una con sus herramientas (Kawiil Central, Patio Yoltik, Slack, correo, adjuntos y transcripciones, memoria, tableros, agenda). "
+    "Cada paso: `titulo` corto y accionable, `detalle` (qué consultar o producir, con nombres/filtros), y `tipo`: «leer» (solo consultar o analizar), «memoria» (guardar en la memoria de Donna "
+    "o crear un tablero/informe) o «cambio» (MODIFICA sistemas externos: cerrar o actualizar tareas, enviar correos o mensajes, crear o mover eventos, borrar; requiere confirmación de Polo). "
+    "Pon los pasos de lectura primero y los de cambio al final. El último paso suele ser un informe o tablero con lo encontrado. No inventes datos. "
+    'Responde SOLO un JSON: {"titulo": "...", "pasos": [{"titulo": "...", "detalle": "...", "tipo": "leer|memoria|cambio"}]}')
+
+
+def _trabajo_planear(pedido: str) -> dict:
+    key = core.load_anthropic_key()
+    if not key:
+        raise RuntimeError("falta ANTHROPIC_API_KEY para planear")
+    out = core.call_haiku(key, _PLAN_SYS, [], pedido, max_tokens=1800, timeout=60)
+    if not out or str(out).lstrip().startswith(("(error", "(sin respuesta", "Error")):
+        raise RuntimeError("el planeador no respondió")
+    return app_translate._json_de(out)
+
+
+def _trabajo_ejecutar(prompt: str):
+    texto, err = "", ""
+    for _ in range(6):
+        texto, _m, err = _ask_donna_voice(prompt, [], registrar=False, voz=False)
+        if not (err and "atendiendo otras consultas" in str(err)):
+            break
+        time.sleep(15)
+    return texto, err
+
+
+def _trabajo_resumir(job: dict) -> str:
+    cuerpo = f"Trabajo: {job['titulo']}\nPedido: {job['pedido'][:500]}\n\n" + "\n\n".join(
+        f"Paso {i + 1} [{p['estado']}] {p['titulo']}\n{(p['resultado'] or '')[:900]}" for i, p in enumerate(job["pasos"]))
+    out = core.call_deepseek("Resume para Polo, en español y máximo 12 líneas, cómo quedó este trabajo: **Hecho** (con las cifras reales que traen los resultados), "
+                             "**Hallazgos clave** y **Pendiente** (lo que falló, está en espera de su confirmación o no se hizo). Usa SOLO lo que dicen los resultados.", [], cuerpo)
+    return (out or "").strip()
+
+
+def _trabajo_notificar(titulo: str, cuerpo: str, link: str, completo: str) -> None:
+    import louis_push
+    louis_push.notify_async(titulo, cuerpo.replace("*", ""), tab="chat", tag="trab-" + link.split(":")[-1], full_body=completo, kind="trabajo", link=link)
+
+
+app_trabajos.configurar(planear=_trabajo_planear, ejecutar=_trabajo_ejecutar, resumir=_trabajo_resumir, notificar=_trabajo_notificar)
 
 
 def _guardar_conversacion_voz(hist: list, t0: float) -> None:
@@ -452,8 +498,8 @@ _DONNA_TOOLS = [
      "description": "Crea un recordatorio/aviso futuro que llegará como notificación. Da `en_minutos` (p. ej. 30) o `fecha_hora` ISO 8601 en hora de Ciudad de México (p. ej. 2026-11-19T09:00).",
      "parameters": {"type": "object", "properties": {"mensaje": {"type": "string"}, "en_minutos": {"type": "integer"}, "fecha_hora": {"type": "string"}}, "required": ["mensaje"]}},
     {"type": "function", "name": "tarea_en_segundo_plano",
-     "description": "Para trabajo LARGO (cargar o procesar muchas cosas, revisar cientos de datos, preparar un informe): lo deja corriendo en segundo plano y te avisa por notificación al terminar. "
-                    "Úsala cuando el pedido tome más de medio minuto. Responde de inmediato.",
+     "description": "Para trabajo GRANDE o ambicioso (varios pasos o fuentes, cargar o limpiar muchas cosas, revisar cientos de datos, preparar un informe): lo convierte en un TRABAJO con plan de pasos que Donna "
+                    "resuelve sola, y Polo lo sigue en el módulo Trabajos (lo que hace, lo cumplido, lo pendiente); avisa por notificación al terminar. Responde de inmediato con el plan.",
      "parameters": {"type": "object", "properties": {"pedido": {"type": "string"}}, "required": ["pedido"]}},
     {"type": "function", "name": "terminar_conversacion",
      "description": "Cierra la conversación por voz cuando Polo se despide o dice que eso es todo.",
@@ -979,6 +1025,12 @@ class Handler(BaseHTTPRequestHandler):
                         lim = 50
                     self._send_json(200, {"items": louis_push.inbox_list(lim), "unread": louis_push.unread_count(),
                                           "confirmaciones": louis_push.pending_confirmations()})
+                elif _r0 == "/v1/app/trabajos":
+                    self._send_json(200, {"items": app_trabajos.listar()})
+                elif _r0 == "/v1/app/trabajo":
+                    from urllib.parse import urlparse, parse_qs
+                    t = app_trabajos.obtener((parse_qs(urlparse(self.path).query).get("id") or [""])[0])
+                    self._send_json(200 if t else 404, t or {"error": "no existe ese trabajo"})
                 elif _r0 == "/v1/app/artefactos":
                     import app_artifacts
                     self._send_json(200, {"items": app_artifacts.listar()})
@@ -1542,13 +1594,18 @@ class Handler(BaseHTTPRequestHandler):
                         salida = donna_voz.crear_recordatorio(a.get("mensaje", ""), a.get("fecha_hora", ""), a.get("en_minutos", 0))
                     elif name == "tarea_en_segundo_plano":
                         pedido = str(a.get("pedido", "")).strip()
-                        if len(pedido) < 5:
-                            salida = "❌ Falta el pedido de la tarea."
+                        if len(pedido) < 8:
+                            salida = "❌ Falta el pedido del trabajo."
                         else:
-                            with hl:
-                                h2 = list(hist[-8:])
-                            bg = _bg_lanzar(pedido, notificar=True, historial=h2, tarea=True)
-                            salida = ("✅ Quedó corriendo en segundo plano (tarea %s). Le llegará una notificación con el resultado en cuanto termine." % bg["id"])
+                            try:
+                                t = app_trabajos.crear(pedido, usuario="voz", esperar_plan=25)
+                                aviso("trabajo", id=t["id"], titulo=t["titulo"])
+                                pasos = "; ".join(f"{i + 1}) {p['titulo']}" for i, p in enumerate(t["pasos"][:6])) or "(armando el plan)"
+                                salida = (f"✅ Es un trabajo grande: lo armé como TRABAJO «{t['titulo']}» con un plan de {len(t['pasos'])} paso(s): {pasos}. "
+                                          "Ya lo está resolviendo por su cuenta y Polo lo ve en el módulo Trabajos (qué hace, qué cumplió y qué queda pendiente); "
+                                          "los pasos que cambian cosas esperan su confirmación. Dile eso, breve, con tus palabras.")
+                            except ValueError as e:
+                                salida = "❌ No pude crear el trabajo: " + str(e)
                     elif name == "terminar_conversacion":
                         estado["cerrar"] = True
                         salida = "Listo. Despídete en una frase corta."
@@ -2149,6 +2206,15 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path.startswith("/v1/app/media/") and self._media_post(self.path.split("?", 1)[0], body):
             return
+        if self.path in ("/v1/app/trabajos/crear", "/v1/app/trabajo/accion"):
+            try:
+                if self.path.endswith("crear"):
+                    self._send_json(200, app_trabajos.crear(str(body.get("pedido", "")), str(body.get("titulo", "")), self._media_user(), esperar_plan=float(body.get("esperar") or 0)))
+                else:
+                    self._send_json(200, app_trabajos.accion(str(body.get("id", "")), str(body.get("accion", "")), body.get("paso")))
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
+            return
         if self.path.startswith("/v1/app/translate") and self._translate_post(self.path.split("?", 1)[0], body):
             return
         if (self.path.startswith("/v1/app/voice/") or self.path in ("/v1/app/speak", "/v1/app/clientlog")) \
@@ -2347,6 +2413,12 @@ def main():
     log.info("Arrancando openclaw-gateway en %s:%d", HOST, PORT)
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     srv.started_at = int(time.time())
+    try:
+        n = app_trabajos.reanudar_pendientes()
+        if n:
+            log.info("Trabajos retomados tras el reinicio: %d", n)
+    except Exception:
+        log.exception("no pude retomar trabajos")
     try:
         n = app_media.resume_pending()
         if n:

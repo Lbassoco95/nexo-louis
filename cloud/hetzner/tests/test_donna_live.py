@@ -281,16 +281,31 @@ class AccionesPorVoz(Base):
         time.sleep(3.5)
         self.assertTrue(any("Tarea lista" in a[0][0] and "14 transcripciones" in a[1]["full_body"] for a in self.avisos), self.avisos)
 
-    def test_tarea_en_segundo_plano_responde_al_instante(self):
-        g._ask_donna_voice = lambda m, h, registrar=True: (CONSULTAS.append(("bg", m, registrar)) or time.sleep(1) or ("Listo: 14 cargadas.", "deepseek", None))
-        t0 = time.time()
-        fake, ms = self._correr("segundo_plano", quiero=lambda o: self.hay(o, "tool_done"))
-        self.assertLess(time.time() - t0, 6)
-        self.assertTrue(fake.items[-1]["output"].startswith("✅ Quedó corriendo"))
-        time.sleep(2)
-        bg = [x for x in CONSULTAS if x[0] == "bg"]
-        self.assertIn("segundo plano", bg[0][1]); self.assertFalse(bg[0][2])
-        self.assertTrue(any("Tarea lista" in a[0][0] for a in self.avisos))
+    def test_trabajo_grande_se_convierte_en_plan_visible(self):
+        import app_trabajos as TR
+        TR.TRAB_DIR = TMP / "trabajos"; TR._HILOS.clear()
+        for f in TR.TRAB_DIR.glob("j*.json") if TR.TRAB_DIR.exists() else []:
+            f.unlink()
+        orig = dict(TR._CFG)
+        TR.configurar(planear=lambda p: {"titulo": "Cargar transcripciones", "pasos": [{"titulo": "Listar las transcripciones", "tipo": "leer"},
+                                                                                     {"titulo": "Cargarlas a la base", "tipo": "memoria"}]},
+                      ejecutar=lambda p: (CONSULTAS.append(("paso", p)) or time.sleep(0.2) or ("Hecho: 14 transcripciones.", "")),
+                      resumir=lambda j: "Se cargaron 14 transcripciones.", notificar=lambda *a: self.avisos.append(a))
+        try:
+            t0 = time.time()
+            fake, ms = self._correr("segundo_plano", quiero=lambda o: self.hay(o, "tool_done"))
+            self.assertLess(time.time() - t0, 8)                                                     # responde de inmediato, con el plan
+            out = fake.items[-1]["output"]
+            self.assertTrue(out.startswith("✅ Es un trabajo grande"), out)
+            self.assertIn("2 paso(s)", out); self.assertIn("módulo Trabajos", out); self.assertIn("Listar las transcripciones", out)
+            self.assertTrue(self.hay(ms, "trabajo"))                                                  # la app recibe el aviso para mostrar el módulo
+            jid = [d["id"] for k, d in ms if k == "text" and d.get("t") == "trabajo"][0]
+            time.sleep(1.5)
+            j = TR.obtener(jid)
+            self.assertEqual(j["estado"], "terminado"); self.assertEqual(j["progreso"], 100)
+            self.assertTrue(any("Trabajo terminado" in a[0] and a[2] == "trabajo:" + jid for a in self.avisos), self.avisos)
+        finally:
+            TR._CFG.update(orig)
 
     def test_la_conversacion_queda_guardada_y_en_la_base(self):
         import app_media as M
