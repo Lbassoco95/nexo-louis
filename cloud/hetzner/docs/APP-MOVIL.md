@@ -201,3 +201,14 @@ Voz con Donna y traductor ahora usan **streaming**: `PUT /v1/app/voice/turn` y `
 (`stt` lo que dijiste → `respuesta`/`tr` → `audio` por trozos de 1-2 frases, sintetizados en paralelo → `done` con tiempos). El primer audio suena sin esperar el resto.
 Transcripción rápida (`gpt-4o-mini-transcribe`). El contexto de la conversación por voz vive en el servidor por `vsid` (solo esa conversación, 30 min), no en el historial del chat.
 La app muestra «⏱ te entendió · respuesta · primera voz» para ver dónde se va el tiempo. Para voz simultánea real (sin turnos): `tools/probar-realtime.py` averigua qué modelos/rutas Realtime tiene la cuenta.
+
+## Voz primero, turnos de 5 minutos y compartir (v13)
+
+- **Primero el audio, luego el texto:** en el traductor y en la conversación con Donna el servidor manda el 1.er trozo de voz, DESPUÉS el texto y luego el resto del audio
+  (si la voz falla, el texto llega igual). Los turnos largos se leen completos: hasta 6000 caracteres en ≤10 trozos que se sintetizan en paralelo.
+- **Turnos de hasta 5 minutos** (cuenta regresiva en los últimos 30 s; al llegar se envía solo, no se pierde), pantalla encendida (Wake Lock) y sin voces encimadas:
+  al grabar de nuevo se calla cualquier audio que siga sonando; «Hablo yo» salta la reproducción.
+- **Compartir:** 🔗 en el detalle de un adjunto y al guardar una conversación → enlace secreto (192 bits) de SOLO LECTURA, 1/7/30 días, revocable («Dejar de compartir»).
+  Página pública `GET /s/<token>` sin scripts, `noindex`, CSP cerrada; 20 intentos fallidos/min por IP. Donna lo hace con `adjuntos_compartir` (solo si Polo lo pide).
+- **Traducción simultánea (en vivo):** `tools/probar-traduccion-en-vivo.py` averigua la configuración y los eventos de `gpt-realtime-translate` con la cuenta real.
+- Pruebas: `python3 -m unittest tests.test_voice tests.test_ws_codec`.

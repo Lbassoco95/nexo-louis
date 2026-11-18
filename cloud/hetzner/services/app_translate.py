@@ -108,7 +108,7 @@ def traducir(texto: str, de: str, a: str) -> dict:
     if not key:
         raise RuntimeError("falta ANTHROPIC_API_KEY para traducir")
     orig = "(detecta el idioma: es, en o zh) " if de == "auto" else f"del {LANGS[de]} "
-    out = core.call_haiku(key, _SYS.format(orig=orig.strip(), dest=LANGS[a]), [], texto, max_tokens=2048, timeout=60)
+    out = core.call_haiku(key, _SYS.format(orig=orig.strip(), dest=LANGS[a]), [], texto, max_tokens=4096, timeout=90)
     if not out or str(out).lstrip().startswith(("(error", "(sin respuesta", "Error")):
         raise RuntimeError("el traductor no respondió: " + str(out)[:120])
     j = _json_de(out)
@@ -244,23 +244,42 @@ def texto_hablado(md: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
-def dividir_frases(texto: str, min_chars: int = 40, max_trozos: int = 5) -> list:
-    """Parte el texto en trozos de 1-2 frases (también chino). El primero es corto para que suene pronto."""
+def dividir_frases(texto: str, primero: int = 40, resto: int = 260, max_chars: int = 900, max_trozos: int = 10) -> list:
+    """Parte el texto en trozos que se sintetizan en paralelo. El PRIMERO es corto (suena pronto); los demás, más largos
+    (menos llamadas); ninguno pasa de max_chars (el TTS acepta ~4000, pero trozos medianos salen más rápido)."""
     partes = [p for p in re.split(r"(?<=[.!?。！？;；])\s*", (texto or "").strip()) if p.strip()]
     if not partes:
         return []
-    trozos, cur = [], ""
+    resto = min(max_chars, max(resto, -(-len(texto or "") // max(1, max_trozos - 1))))   # textos largos: trozos parejos, sin uno gigante al final
+    # una «frase» enorme sin puntuación se corta por comas/espacios
+    chicas = []
     for p in partes:
-        cur = (cur + " " + p).strip() if cur else p
-        if len(cur) >= min_chars:
+        while len(p) > max_chars:
+            k = max(p.rfind(",", 0, max_chars), p.rfind("，", 0, max_chars), p.rfind(" ", 0, max_chars))
+            k = k if k > max_chars // 3 else max_chars
+            chicas.append(p[:k + 1].strip())
+            p = p[k + 1:].strip()
+        if p:
+            chicas.append(p)
+    trozos, cur = [], ""
+    for p in chicas:
+        umbral = primero if not trozos else resto
+        if cur and len(cur) + 1 + len(p) > max_chars:
+            trozos.append(cur)
+            cur = p
+        else:
+            cur = (cur + " " + p).strip() if cur else p
+        if len(cur) >= (primero if not trozos else resto):
             trozos.append(cur)
             cur = ""
     if cur:
-        if trozos and len(cur) < min_chars // 2:
+        if trozos and len(cur) < 20 and len(trozos[-1]) + len(cur) < max_chars:
             trozos[-1] += " " + cur
         else:
             trozos.append(cur)
-    while len(trozos) > max_trozos:                      # demasiados trozos: une los últimos
+    while len(trozos) > max_trozos:                      # demasiados trozos: une los últimos sin pasar del tope
+        if len(trozos[-2]) + len(trozos[-1]) + 1 > 3900:
+            break
         trozos[-2:] = [trozos[-2] + " " + trozos[-1]]
     return trozos
 
@@ -268,10 +287,10 @@ def dividir_frases(texto: str, min_chars: int = 40, max_trozos: int = 5) -> list
 def voz_por_trozos(texto: str, idioma: str):
     """Genera (indice, mp3) EN ORDEN, pero sintetizando los trozos en paralelo: el 1.º suena en cuanto está listo."""
     from concurrent.futures import ThreadPoolExecutor
-    trozos = dividir_frases(texto_hablado(texto)[:2500])
+    trozos = dividir_frases(texto_hablado(texto)[:MAX_TEXT])
     if not trozos:
         return
-    with ThreadPoolExecutor(max_workers=min(3, len(trozos))) as ex:
+    with ThreadPoolExecutor(max_workers=min(4, len(trozos))) as ex:
         futs = [ex.submit(texto_a_voz, t, idioma) for t in trozos]
         for i, f in enumerate(futs):
             yield i, f.result()

@@ -579,6 +579,93 @@ def buscar(consulta: str, limit: int = 8) -> str:
                         for r in res)
 
 
+# ------------------------------------------------------------------ compartir (enlace temporal, solo lectura, revocable)
+SHARES_FILE = STATE_DIR / "shares.json"
+_SH_LOCK = threading.RLock()
+
+
+def _sh_read() -> dict:
+    try:
+        return json.loads(SHARES_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def _sh_write(d: dict) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = SHARES_FILE.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(d, f)
+    os.replace(tmp, SHARES_FILE)
+
+
+def _th(token: str) -> str:
+    import hashlib
+    return hashlib.sha256((token or "").encode()).hexdigest()
+
+
+def share_create(mid: str, dias: int = 7, user: str = "") -> dict:
+    """Enlace secreto (192 bits) que muestra SOLO este documento, sin entrar a la app. Caduca (1-30 días) y se puede revocar."""
+    m = _meta(mid)
+    if not m:
+        raise ValueError("no existe ese adjunto")
+    if m.get("estado") != "listo":
+        raise ValueError("el adjunto todavía no está listo (estado: %s)" % m.get("estado"))
+    dias = max(1, min(int(dias or 7), 30))
+    token = secrets.token_urlsafe(24)
+    exp = int(time.time()) + dias * 86400
+    with _SH_LOCK:
+        d = {k: v for k, v in _sh_read().items() if v.get("exp", 0) > time.time()}
+        if len(d) >= 300:
+            raise ValueError("hay demasiados enlaces activos; revoca alguno")
+        d[_th(token)] = {"mid": mid, "exp": exp, "creado": int(time.time()), "usuario": user[:60]}
+        _sh_write(d)
+    return {"token": token, "exp": exp, "dias": dias}
+
+
+def share_list(mid: str) -> list:
+    return [{"exp": v["exp"], "creado": v["creado"]} for v in _sh_read().values() if v.get("mid") == mid and v.get("exp", 0) > time.time()]
+
+
+def share_revoke(mid: str) -> int:
+    with _SH_LOCK:
+        d = _sh_read()
+        keep = {k: v for k, v in d.items() if v.get("mid") != mid}
+        _sh_write(keep)
+        return len(d) - len(keep)
+
+
+def share_page(token: str):
+    """HTML autónomo (sin scripts ni recursos externos) del documento compartido, o None si no existe/caducó."""
+    import html as _h
+    rec = _sh_read().get(_th(token))
+    if not rec or rec.get("exp", 0) < time.time():
+        return None
+    m = _meta(rec["mid"])
+    if not m or m.get("estado") != "listo":
+        return None
+    try:
+        texto = (_dir(rec["mid"]) / "text.txt").read_text()
+    except OSError:
+        return None
+    esc = lambda x: _h.escape(x or "")
+    resumen = esc(m.get("resumen") or "").replace("\n", "<br>")
+    resumen = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", resumen)
+    fecha = time.strftime("%d/%m/%Y %H:%M", time.localtime(m.get("creado", 0)))
+    caduca = time.strftime("%d/%m/%Y", time.localtime(rec["exp"]))
+    return ("<!doctype html><html lang=\"es\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            "<meta name=\"robots\" content=\"noindex,nofollow\"><title>" + esc(m["nombre"]) + "</title><style>"
+            "body{font:16px/1.55 -apple-system,system-ui,sans-serif;max-width:760px;margin:0 auto;padding:18px;color:#111a2e;background:#fff}"
+            "@media(prefers-color-scheme:dark){body{background:#0b1220;color:#e8edf7}.card{background:#121a2c!important;border-color:#243049!important}}"
+            "h1{font-size:21px;margin:.2em 0}.meta{color:#5d6985;font-size:13px}.card{background:#f4f6fb;border:1px solid #dde3f0;border-radius:14px;padding:12px 14px;margin:14px 0}"
+            "pre{white-space:pre-wrap;word-wrap:break-word;font:15px/1.6 inherit;margin:0}.foot{color:#8b97b3;font-size:12px;margin-top:22px}"
+            "</style></head><body><h1>" + esc(m["nombre"]) + "</h1><div class=\"meta\">" + fecha + " · " + esc(m.get("tipo", "")) + "</div>"
+            + (("<div class=\"card\"><b>Resumen</b><br>" + resumen + "</div>") if resumen else "")
+            + "<div class=\"card\"><pre>" + esc(texto) + "</pre></div>"
+            "<div class=\"foot\">Compartido desde Donna · enlace temporal, válido hasta el " + caduca + "</div></body></html>")
+
+
 def file_path(mid: str):
     m = _meta(mid)
     if not m:

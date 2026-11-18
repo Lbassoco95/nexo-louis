@@ -363,6 +363,8 @@ _DOC_CHAT_SYSTEM = (
     "con el documento, dilo. Español mexicano, claro y conciso."
 )
 _MAX_BODY = 1_000_000  # 1 MB
+_SHARE_MISS: dict = {}                 # ip -> intentos fallidos a /s/<token> en el último minuto
+_SHARE_LOCK = threading.Lock()
 _VSESS: dict = {}                      # vsid -> {"h": [{role, content}], "t": última actividad}: contexto SOLO de esta conversación por voz
 _VSESS_LOCK = threading.Lock()
 _ADIOS_RE = re.compile(r"^\W*(adi[oó]s|hasta luego|eso es todo|terminar|terminamos|ya es todo)\W*$", re.I)
@@ -788,6 +790,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         _r0 = self.path.split("?", 1)[0]
+        if _r0.startswith("/s/"):                              # documento compartido: público, solo lectura, con el enlace secreto
+            self._shared_page(_r0[3:])
+            return
         if _r0 == "/app":
             # El service worker (alcance /app/) solo controla /app/…: sin la diagonal final la
             # app no queda bajo su control y las notificaciones push nunca se registran.
@@ -1080,6 +1085,37 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
             return False
 
+    def _shared_page(self, token: str):
+        ip = _client_ip(self)
+        now = time.time()
+        with _SHARE_LOCK:
+            hits = _SHARE_MISS.setdefault(ip, deque())
+            while hits and now - hits[0] > 60:
+                hits.popleft()
+            if len(hits) >= 20:
+                self._send_json(429, {"error": "demasiados intentos"})
+                return
+        html = app_media.share_page(token) if re.fullmatch(r"[A-Za-z0-9_-]{20,60}", token or "") else None
+        if html is None:
+            with _SHARE_LOCK:
+                _SHARE_MISS[ip].append(now)
+            body = "<!doctype html><meta charset=utf-8><meta name=robots content=noindex><title>No disponible</title><p style='font:16px system-ui;padding:24px'>Este enlace no existe o ya caducó.</p>".encode()
+            code = 404
+        else:
+            body, code = html.encode("utf-8"), 200
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Robots-Tag", "noindex, nofollow")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'")
+            self.end_headers()
+        except OSError:
+            return
+        self._safe_write(body)
+
     # ---- adjuntos (fotos, audios, videos, archivos) ----
     def _media_user(self) -> str:
         kind, ses = getattr(self, "_auth", (None, None))
@@ -1105,6 +1141,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, app_media.get(mid))
         elif parts[4] == "parts":
             self._send_json(200, {"partes": app_media.parts_have(mid)})
+        elif parts[4] == "shares":
+            self._send_json(200, {"activos": app_media.share_list(mid)})
         elif parts[4] == "text":
             self._send_json(200, {"texto": app_media.leer_texto(mid, 0, 30000)})
         elif parts[4] == "file":
@@ -1139,6 +1177,18 @@ class Handler(BaseHTTPRequestHandler):
                 r = app_media.init(str(body.get("nombre", "")), str(body.get("mime", "")), int(body.get("tamano") or 0),
                                    self._media_user(), str(body.get("origen", "")))
                 self._send_json(200, r)
+                return True
+            if len(parts) == 5 and parts[:3] == ["v1", "app", "media"] and parts[4] == "share":
+                if not app_media.ID_RE.match(parts[3]):
+                    raise ValueError("id inválido")
+                r = app_media.share_create(parts[3], int(body.get("dias") or 7), self._media_user())
+                r["url"] = _base_url(self.headers.get("Host", "")) + "/s/" + r["token"]
+                self._send_json(200, r)
+                return True
+            if len(parts) == 5 and parts[:3] == ["v1", "app", "media"] and parts[4] == "unshare":
+                if not app_media.ID_RE.match(parts[3]):
+                    raise ValueError("id inválido")
+                self._send_json(200, {"revocados": app_media.share_revoke(parts[3])})
                 return True
             if len(parts) == 5 and parts[:3] == ["v1", "app", "media"] and parts[4] == "finish":
                 if not app_media.ID_RE.match(parts[3]):
@@ -1226,6 +1276,32 @@ class Handler(BaseHTTPRequestHandler):
                 return False
         return True
 
+    def _voz_primero(self, texto: str, idioma: str, t0: float, marks: dict, mostrar_texto) -> bool:
+        """PRIORIDAD A LA VOZ: manda el primer trozo de audio, DESPUÉS el texto (mostrar_texto()), y luego el resto del audio.
+        Si la voz falla, el texto se manda igual y el error se propaga. False si el cliente ya no está."""
+        import base64
+        it = app_translate.voz_por_trozos(texto, idioma)
+        try:
+            primero = next(it, None)
+        except Exception:
+            if not mostrar_texto():
+                return False
+            raise
+        if primero is not None:
+            marks["audio1"] = int((time.time() - t0) * 1000)
+            if not self._sse("audio", {"i": 0, "b64": base64.b64encode(primero[1]).decode("ascii")}):
+                return False
+        if not mostrar_texto():
+            return False
+        try:
+            for i, mp3 in it:
+                if not self._sse("audio", {"i": i, "b64": base64.b64encode(mp3).decode("ascii")}):
+                    return False
+        except Exception as e:
+            self._sse("fail", {"error": "la voz se cortó: " + str(e)[:120]})
+            return False
+        return True
+
     def _read_audio_body(self):
         n = int(self.headers.get("Content-Length", "0"))
         if n <= 0 or n > app_translate.MAX_AUDIO:
@@ -1255,11 +1331,12 @@ class Handler(BaseHTTPRequestHandler):
             sid = (q.get("sid") or [""])[0]
             if sid:
                 app_translate.registrar_turno(sid, r, "voz")
-            if not self._sse("tr", {**r, "ms": marks["tr"]}):
-                return
+            mostrar = lambda: self._sse("tr", {**r, "ms": marks["tr"]})
             if (q.get("voz") or ["1"])[0] != "0":
-                if not self._stream_voz(r["traduccion"], r["destino"], t0, marks):
+                if not self._voz_primero(r["traduccion"], r["destino"], t0, marks, mostrar):
                     return
+            elif not mostrar():
+                return
             self._sse("done", {"ms": {**marks, "total": int((time.time() - t0) * 1000)}})
         except (ValueError, RuntimeError) as e:
             self._sse("fail", {"error": str(e)})
@@ -1317,9 +1394,8 @@ class Handler(BaseHTTPRequestHandler):
                 ses["h"] += [{"role": "user", "content": texto}, {"role": "assistant", "content": resp}]
                 ses["h"] = ses["h"][-12:]
                 ses["t"] = time.time()
-            if not self._sse("respuesta", {"texto": resp, "model": modelo, "ms": marks["llm"]}):
-                return
-            if not self._stream_voz(resp, "es", t0, marks):
+            mostrar = lambda: self._sse("respuesta", {"texto": resp, "model": modelo, "ms": marks["llm"]})
+            if not self._voz_primero(resp, "es", t0, marks, mostrar):
                 return
             self._sse("done", {"ms": {**marks, "total": int((time.time() - t0) * 1000)}})
         except (ValueError, RuntimeError) as e:

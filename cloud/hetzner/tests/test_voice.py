@@ -1,5 +1,5 @@
 """Voz con Donna, subida rápida (Atajos), usuarios solo-subida y registro de errores del teléfono."""
-import os, sys, json, tempfile, http.client, threading, unittest
+import os, sys, json, time, tempfile, http.client, threading, unittest
 from pathlib import Path
 from http.server import ThreadingHTTPServer
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "services"))
@@ -149,9 +149,9 @@ class Streaming(Base):
         ev = sse(raw)
         nombres = [e for e, _ in ev]
         self.assertEqual(st, 200)
-        self.assertEqual(nombres[:2], ["stt", "respuesta"])                    # primero lo que dijiste, luego la respuesta
-        self.assertIn("audio", nombres); self.assertEqual(nombres[-1], "done")
-        self.assertLess(nombres.index("respuesta"), nombres.index("audio"))
+        self.assertEqual(nombres[:3], ["stt", "audio", "respuesta"])          # VOZ PRIMERO: lo que dijiste, el audio, y DESPUÉS el texto
+        self.assertEqual(nombres[-1], "done")
+        self.assertLess(nombres.index("audio"), nombres.index("respuesta"))
         done = ev[-1][1]["ms"]
         self.assertTrue({"stt", "llm", "audio1", "total"} <= set(done))
         self.assertIn("MODO VOZ", VISTO["system"])
@@ -191,15 +191,80 @@ class Streaming(Base):
     def test_traductor_en_streaming(self):
         st, raw = self.req("PUT", "/v1/app/translate/stream?de=es&a=en&sid=tabcdef0123&nombre=v.m4a", raw=b"a" * 3000)
         ev = sse(raw); nombres = [e for e, _ in ev]
-        self.assertEqual(nombres[:2], ["stt", "tr"]); self.assertEqual(nombres[-1], "done")
+        self.assertEqual(nombres[:3], ["stt", "audio", "tr"]); self.assertEqual(nombres[-1], "done")      # primero el audio, luego el texto
         self.assertGreaterEqual(nombres.count("audio"), 1)
         self.assertEqual(dict(ev)["tr"]["destino"], "en")
         st, raw = self.req("PUT", "/v1/app/translate/stream?de=es&a=en&voz=0", raw=b"a" * 3000)
         self.assertNotIn("audio", [e for e, _ in sse(raw)])                  # voz=0: sin audio
 
+    def test_si_falla_la_voz_el_texto_llega_igual(self):
+        def mal(t, i): raise RuntimeError("OpenAI 500")
+        T.texto_a_voz = mal
+        st, raw = self.req("PUT", "/v1/app/translate/stream?de=es&a=en", raw=b"a" * 3000)
+        nombres = [e for e, _ in sse(raw)]
+        self.assertIn("tr", nombres); self.assertEqual(nombres[-1], "fail")           # el texto se muestra y el error se avisa
+
+    def test_turno_largo_se_habla_completo(self):
+        largo = ("Esta es una frase de prueba con bastante contenido para simular una intervención larga. " * 55).strip()
+        core.call_haiku = lambda key, system, hist, user, **kw: json.dumps({"origen": "es", "traduccion": largo, "pinyin": ""})
+        hablado = []
+        T.texto_a_voz = lambda t, i: hablado.append(t) or b"MP3"
+        st, raw = self.req("PUT", "/v1/app/translate/stream?de=es&a=en", raw=b"a" * 3000)
+        self.assertEqual(sse(raw)[-1][0], "done")
+        self.assertGreaterEqual(len(hablado), 5)
+        self.assertGreaterEqual(sum(len(x) for x in hablado), int(len(largo) * 0.97))   # no se trunca: se lee casi todo (~4800 caracteres)
+
     def test_usuario_atajo_no_puede_usar_voz(self):
         tok = self.token("atajo-polo", "otra frase larga y segura 2026")
         self.assertEqual(self.req("PUT", "/v1/app/voice/turn?vsid=x", raw=b"a" * 3000, tok=tok)[0], 401)
+
+
+class Compartir(Base):
+    def _doc(self, texto="Conversación con el proveedor. El precio unitario es de 12 dólares y entrega en 30 días. " * 3):
+        return M.register_text("Proveedor Shenzhen", texto, tipo="conversacion", resumen="**Resumen** precio y plazo")["id"]
+
+    def test_crear_abrir_y_revocar_enlace(self):
+        mid = self._doc()
+        st, d = self.req("POST", f"/v1/app/media/{mid}/share", {"dias": 7})
+        self.assertEqual(st, 200); self.assertTrue(d["url"].endswith("/s/" + d["token"])); self.assertEqual(d["dias"], 7)
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        c.request("GET", "/s/" + d["token"])                                           # SIN token de la app: es público
+        r = c.getresponse(); html = r.read().decode()
+        self.assertEqual(r.status, 200); self.assertIn("precio unitario", html); self.assertIn("<b>Resumen</b>", html)
+        self.assertIn("noindex", r.getheader("X-Robots-Tag")); self.assertIn("default-src 'none'", r.getheader("Content-Security-Policy"))
+        self.assertNotIn("<script", html)
+        self.assertEqual(self.req("POST", f"/v1/app/media/{mid}/unshare", {})[1]["revocados"], 1)
+        c.request("GET", "/s/" + d["token"]); self.assertEqual(c.getresponse().status, 404)
+
+    def test_enlace_caducado_o_inventado_da_404(self):
+        mid = self._doc()
+        tok = M.share_create(mid, 1)["token"]
+        sh = M._sh_read(); k = M._th(tok); sh[k]["exp"] = int(time.time()) - 5; M._sh_write(sh)
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        for ruta in ("/s/" + tok, "/s/" + "A" * 32, "/s/corto", "/s/../etc/passwd"):
+            c.request("GET", ruta); r = c.getresponse(); r.read()
+            self.assertIn(r.status, (404, 400), ruta)
+
+    def test_el_html_compartido_escapa_el_contenido(self):
+        mid = self._doc("<script>alert(1)</script> & <img src=x onerror=alert(2)>")
+        tok = M.share_create(mid, 1)["token"]
+        html = M.share_page(tok)
+        self.assertNotIn("<script>alert", html); self.assertNotIn("<img", html); self.assertIn("&lt;script&gt;", html)
+
+    def test_solo_documentos_listos(self):
+        r = M.init("x.m4a", "audio/mp4", 1)
+        with self.assertRaises(ValueError):
+            M.share_create(r["id"], 7)
+
+    def test_usuario_atajo_no_puede_compartir(self):
+        tok = self.token("atajo-polo", "otra frase larga y segura 2026")
+        self.assertEqual(self.req("POST", f"/v1/app/media/{self._doc()}/share", {}, tok=tok)[0], 401)
+
+    def test_donna_puede_compartir_por_herramienta(self):
+        mid = self._doc()
+        out = core.execute_tool("adjuntos_compartir", {"id": mid, "dias": 3})
+        self.assertIn("/s/", out); self.assertIn("3 día", out)
+        self.assertIn("revocados: 1", core.execute_tool("adjuntos_compartir", {"id": mid, "revocar": True}))
 
 
 class Frases(unittest.TestCase):
@@ -209,7 +274,7 @@ class Frases(unittest.TestCase):
         self.assertTrue(t[0].startswith("Hola Polo")); self.assertEqual(" ".join(t).count("Dazon"), 1)
 
     def test_chino_sin_espacios(self):
-        t = T.dividir_frases("我们需要确认批次的单价。请在周五之前回复我们。谢谢你的帮助！", min_chars=12)
+        t = T.dividir_frases("我们需要确认批次的单价。请在周五之前回复我们。谢谢你的帮助！", primero=12, resto=12)
         self.assertGreaterEqual(len(t), 2)
 
     def test_quita_formato_para_hablar(self):

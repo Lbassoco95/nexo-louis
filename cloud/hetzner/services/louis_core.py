@@ -2957,6 +2957,11 @@ TOOLS_DEFINITION = [
         "input_schema": {"type": "object", "properties": {"id": {"type": "string"}, "desde": {"type": "integer"}, "limite": {"type": "integer"}}, "required": ["id"]},
     },
     {
+        "name": "adjuntos_compartir",
+        "description": "Crea un ENLACE TEMPORAL de solo lectura para compartir con otra persona una transcripción, conversación traducida o documento (id del adjunto). Devuelve la URL y cuándo caduca (1-30 días, por defecto 7). Úsalo cuando Polo diga «compártesela a…» o «mándale la conversación a…» y pega el enlace en el correo/mensaje. NUNCA lo compartas sin que Polo lo pida. Con `revocar: true` deja de compartirlo.",
+        "input_schema": {"type": "object", "properties": {"id": {"type": "string"}, "dias": {"type": "integer"}, "revocar": {"type": "boolean"}}, "required": ["id"]},
+    },
+    {
         "name": "adjuntos_listar",
         "description": "Lista los adjuntos recientes de la app (id, nombre, tipo, estado, resumen). tipo: imagen, audio, video o documento.",
         "input_schema": {"type": "object", "properties": {"tipo": {"type": "string"}, "limite": {"type": "integer"}}},
@@ -9271,7 +9276,7 @@ def execute_tool(name: str, args: dict) -> str:
             return f"ERROR creando recordatorio: {r.stderr.strip()}"
         elif name.startswith("patio_"):
             return _tool_patio(name, args)
-        elif name in ("adjuntos_buscar", "adjuntos_leer", "adjuntos_listar"):
+        elif name in ("adjuntos_buscar", "adjuntos_leer", "adjuntos_listar", "adjuntos_compartir"):
             return _tool_adjuntos(name, args)
         elif name in ("crear_artefacto", "actualizar_artefacto", "listar_artefactos"):
             return _tool_artefacto(name, args)
@@ -9822,6 +9827,13 @@ def _tool_adjuntos(name, args):
             return _M.buscar(args.get("consulta", ""), int(args.get("limite") or 8))
         if name == "adjuntos_leer":
             return _M.leer_texto(args.get("id", ""), int(args.get("desde") or 0), int(args.get("limite") or 8000))
+        if name == "adjuntos_compartir":
+            if args.get("revocar"):
+                return f"✅ enlaces revocados: {_M.share_revoke(args.get('id', ''))}"
+            r = _M.share_create(args.get("id", ""), int(args.get("dias") or 7), "donna")
+            dom = (os.environ.get("LOUIS_DOMAIN", "") or "").strip().strip("\"'") or "donna.kawiil.mx"
+            return (f"✅ Enlace de solo lectura: https://{dom}/s/{r['token']} — caduca en {r['dias']} día(s). "
+                    "Quien lo tenga puede leer ese documento (nada más). Compártelo solo con quien Polo indicó.")
         items = _M.listar(int(args.get("limite") or 20), args.get("tipo", ""))
         if not items:
             return "(no hay adjuntos todavía)"

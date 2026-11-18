@@ -556,6 +556,25 @@ async function openMediaList(){
     $('#ms-go').onclick=go1;$('#ms-q').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();go1()}});
   }catch(e){sheet('Mis adjuntos','<div class="empty">No pude cargar. '+esc(e.message)+'</div>')}
 }
+/* ---------- compartir un documento o conversación (enlace temporal de solo lectura) ---------- */
+async function shareDoc(id,nombre,dias){
+  try{
+    const r=await api('/v1/app/media/'+id+'/share',{method:'POST',body:JSON.stringify({dias})});
+    const cad=new Date(r.exp*1000).toLocaleDateString('es-MX',{day:'numeric',month:'long'});
+    sheet('Compartir','<div class="sub" style="margin-bottom:8px">«'+esc(nombre)+'» · quien tenga este enlace puede LEER solo este documento hasta el '+esc(cad)+'.</div>'+
+      '<input id="sh-url" readonly value="'+esc(r.url)+'" style="width:100%;padding:11px;border-radius:12px;border:1px solid var(--line);background:var(--panel);color:var(--tx);font:13px monospace">'+
+      '<div class="trtalk" style="margin-top:10px"><button id="sh-copy">📋 Copiar</button><button id="sh-send">📤 Enviar…</button></div>'+
+      '<button class="menurow" id="sh-off" style="margin-top:6px"><span style="font-size:20px">🚫</span><span><b>Dejar de compartir</b><small>Cancela todos los enlaces de este documento</small></span></button>');
+    $('#sh-copy').onclick=async()=>{try{await navigator.clipboard.writeText(r.url);toast('Enlace copiado')}catch(e){$('#sh-url').select();toast('Selecciona y copia el enlace')}};
+    $('#sh-send').onclick=async()=>{if(navigator.share){try{await navigator.share({title:nombre,text:'Te comparto: '+nombre,url:r.url})}catch(e){}}else{try{await navigator.clipboard.writeText(r.url);toast('Enlace copiado')}catch(e){}}};
+    $('#sh-off').onclick=async()=>{try{const x=await api('/v1/app/media/'+id+'/unshare',{method:'POST',body:'{}'});toast('Enlaces cancelados: '+x.revocados);openMedia(id)}catch(e){toast(e.message)}};
+  }catch(e){toast('No pude crear el enlace: '+e.message)}
+}
+function shareChooser(id,nombre){
+  sheet('Compartir','<div class="sub" style="margin-bottom:10px">Se crea un enlace secreto de solo lectura de «'+esc(nombre)+'». ¿Cuánto tiempo debe funcionar?</div>'+
+    [[1,'1 día'],[7,'7 días'],[30,'30 días']].map(d=>'<button class="menurow" data-sd="'+d[0]+'"><span style="font-size:20px">🔗</span><span><b>'+d[1]+'</b></span></button>').join(''));
+  $$('#sh-b [data-sd]').forEach(b=>b.onclick=()=>shareDoc(id,nombre,+b.dataset.sd));
+}
 async function openMedia(id){
   sheet('Adjunto','<div class="empty">Cargando…</div>');
   try{
@@ -563,7 +582,8 @@ async function openMedia(id){
     sheet(m.nombre,'<div class="sub">'+esc(m.tipo)+' · '+esc(m.estado)+(m.motor?' · '+esc(m.motor):'')+'</div>'+
       (m.resumen?'<div class="card" style="margin:10px 0">'+md(m.resumen)+'</div>':'')+
       (t?'<details><summary>Texto completo</summary><pre style="white-space:pre-wrap;font-size:13px">'+esc(t)+'</pre></details>':'<div class="empty">'+esc(m.error||'Procesando…')+'</div>')+
-      '<button class="artcard" id="m-ask" style="margin-top:12px">💬 Preguntarle a Donna sobre esto</button>');
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button class="artcard" id="m-ask">💬 Preguntarle a Donna</button>'+(m.estado==='listo'?'<button class="artcard" id="m-share" style="background:#0f8a5f">🔗 Compartir</button>':'')+'</div>');
+    const sb=$('#m-share');if(sb)sb.onclick=()=>shareChooser(m.id,m.nombre);
     const a=$('#m-ask');if(a)a.onclick=()=>{closeSheet();go('chat');$('#inp').value='Sobre mi adjunto «'+m.nombre+'»: ';PEND.push({name:m.nombre,state:'listo',label:'✓',id:m.id});paintPend();$('#inp').focus()};
   }catch(e){sheet('Adjunto','<div class="empty">'+esc(e.message)+'</div>')}
 }
@@ -574,13 +594,15 @@ async function openMedia(id){
 function clog(msg){try{fetch('/v1/app/clientlog',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+TOKEN},body:JSON.stringify({msg:String(msg).slice(0,400)+' | '+navigator.userAgent.slice(0,90)})})}catch(e){}}
 window.addEventListener('error',e=>clog('JS: '+e.message));window.addEventListener('unhandledrejection',e=>clog('Promesa: '+(e.reason&&e.reason.message||e.reason)));
 const MIC_MIMES=['audio/mp4','audio/webm;codecs=opus','audio/webm','audio/ogg'];
-async function micCapture({vad=false,maxMs=120000,onLevel=()=>{},onTick=()=>{}}={}){
+const MAX_TURN_MS=300000;   // 5 minutos por turno
+async function micCapture({vad=false,maxMs=MAX_TURN_MS,onLevel=()=>{},onTick=()=>{}}={}){
   if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia||!window.MediaRecorder)throw new Error('Este navegador no puede grabar audio');
   const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
   const mime=MIC_MIMES.find(m=>MediaRecorder.isTypeSupported(m))||'';
   const mr=new MediaRecorder(stream,mime?{mimeType:mime}:undefined),chunks=[];
   let ac=null,an=null,raf=0,stopped=false,spoke=false,peak=0,base=0,nb=0;const t0=Date.now();let lastVoice=t0;const buf=new Uint8Array(1024);
   try{ac=new (window.AudioContext||window.webkitAudioContext)();if(ac.resume)ac.resume();an=ac.createAnalyser();an.fftSize=1024;ac.createMediaStreamSource(stream).connect(an)}catch(e){ac=null;an=null}
+  let wl=null;try{if(navigator.wakeLock)wl=await navigator.wakeLock.request('screen')}catch(e){}   // la pantalla no se apaga mientras grabas
   let stop;
   const loop=()=>{
     if(stopped)return;const now=Date.now();let lvl=0;
@@ -595,7 +617,7 @@ async function micCapture({vad=false,maxMs=120000,onLevel=()=>{},onTick=()=>{}}=
   };
   const done=new Promise(res=>{
     mr.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data)};
-    mr.onstop=()=>{stopped=true;cancelAnimationFrame(raf);stream.getTracks().forEach(t=>t.stop());try{ac&&ac.close()}catch(e){}
+    mr.onstop=()=>{stopped=true;cancelAnimationFrame(raf);stream.getTracks().forEach(t=>t.stop());try{ac&&ac.close()}catch(e){}try{wl&&wl.release()}catch(e){}
       setTimeout(()=>res({blob:new Blob(chunks,{type:mr.mimeType||mime||'audio/webm'}),spoke,peak,ms:Date.now()-t0,mime:mr.mimeType||mime}),300)};
     mr.onerror=e=>{clog('MediaRecorder error: '+(e.error&&e.error.name||e.name||'?'))};
   });
@@ -674,11 +696,12 @@ async function trText(txt,de,a){
 }
 async function trTalk(de,a,btn){
   if(TR.rec){TR.rec.stop();return}
+  if(TR.pl){TR.pl.stop();TR.pl=null}                 // si aún suena una traducción, se calla antes de grabar (no se encima la voz ni entra al micrófono)
   if(TR.busy)return;
   trUnlock();
   const st=$('#tr-st'),lv=$('#tr-lvl');
   let cap;
-  try{cap=await micCapture({onLevel:l=>{if(lv)lv.style.width=Math.min(100,Math.round(l*400))+'%'},onTick:ms=>{st.textContent='🔴 Escuchando… '+fmtMs(ms)+' — toca de nuevo para terminar'}})}
+  try{cap=await micCapture({onLevel:l=>{if(lv)lv.style.width=Math.min(100,Math.round(l*400))+'%'},onTick:ms=>{const left=MAX_TURN_MS-ms;st.textContent='🔴 Escuchando… '+fmtMs(ms)+(left<=30000?' · ⏳ quedan '+Math.ceil(left/1000)+' s (se enviará solo)':' — toca de nuevo para terminar')}})}
   catch(e){st.textContent='⚠️ Micrófono: '+(e.name==='NotAllowedError'?'permiso denegado (actívalo en Ajustes del teléfono)':e.message);clog('trTalk mic: '+e.name+' '+e.message);return}
   TR.rec=cap;btn.classList.add('rec');btn.dataset.old=btn.textContent;btn.textContent='■ Terminar';
   document.querySelectorAll('.trtalk button').forEach(b=>{if(b!==btn)b.disabled=true});
@@ -690,7 +713,7 @@ async function trTalk(de,a,btn){
   if(r.blob.size<800){st.textContent='⚠️ El audio salió vacío ('+r.blob.size+' bytes). Revisa el permiso del micrófono.';clog('trTalk audio vacío '+r.blob.size+' '+r.mime);return}
   if(!r.spoke&&r.peak<0.012){st.textContent='⚠️ No se escuchó voz (el micrófono casi no captó sonido). Acércate e intenta de nuevo.';clog('trTalk sin voz peak='+r.peak);return}
   TR.busy=true;st.textContent='Enviando…';
-  const pl=mkPlayer(TR.aud||(TR.aud=new Audio()));let err='',ms=null;
+  const pl=TR.pl=mkPlayer(TR.aud||(TR.aud=new Audio()));let err='',ms=null;
   try{
     const sid=await trEnsureSid();
     await sseFetch('/v1/app/translate/stream?de='+de+'&a='+a+'&sid='+sid+'&voz='+(TR.auto?1:0)+'&nombre=voz'+extOf(r.blob.type),
@@ -702,8 +725,9 @@ async function trTalk(de,a,btn){
         else if(ev==='done')ms=d.ms});
   }catch(e){err=e.message}
   if(err){st.textContent='⚠️ '+err;clog('trTalk: '+err)}
-  else{const el=$('#tr-ms');if(el)el.textContent=msLine(ms)}
+  else{const el=$('#tr-ms');if(el)el.textContent=msLine(ms);st.textContent='🔊 Reproduciendo… (toca «Hablo yo» para saltarla)'}
   TR.busy=false;
+  pl.whenIdle().then(()=>{if(TR.pl===pl){TR.pl=null;if(!TR.rec&&!TR.busy&&/Reproduciendo/.test(st.textContent))st.textContent=''}});
 }
 async function trFinish(){
   if(!TR.turns.length){toast('Aún no hay conversación');return}
@@ -712,7 +736,8 @@ async function trFinish(){
     const m=await api('/v1/app/translate/finish',{method:'POST',body:JSON.stringify({sid:TR.sid})});
     const id=m.id,nombre=m.nombre;TR.sid=null;TR.turns=[];
     sheet('Conversación guardada','<div class="sub">'+esc(nombre)+'</div>'+(m.resumen?'<div class="card" style="margin:10px 0">'+md(m.resumen)+'</div>':'<div class="empty">Guardada (muy corta para resumir).</div>')+
-      '<button class="artcard" id="tr-ask" style="margin-top:12px">💬 Que Donna proponga tareas y seguimientos</button>');
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button class="artcard" id="tr-ask">💬 Que Donna proponga tareas</button><button class="artcard" id="tr-share" style="background:#0f8a5f">🔗 Compartir</button></div>');
+    $('#tr-share').onclick=()=>shareChooser(id,nombre);
     $('#tr-ask').onclick=()=>{closeSheet();go('chat');$('#inp').value='De mi conversación traducida «'+nombre+'»: propón los pendientes y seguimientos (quién, qué, cuándo).';PEND.push({name:nombre,state:'listo',label:'✓',id:id});paintPend();$('#inp').focus()};
   }catch(e){$('#tr-st').textContent='⚠️ '+e.message}
 }
@@ -721,7 +746,7 @@ function openTranslator(){
     '<div class="trbar"><select id="tr-de">'+trOpts(TR.de)+'</select><button id="tr-sw" aria-label="Intercambiar">⇄</button><select id="tr-a">'+trOpts(TR.a)+'</select></div>'+
     '<div class="trtalk"><button id="tr-b1"></button><button id="tr-b2"></button></div>'+
     '<div class="trin"><input id="tr-in" placeholder="O escribe aquí…" enterkeyhint="send"><button id="tr-go">Traducir</button></div>'+
-    '<label class="trlbl"><input type="checkbox" id="tr-auto"'+(TR.auto?' checked':'')+'> Leer la traducción en voz alta</label>'+
+    '<div class="sub" style="font-size:11px;margin:0 0 6px">Cada turno puede durar hasta 5 minutos. Mantén la pantalla encendida y la app abierta.</div><label class="trlbl"><input type="checkbox" id="tr-auto"'+(TR.auto?' checked':'')+'> Leer la traducción en voz alta</label>'+
     '<div class="lvl"><i id="tr-lvl"></i></div><div id="tr-st" class="sub" style="min-height:18px;margin-bottom:2px"></div><div id="tr-ms" class="sub" style="font-size:11px;min-height:14px;margin-bottom:6px"></div>'+
     '<div id="tr-turns" style="max-height:34dvh;overflow-y:auto"></div>'+
     '<button class="artcard" id="tr-fin" style="margin-top:10px">💾 Terminar y guardar la conversación</button>');
@@ -751,7 +776,7 @@ async function vmLoop(){
   while(VM.on){
     vmSet('listen','Te escucho…');
     let r;
-    try{VM.cap=await micCapture({vad:true,maxMs:90000,onLevel:l=>{if(VM.on&&$('#vm-orb').dataset.s==='listen')$('#vm-orb').style.transform='scale('+(1+Math.min(.5,l*3))+')'}});r=await VM.cap.done}
+    try{VM.cap=await micCapture({vad:true,onLevel:l=>{if(VM.on&&$('#vm-orb').dataset.s==='listen')$('#vm-orb').style.transform='scale('+(1+Math.min(.5,l*3))+')'}});r=await VM.cap.done}
     catch(e){clog('vm mic: '+e.name+' '+e.message);vmStop('⚠️ Micrófono: '+(e.name==='NotAllowedError'?'permiso denegado':e.message));return}
     VM.cap=null;if(!VM.on)return;
     if(!r.spoke||r.blob.size<1500){if(++VM.silent>=2){vmStop('No te escuché. Toca «Empezar» para continuar.');return}continue}
