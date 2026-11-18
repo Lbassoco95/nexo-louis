@@ -1354,7 +1354,7 @@ def _cerebro_crear_brief(tarea: str, cliente: str, insumos: str = "",
                          urgencia: str = "normal", contexto: str = "") -> str:
     """
     Crea un brief de dispatch en el almacén compartido y envía notificación
-    inmediata a Polo por Telegram ('brief listo, ábrelo en Cowork').
+    inmediata a Polo en la app ('brief listo, ábrelo en Cowork').
     """
     BRIEFS_PATH.mkdir(parents=True, exist_ok=True)
     ahora = datetime.now(TZ_CDMX)
@@ -4089,7 +4089,7 @@ TOOLS_DEFINITION = [
         "name": "cerebro_crear_brief",
         "description": (
             "Crea un brief de dispatch en el cerebro para que Cowork produzca un entregable. "
-            "Notifica a Polo por Telegram inmediatamente ('brief listo, ábrelo en Cowork'). "
+            "Avisa a Polo de inmediato en la app ('brief listo, ábrelo en Cowork'). "
             "Usar cuando Louis identifica trabajo que debe delegarse a Cowork."
         ),
         "input_schema": {
@@ -4163,7 +4163,7 @@ TOOLS_DEFINITION = [
         "description": (
             "Compara los pendientes abiertos de AGENDA.md con el estado real del cerebro. "
             "Detecta lo que Louis reporta como 'pendiente' pero ya está 'listo' o 'aprobado' en Cowork. "
-            "Notifica a Polo por Telegram si hay discrepancias. "
+            "Avisa a Polo en la app si hay discrepancias. "
             "Usar en briefing matutino o cuando Polo pregunta por el estado de proyectos."
         ),
         "input_schema": {"type": "object", "properties": {}},
