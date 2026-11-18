@@ -225,7 +225,8 @@ def render_page(titulo: str, agente: str, body_html: str, *,
 
     # El HTML se entrega a terceros: lleva SOLO el token del chat de documentos
     # (sin tools ni memoria), nunca el token principal del gateway.
-    chat_url = _os.environ.get("CHAT_ENDPOINT", "https://louis.kawiil.mx/v1/doc-chat")
+    _dom = (_os.environ.get("LOUIS_DOMAIN", "") or "louis.kawiil.mx").strip().strip('"\'')
+    chat_url = _os.environ.get("CHAT_ENDPOINT", f"https://{_dom}/v1/doc-chat")
     if chat_url.endswith("/v1/chat/completions"):
         chat_url = chat_url[: -len("/v1/chat/completions")] + "/v1/doc-chat"
     chat_token = _os.environ.get("DOC_CHAT_TOKEN", "")

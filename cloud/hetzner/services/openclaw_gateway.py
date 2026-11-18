@@ -9,6 +9,9 @@ delgada que envuelve `louis_core` y expone tres rutas:
   GET  /v1/status                  → estado del gateway + routing
   POST /v1/chat/completions        → endpoint compatible con OpenAI (usa louis_core)
   POST /v1/tools/{name}            → ejecutar tool directamente (debug)
+  GET  /app                        → app móvil (PWA); datos en /v1/app/* (Bearer)
+  POST /v1/app/chat/stream         → chat en streaming (SSE) · GET /v1/app/chat/result?rid=
+  *    /v1/app/push/*              → notificaciones push (key, subscribe, unsubscribe, test)
 
 Diseñado para correr en 127.0.0.1:3000 detrás de Caddy en louis.kawiil.mx.
 
@@ -29,6 +32,7 @@ import json
 import time
 import hmac
 import base64
+import ipaddress
 import logging
 import threading
 import traceback
@@ -42,6 +46,7 @@ if SCRIPTS_DIR.exists():
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import louis_core as core  # noqa: E402
+import app_auth  # noqa: E402  (usuario/contraseña de la app, sesiones propias)
 
 # Solo StreamHandler: el servicio de systemd ya redirige stdout/stderr al log
 # (StandardOutput=append:.../openclaw-gateway.log). Con FileHandler además, cada
@@ -84,6 +89,32 @@ def _require_auth(handler) -> bool:
     return _same(_bearer(handler), TOKEN)
 
 
+def _client_ip(handler) -> str:
+    """IP real del cliente. Detrás de Caddy (loopback) se confía en X-Real-IP; si no, en la conexión directa."""
+    peer = handler.client_address[0] if handler.client_address else "?"
+    if peer in ("127.0.0.1", "::1"):
+        real = (handler.headers.get("X-Real-IP") or "").strip()
+        try:
+            return str(ipaddress.ip_address(real))
+        except ValueError:
+            pass
+    return peer
+
+
+def _require_app_auth(handler) -> bool:
+    """Rutas /v1/app/*: acepta el token MAESTRO (administrador, CLI) o una SESIÓN de usuario/contraseña
+    (prefijo dns_). Las sesiones SOLO valen aquí: /v1/tools, /v1/agents y /v1/chat/completions siguen
+    exigiendo el token maestro. Deja en handler._auth = ('admin'|'sesion', sesión)."""
+    if _require_auth(handler):
+        handler._auth = ("admin", None)
+        return True
+    s = app_auth.check_session(_bearer(handler))
+    if s:
+        handler._auth = ("sesion", s)
+        return True
+    return False
+
+
 def _require_doc_auth(handler) -> bool:
     """Chat de documentos: exige Bearer <DOC_CHAT_TOKEN> (distinto del token principal)."""
     if not DOC_TOKEN:
@@ -104,6 +135,185 @@ def _require_dashboard_auth(handler) -> bool:
         return False
     return _same(user, DASH_USER) and _same(pw, DASH_PASS)
 
+
+
+# ---- App móvil (PWA) --------------------------------------------------------
+# El cascarón (HTML/manifest/sw/icono) es público y NO contiene datos ni secretos:
+# el token se escribe una vez en el teléfono. Todos los datos van por /v1/app/* con Bearer.
+_APP_DIR = next((d for d in (Path(__file__).resolve().parent / "app", Path("/opt/openclaw/scripts/app")) if d.is_dir()),
+                Path(__file__).resolve().parent / "app")
+_APP_FILES = {
+    "/app/": ("index.html", "text/html; charset=utf-8"),
+    "/app/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
+    "/app/sw.js": ("sw.js", "application/javascript; charset=utf-8"),
+    "/app/icon.svg": ("icon.svg", "image/svg+xml"),
+    # Script del widget para iPhone (app Scriptable). Público: NO contiene el token (lo pide una vez).
+    "/app/widget-scriptable.js": ("widget-scriptable.js", "text/javascript; charset=utf-8"),
+}
+
+
+_NAME_SAFE = re.compile(r"[^\w .\-]", re.UNICODE)
+
+
+def _agent_name() -> str:
+    """Nombre del asistente para la interfaz (solo letras, espacios, punto y guion: va dentro de HTML/JS/JSON)."""
+    return _NAME_SAFE.sub("", core.AGENT_NAME).strip() or "Asistente"
+
+
+_HOST_SAFE = re.compile(r"^[A-Za-z0-9.\-]{1,100}(:\d{1,5})?$")
+
+
+def _base_url(host: str = "") -> str:
+    """https://<dominio>: LOUIS_DOMAIN (el de Caddy) y, si no está, el Host de la petición (validado)."""
+    dom = (os.environ.get("LOUIS_DOMAIN", "") or "").strip().strip("\"'")
+    if not dom and host and _HOST_SAFE.match(host):
+        dom = host
+    return "https://" + (dom or "donna.kawiil.mx")
+
+
+def _app_file(ruta: str, host: str = ""):
+    """(bytes, content-type) del cascarón de la app, o None. {{AGENT_NAME}} y {{BASE_URL}} se sustituyen al servir."""
+    ent = _APP_FILES.get(ruta)
+    if not ent:
+        return None
+    try:
+        raw = (_APP_DIR / ent[0]).read_bytes()
+    except OSError:
+        return None
+    raw = raw.replace(b"{{AGENT_NAME}}", _agent_name().encode("utf-8"))
+    raw = raw.replace(b"{{BASE_URL}}", _base_url(host).encode("utf-8"))
+    return raw, ent[1]
+
+
+# ---- Chat en streaming (SSE) para la app móvil --------------------------------
+# call_llm devuelve la respuesta completa (enrutado + tools + varios modelos), así que el
+# streaming es a nivel de servicio: la respuesta se calcula en un hilo mientras el cliente
+# recibe latidos de progreso, y al terminar se emite en fragmentos. El resultado queda
+# guardado 1 h por `rid`: si el teléfono se bloquea a media respuesta, la app lo recupera
+# (/v1/app/chat/result) y, si el cliente ya no estaba, se avisa por push.
+_RID_OK = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+_RESULTS: dict = {}
+_RESULTS_LOCK = threading.Lock()
+_CHAT_SLOTS = threading.BoundedSemaphore(4)
+
+
+def _split_messages(messages: list):
+    """(último mensaje de usuario, historial previo) — misma lógica que /v1/chat/completions."""
+    user_msg, history = "", []
+    for m in messages or []:
+        role, content = m.get("role"), m.get("content", "")
+        text = content if isinstance(content, str) else json.dumps(content)
+        if role == "user":
+            if user_msg:
+                history.append({"role": "user", "content": user_msg})
+            user_msg = text
+        elif role == "assistant":
+            history.append({"role": "assistant", "content": text})
+    return user_msg, history
+
+
+def _gc_results():
+    now = time.time()
+    with _RESULTS_LOCK:
+        for k in [k for k, v in _RESULTS.items() if now - v["t0"] > 3600]:
+            _RESULTS.pop(k, None)
+
+
+# Historial persistente de la app (igual que telegram-history.jsonl / slack-history.jsonl). Sirve para
+# dos cosas: (1) que call_llm sepa si ya hubo conversación hoy — SIN archivo trata TODO mensaje como
+# «primera conversación del día» y responde con el briefing completo cada vez; (2) que la destilación
+# nocturna de memoria (run_memory_distillation) también aprenda de lo conversado por la app.
+APP_HISTORY_FILE = core.SPACE / "app-history.jsonl"
+
+
+def _hist_append(role: str, content: str):
+    try:
+        core.append_history(APP_HISTORY_FILE, role, content)
+    except Exception:
+        log.warning("no pude escribir app-history.jsonl", exc_info=True)
+
+
+def _chat_worker(rid: str, user_msg: str, history: list):
+    res = _RESULTS[rid]
+    try:
+        api_key = core.load_anthropic_key()
+        sys_prompt = core.load_system_prompt(channel="api")
+        # Mismo orden que telegram-bridge: el mensaje entra al historial ANTES de call_llm.
+        _hist_append("user", user_msg)
+        text, model = core.call_llm(api_key, sys_prompt, history, user_msg, history_file=APP_HISTORY_FILE)
+        if text:
+            _hist_append("assistant", text)
+        out = {"text": text or "(sin respuesta)", "model": model, "error": None}
+    except Exception as e:
+        log.exception("chat stream falló")
+        out = {"text": "", "model": "", "error": str(e)[:200] or "error"}
+    with _RESULTS_LOCK:
+        res.update(out, done=True)
+        gone = res.get("client_gone")
+    _CHAT_SLOTS.release()
+    if gone:
+        _push_answer(res)
+
+
+def _push_answer(res: dict):
+    """El cliente se fue antes de recibir la respuesta → avisa por push (si hay suscripciones)."""
+    if res.get("pushed"):
+        return
+    res["pushed"] = True
+    try:
+        import louis_push
+        txt = res.get("text") or ("⚠️ " + (res.get("error") or "error"))
+        louis_push.notify_async(f"{core.AGENT_NAME} respondió", re.sub(r"[*_`#>]+", "", txt).strip()[:200], tab="chat",
+                                tag="resp-" + res.get("rid", ""))
+    except Exception:
+        log.exception("push de respuesta falló")
+
+
+# ---- Acciones de confirmación de la bandeja (lista CERRADA: solo estas, nunca texto libre) ----------
+# Cada acción aplica algo que el asistente PROPUSO y que antes se confirmaba escribiendo «cierra todos los
+# sugeridos» / «agrega todas las altas». El botón solo funciona sobre la propuesta del MISMO DÍA que el aviso:
+# si ya hay una propuesta más nueva, se rechaza (no se cierra algo distinto de lo que se veía en pantalla).
+def _fecha_cdmx(ts: int) -> str:
+    from datetime import datetime
+    return datetime.fromtimestamp(ts, core.TZ_CDMX).strftime("%Y-%m-%d")
+
+
+def _estado_steward_fecha() -> str:
+    try:
+        return str(core._steward_load_state().get("date", ""))
+    except Exception:
+        return ""
+
+
+def _estado_altas_fecha() -> str:
+    try:
+        return str(json.loads(core.SLACK_FOLLOWUP_STATE.read_text()).get("fecha", ""))
+    except Exception:
+        return ""
+
+
+_ACTIONS = {
+    "steward_cerrar_sugeridos": (lambda: core.aplicar_cierres_steward("todos los sugeridos"), _estado_steward_fecha),
+    "altas_todas": (lambda: core.aplicar_altas_seguimiento("todas"), _estado_altas_fecha),
+}
+
+
+def _run_notif_action(nid: str, action_id: str):
+    """(código HTTP, dict). Valida: la acción existe, el aviso la ofrece, no se usó ya y la propuesta sigue vigente."""
+    import louis_push
+    rec = louis_push.inbox_get(nid)
+    if not rec:
+        return 404, {"error": "aviso no encontrado"}
+    if action_id not in _ACTIONS or action_id not in [a.get("id") for a in rec.get("actions") or []]:
+        return 400, {"error": "acción no permitida para este aviso"}
+    if action_id in (rec.get("done") or {}):
+        return 200, {"ok": True, "ya": True, "result": rec["done"][action_id].get("result", "")}
+    fn, fecha_estado = _ACTIONS[action_id]
+    if fecha_estado() != _fecha_cdmx(rec["ts"]):
+        return 409, {"error": "Esta propuesta ya no está vigente (hay una más reciente). Pídele a la asistente que la repita."}
+    result = str(fn())
+    louis_push.inbox_set_done(nid, action_id, result)
+    return 200, {"ok": True, "result": result}
 
 _AGENT_NAME_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,80}$")
 
@@ -149,7 +359,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Louis · Agentes en vivo</title>
+<title>@@AGENT_NAME@@ · Agentes en vivo</title>
 <style>
   :root { --bg:#0b0f1a; --panel:#131a2b; --txt:#e6ecf5; --dim:#8a96ad;
           --idle:#2b3650; --active:#27e0a0; --line:#1f2a44; }
@@ -473,12 +683,14 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass  # cliente desconectó — normal en health-checks, no es error
 
-    def _send_json(self, code, payload):
+    def _send_json(self, code, payload, headers=None):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         try:
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Access-Control-Allow-Origin", "*")
+            for k, v in (headers or {}).items():
+                self.send_header(k, str(v))
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
@@ -540,6 +752,107 @@ class Handler(BaseHTTPRequestHandler):
                                   "version": "1.0", "uptime_started": getattr(self.server, "started_at", 0)})
             return
 
+        _r0 = self.path.split("?", 1)[0]
+        if _r0 == "/app":
+            # El service worker (alcance /app/) solo controla /app/…: sin la diagonal final la
+            # app no queda bajo su control y las notificaciones push nunca se registran.
+            _q = self.path[len("/app"):]
+            try:
+                self.send_response(302)
+                self.send_header("Location", "/app/" + (_q if _q.startswith("?") else ""))
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass
+            return
+        if _r0 in _APP_FILES:
+            f = _app_file(_r0, self.headers.get("Host", ""))
+            if not f:
+                self._send_json(404, {"error": "app no instalada"})
+                return
+            body, ctype = f
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Referrer-Policy", "no-referrer")
+                if ctype.startswith("text/html"):
+                    self.send_header("X-Frame-Options", "DENY")
+                self.end_headers()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                return
+            self._safe_write(body)
+            return
+
+        if _r0.startswith("/v1/app/"):
+            if not _require_app_auth(self):
+                self._send_json(401, {"error": "unauthorized"})
+                return
+            try:
+                if _r0 == "/v1/app/ping":
+                    kind, ses = self._auth
+                    self._send_json(200, {"ok": True, "modo": kind, "user": (ses or {}).get("user", "")})
+                elif _r0 == "/v1/app/sessions":
+                    kind, ses = self._auth
+                    self._send_json(200, {"sesiones": app_auth.list_sessions(
+                        (ses or {}).get("user") if kind == "sesion" else None, _bearer(self))})
+                elif _r0 == "/v1/app/chat/result":
+                    from urllib.parse import urlparse, parse_qs
+                    rid = (parse_qs(urlparse(self.path).query).get("rid") or [""])[0]
+                    _gc_results()
+                    with _RESULTS_LOCK:
+                        r = _RESULTS.get(rid) if _RID_OK.match(rid) else None
+                        out = ({"found": True, "done": bool(r.get("done")), "text": r.get("text", ""),
+                                "model": r.get("model", ""), "error": r.get("error")} if r else {"found": False})
+                    self._send_json(200, out)
+                elif _r0 == "/v1/app/push/key":
+                    import louis_push
+                    self._send_json(200, {"key": louis_push.public_key()})
+                elif _r0 == "/v1/app/push/status":
+                    import louis_push
+                    self._send_json(200, {"subs": louis_push.count()})
+                elif _r0 == "/v1/app/hoy":
+                    import louis_push
+                    d = core.build_app_hoy()
+                    d["sin_leer"] = louis_push.unread_count()                  # para la campana y el widget
+                    d["confirmaciones"] = louis_push.pending_confirmations()   # avisos con botón sin usar
+                    self._send_json(200, d)
+                elif _r0 == "/v1/app/notifs":
+                    import louis_push
+                    from urllib.parse import urlparse, parse_qs
+                    try:
+                        lim = int((parse_qs(urlparse(self.path).query).get("limit") or ["50"])[0])
+                    except ValueError:
+                        lim = 50
+                    self._send_json(200, {"items": louis_push.inbox_list(lim), "unread": louis_push.unread_count(),
+                                          "confirmaciones": louis_push.pending_confirmations()})
+                elif _r0 == "/v1/app/artefactos":
+                    import app_artifacts
+                    self._send_json(200, {"items": app_artifacts.listar()})
+                elif _r0 == "/v1/app/artefacto":
+                    import app_artifacts
+                    from urllib.parse import urlparse, parse_qs
+                    aid = (parse_qs(urlparse(self.path).query).get("id") or [""])[0]
+                    try:
+                        art = app_artifacts.obtener(aid)
+                    except ValueError:
+                        art = None
+                    self._send_json(200 if art else 404, art or {"error": "no existe ese artefacto"})
+                elif _r0 == "/v1/app/entregables":
+                    self._send_json(200, {"entregables": core._entregables_lista_tablero()})
+                elif _r0 == "/v1/app/entregable":
+                    from urllib.parse import urlparse, parse_qs
+                    q = parse_qs(urlparse(self.path).query)
+                    self._send_json(200, core._entregable_detalle((q.get("f") or [""])[0]))
+                else:
+                    self._send_json(404, {"error": "no encontrado"})
+            except Exception as e:
+                log.exception("/v1/app falló")
+                self._send_json(500, {"error": str(e)[:200]})
+            return
+
         # Todo lo que muestra datos (dashboard, tablero, entregables) exige usuario y
         # contraseña AQUÍ, sin depender de que Caddy lo haga: en producción se vio que
         # el tráfico llegaba al gateway sin pasar por esa protección.
@@ -553,7 +866,7 @@ class Handler(BaseHTTPRequestHandler):
 
         # Dashboard visual de agentes — solo lectura, con usuario y contraseña.
         if self.path in ("/", "/dashboard", "/agentes"):
-            self._send_html(200, _DASHBOARD_HTML)
+            self._send_html(200, _DASHBOARD_HTML.replace("@@AGENT_NAME@@", _agent_name()))
             return
 
         # Feed de actividad de agentes (JSON) que consume el dashboard.
@@ -722,12 +1035,102 @@ class Handler(BaseHTTPRequestHandler):
                          "finish_reason": "stop"}],
         })
 
+    def _sse(self, event: str, data: dict) -> bool:
+        try:
+            self.wfile.write(f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8"))
+            self.wfile.flush()
+            return True
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+            return False
+
+    def _chat_stream(self, body: dict):
+        rid = str(body.get("rid", ""))
+        user_msg, history = _split_messages(body.get("messages", []))
+        if not _RID_OK.match(rid) or not user_msg:
+            self._send_json(400, {"error": "rid y mensaje de usuario requeridos"})
+            return
+        _gc_results()
+        with _RESULTS_LOCK:
+            if rid in _RESULTS:
+                self._send_json(409, {"error": "rid repetido"})
+                return
+        if not _CHAT_SLOTS.acquire(blocking=False):
+            self._send_json(429, {"error": "Louis está atendiendo otras consultas; reintenta en un momento"})
+            return
+        res = {"rid": rid, "t0": time.time(), "done": False, "client_gone": False}
+        with _RESULTS_LOCK:
+            _RESULTS[rid] = res
+        threading.Thread(target=_chat_worker, args=(rid, user_msg, history), daemon=True).start()
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-transform")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "close")
+            self.end_headers()
+        except OSError:
+            res["client_gone"] = True
+        alive = not res["client_gone"]
+        last = 0.0
+        while alive and not res["done"]:
+            time.sleep(0.25)
+            if time.time() - last >= 2:
+                last = time.time()
+                alive = self._sse("status", {"s": int(time.time() - res["t0"])})
+        if alive and res["done"]:
+            if res.get("error"):
+                alive = self._sse("fail", {"error": res["error"]})
+            else:
+                text = res["text"]
+                parts = re.findall(r"\S+\s*|\s+", text)
+                chunks = ["".join(parts[i:i + 3]) for i in range(0, len(parts), 3)]
+                delay = min(0.03, 3.5 / max(len(chunks), 1))  # toda la animación ≤ ~3.5 s
+                for c in chunks:
+                    if not self._sse("delta", {"d": c}):
+                        alive = False
+                        break
+                    time.sleep(delay)
+                if alive:
+                    alive = self._sse("done", {"model": res["model"]})
+        if not alive:
+            with _RESULTS_LOCK:
+                res["client_gone"] = True
+                finished = res["done"]
+            if finished:
+                _push_answer(res)
+
+    def _login(self):
+        """POST /v1/app/login {user, password} → {token, expires, user}. Sin autenticación previa, con límite de intentos."""
+        try:
+            body = self._read_json()
+        except Exception:
+            self._send_json(400, {"error": "JSON inválido"})
+            return
+        res = app_auth.login(str(body.get("user", "")), str(body.get("password", "")),
+                             _client_ip(self), self.headers.get("User-Agent", ""))
+        if res.get("ok"):
+            log.info("login ok: %s desde %s", res["user"], _client_ip(self))
+            self._send_json(200, {"ok": True, "token": res["token"], "expires": res["expires"], "user": res["user"]})
+            return
+        time.sleep(0.6)  # frena la adivinanza en línea (el límite de intentos hace el resto)
+        log.warning("login FALLIDO desde %s (%s)", _client_ip(self), res.get("error"))
+        if res.get("retry_after"):
+            self._send_json(429, {"error": res["error"], "retry_after": res["retry_after"]},
+                            headers={"Retry-After": res["retry_after"]})
+        else:
+            self._send_json(401, {"error": res["error"]})
+
     def do_POST(self):
         if self.path == "/v1/doc-chat":
             self._doc_chat()
             return
 
-        if not _require_auth(self):
+        if self.path == "/v1/app/login":
+            self._login()
+            return
+
+        # /v1/app/* acepta token maestro o sesión de usuario; todo lo demás (tools, agentes, completions) SOLO el maestro.
+        if not (_require_app_auth(self) if self.path.startswith("/v1/app/") else _require_auth(self)):
             self._send_json(401, {"error": "unauthorized"})
             return
 
@@ -735,6 +1138,70 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json()
         except Exception as e:
             self._send_json(400, {"error": f"JSON inválido: {e}"})
+            return
+
+        # App móvil: chat en streaming (SSE)
+        if self.path == "/v1/app/chat/stream":
+            self._chat_stream(body)
+            return
+
+        # App móvil: cerrar sesión (esta o todas las del usuario)
+        if self.path == "/v1/app/logout":
+            kind, ses = self._auth
+            self._send_json(200, {"ok": bool(kind == "sesion" and app_auth.revoke(_bearer(self)))})
+            return
+        if self.path == "/v1/app/sessions/revoke-all":
+            kind, ses = self._auth
+            n = app_auth.revoke_all((ses or {}).get("user") if kind == "sesion" else None)
+            self._send_json(200, {"ok": True, "cerradas": n})
+            return
+
+        # App móvil: bandeja de notificaciones (marcar leídas / ejecutar un botón de confirmación)
+        if self.path == "/v1/app/notifs/read":
+            import louis_push
+            ids = body.get("ids")
+            n = louis_push.inbox_mark_read(None if body.get("all") else set(map(str, ids or [])))
+            self._send_json(200, {"ok": True, "cambiadas": n, "unread": louis_push.unread_count()})
+            return
+        if self.path == "/v1/app/notifs/action":
+            try:
+                code, out = _run_notif_action(str(body.get("id", "")), str(body.get("action", "")))
+            except Exception as e:
+                log.exception("acción de bandeja falló")
+                code, out = 500, {"error": str(e)[:200]}
+            self._send_json(code, out)
+            return
+
+        # App móvil: notificaciones push
+        if self.path.startswith("/v1/app/push/"):
+            import louis_push
+            op = self.path[len("/v1/app/push/"):]
+            if op == "subscribe":
+                ok = louis_push.add_sub(body.get("subscription") or {}, str(body.get("label", "")))
+                self._send_json(200 if ok else 400, {"ok": ok, "subs": louis_push.count()} if ok
+                                else {"error": "suscripción inválida"})
+            elif op == "unsubscribe":
+                louis_push.remove_sub(str(body.get("endpoint", "")))
+                self._send_json(200, {"ok": True, "subs": louis_push.count()})
+            elif op == "test":
+                n = louis_push.notify(core.AGENT_NAME, "Notificación de prueba ✅ — todo funciona.", tab="chat",
+                                      tag="prueba", ttl=300)
+                self._send_json(200, {"ok": n > 0, "enviadas": n, "subs": louis_push.count()})
+            else:
+                self._send_json(404, {"error": "no encontrado"})
+            return
+
+        # App móvil: marcar un pendiente de la AGENDA como hecho (misma tool que usa Louis).
+        if self.path == "/v1/app/agenda/hecho":
+            texto = str(body.get("texto", "")).strip()
+            if not texto:
+                self._send_json(400, {"error": "texto requerido"})
+                return
+            try:
+                self._send_json(200, {"ok": True, "result": core.execute_tool("completar_pendiente", {"texto": texto})})
+            except Exception as e:
+                log.exception("completar_pendiente falló")
+                self._send_json(500, {"error": str(e)[:200]})
             return
 
         # OpenAI-compatible chat completions
@@ -773,8 +1240,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(500, {"error": str(e), "trace": traceback.format_exc()})
                 return
 
+            # Archivos generados en este turno: se adjuntan a la respuesta del chat
+            # (antes quedaban en la cola y solo los drenaba el bridge de Telegram).
+            import base64 as _b64
+            attachments = [
+                {"filename": fn, "caption": cap, "content_base64": _b64.b64encode(c).decode()}
+                for c, fn, cap in core.get_pending_files()
+            ]
             now = int(time.time())
             self._send_json(200, {
+                "attachments": attachments,
                 "id": f"openclaw-{now}",
                 "object": "chat.completion",
                 "created": now,

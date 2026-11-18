@@ -1,0 +1,16 @@
+{
+  "name": "{{AGENT_NAME}} — Nexo de Polo",
+  "short_name": "{{AGENT_NAME}}",
+  "description": "Tu Jarvis: chat, agenda y entregables en un solo lugar.",
+  "start_url": "/app/",
+  "scope": "/app/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b1220",
+  "theme_color": "#0b1220",
+  "lang": "es-MX",
+  "icons": [
+    {"src": "/app/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"},
+    {"src": "/app/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable"}
+  ]
+}
