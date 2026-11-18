@@ -535,6 +535,7 @@ MEMORY_FILES = [
     "FINANZAS.md",      # Notas financieras personales (NO números de cuenta) — pagos recurrentes, deadlines fiscales
     "COACH.md",         # Briefing de coach ejecutivo: perfil psicométrico de Polo + prioridades de desarrollo
     "COWORK.md",        # Lo que Polo trabaja con Claude en Cowork (decisiones, entregables, pendientes, aprendizajes)
+    "ACADEMICO.md",     # Diplomados en curso, entregas y fechas, y el plan del doctorado (programas, requisitos, convocatorias)
 ]
 
 
@@ -707,6 +708,10 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "- PROSPECTOS.md: pipeline comercial — quién, qué necesita, próximo paso, fecha de seguimiento\n"
         "- PERSONAL.md: vida personal de Polo — agenda no-oficina, hobbies, planes\n"
         "- FAMILIA.md: familia + cumpleaños + aniversarios (recordatorios anuales)\n"
+        "- ACADEMICO.md: los diplomados de Polo (institución, fechas, entregas, calificaciones) y su futuro doctorado (programas candidatos, requisitos, "
+        "convocatorias, documentos, asesores, línea de investigación). Cuando mencione clases, tareas, lecturas, entregas, becas o el doctorado, "
+        "captúralo ahí sin que lo pida, y agenda recordatorios con `agendar_recordatorio` para cada entrega o fecha límite. Si el archivo está vacío "
+        "o dice «por definir», NO inventes nada: pídele (por voz o texto) que te cuente sus diplomados y su plan de doctorado, y guárdalo tal cual.\n"
         "- SALUD.md: citas médicas pendientes, exámenes, medicamentos\n"
         "- VIAJES.md: viajes pasados/próximos, preferencias (aerolínea, hotel, status frecuente)\n"
         "- FINANZAS.md: notas financieras personales — pagos recurrentes, deadlines fiscales (NUNCA guardes números de cuenta o tarjetas)\n"
@@ -2333,6 +2338,10 @@ _MEMORY_FILE_KEYWORDS = (
     ("proyecto", "PROJECTS.md"),
     ("project", "PROJECTS.md"),
     ("personal", "PERSONAL.md"),
+    ("diplomado", "ACADEMICO.md"),
+    ("doctorado", "ACADEMICO.md"),
+    ("academico", "ACADEMICO.md"),
+    ("académico", "ACADEMICO.md"),
     ("familia", "FAMILIA.md"),
     ("salud", "SALUD.md"),
     ("viaje", "VIAJES.md"),

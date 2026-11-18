@@ -444,11 +444,19 @@ def process(mid: str) -> None:
             try:
                 import louis_push
                 louis_push.notify_async(f"Transcripción lista: {m['nombre'][:40]}",
-                                        (resumen or texto)[:180].replace("*", ""), tab="chat", tag="media-" + mid)
+                                        (resumen or texto)[:180].replace("*", ""), tab="chat", tag="media-" + mid,
+                                        full_body=(resumen or texto[:3000]), link="media:" + mid, kind="media")
             except Exception:
                 pass
     except Exception as e:
         _update(mid, estado="error", error=str(e)[:300], progreso="")
+        if m.get("tipo") in ("audio", "video"):
+            try:
+                import louis_push
+                louis_push.notify_async(f"No pude transcribir: {m['nombre'][:40]}", str(e)[:200], tab="chat",
+                                        tag="media-" + mid, link="media:" + mid, kind="media")
+            except Exception:
+                pass
 
 
 def register_text(nombre: str, texto: str, tipo: str = "documento", resumen: str = "", origen: str = "") -> dict:
@@ -511,10 +519,11 @@ def leer_texto(mid: str, desde: int = 0, limite: int = 8000) -> str:
     return f"«{m['nombre']}» ({m['tipo']}, {len(t)} caracteres, motor {m.get('motor')}):\n{trozo}{pie}"
 
 
-def buscar(consulta: str, limit: int = 8) -> str:
+def buscar_items(consulta: str, limit: int = 8) -> list:
+    """Coincidencias en los adjuntos listos: [{id, nombre, tipo, creado, extracto, puntos}] (mejores primero)."""
     q = (consulta or "").strip().lower()
     if len(q) < 2:
-        return "❌ escribe qué buscar (mínimo 2 letras)"
+        return []
     palabras = [w for w in re.split(r"\s+", q) if len(w) > 1]
     res = []
     try:
@@ -533,14 +542,21 @@ def buscar(consulta: str, limit: int = 8) -> str:
         score = sum(low.count(w) for w in palabras)
         if not score or not all(w in low for w in palabras):
             continue
-        i = low.find(palabras[0], len(m["nombre"]) + 1) - len(m["nombre"]) - 1
-        i = max(0, i)
-        res.append((score, m, t[max(0, i - 120):i + 280].replace("\n", " ")))
-    res.sort(key=lambda x: -x[0])
+        i = max(0, low.find(palabras[0], len(m["nombre"]) + 1) - len(m["nombre"]) - 1)
+        res.append({"id": m["id"], "nombre": m["nombre"], "tipo": m["tipo"], "creado": m["creado"],
+                    "extracto": t[max(0, i - 120):i + 280].replace("\n", " "), "puntos": score})
+    res.sort(key=lambda x: -x["puntos"])
+    return res[:max(1, min(limit, 50))]
+
+
+def buscar(consulta: str, limit: int = 8) -> str:
+    if len((consulta or "").strip()) < 2:
+        return "❌ escribe qué buscar (mínimo 2 letras)"
+    res = buscar_items(consulta, limit)
     if not res:
         return "(sin coincidencias en los adjuntos procesados)"
-    return "\n\n".join(f"- [[adjunto:{m['id']}]] «{m['nombre']}» ({m['tipo']}, {time.strftime('%d/%m/%Y', time.localtime(m['creado']))})\n  …{ex}…"
-                       for _, m, ex in res[:limit])
+    return "\n\n".join(f"- [[adjunto:{r['id']}]] «{r['nombre']}» ({r['tipo']}, {time.strftime('%d/%m/%Y', time.localtime(r['creado']))})\n  …{r['extracto']}…"
+                        for r in res)
 
 
 def file_path(mid: str):

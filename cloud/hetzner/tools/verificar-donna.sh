@@ -90,6 +90,13 @@ elif [[ -x /usr/local/bin/whisper-cli ]]; then info "sin OPENAI_API_KEY: usará 
 else bad "no hay motor de transcripción: define OPENAI_API_KEY en $OC/credentials/openai.env o instala whisper"; fi
 info "espacio libre para adjuntos: $(df -h --output=avail "$OC/state" 2>/dev/null | tail -1 | tr -d ' ')"
 
+echo "3i) App instalada (archivos completos)"
+for f in sw.js index.html manifest.webmanifest; do
+  sz=$($SUDO stat -c %s "$OC/scripts/app/$f" 2>/dev/null || echo 0)
+  min=100; [[ $f == sw.js ]] && min=1500; [[ $f == index.html ]] && min=20000
+  [[ "$sz" -ge "$min" ]] && ok "app/$f ($sz bytes)" || bad "app/$f VACÍO O INCOMPLETO ($sz bytes) → reinstalar: sudo install -m 0644 -o polo -g polo ~/donna-deploy/cloud/hetzner/services/app/$f $OC/scripts/app/"
+done
+
 echo "4) Conversación real (¿Ya estás ahí?)"
 if [[ -n "$TOKEN" ]]; then
   ERR=$(mktemp); OUT=$(DONNA_URL="$URL" DONNA_TOKEN="$TOKEN" python3 "$HERE/donna-chat.py" "¿Ya estás ahí?" 2>"$ERR")

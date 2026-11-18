@@ -1055,6 +1055,10 @@ class Handler(BaseHTTPRequestHandler):
     def _media_get(self, path: str):
         from urllib.parse import urlparse, parse_qs
         parts = [x for x in path.split("/") if x]          # v1 app media [id] [accion]
+        if len(parts) == 4 and parts[3] == "search":
+            q = parse_qs(urlparse(self.path).query)
+            self._send_json(200, {"items": app_media.buscar_items((q.get("q") or [""])[0])})
+            return
         if len(parts) == 3:
             q = parse_qs(urlparse(self.path).query)
             self._send_json(200, {"items": app_media.listar(int((q.get("limit") or ["50"])[0] or 50), (q.get("tipo") or [""])[0]),

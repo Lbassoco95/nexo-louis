@@ -227,9 +227,9 @@ def _inbox_write(items: list) -> None:
     os.replace(tmp, INBOX_FILE)
 
 
-def inbox_add(title: str, body: str, tab: str = "chat", actions: list = None, kind: str = "") -> dict:
+def inbox_add(title: str, body: str, tab: str = "chat", actions: list = None, kind: str = "", link: str = "") -> dict:
     rec = {"id": uuid.uuid4().hex[:12], "ts": int(time.time()), "title": (title or AGENT_NAME)[:120],
-           "body": (body or "")[:4000], "tab": tab, "kind": kind, "read": False,
+           "body": (body or "")[:4000], "tab": tab, "kind": kind, "link": (link or "")[:80], "read": False,
            "actions": actions or [], "done": {}}
     with _InboxLock():
         items = _inbox_read()
@@ -302,12 +302,12 @@ def _send_one(sub: dict, payload: bytes, ttl: int, urgency: str, topic: str = ""
 
 
 def notify(title: str, body: str = "", tab: str = "chat", tag: str = "", ttl: int = 3600,
-           urgency: str = "normal", actions: list = None, full_body: str = None, kind: str = "") -> int:
+           urgency: str = "normal", actions: list = None, full_body: str = None, kind: str = "", link: str = "") -> int:
     """Guarda el aviso en la bandeja y lo envía a los teléfonos suscritos. Devuelve cuántos aceptaron.
     Nunca lanza."""
     try:
         try:
-            rec = inbox_add(title, full_body if full_body is not None else body, tab, actions, kind)
+            rec = inbox_add(title, full_body if full_body is not None else body, tab, actions, kind, link)
         except Exception:
             log.warning("no pude guardar en la bandeja", exc_info=True)
             rec = {"id": ""}
@@ -315,7 +315,7 @@ def notify(title: str, body: str = "", tab: str = "chat", tag: str = "", ttl: in
         if not subs:
             return 0
         payload = json.dumps({"title": (title or AGENT_NAME)[:80], "body": (body or "")[:300],
-                              "tab": "notifs" if rec.get("id") else tab, "nid": rec.get("id", ""),
+                              "tab": "notifs" if rec.get("id") else tab, "nid": rec.get("id", ""), "link": (link or "")[:80],
                               "badge": unread_count(),
                               "tag": tag or hashlib.md5((title or "").encode()).hexdigest()[:8],
                               "ts": int(time.time())}, ensure_ascii=False).encode()
