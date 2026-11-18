@@ -136,3 +136,11 @@ SQL: `scripts/patio-yoltik-rol-lectura.sql` y `scripts/patio-yoltik-rol-escritur
 Herramientas: `patio_estado/tablas/describir/query/tareas/proyectos/tarea_detalle` (lectura),
 `patio_actualizar_tarea` (cerrar = `{"estatus":"completada"}`) y `patio_avance` (escritura, auditada en `logs/patio-yoltik-ops.log`).
 Pruebas: `python3 -m unittest tests.test_patio_yoltik`.
+
+## Slack de Yoltik (v7)
+
+Segundo workspace: la app «Donna Yoltik» (permisos de bot: `channels:read/history`, `groups:read/history`, `users:read`, `chat:write`).
+Token en `/opt/openclaw/credentials/slack.env` como `SLACK_BOT_TOKEN_YOLTIK` (`sudo bash scripts/setup-slack-yoltik.sh`, que prueba el token).
+Donna solo ve los canales donde la invites (`/invite @Donna`). Las herramientas `slack_resumen/canales/leer/dm_leer` aceptan
+`workspace: "yoltik"` (default kawiil). El resumen de las 18:17 y el seguimiento de las 07:41 incluyen Yoltik con etiqueta `[Yoltik]`.
+Pruebas: `python3 -m unittest tests.test_slack_workspaces`.

@@ -206,6 +206,9 @@ def _clients() -> list:
         out.append(("usuario", WebClient(token=user)))
     if bot.startswith("xoxb-"):
         out.append(("bot", WebClient(token=bot)))
+    yol = creds.get("SLACK_BOT_TOKEN_YOLTIK", "")
+    if yol.startswith("xoxb-"):
+        out.append(("yoltik", WebClient(token=yol)))        # workspace de Yoltik (solo canales donde Donna está invitada)
     return out
 
 
@@ -245,6 +248,8 @@ def collect(since_ts: float) -> tuple:
             vistos.add(cid)
             stats["convs"] += 1
             canal = _label(c, names)
+            if etiqueta == "yoltik":
+                canal = "[Yoltik] " + canal                  # para no mezclarlo con el Slack de Kawiil
             try:
                 got, cursor = [], None
                 for _ in range(MAX_PAGES):

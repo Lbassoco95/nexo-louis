@@ -3615,6 +3615,7 @@ TOOLS_DEFINITION = [
         "input_schema": {
             "type": "object",
             "properties": {
+                "workspace": {"type": "string", "enum": ["kawiil", "yoltik"], "description": "Workspace de Slack. Default kawiil; usa yoltik para el Slack de Yoltik."},
                 "canales": {"type": "array", "items": {"type": "string"}, "description": "Lista de canales a leer (ej: ['general','cumplimiento']). Si se omite, lee los primeros 8 canales disponibles."},
                 "msgs_por_canal": {"type": "integer", "default": 10, "description": "Mensajes a traer por canal (máx 50)."},
             },
@@ -3623,7 +3624,7 @@ TOOLS_DEFINITION = [
     {
         "name": "slack_canales",
         "description": "Lista los canales de Slack donde Louis-Nexo está invitado. Úsala para saber qué canales puede leer antes de llamar slack_leer.",
-        "input_schema": {"type": "object", "properties": {}},
+        "input_schema": {"type": "object", "properties": {"workspace": {"type": "string", "enum": ["kawiil", "yoltik"], "description": "Workspace de Slack. Default kawiil; usa yoltik para el Slack de Yoltik."}}},
     },
     {
         "name": "slack_leer",
@@ -3631,6 +3632,7 @@ TOOLS_DEFINITION = [
         "input_schema": {
             "type": "object",
             "properties": {
+                "workspace": {"type": "string", "enum": ["kawiil", "yoltik"], "description": "Workspace de Slack. Default kawiil; usa yoltik para el Slack de Yoltik."},
                 "canal": {"type": "string", "description": "Nombre o ID del canal (ej: 'general', 'C08XXXXX')"},
                 "limite": {"type": "integer", "default": 20, "description": "Número de mensajes a traer (máx 100)"},
             },
@@ -3643,6 +3645,7 @@ TOOLS_DEFINITION = [
         "input_schema": {
             "type": "object",
             "properties": {
+                "workspace": {"type": "string", "enum": ["kawiil", "yoltik"], "description": "Workspace de Slack. Default kawiil; usa yoltik para el Slack de Yoltik."},
                 "usuario": {"type": "string", "description": "Nombre o ID del usuario (ej: 'polo', 'U08XXXXX')"},
                 "limite": {"type": "integer", "default": 20},
             },
@@ -5271,17 +5274,31 @@ def _mac_bash_nivel(bash_cmd: str) -> str:
     return "impactful"
 
 
+_SLACK_WS = _threading.local()
+SLACK_WORKSPACES = {"kawiil": "SLACK_BOT_TOKEN", "yoltik": "SLACK_BOT_TOKEN_YOLTIK"}
+
+
+def _slack_ws_set(nombre) -> None:
+    """Elige el workspace (kawiil por default) para las llamadas de Slack de ESTE hilo."""
+    _SLACK_WS.name = (nombre or "kawiil").strip().lower()
+
+
 def _slack_client():
-    """Devuelve un WebClient de Slack usando el token del archivo de credenciales."""
+    """Devuelve un WebClient de Slack del workspace elegido (kawiil por default; «yoltik» usa SLACK_BOT_TOKEN_YOLTIK)."""
     try:
         from slack_sdk import WebClient
     except ImportError:
         return None, "ERROR: slack_sdk no instalado (pip install slack-sdk)"
+    ws = getattr(_SLACK_WS, "name", "kawiil")
+    var = SLACK_WORKSPACES.get(ws)
+    if not var:
+        return None, f"ERROR: workspace de Slack desconocido «{ws}». Válidos: {', '.join(SLACK_WORKSPACES)}"
     creds_path = HOME_OC / "credentials" / "slack.env"
     creds = load_env_file(creds_path)
-    token = creds.get("SLACK_BOT_TOKEN") or os.environ.get("SLACK_BOT_TOKEN", "")
+    token = creds.get(var) or os.environ.get(var, "")
     if not token.startswith("xoxb-"):
-        return None, f"ERROR: SLACK_BOT_TOKEN no configurado o inválido en {creds_path}"
+        extra = " → corre setup-slack-yoltik.sh en el servidor" if ws == "yoltik" else ""
+        return None, f"ERROR: {var} no configurado o inválido en {creds_path}{extra}"
     return WebClient(token=token), None
 
 
@@ -9363,12 +9380,16 @@ def execute_tool(name: str, args: dict) -> str:
             import self_update as _su
             return _su.restaurar_mi_codigo(args["archivo"], args["backup_id"])
         elif name == "slack_resumen":
+            _slack_ws_set(args.get("workspace"))
             return _slack_resumen(args.get("canales"), args.get("msgs_por_canal", 10))
         elif name == "slack_canales":
+            _slack_ws_set(args.get("workspace"))
             return _slack_canales()
         elif name == "slack_leer":
+            _slack_ws_set(args.get("workspace"))
             return _slack_leer(args["canal"], args.get("limite", 20))
         elif name == "slack_dm_leer":
+            _slack_ws_set(args.get("workspace"))
             return _slack_dm_leer(args["usuario"], args.get("limite", 20))
         elif name == "dropbox_buscar":
             return _dropbox_buscar(args["query"], args.get("limite", 10))

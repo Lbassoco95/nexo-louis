@@ -77,6 +77,10 @@ if [[ -n "$TOKEN" && -f "$PY" ]]; then
   echo "$PE" | grep -q "✗\|❌" && bad "Patio Yoltik no responde completo" || { [[ -n "$PE" ]] && ok "Patio Yoltik responde con datos reales"; }
 fi
 
+echo "3g) Slack de Yoltik"
+if $SUDO grep -q "^SLACK_BOT_TOKEN_YOLTIK=xoxb-" /opt/openclaw/credentials/slack.env 2>/dev/null; then ok "SLACK_BOT_TOKEN_YOLTIK presente"
+else info "Slack de Yoltik sin configurar → sudo bash /opt/louis/scripts/setup-slack-yoltik.sh"; fi
+
 echo "4) Conversación real (¿Ya estás ahí?)"
 if [[ -n "$TOKEN" ]]; then
   ERR=$(mktemp); OUT=$(DONNA_URL="$URL" DONNA_TOKEN="$TOKEN" python3 "$HERE/donna-chat.py" "¿Ya estás ahí?" 2>"$ERR")
