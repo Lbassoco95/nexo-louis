@@ -50,6 +50,7 @@ import louis_core as core  # noqa: E402
 import app_auth  # noqa: E402  (usuario/contraseña de la app, sesiones propias)
 import app_media  # noqa: E402  (adjuntos, grabaciones y archivos de la app)
 import app_translate  # noqa: E402  (traductor español/inglés/chino de la app)
+import ws_lite  # noqa: E402  (WebSocket mínimo: traductor en vivo)
 
 # Solo StreamHandler: el servicio de systemd ya redirige stdout/stderr al log
 # (StandardOutput=append:.../openclaw-gateway.log). Con FileHandler además, cada
@@ -363,6 +364,10 @@ _DOC_CHAT_SYSTEM = (
     "con el documento, dilo. Español mexicano, claro y conciso."
 )
 _MAX_BODY = 1_000_000  # 1 MB
+_LIVE_SLOTS = threading.BoundedSemaphore(2)          # máximo 2 traducciones en vivo a la vez (cada minuto cuesta)
+LIVE_MAX_SECONDS = int(os.environ.get("LIVE_MAX_SECONDS", "1800"))
+LIVE_IDLE_SECONDS = int(os.environ.get("LIVE_IDLE_SECONDS", "90"))
+_LIVE_LANGS = {"es": "es", "en": "en", "zh": os.environ.get("LIVE_ZH_CODE", "zh")}
 _SHARE_MISS: dict = {}                 # ip -> intentos fallidos a /s/<token> en el último minuto
 _SHARE_LOCK = threading.Lock()
 _VSESS: dict = {}                      # vsid -> {"h": [{role, content}], "t": última actividad}: contexto SOLO de esta conversación por voz
@@ -790,6 +795,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         _r0 = self.path.split("?", 1)[0]
+        if _r0 == "/v1/app/live" and "websocket" in self.headers.get("Upgrade", "").lower():
+            self._live_ws()
+            return
         if _r0.startswith("/s/"):                              # documento compartido: público, solo lectura, con el enlace secreto
             self._shared_page(_r0[3:])
             return
@@ -1205,6 +1213,148 @@ class Handler(BaseHTTPRequestHandler):
             return True
         return False
 
+    # ---- traducción EN VIVO (OpenAI gpt-realtime-translate) a través de este servidor ----
+    def _live_ws(self):
+        """GET /v1/app/live (Upgrade: websocket). Protocolo con la app: 1.er mensaje {t:'auth',token,to}; luego audio PCM16 24 kHz como
+        binarios (app→servidor) y, de vuelta, binarios 0x01+PCM16 (voz traducida) y JSON {t:'in'|'out'|'error'|'end'}.
+        La llave de OpenAI nunca sale del servidor."""
+        import base64 as _b64
+        key = self.headers.get("Sec-WebSocket-Key", "")
+        if not key or "websocket" not in self.headers.get("Upgrade", "").lower():
+            self._send_json(400, {"error": "se requiere WebSocket"})
+            return
+        try:
+            self.send_response(101)
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Sec-WebSocket-Accept", ws_lite.accept_key(key))
+            self.end_headers()
+            self.wfile.flush()
+        except OSError:
+            return
+        self.close_connection = True
+        cli = ws_lite.Conn(self.connection, cliente=False)
+
+        def aviso(t, **kw):
+            try:
+                cli.send_text(json.dumps({"t": t, **kw}, ensure_ascii=False))
+            except OSError:
+                pass
+
+        try:
+            m = cli.recv_message(timeout=8)
+            if not m or m[0] != "text":
+                return cli.close()
+            try:
+                hello = json.loads(m[1])
+            except ValueError:
+                hello = {}
+            tok = str(hello.get("token", ""))
+            s = None if _same(tok, TOKEN or "\0") else app_auth.check_session(tok)
+            ok = bool(TOKEN and _same(tok, TOKEN)) or (s and not str(s.get("user", "")).startswith("atajo-"))
+            if hello.get("t") != "auth" or not ok:
+                aviso("error", m="No autorizado")
+                return cli.close()
+            if not _LIVE_SLOTS.acquire(blocking=False):
+                aviso("error", m="Ya hay traducciones en vivo en curso; espera a que termine una")
+                return cli.close()
+        except Exception:
+            return cli.close()
+        up = None
+        t0 = time.time()
+        try:
+            import app_media as _M
+            apikey = _M.openai_key()
+            if not apikey:
+                aviso("error", m="Falta OPENAI_API_KEY en el servidor")
+                return
+            url = os.environ.get("LIVE_UPSTREAM_URL", "wss://api.openai.com/v1/realtime/translations?model=gpt-realtime-translate")
+            try:
+                up = ws_lite.connect_url(url, {"Authorization": f"Bearer {apikey}"})
+            except Exception as e:
+                aviso("error", m="No pude conectar con el traductor en vivo: " + str(e)[:120])
+                return
+            to = _LIVE_LANGS.get(str(hello.get("to", "en")), "en")
+            up.send_text(json.dumps({"type": "session.update", "session": {"audio": {
+                "input": {"transcription": {"model": "gpt-realtime-whisper"}}, "output": {"language": to}}}}))
+            stop = threading.Event()
+
+            def arriba():                                         # OpenAI → app
+                try:
+                    while not stop.is_set():
+                        r = up.recv_message(timeout=1)
+                        if r is None:
+                            continue
+                        if r[0] == "close":
+                            aviso("end", m="El traductor cerró la sesión")
+                            break
+                        if r[0] != "text":
+                            continue
+                        try:
+                            ev = json.loads(r[1])
+                        except ValueError:
+                            continue
+                        tp = ev.get("type", "")
+                        if tp == "session.output_audio.delta":
+                            cli.send_binary(b"\x01" + _b64.b64decode(ev.get("delta", "")))
+                        elif tp == "session.output_transcript.delta":
+                            aviso("out", d=ev.get("delta", ""), ms=ev.get("elapsed_ms"))
+                        elif tp == "session.input_transcript.delta":
+                            aviso("in", d=ev.get("delta", ""), ms=ev.get("elapsed_ms"))
+                        elif tp == "error":
+                            msg = (ev.get("error") or {}).get("message", "error del traductor")
+                            log.warning("live upstream error: %s", msg[:200])
+                            aviso("error", m=msg[:240])
+                        elif tp.endswith(".done") or tp in ("session.created", "session.updated"):
+                            aviso("ev", type=tp)
+                except Exception:
+                    log.exception("live: OpenAI→app falló")
+                finally:
+                    stop.set()
+
+            th = threading.Thread(target=arriba, daemon=True)
+            th.start()
+            aviso("listo", to=to, max=LIVE_MAX_SECONDS)
+            ultimo = time.time()
+            while not stop.is_set():
+                if time.time() - t0 > LIVE_MAX_SECONDS:
+                    aviso("end", m="Se alcanzó el límite de la sesión (%d min)" % (LIVE_MAX_SECONDS // 60))
+                    break
+                r = cli.recv_message(timeout=1)
+                if r is None:
+                    if time.time() - ultimo > LIVE_IDLE_SECONDS:
+                        aviso("end", m="Sesión cerrada por inactividad")
+                        break
+                    continue
+                if r[0] == "close":
+                    break
+                if r[0] == "binary":
+                    ultimo = time.time()
+                    up.send_text(json.dumps({"type": "session.input_audio_buffer.append",
+                                             "audio": _b64.b64encode(r[1]).decode("ascii")}))
+                elif r[0] == "text":
+                    try:
+                        j = json.loads(r[1])
+                    except ValueError:
+                        continue
+                    if j.get("t") == "lang":
+                        up.send_text(json.dumps({"type": "session.update", "session": {"audio": {
+                            "output": {"language": _LIVE_LANGS.get(str(j.get("to", "")), "en")}}}}))
+                    elif j.get("t") == "close":
+                        break
+            stop.set()
+        except Exception:
+            log.exception("live falló")
+            aviso("error", m="Error interno en la traducción en vivo")
+        finally:
+            _LIVE_SLOTS.release()
+            try:
+                up and up.close()
+            except Exception:
+                pass
+            cli.close()
+            log.info("live: sesión de %.0f s", time.time() - t0)
+
     # ---- conversación por voz con Donna ----
     def _voice_post(self, path: str, body: dict) -> bool:
         try:
@@ -1442,6 +1592,23 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self._safe_write(audio)
+                return True
+            if path == "/v1/app/translate/log":                       # la traducción en vivo manda aquí sus turnos al terminar
+                sid, turnos = str(body.get("sid", "")), body.get("turnos") or []
+                if not isinstance(turnos, list) or len(turnos) > 300:
+                    raise ValueError("turnos inválidos")
+                n = 0
+                for t in turnos:
+                    if not isinstance(t, dict):
+                        continue
+                    o, tr = str(t.get("original", ""))[:app_translate.MAX_TEXT], str(t.get("traduccion", ""))[:app_translate.MAX_TEXT]
+                    if not (o.strip() or tr.strip()):
+                        continue
+                    app_translate.registrar_turno(sid, {"origen": t.get("origen") if t.get("origen") in app_translate.LANGS else "",
+                                                        "destino": t.get("destino") if t.get("destino") in app_translate.LANGS else "es",
+                                                        "original": o, "traduccion": tr, "pinyin": ""}, "vivo")
+                    n += 1
+                self._send_json(200, {"ok": True, "turnos": n})
                 return True
             if path == "/v1/app/translate/finish":
                 m = app_translate.guardar_sesion(str(body.get("sid", "")), str(body.get("titulo", "")))

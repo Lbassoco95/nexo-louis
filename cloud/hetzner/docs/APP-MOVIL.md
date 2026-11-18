@@ -212,3 +212,13 @@ La app muestra «⏱ te entendió · respuesta · primera voz» para ver dónde 
   Página pública `GET /s/<token>` sin scripts, `noindex`, CSP cerrada; 20 intentos fallidos/min por IP. Donna lo hace con `adjuntos_compartir` (solo si Polo lo pide).
 - **Traducción simultánea (en vivo):** `tools/probar-traduccion-en-vivo.py` averigua la configuración y los eventos de `gpt-realtime-translate` con la cuenta real.
 - Pruebas: `python3 -m unittest tests.test_voice tests.test_ws_codec`.
+
+## Traducción en vivo (v14)
+
+⚡ dentro de 🌐: simultánea con `gpt-realtime-translate`. El teléfono habla con ESTE servidor (WebSocket `/v1/app/live`, 1.er mensaje `auth`) y el servidor con OpenAI
+(`wss://api.openai.com/v1/realtime/translations`), así la llave nunca sale de Hetzner. Protocolo verificado con `tools/probar-traduccion-en-vivo-2.py`:
+`session.update` (`audio.output.language`, `audio.input.transcription`), audio con `session.input_audio_buffer.append` (PCM16 24 kHz), y de regreso
+`session.output_audio.delta`, `session.input_transcript.delta`, `session.output_transcript.delta`. «Hablo yo / Habla el otro» cambia el idioma de salida sin cortar la sesión.
+Límites: 2 sesiones a la vez, 30 min por sesión, 90 s sin audio la cierra (`LIVE_MAX_SECONDS`, `LIVE_IDLE_SECONDS`). Con bocina el micrófono se pausa mientras suena la traducción; con audífonos no.
+Al terminar se guarda como conversación (resumen, compartir). `tools/probar-donna-realtime.py` averigua cómo montar a Donna sobre `gpt-realtime-2.1` (siguiente paso).
+Pruebas: `python3 -m unittest tests.test_live`.

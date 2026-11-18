@@ -97,6 +97,9 @@ for f in sw.js index.html manifest.webmanifest; do
   [[ "$sz" -ge "$min" ]] && ok "app/$f ($sz bytes)" || bad "app/$f VACÍO O INCOMPLETO ($sz bytes) → reinstalar: sudo install -m 0644 -o polo -g polo ~/donna-deploy/cloud/hetzner/services/app/$f $OC/scripts/app/"
 done
 
+echo "3j) Traducción en vivo"
+[[ -f "$OC/scripts/ws_lite.py" ]] && ok "ws_lite.py instalado (WebSocket del traductor en vivo)" || bad "falta ws_lite.py → sudo install -m 0755 -o polo -g polo ~/donna-deploy/cloud/hetzner/services/ws_lite.py $OC/scripts/"
+
 echo "4) Conversación real (¿Ya estás ahí?)"
 if [[ -n "$TOKEN" ]]; then
   ERR=$(mktemp); OUT=$(DONNA_URL="$URL" DONNA_TOKEN="$TOKEN" python3 "$HERE/donna-chat.py" "¿Ya estás ahí?" 2>"$ERR")

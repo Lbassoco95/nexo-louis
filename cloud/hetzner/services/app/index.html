@@ -143,6 +143,7 @@ input.search{width:100%;background:var(--panel);color:var(--tx);border:1px solid
 .vmst{font-size:18px;font-weight:600;text-align:center;min-height:26px}.vmtx{max-height:26dvh;overflow-y:auto;font-size:15px;color:#c9d3ea;text-align:center;margin:10px 0;line-height:1.45;width:100%}
 .vmms{font-size:11px;color:#8b97b3;min-height:14px;margin-bottom:6px}
 .vmhint{font-size:12px;color:#8b97b3;text-align:center;margin-top:10px}
+.trtalk button.off{opacity:.5}
 .trlbl{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--mut);margin:0 0 10px}
 .btn{background:linear-gradient(135deg,var(--acc),var(--acc2));color:#fff;border:0;border-radius:12px;padding:12px 16px;font:inherit;font-weight:600;width:100%}
 .btn.ghost{background:var(--panel);color:var(--tx);border:1px solid var(--line);font-weight:400;margin-top:8px}
@@ -662,6 +663,124 @@ function mkPlayer(el){
 const msLine=m=>m?('⏱ '+[m.stt!=null&&'te entendió '+(m.stt/1000).toFixed(1)+'s',m.tr!=null&&'traducción '+(m.tr/1000).toFixed(1)+'s',m.llm!=null&&'respuesta '+(m.llm/1000).toFixed(1)+'s',
   m.audio1!=null&&'primera voz '+(m.audio1/1000).toFixed(1)+'s'].filter(Boolean).join(' · ')):'';
 
+/* ---------- audio en vivo (PCM16 24 kHz): captura, reproducción sin cortes y compuerta anti-eco; lo usan la traducción en vivo y Donna en tiempo real ---------- */
+const LA={ctx:null,stream:null,proc:null,src:null,nextT:0,srcs:[],wl:null,onFrame:null,gateFn:()=>false,level:0};
+async function laStart(onFrame,gateFn){
+  LA.onFrame=onFrame;LA.gateFn=gateFn||(()=>false);
+  const AC=window.AudioContext||window.webkitAudioContext;
+  try{LA.ctx=new AC({sampleRate:24000})}catch(e){LA.ctx=new AC()}
+  await LA.ctx.resume();
+  LA.stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true,channelCount:1}});
+  try{if(navigator.wakeLock)LA.wl=await navigator.wakeLock.request('screen')}catch(e){}
+  LA.src=LA.ctx.createMediaStreamSource(LA.stream);
+  LA.proc=LA.ctx.createScriptProcessor(2048,1,1);
+  const mute=LA.ctx.createGain();mute.gain.value=0;
+  LA.src.connect(LA.proc);LA.proc.connect(mute);mute.connect(LA.ctx.destination);
+  const inRate=LA.ctx.sampleRate;
+  LA.proc.onaudioprocess=ev=>{
+    const f=ev.inputBuffer.getChannelData(0);
+    let s=0;for(let i=0;i<f.length;i++)s+=f[i]*f[i];LA.level=Math.sqrt(s/f.length);
+    let out=f;
+    if(inRate!==24000){const r=inRate/24000,n=Math.floor(f.length/r);out=new Float32Array(n);
+      for(let i=0;i<n;i++){const x=i*r,i0=Math.floor(x),i1=Math.min(i0+1,f.length-1),t=x-i0;out[i]=f[i0]*(1-t)+f[i1]*t}}
+    const pcm=new Int16Array(out.length),mudo=LA.gateFn();
+    for(let i=0;i<out.length;i++){const v=mudo?0:Math.max(-1,Math.min(1,out[i]));pcm[i]=v<0?v*32768:v*32767}
+    if(LA.onFrame)LA.onFrame(pcm.buffer);
+  };
+}
+function laPlay(int16){
+  const ctx=LA.ctx;if(!ctx||!int16.length)return;
+  const b=ctx.createBuffer(1,int16.length,24000),ch=b.getChannelData(0);
+  for(let i=0;i<int16.length;i++)ch[i]=int16[i]/32768;
+  const s=ctx.createBufferSource();s.buffer=b;s.connect(ctx.destination);
+  const t=Math.max(ctx.currentTime+0.03,LA.nextT);s.start(t);LA.nextT=t+b.duration;LA.srcs.push(s);s.onended=()=>{LA.srcs=LA.srcs.filter(x=>x!==s)};
+}
+const laSpeaking=()=>!!(LA.ctx&&LA.nextT>LA.ctx.currentTime+0.05);
+function laFlush(){LA.srcs.forEach(s=>{try{s.stop()}catch(e){}});LA.srcs=[];LA.nextT=0}
+function laStop(){
+  laFlush();
+  try{if(LA.proc){LA.proc.onaudioprocess=null;LA.proc.disconnect()}}catch(e){}
+  try{LA.src&&LA.src.disconnect()}catch(e){}
+  try{LA.stream&&LA.stream.getTracks().forEach(t=>t.stop())}catch(e){}
+  try{LA.wl&&LA.wl.release()}catch(e){}
+  try{LA.ctx&&LA.ctx.close()}catch(e){}
+  LA.ctx=LA.stream=LA.proc=LA.src=LA.wl=null;
+}
+const wsUrl=p=>(location.protocol==='https:'?'wss://':'ws://')+location.host+p;
+
+/* ---------- traducción EN VIVO (simultánea): hablas con naturalidad y la traducción suena casi al mismo tiempo ---------- */
+const LV={ws:null,on:false,dir:'me',other:LS.get('lv_other','en'),turns:[],cur:null,lastIn:0,t0:0,max:1800,tick:0,half:LS.get('lv_half',true)};
+const lvStatus=t=>{const e=$('#lv-st');if(e)e.textContent=t};
+function lvRender(){
+  const box=$('#lv-turns');if(!box)return;
+  box.innerHTML=LV.turns.map(t=>'<div class="trturn"><div class="o">'+esc(TRL[t.origen]||'?')+': '+esc(t.original)+'</div><div class="t">'+esc(t.traduccion||'…')+'</div></div>').join('')||'<div class="empty">Toca «Empezar» y habla.</div>';
+  box.scrollTop=box.scrollHeight;
+}
+function lvText(kind,d){
+  const now=Date.now(),de=LV.dir==='me'?'es':LV.other,a=LV.dir==='me'?LV.other:'es';
+  if(!LV.cur||LV.cur.dirUsed!==LV.dir||(kind==='in'&&LV.cur.original&&now-LV.lastIn>2500)){LV.cur={origen:de,destino:a,original:'',traduccion:'',dirUsed:LV.dir};LV.turns.push(LV.cur)}
+  if(kind==='in'){LV.cur.original+=d;LV.lastIn=now}else LV.cur.traduccion+=d;
+  lvRender();
+}
+function lvDir(d){
+  LV.dir=d;$('#lv-me').classList.toggle('off',d!=='me');$('#lv-ot').classList.toggle('off',d==='me');
+  if(LV.ws&&LV.ws.readyState===1)LV.ws.send(JSON.stringify({t:'lang',to:d==='me'?LV.other:'es'}));
+}
+function lvStop(){
+  if(!LV.on)return;LV.on=false;clearInterval(LV.tick);
+  try{if(LV.ws&&LV.ws.readyState===1)LV.ws.send(JSON.stringify({t:'close'}));LV.ws&&LV.ws.close()}catch(e){}
+  LV.ws=null;laStop();
+  const g=$('#lv-go');if(g)g.textContent='▶ Empezar de nuevo';const l=$('#lv-lvl');if(l)l.style.width='0';
+}
+async function lvStart(){
+  if(LV.on)return;LV.on=true;$('#lv-go').textContent='■ Detener';lvStatus('Conectando…');
+  try{await laStart(buf=>{if(LV.ws&&LV.ws.readyState===1)LV.ws.send(buf)},()=>LV.half&&laSpeaking())}
+  catch(e){lvStatus('⚠️ Micrófono: '+(e.name==='NotAllowedError'?'permiso denegado (actívalo en Ajustes del teléfono)':e.message));clog('lv mic: '+e.name+' '+e.message);LV.on=false;$('#lv-go').textContent='▶ Empezar';return}
+  const ws=LV.ws=new WebSocket(wsUrl('/v1/app/live'));ws.binaryType='arraybuffer';
+  ws.onopen=()=>ws.send(JSON.stringify({t:'auth',token:TOKEN,to:LV.dir==='me'?LV.other:'es'}));
+  ws.onmessage=e=>{
+    if(typeof e.data!=='string'){laPlay(new Int16Array(e.data.slice(1)));return}
+    let m;try{m=JSON.parse(e.data)}catch(x){return}
+    if(m.t==='listo'){LV.t0=Date.now();LV.max=m.max||1800;lvStatus('🔴 En vivo — habla con naturalidad')}
+    else if(m.t==='in'||m.t==='out')lvText(m.t,m.d);
+    else if(m.t==='error'){lvStatus('⚠️ '+m.m);clog('live: '+m.m)}
+    else if(m.t==='end'){lvStatus('ℹ️ '+m.m);lvStop()}
+  };
+  ws.onclose=()=>{if(LV.on){lvStatus('Se cerró la conexión');lvStop()}};
+  ws.onerror=()=>{clog('live ws error')};
+  LV.tick=setInterval(()=>{
+    const l=$('#lv-lvl');if(l)l.style.width=Math.min(100,Math.round(LA.level*500))+'%';
+    if(LV.t0&&LV.on&&/En vivo/.test(($('#lv-st')||{}).textContent||'')){const s=Math.floor((Date.now()-LV.t0)/1000);lvStatus('🔴 En vivo '+fmtMs(s*1000)+(LV.max-s<=120?' · ⏳ quedan '+Math.max(0,LV.max-s)+' s':'')+(laSpeaking()&&LV.half?' · 🔊 traducción':''))}
+  },400);
+}
+async function lvFinish(){
+  lvStop();
+  const ts=LV.turns.filter(t=>t.original.trim()||t.traduccion.trim());
+  if(!ts.length){toast('Aún no hay conversación');return}
+  lvStatus('Guardando…');
+  try{
+    const sid=await trEnsureSid();
+    await api('/v1/app/translate/log',{method:'POST',body:JSON.stringify({sid,turnos:ts.map(t=>({origen:t.origen,destino:t.destino,original:t.original,traduccion:t.traduccion}))})});
+    TR.turns=ts.map(t=>({origen:t.origen,destino:t.destino,original:t.original,traduccion:t.traduccion,pinyin:''}));LV.turns=[];LV.cur=null;
+    await trFinish();
+  }catch(e){lvStatus('⚠️ '+e.message)}
+}
+function openLive(){
+  sheet('Traducción en vivo',
+    '<div class="sub" style="margin-bottom:8px">Habla con naturalidad: la traducción se escucha casi al mismo tiempo. Funciona mejor con audífonos.</div>'+
+    '<div class="trbar"><select disabled><option>Español</option></select><span>⇄</span><select id="lv-other">'+['en','zh'].map(k=>'<option value="'+k+'"'+(k===LV.other?' selected':'')+'>'+TRL[k]+'</option>').join('')+'</select></div>'+
+    '<div class="trtalk"><button id="lv-me">🗣 Hablo yo</button><button id="lv-ot" class="off">👂 Habla el otro</button></div>'+
+    '<label class="trlbl"><input type="checkbox" id="lv-half"'+(LV.half?' checked':'')+'> Uso la bocina (pausar el micrófono mientras suena la traducción; con audífonos, desmárcalo)</label>'+
+    '<div class="lvl"><i id="lv-lvl"></i></div><div id="lv-st" class="sub" style="min-height:18px;margin-bottom:6px"></div>'+
+    '<div id="lv-turns" style="max-height:30dvh;overflow-y:auto"></div>'+
+    '<div class="trtalk" style="margin-top:10px"><button id="lv-go">▶ Empezar</button><button id="lv-save">💾 Terminar y guardar</button></div><div id="tr-st" hidden></div>');
+  LV.dir='me';lvRender();
+  $('#lv-other').onchange=e=>{LV.other=e.target.value;LS.set('lv_other',LV.other);if(LV.on)lvDir(LV.dir)};
+  $('#lv-half').onchange=e=>{LV.half=e.target.checked;LS.set('lv_half',LV.half)};
+  $('#lv-me').onclick=()=>lvDir('me');$('#lv-ot').onclick=()=>lvDir('otro');
+  $('#lv-go').onclick=()=>LV.on?lvStop():lvStart();$('#lv-save').onclick=lvFinish;
+}
+
 /* ---------- traductor: español ⇄ inglés ⇄ chino (por turnos; se escucha y se guarda) ---------- */
 const TRL={es:'Español',en:'English',zh:'中文 (简体)'};
 let TR={sid:null,de:LS.get('tr_de','es'),a:LS.get('tr_a','en'),turns:[],auto:LS.get('tr_auto',true),rec:null,busy:false,aud:null};
@@ -743,6 +862,7 @@ async function trFinish(){
 }
 function openTranslator(){
   sheet('Traductor',
+    '<button class="menurow" id="tr-live" style="margin-bottom:10px"><span style="font-size:22px">⚡</span><span><b>Traducción en vivo</b><small>Simultánea: hablas con naturalidad y se escucha casi al instante</small></span></button>'+
     '<div class="trbar"><select id="tr-de">'+trOpts(TR.de)+'</select><button id="tr-sw" aria-label="Intercambiar">⇄</button><select id="tr-a">'+trOpts(TR.a)+'</select></div>'+
     '<div class="trtalk"><button id="tr-b1"></button><button id="tr-b2"></button></div>'+
     '<div class="trin"><input id="tr-in" placeholder="O escribe aquí…" enterkeyhint="send"><button id="tr-go">Traducir</button></div>'+
@@ -759,7 +879,7 @@ function openTranslator(){
   const go1=()=>{const v=$('#tr-in').value;$('#tr-in').value='';trUnlock();trText(v,'auto',TR.a)};
   $('#tr-go').onclick=go1;$('#tr-in').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();go1()}});
   $('#tr-auto').onchange=e=>{TR.auto=e.target.checked;LS.set('tr_auto',TR.auto)};
-  $('#tr-fin').onclick=trFinish;trPaint();
+  $('#tr-fin').onclick=trFinish;trPaint();$('#tr-live').onclick=openLive;
 }
 $('#trbtn').onclick=openTranslator;
 
