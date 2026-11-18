@@ -17,6 +17,10 @@ for s in openclaw-gateway telegram-bridge scheduler slack-bridge; do
   else bad "$s NO activo (journalctl -u $s -n 30)"; fi
 done
 
+# Tras un reinicio el gateway tarda unos segundos: se espera a que responda antes de las pruebas en vivo (evita falsos ✗)
+for _i in $(seq 1 30); do curl -sf --max-time 2 "$URL/healthz" >/dev/null 2>&1 && break; sleep 1; done
+curl -sf --max-time 2 "$URL/healthz" >/dev/null 2>&1 && ok "gateway responde ($URL)" || bad "el gateway NO responde en $URL → sudo journalctl -u openclaw-gateway -n 40 --no-pager"
+
 echo "2) Código instalado en $OC/scripts (versión reciente)"
 [[ "$(cnt '_MESES_NUM_ES' "$OC/scripts/louis_core.py")" -ge 1 ]] && ok "arreglo de fechas" || bad "falta el arreglo de fechas → reinstalar louis_core.py"
 [[ "$(cnt 'APP_HISTORY_FILE' "$OC/scripts/openclaw_gateway.py")" -ge 1 ]] && ok "historial de la app" || bad "falta el historial de la app → reinstalar openclaw_gateway.py"
