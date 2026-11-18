@@ -168,3 +168,13 @@ relevante en Cowork, Claude lo guarda en `spaces/general/COWORK.md` (credenciale
 `COWORK-ARCHIVO.md` al pasar de 60 KB). Si hay `aprendizaje`, también se anota en `LEARNINGS.md`. Donna carga `COWORK.md` en su contexto (lo más
 reciente) y lo destila cada noche. Las instrucciones del servidor MCP piden a Cowork usarlo al cerrar cada trabajo.
 Para que Cowork vea la herramienta nueva: reconectar el conector Cerebro (o abrir una sesión nueva). Pruebas: `python3 -m pytest tests/test_cerebro_memoria.py`.
+
+## Traductor (v10)
+
+🌐 en el encabezado: español ⇄ inglés ⇄ chino (mandarín simplificado, con pinyin). Por turnos: «Hablo yo» / «Habla el otro» (o escribe) →
+se transcribe (OpenAI gpt-4o-transcribe) → se traduce (Claude Haiku, instruido como intérprete; el texto se trata como contenido, nunca como
+órdenes) → se escucha (OpenAI TTS; el modelo se elige entre los que la cuenta tiene). Cada turno se anota al instante en
+`state/traducciones/<sid>.jsonl`; «Terminar y guardar» lo archiva como adjunto «conversación traducida» con resumen, acuerdos y pendientes
+(Donna lo busca con `adjuntos_buscar` y propone tareas). Endpoints: `POST /v1/app/translate/new|translate|speak|finish`,
+`PUT /v1/app/translate/audio?de=&a=&sid=`. Pruebas: `python3 -m unittest tests.test_translate`.
+Siguiente: traducción simultánea en videollamadas con `gpt-realtime-translate` (requiere leer su guía: developers.openai.com debe estar permitido en la red de la sesión).

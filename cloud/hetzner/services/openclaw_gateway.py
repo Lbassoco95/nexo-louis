@@ -48,6 +48,7 @@ if SCRIPTS_DIR.exists():
 import louis_core as core  # noqa: E402
 import app_auth  # noqa: E402  (usuario/contraseña de la app, sesiones propias)
 import app_media  # noqa: E402  (adjuntos, grabaciones y archivos de la app)
+import app_translate  # noqa: E402  (traductor español/inglés/chino de la app)
 
 # Solo StreamHandler: el servicio de systemd ya redirige stdout/stderr al log
 # (StandardOutput=append:.../openclaw-gateway.log). Con FileHandler además, cada
@@ -1117,9 +1118,77 @@ class Handler(BaseHTTPRequestHandler):
             return True
         return False
 
+    # ---- traductor ----
+    def _translate_post(self, path: str, body: dict) -> bool:
+        try:
+            if path == "/v1/app/translate/new":
+                self._send_json(200, {"sid": app_translate.new_sid()})
+                return True
+            if path == "/v1/app/translate":
+                sid = str(body.get("sid", ""))
+                r = app_translate.traducir(str(body.get("texto", "")), str(body.get("de", "auto")), str(body.get("a", "")))
+                if sid:
+                    app_translate.registrar_turno(sid, r, "texto")
+                self._send_json(200, r)
+                return True
+            if path == "/v1/app/translate/speak":
+                audio = app_translate.texto_a_voz(str(body.get("texto", "")), str(body.get("idioma", "")))
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/mpeg")
+                self.send_header("Content-Length", str(len(audio)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self._safe_write(audio)
+                return True
+            if path == "/v1/app/translate/finish":
+                m = app_translate.guardar_sesion(str(body.get("sid", "")), str(body.get("titulo", "")))
+                self._send_json(200, m)
+                return True
+        except ValueError as e:
+            self._send_json(400, {"error": str(e)})
+            return True
+        except RuntimeError as e:
+            self._send_json(502, {"error": str(e)})
+            return True
+        except Exception as e:
+            log.exception("traductor falló")
+            self._send_json(500, {"error": str(e)[:200]})
+            return True
+        return False
+
+    def _translate_audio(self):
+        """PUT /v1/app/translate/audio?de=&a=&sid= — cuerpo = audio de UN turno (hasta 25 MB) → transcribe y traduce."""
+        from urllib.parse import urlparse, parse_qs
+        q = parse_qs(urlparse(self.path).query)
+        try:
+            n = int(self.headers.get("Content-Length", "0"))
+            if n <= 0 or n > app_translate.MAX_AUDIO:
+                raise ValueError("el audio de un turno debe pesar entre 1 byte y 25 MB")
+            audio = self.rfile.read(n)
+            nombre = (q.get("nombre") or ["voz.webm"])[0]
+            texto = app_translate.voz_a_texto(audio, nombre)
+            r = app_translate.traducir(texto, (q.get("de") or ["auto"])[0], (q.get("a") or [""])[0])
+            sid = (q.get("sid") or [""])[0]
+            if sid:
+                app_translate.registrar_turno(sid, r, "voz")
+            self._send_json(200, r)
+        except ValueError as e:
+            self._send_json(400, {"error": str(e)})
+        except RuntimeError as e:
+            self._send_json(502, {"error": str(e)})
+        except Exception as e:
+            log.exception("traducción de audio falló")
+            self._send_json(500, {"error": str(e)[:200]})
+
     def do_PUT(self):
         """PUT /v1/app/media/<id>/chunk?i=N — cuerpo binario de una parte, escrito directo a disco (sin tope de 1 MB)."""
         from urllib.parse import urlparse, parse_qs
+        if self.path.split("?", 1)[0] == "/v1/app/translate/audio":
+            if not _require_app_auth(self):
+                self._send_json(401, {"error": "unauthorized"})
+                return
+            self._translate_audio()
+            return
         if not self.path.startswith("/v1/app/media/"):
             self._send_json(404, {"error": "no encontrado"})
             return
@@ -1244,6 +1313,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if self.path.startswith("/v1/app/media/") and self._media_post(self.path.split("?", 1)[0], body):
+            return
+        if self.path.startswith("/v1/app/translate") and self._translate_post(self.path.split("?", 1)[0], body):
             return
 
         # App móvil: chat en streaming (SSE)

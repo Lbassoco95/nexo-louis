@@ -121,6 +121,16 @@ input.search{width:100%;background:var(--panel);color:var(--tx);border:1px solid
 .recbar button{border:0;border-radius:10px;padding:7px 12px;font-weight:600;background:#dc2626;color:#fff}.recbar button.g{background:var(--panel);color:var(--tx);border:1px solid var(--line)}
 .menurow{display:flex;align-items:center;gap:12px;width:100%;text-align:left;background:var(--panel);border:1px solid var(--line);border-radius:14px;color:inherit;padding:13px;margin:0 0 8px;font-size:15px}
 .menurow small{display:block;color:var(--mut);font-size:12px}
+.trbar{display:flex;gap:8px;align-items:center;margin-bottom:10px}
+.trbar select{flex:1;background:var(--panel);color:var(--tx);border:1px solid var(--line);border-radius:12px;padding:9px;font:inherit}
+.trbar button{background:var(--panel);color:var(--tx);border:1px solid var(--line);border-radius:12px;padding:9px 12px;font-size:16px}
+.trtalk{display:flex;gap:8px;margin-bottom:8px}.trtalk button{flex:1;border:0;border-radius:14px;padding:13px 8px;font-weight:700;color:#fff;background:linear-gradient(135deg,var(--acc),var(--acc2));font-size:14px}
+.trtalk button.rec{background:#dc2626;animation:pl 1s infinite}.trtalk button:disabled{opacity:.5}
+.trin{display:flex;gap:8px;margin-bottom:10px}.trin input{flex:1;background:var(--panel);color:var(--tx);border:1px solid var(--line);border-radius:12px;padding:10px;font:inherit}
+.trin button{border:0;border-radius:12px;padding:0 14px;background:var(--panel);color:var(--tx);border:1px solid var(--line);font-weight:600}
+.trturn{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:10px 12px;margin:0 0 8px}
+.trturn .o{color:var(--mut);font-size:12.5px}.trturn .t{font-size:17px;font-weight:600;margin:3px 0}.trturn .p{color:var(--mut);font-size:13px}
+.trturn button{background:none;border:0;font-size:18px;padding:2px 6px}.trlbl{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--mut);margin:0 0 10px}
 .btn{background:linear-gradient(135deg,var(--acc),var(--acc2));color:#fff;border:0;border-radius:12px;padding:12px 16px;font:inherit;font-weight:600;width:100%}
 .btn.ghost{background:var(--panel);color:var(--tx);border:1px solid var(--line);font-weight:400;margin-top:8px}
 label{display:block;font-size:13px;color:var(--mut);margin:14px 0 6px}
@@ -144,7 +154,7 @@ input.f{width:100%;background:var(--panel);color:var(--tx);border:1px solid var(
 </head>
 <body>
 <div id="app">
-  <header><span class="dot" id="dot"></span><h1 id="title">{{AGENT_NAME}}</h1><button id="bell" aria-label="Notificaciones">🔔<span class="bbadge" id="bbadge" hidden></span></button><button id="arts" aria-label="Tableros">🧩</button><button id="refresh" aria-label="Actualizar">⟳</button></header>
+  <header><span class="dot" id="dot"></span><h1 id="title">{{AGENT_NAME}}</h1><button id="bell" aria-label="Notificaciones">🔔<span class="bbadge" id="bbadge" hidden></span></button><button id="trbtn" aria-label="Traductor">🌐</button><button id="arts" aria-label="Tableros">🧩</button><button id="refresh" aria-label="Actualizar">⟳</button></header>
   <div class="banner" id="banner">Sin conexión con {{AGENT_NAME}}. Reintentando…</div>
   <main>
     <section class="view on" id="v-chat">
@@ -510,7 +520,7 @@ async function openMediaList(){
   try{
     const d=await api('/v1/app/media?limit=60');
     if(!d.items.length){sheet('Mis adjuntos','<div class="empty">Aún no hay adjuntos.</div>');return}
-    const ic={imagen:'🖼️',audio:'🎙️',video:'🎬',documento:'📄'};
+    const ic={imagen:'🖼️',audio:'🎙️',video:'🎬',documento:'📄',conversacion:'🌐'};
     sheet('Mis adjuntos',d.items.map(i=>'<button class="artrow" data-media="'+esc(i.id)+'"><b>'+(ic[i.tipo]||'📎')+' '+esc(i.nombre)+'</b><small>'+esc(i.estado)+' · '+fmtB(i.tamano||0)+' · '+new Date(i.creado*1000).toLocaleDateString('es-MX',{day:'numeric',month:'short'})+(i.error?' · ⚠️ '+esc(i.error):'')+'</small></button>').join('')+
       '<div class="sub" style="margin-top:8px">Espacio libre en el servidor: '+Math.round((d.libre_mb||0)/1024)+' GB</div>');
   }catch(e){sheet('Mis adjuntos','<div class="empty">No pude cargar. '+esc(e.message)+'</div>')}
@@ -526,6 +536,99 @@ async function openMedia(id){
     const a=$('#m-ask');if(a)a.onclick=()=>{closeSheet();go('chat');$('#inp').value='Sobre mi adjunto «'+m.nombre+'»: ';PEND.push({name:m.nombre,state:'listo',label:'✓',id:m.id});paintPend();$('#inp').focus()};
   }catch(e){sheet('Adjunto','<div class="empty">'+esc(e.message)+'</div>')}
 }
+
+
+/* ---------- traductor: español ⇄ inglés ⇄ chino (por turnos; se escucha y se guarda) ---------- */
+const TRL={es:'Español',en:'English',zh:'中文 (简体)'};
+let TR={sid:null,de:LS.get('tr_de','es'),a:LS.get('tr_a','en'),turns:[],auto:LS.get('tr_auto',true),rec:null,busy:false,aud:null};
+function trOpts(sel){return Object.keys(TRL).map(k=>'<option value="'+k+'"'+(k===sel?' selected':'')+'>'+TRL[k]+'</option>').join('')}
+function trPaint(){
+  const box=$('#tr-turns');if(!box)return;
+  box.innerHTML=TR.turns.map((t,i)=>'<div class="trturn"><div class="o">'+esc(TRL[t.origen]||'?')+': '+esc(t.original)+'</div><div class="t">'+esc(t.traduccion)+'</div>'+
+    (t.pinyin?'<div class="p">'+esc(t.pinyin)+'</div>':'')+'<button data-say="'+i+'" aria-label="Escuchar">🔊</button></div>').join('')||'<div class="empty">Habla o escribe y te lo traduzco.</div>';
+  box.querySelectorAll('[data-say]').forEach(b=>b.onclick=()=>trSay(+b.dataset.say));
+}
+async function trSay(i){
+  const t=TR.turns[i];if(!t)return;
+  try{
+    const r=await fetch('/v1/app/translate/speak',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+TOKEN},body:JSON.stringify({texto:t.traduccion,idioma:t.destino})});
+    if(!r.ok){let m='';try{m=(await r.json()).error}catch(e){}throw new Error(m||('Error '+r.status))}
+    const url=URL.createObjectURL(await r.blob());
+    if(!TR.aud)TR.aud=new Audio();TR.aud.src=url;await TR.aud.play();
+  }catch(e){toast('No pude reproducir: '+e.message)}
+}
+function trUnlock(){try{if(!TR.aud)TR.aud=new Audio();TR.aud.src='data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';TR.aud.play().catch(()=>{})}catch(e){}}
+async function trResult(r){
+  TR.turns.push(r);trPaint();
+  const box=$('#tr-turns');if(box)box.scrollTop=box.scrollHeight;
+  if(TR.auto)trSay(TR.turns.length-1);
+}
+async function trEnsureSid(){if(!TR.sid)TR.sid=(await api('/v1/app/translate/new',{method:'POST',body:'{}'})).sid;return TR.sid}
+async function trText(txt,de,a){
+  if(TR.busy||!txt.trim())return;TR.busy=true;$('#tr-st').textContent='Traduciendo…';
+  try{const sid=await trEnsureSid();trResult(await api('/v1/app/translate',{method:'POST',body:JSON.stringify({texto:txt,de,a,sid})}));$('#tr-st').textContent=''}
+  catch(e){$('#tr-st').textContent='⚠️ '+e.message}
+  TR.busy=false;
+}
+async function trTalk(de,a,btn){
+  trUnlock();
+  if(TR.rec){TR.rec.mr.stop();return}
+  if(TR.busy)return;
+  if(!navigator.mediaDevices||!window.MediaRecorder){toast('Este navegador no puede grabar audio');return}
+  let stream;try{stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}})}catch(e){toast('Permiso de micrófono denegado');return}
+  const mime=['audio/mp4','audio/webm;codecs=opus','audio/webm','audio/ogg'].find(m=>MediaRecorder.isTypeSupported(m))||'';
+  const mr=new MediaRecorder(stream,mime?{mimeType:mime}:undefined),chunks=[];
+  TR.rec={mr,btn};btn.classList.add('rec');btn.dataset.old=btn.textContent;btn.textContent='■ Detener';
+  document.querySelectorAll('.trtalk button').forEach(b=>{if(b!==btn)b.disabled=true});
+  mr.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data)};
+  mr.onstop=async()=>{
+    stream.getTracks().forEach(t=>t.stop());TR.rec=null;btn.classList.remove('rec');btn.textContent=btn.dataset.old;
+    document.querySelectorAll('.trtalk button').forEach(b=>b.disabled=false);
+    const blob=new Blob(chunks,{type:mr.mimeType||'audio/webm'});if(blob.size<800){$('#tr-st').textContent='No se escuchó nada';return}
+    TR.busy=true;$('#tr-st').textContent='Escuchando y traduciendo…';
+    try{
+      const sid=await trEnsureSid(),ext=/mp4/.test(blob.type)?'.m4a':/ogg/.test(blob.type)?'.ogg':'.webm';
+      const r=await fetch('/v1/app/translate/audio?de='+de+'&a='+a+'&sid='+sid+'&nombre=voz'+ext,{method:'PUT',headers:{Authorization:'Bearer '+TOKEN},body:blob});
+      if(r.status===401){logout(true);return}
+      const j=await r.json();if(!r.ok)throw new Error(j.error||('Error '+r.status));
+      $('#tr-st').textContent='';trResult(j);
+    }catch(e){$('#tr-st').textContent='⚠️ '+e.message}
+    TR.busy=false;
+  };
+  mr.start();
+}
+async function trFinish(){
+  if(!TR.turns.length){toast('Aún no hay conversación');return}
+  $('#tr-st').textContent='Guardando y resumiendo…';
+  try{
+    const m=await api('/v1/app/translate/finish',{method:'POST',body:JSON.stringify({sid:TR.sid})});
+    const id=m.id,nombre=m.nombre;TR.sid=null;TR.turns=[];
+    sheet('Conversación guardada','<div class="sub">'+esc(nombre)+'</div>'+(m.resumen?'<div class="card" style="margin:10px 0">'+md(m.resumen)+'</div>':'<div class="empty">Guardada (muy corta para resumir).</div>')+
+      '<button class="artcard" id="tr-ask" style="margin-top:12px">💬 Que Donna proponga tareas y seguimientos</button>');
+    $('#tr-ask').onclick=()=>{closeSheet();go('chat');$('#inp').value='De mi conversación traducida «'+nombre+'»: propón los pendientes y seguimientos (quién, qué, cuándo).';PEND.push({name:nombre,state:'listo',label:'✓',id:id});paintPend();$('#inp').focus()};
+  }catch(e){$('#tr-st').textContent='⚠️ '+e.message}
+}
+function openTranslator(){
+  sheet('Traductor',
+    '<div class="trbar"><select id="tr-de">'+trOpts(TR.de)+'</select><button id="tr-sw" aria-label="Intercambiar">⇄</button><select id="tr-a">'+trOpts(TR.a)+'</select></div>'+
+    '<div class="trtalk"><button id="tr-b1"></button><button id="tr-b2"></button></div>'+
+    '<div class="trin"><input id="tr-in" placeholder="O escribe aquí…" enterkeyhint="send"><button id="tr-go">Traducir</button></div>'+
+    '<label class="trlbl"><input type="checkbox" id="tr-auto"'+(TR.auto?' checked':'')+'> Leer la traducción en voz alta</label>'+
+    '<div id="tr-st" class="sub" style="min-height:18px;margin-bottom:6px"></div>'+
+    '<div id="tr-turns" style="max-height:34dvh;overflow-y:auto"></div>'+
+    '<button class="artcard" id="tr-fin" style="margin-top:10px">💾 Terminar y guardar la conversación</button>');
+  const sync=()=>{TR.de=$('#tr-de').value;TR.a=$('#tr-a').value;LS.set('tr_de',TR.de);LS.set('tr_a',TR.a);
+    $('#tr-b1').textContent='🎙 Hablo yo ('+TRL[TR.de].split(' ')[0]+')';$('#tr-b2').textContent='🎙 Habla el otro ('+TRL[TR.a].split(' ')[0]+')'};
+  $('#tr-de').onchange=sync;$('#tr-a').onchange=sync;sync();
+  $('#tr-sw').onclick=()=>{const x=$('#tr-de').value;$('#tr-de').value=$('#tr-a').value;$('#tr-a').value=x;sync()};
+  $('#tr-b1').onclick=()=>trTalk(TR.de,TR.a,$('#tr-b1'));
+  $('#tr-b2').onclick=()=>trTalk(TR.a,TR.de,$('#tr-b2'));
+  const go1=()=>{const v=$('#tr-in').value;$('#tr-in').value='';trUnlock();trText(v,'auto',TR.a)};
+  $('#tr-go').onclick=go1;$('#tr-in').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();go1()}});
+  $('#tr-auto').onchange=e=>{TR.auto=e.target.checked;LS.set('tr_auto',TR.auto)};
+  $('#tr-fin').onclick=trFinish;trPaint();
+}
+$('#trbtn').onclick=openTranslator;
 
 /* ---------- Bandeja de notificaciones ---------- */
 function setAppBadge(n){try{if(n>0&&navigator.setAppBadge)navigator.setAppBadge(n);else if(navigator.clearAppBadge)navigator.clearAppBadge()}catch(e){}}

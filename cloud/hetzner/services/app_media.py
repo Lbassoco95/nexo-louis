@@ -451,6 +451,24 @@ def process(mid: str) -> None:
         _update(mid, estado="error", error=str(e)[:300], progreso="")
 
 
+def register_text(nombre: str, texto: str, tipo: str = "documento", resumen: str = "", origen: str = "") -> dict:
+    """Guarda un texto ya listo (p. ej. una conversación traducida) como adjunto buscable por Donna."""
+    mid = "m" + secrets.token_hex(5)
+    d = _dir(mid)
+    d.mkdir(parents=True, mode=0o700)
+    os.chmod(d, 0o700)
+    texto = (texto or "")[:TEXT_CAP]
+    fd = os.open(d / "text.txt", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(texto)
+    rec = {"id": mid, "nombre": safe_name(nombre), "mime": "text/plain", "tipo": tipo, "tamano": len(texto.encode()),
+           "estado": "listo", "creado": int(time.time()), "actualizado": int(time.time()), "usuario": "", "origen": origen[:30],
+           "partes": 0, "texto_chars": len(texto), "resumen": resumen or "", "error": "", "motor": "texto"}
+    with _LOCK:
+        _write_json(d / "meta.json", rec)
+    return public(rec)
+
+
 # ------------------------------------------------------------------ consulta
 def public(m: dict) -> dict:
     return {k: m.get(k) for k in ("id", "nombre", "tipo", "tamano", "estado", "creado", "texto_chars", "error", "progreso",
