@@ -193,6 +193,26 @@ def finish(mid: str, n_parts: int, background: bool = True) -> dict:
     return m
 
 
+def quick_upload(stream, length: int, nombre: str, mime: str = "", user: str = "", origen: str = "atajo") -> dict:
+    """Subida en UNA sola petición (para Atajos de iPhone / «Compartir»): el cuerpo se escribe a disco por partes de 8 MB,
+    sin cargar el archivo en memoria, y se procesa igual que una subida de la app."""
+    length = int(length or 0)
+    if length <= 0:
+        raise ValueError("falta Content-Length (envía el archivo como cuerpo de la petición)")
+    r = init(nombre, mime, length, user, origen)
+    left, n = length, 0
+    try:
+        while left > 0:
+            take = min(left, 8 * 1024 * 1024)
+            save_chunk(r["id"], n, stream, take)
+            left -= take
+            n += 1
+    except Exception:
+        shutil.rmtree(_dir(r["id"]), ignore_errors=True)         # no dejes archivos a medias
+        raise
+    return public(finish(r["id"], n))
+
+
 def resume_pending() -> int:
     """Al arrancar: retoma lo que quedó 'en cola' o 'procesando' por un reinicio del servidor."""
     n = 0

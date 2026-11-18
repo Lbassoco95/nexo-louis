@@ -31,6 +31,7 @@ import sys
 import json
 import time
 import hmac
+import secrets
 import base64
 import ipaddress
 import logging
@@ -103,6 +104,9 @@ def _client_ip(handler) -> str:
     return peer
 
 
+_ATAJO_RUTAS = {"/v1/app/media/quick", "/v1/app/ping", "/v1/app/clientlog"}
+
+
 def _require_app_auth(handler) -> bool:
     """Rutas /v1/app/*: acepta el token MAESTRO (administrador, CLI) o una SESIÓN de usuario/contraseña
     (prefijo dns_). Las sesiones SOLO valen aquí: /v1/tools, /v1/agents y /v1/chat/completions siguen
@@ -112,6 +116,9 @@ def _require_app_auth(handler) -> bool:
         return True
     s = app_auth.check_session(_bearer(handler))
     if s:
+        # Usuarios «atajo-…» (para Atajos de iPhone) SOLO pueden subir archivos: si ese token se filtra, no lee nada.
+        if str(s.get("user", "")).startswith("atajo-") and handler.path.split("?", 1)[0] not in _ATAJO_RUTAS:
+            return False
         handler._auth = ("sesion", s)
         return True
     return False
@@ -235,11 +242,19 @@ def _hist_append(role: str, content: str):
         log.warning("no pude escribir app-history.jsonl", exc_info=True)
 
 
-def _chat_worker(rid: str, user_msg: str, history: list):
+_VOZ_BLOQUE = (
+    "\n\n# MODO VOZ (tu respuesta se LEERÁ EN VOZ ALTA)\n"
+    "Responde como en una conversación hablada: máximo 3 o 4 frases cortas, español natural, sin markdown, sin listas, sin tablas, sin emojis, "
+    "sin enlaces. Di los números y fechas como se dicen en voz alta. Si la respuesta requiere una lista o una tabla, di que la dejas en el chat "
+    "y da solo lo esencial. Si no entendiste algo, pregunta brevemente."
+)
+
+
+def _chat_worker(rid: str, user_msg: str, history: list, voz: bool = False):
     res = _RESULTS[rid]
     try:
         api_key = core.load_anthropic_key()
-        sys_prompt = core.load_system_prompt(channel="api")
+        sys_prompt = core.load_system_prompt(channel="api") + (_VOZ_BLOQUE if voz else "")
         # Mismo orden que telegram-bridge: el mensaje entra al historial ANTES de call_llm.
         _hist_append("user", user_msg)
         text, model = core.call_llm(api_key, sys_prompt, history, user_msg, history_file=APP_HISTORY_FILE)
@@ -347,6 +362,20 @@ _DOC_CHAT_SYSTEM = (
     "con el documento, dilo. Español mexicano, claro y conciso."
 )
 _MAX_BODY = 1_000_000  # 1 MB
+_CLOG_HITS: deque = deque()
+_CLOG_LOCK = threading.Lock()
+
+
+def _clientlog_ok() -> bool:
+    """Registro de errores de la app del teléfono: máx. 30 por minuto (para diagnosticar sin dejar abierta una puerta de spam)."""
+    now = time.time()
+    with _CLOG_LOCK:
+        while _CLOG_HITS and now - _CLOG_HITS[0] > 60:
+            _CLOG_HITS.popleft()
+        if len(_CLOG_HITS) >= 30:
+            return False
+        _CLOG_HITS.append(now)
+        return True
 
 
 # ============================================================================
@@ -1122,6 +1151,71 @@ class Handler(BaseHTTPRequestHandler):
             return True
         return False
 
+    # ---- conversación por voz con Donna ----
+    def _voice_post(self, path: str, body: dict) -> bool:
+        try:
+            if path == "/v1/app/speak":
+                audio = app_translate.texto_a_voz(str(body.get("texto", ""))[:1500], str(body.get("idioma", "es") or "es"))
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/mpeg")
+                self.send_header("Content-Length", str(len(audio)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self._safe_write(audio)
+                return True
+            if path == "/v1/app/voice/ask":
+                user_msg, history = _split_messages(body.get("messages", []))
+                if not user_msg.strip():
+                    raise ValueError("no hay mensaje")
+                if not _CHAT_SLOTS.acquire(blocking=False):
+                    self._send_json(429, {"error": "Donna está atendiendo otras consultas; reintenta en un momento"})
+                    return True
+                rid = "v" + secrets.token_hex(6)
+                res = {"rid": rid, "t0": time.time(), "done": False, "client_gone": False}
+                with _RESULTS_LOCK:
+                    _RESULTS[rid] = res
+                _chat_worker(rid, user_msg, history, voz=True)          # bloquea hasta tener la respuesta (libera el cupo)
+                with _RESULTS_LOCK:
+                    out = _RESULTS.pop(rid, res)
+                if out.get("error"):
+                    self._send_json(502, {"error": out["error"]})
+                else:
+                    self._send_json(200, {"respuesta": out.get("text", ""), "model": out.get("model", "")})
+                return True
+            if path == "/v1/app/clientlog":
+                if _clientlog_ok():
+                    log.warning("clientlog [%s]: %s", self._media_user(), str(body.get("msg", ""))[:500].replace("\n", " "))
+                self._send_json(200, {"ok": True})
+                return True
+        except ValueError as e:
+            self._send_json(400, {"error": str(e)})
+            return True
+        except RuntimeError as e:
+            self._send_json(502, {"error": str(e)})
+            return True
+        except Exception as e:
+            log.exception("voz falló")
+            self._send_json(500, {"error": str(e)[:200]})
+            return True
+        return False
+
+    def _voice_transcribe(self):
+        """PUT /v1/app/voice/transcribe — cuerpo = audio de UN turno → {texto}."""
+        try:
+            n = int(self.headers.get("Content-Length", "0"))
+            if n <= 0 or n > app_translate.MAX_AUDIO:
+                raise ValueError("el audio de un turno debe pesar entre 1 byte y 25 MB")
+            from urllib.parse import urlparse, parse_qs
+            nombre = (parse_qs(urlparse(self.path).query).get("nombre") or ["voz.webm"])[0]
+            self._send_json(200, {"texto": app_translate.voz_a_texto(self.rfile.read(n), nombre)})
+        except ValueError as e:
+            self._send_json(400, {"error": str(e)})
+        except RuntimeError as e:
+            self._send_json(502, {"error": str(e)})
+        except Exception as e:
+            log.exception("transcripción de voz falló")
+            self._send_json(500, {"error": str(e)[:200]})
+
     # ---- traductor ----
     def _translate_post(self, path: str, body: dict) -> bool:
         try:
@@ -1184,6 +1278,22 @@ class Handler(BaseHTTPRequestHandler):
             log.exception("traducción de audio falló")
             self._send_json(500, {"error": str(e)[:200]})
 
+    def _media_quick(self):
+        """PUT|POST /v1/app/media/quick?nombre=&mime= — el archivo completo como cuerpo (Atajos de iPhone)."""
+        from urllib.parse import urlparse, parse_qs
+        q = parse_qs(urlparse(self.path).query)
+        try:
+            n = int(self.headers.get("Content-Length", "0"))
+            nombre = (q.get("nombre") or [""])[0] or "archivo-" + time.strftime("%Y%m%d-%H%M%S")
+            mime = (q.get("mime") or [self.headers.get("Content-Type", "")])[0]
+            m = app_media.quick_upload(self.rfile, n, nombre, mime, self._media_user(), (q.get("origen") or ["atajo"])[0])
+            self._send_json(200, m)
+        except ValueError as e:
+            self._send_json(400, {"error": str(e)})
+        except Exception as e:
+            log.exception("quick upload falló")
+            self._send_json(500, {"error": str(e)[:200]})
+
     def do_PUT(self):
         """PUT /v1/app/media/<id>/chunk?i=N — cuerpo binario de una parte, escrito directo a disco (sin tope de 1 MB)."""
         from urllib.parse import urlparse, parse_qs
@@ -1192,6 +1302,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(401, {"error": "unauthorized"})
                 return
             self._translate_audio()
+            return
+        if self.path.split("?", 1)[0] == "/v1/app/media/quick":
+            if not _require_app_auth(self):
+                self._send_json(401, {"error": "unauthorized"})
+                return
+            self._media_quick()
+            return
+        if self.path.split("?", 1)[0] == "/v1/app/voice/transcribe":
+            if not _require_app_auth(self):
+                self._send_json(401, {"error": "unauthorized"})
+                return
+            self._voice_transcribe()
             return
         if not self.path.startswith("/v1/app/media/"):
             self._send_json(404, {"error": "no encontrado"})
@@ -1310,6 +1432,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(401, {"error": "unauthorized"})
             return
 
+        if self.path.split("?", 1)[0] == "/v1/app/media/quick":      # cuerpo binario, no JSON
+            self._media_quick()
+            return
+
         try:
             body = self._read_json()
         except Exception as e:
@@ -1319,6 +1445,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/v1/app/media/") and self._media_post(self.path.split("?", 1)[0], body):
             return
         if self.path.startswith("/v1/app/translate") and self._translate_post(self.path.split("?", 1)[0], body):
+            return
+        if (self.path.startswith("/v1/app/voice/") or self.path in ("/v1/app/speak", "/v1/app/clientlog")) \
+                and self._voice_post(self.path.split("?", 1)[0], body):
             return
 
         # App móvil: chat en streaming (SSE)

@@ -178,3 +178,19 @@ se transcribe (OpenAI gpt-4o-transcribe) → se traduce (Claude Haiku, instruido
 (Donna lo busca con `adjuntos_buscar` y propone tareas). Endpoints: `POST /v1/app/translate/new|translate|speak|finish`,
 `PUT /v1/app/translate/audio?de=&a=&sid=`. Pruebas: `python3 -m unittest tests.test_translate`.
 Siguiente: traducción simultánea en videollamadas con `gpt-realtime-translate` (requiere leer su guía: developers.openai.com debe estar permitido en la red de la sesión).
+
+## Voz con Donna, avisos con enlace y celular → Donna (v11)
+
+- **🎧 Conversación por voz:** manos libres (escucha → entiende (OpenAI) → piensa (Donna, con instrucción de responder breve y hablado) → te contesta en voz →
+  vuelve a escuchar). Detecta el silencio solo; «adiós» / «eso es todo» termina; tocar el círculo mientras habla la interrumpe. Todo queda en el chat y en la memoria.
+- **Avisos con enlace:** una transcripción lista llega como notificación; al tocarla abre el documento (resumen, texto completo y «Preguntarle a Donna»).
+  En la bandeja, cada aviso con documento trae «📄 Abrir y consultar». «Mis adjuntos» tiene buscador sobre todo el texto.
+- **Diagnóstico del teléfono:** la app manda sus errores (micrófono, JS) a `clientlog` (máx. 30/min) → `journalctl -u openclaw-gateway | grep clientlog`.
+- **ACADEMICO.md:** memoria de diplomados y doctorado (plantilla en `spaces/general/ACADEMICO.md`; copiar a `/opt/openclaw/spaces/general/` si no existe).
+- **Del celular a Donna (Atajos de iPhone, sin apps nativas):** un usuario cuyo nombre empieza con `atajo-` SOLO puede subir archivos
+  (`PUT|POST /v1/app/media/quick?nombre=…`, cuerpo = el archivo, cualquier tamaño). Crear: `python3 tools/donna-passwd.py atajo-polo`.
+  Atajo «Enviar a Donna» (aparece en el menú Compartir): 1) *Obtener contenido de URL* `POST https://donna.kawiil.mx/v1/app/login`, JSON `{"user":"atajo-polo","password":"…"}`
+  → 2) *Obtener valor del diccionario* `token` → 3) *Repetir con cada elemento* de la entrada: *Obtener contenido de URL* `PUT https://donna.kawiil.mx/v1/app/media/quick?nombre=[Nombre]`,
+  encabezado `Authorization: Bearer [token]`, cuerpo *Archivo*. Sirve para fotos, PDFs, notas, capturas, enlaces y texto. Lo que NO se puede: que una web app lea sola tu
+  galería, contactos, mensajes o calendario; solo recibe lo que tú eliges o lo que un Atajo/automatización le envía.
+- Pruebas: `python3 -m unittest tests.test_voice tests.test_pwa_assets`.
