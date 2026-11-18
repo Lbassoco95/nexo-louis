@@ -89,6 +89,7 @@ class OpenAIDeMentira:
 class Puente(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        g.LIVE_IDLE_SECONDS = 3                       # el valor lo fija el 1.er módulo que importe el gateway: aquí se fuerza
         cls.fake = OpenAIDeMentira()
         os.environ["LIVE_UPSTREAM_URL"] = f"ws://127.0.0.1:{cls.fake.port}/v1/realtime/translations?model=gpt-realtime-translate"
         cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), g.Handler)

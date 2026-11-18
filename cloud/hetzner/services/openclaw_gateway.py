@@ -252,15 +252,16 @@ _VOZ_BLOQUE = (
 )
 
 
-def _chat_worker(rid: str, user_msg: str, history: list, voz: bool = False):
+def _chat_worker(rid: str, user_msg: str, history: list, voz: bool = False, registrar: bool = True):
     res = _RESULTS[rid]
     try:
         api_key = core.load_anthropic_key()
         sys_prompt = core.load_system_prompt(channel="api") + (_VOZ_BLOQUE if voz else "")
         # Mismo orden que telegram-bridge: el mensaje entra al historial ANTES de call_llm.
-        _hist_append("user", user_msg)
+        if registrar:
+            _hist_append("user", user_msg)
         text, model = core.call_llm(api_key, sys_prompt, history, user_msg, history_file=APP_HISTORY_FILE)
-        if text:
+        if text and registrar:
             _hist_append("assistant", text)
         out = {"text": text or "(sin respuesta)", "model": model, "error": None}
     except Exception as e:
@@ -272,6 +273,20 @@ def _chat_worker(rid: str, user_msg: str, history: list, voz: bool = False):
     _CHAT_SLOTS.release()
     if gone:
         _push_answer(res)
+
+
+def _ask_donna_voice(user_msg: str, history: list, registrar: bool = True):
+    """Pregunta al cerebro completo de Donna en modo voz (bloquea). → (texto, modelo, error)."""
+    if not _CHAT_SLOTS.acquire(blocking=False):
+        return "", "", "Donna está atendiendo otras consultas; reintenta en un momento"
+    rid = "v" + secrets.token_hex(6)
+    res = {"rid": rid, "t0": time.time(), "done": False, "client_gone": False}
+    with _RESULTS_LOCK:
+        _RESULTS[rid] = res
+    _chat_worker(rid, user_msg, history, voz=True, registrar=registrar)          # libera el cupo al terminar
+    with _RESULTS_LOCK:
+        out = _RESULTS.pop(rid, res)
+    return out.get("text", ""), out.get("model", ""), out.get("error")
 
 
 def _push_answer(res: dict):
@@ -368,6 +383,16 @@ _LIVE_SLOTS = threading.BoundedSemaphore(2)          # máximo 2 traducciones en
 LIVE_MAX_SECONDS = int(os.environ.get("LIVE_MAX_SECONDS", "1800"))
 LIVE_IDLE_SECONDS = int(os.environ.get("LIVE_IDLE_SECONDS", "90"))
 _LIVE_LANGS = {"es": "es", "en": "en", "zh": os.environ.get("LIVE_ZH_CODE", "zh")}
+_DONNA_TOOLS = [
+    {"type": "function", "name": "consultar_donna",
+     "description": "Pásale a Donna (tu cerebro completo: agenda, tareas, Kawiil Central, Patio Yoltik, Slack, correo, documentos, grabaciones, tableros, memoria) "
+                    "CUALQUIER consulta o acción de Polo, con el pedido completo y claro. Devuelve el resultado real para que lo digas. "
+                    "Si el pedido CAMBIA algo, antes confirma con Polo y escribe «Polo ya confirmó» en el pedido.",
+     "parameters": {"type": "object", "properties": {"pedido": {"type": "string", "description": "Lo que Polo pidió, completo y con contexto"}}, "required": ["pedido"]}},
+    {"type": "function", "name": "terminar_conversacion",
+     "description": "Cierra la conversación por voz cuando Polo se despide o dice que eso es todo.",
+     "parameters": {"type": "object", "properties": {}, "required": []}},
+]
 _SHARE_MISS: dict = {}                 # ip -> intentos fallidos a /s/<token> en el último minuto
 _SHARE_LOCK = threading.Lock()
 _VSESS: dict = {}                      # vsid -> {"h": [{role, content}], "t": última actividad}: contexto SOLO de esta conversación por voz
@@ -798,6 +823,9 @@ class Handler(BaseHTTPRequestHandler):
         if _r0 == "/v1/app/live" and "websocket" in self.headers.get("Upgrade", "").lower():
             self._live_ws()
             return
+        if _r0 == "/v1/app/donna" and "websocket" in self.headers.get("Upgrade", "").lower():
+            self._donna_ws()
+            return
         if _r0.startswith("/s/"):                              # documento compartido: público, solo lectura, con el enlace secreto
             self._shared_page(_r0[3:])
             return
@@ -1214,15 +1242,13 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     # ---- traducción EN VIVO (OpenAI gpt-realtime-translate) a través de este servidor ----
-    def _live_ws(self):
-        """GET /v1/app/live (Upgrade: websocket). Protocolo con la app: 1.er mensaje {t:'auth',token,to}; luego audio PCM16 24 kHz como
-        binarios (app→servidor) y, de vuelta, binarios 0x01+PCM16 (voz traducida) y JSON {t:'in'|'out'|'error'|'end'}.
-        La llave de OpenAI nunca sale del servidor."""
-        import base64 as _b64
+    def _ws_handshake_auth(self):
+        """Apretón de manos WebSocket + autenticación por el 1.er mensaje {t:'auth',token}. Toma un cupo de _LIVE_SLOTS (quien llama lo libera).
+        → (Conn, hello) o (None, None) si algo falló (ya se avisó y cerró)."""
         key = self.headers.get("Sec-WebSocket-Key", "")
         if not key or "websocket" not in self.headers.get("Upgrade", "").lower():
             self._send_json(400, {"error": "se requiere WebSocket"})
-            return
+            return None, None
         try:
             self.send_response(101)
             self.send_header("Upgrade", "websocket")
@@ -1231,20 +1257,23 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.flush()
         except OSError:
-            return
+            return None, None
         self.close_connection = True
         cli = ws_lite.Conn(self.connection, cliente=False)
 
-        def aviso(t, **kw):
+        def fallo(msg):
             try:
-                cli.send_text(json.dumps({"t": t, **kw}, ensure_ascii=False))
+                cli.send_text(json.dumps({"t": "error", "m": msg}, ensure_ascii=False))
             except OSError:
                 pass
+            cli.close()
+            return None, None
 
         try:
             m = cli.recv_message(timeout=8)
             if not m or m[0] != "text":
-                return cli.close()
+                cli.close()
+                return None, None
             try:
                 hello = json.loads(m[1])
             except ValueError:
@@ -1253,13 +1282,29 @@ class Handler(BaseHTTPRequestHandler):
             s = None if _same(tok, TOKEN or "\0") else app_auth.check_session(tok)
             ok = bool(TOKEN and _same(tok, TOKEN)) or (s and not str(s.get("user", "")).startswith("atajo-"))
             if hello.get("t") != "auth" or not ok:
-                aviso("error", m="No autorizado")
-                return cli.close()
+                return fallo("No autorizado")
             if not _LIVE_SLOTS.acquire(blocking=False):
-                aviso("error", m="Ya hay traducciones en vivo en curso; espera a que termine una")
-                return cli.close()
+                return fallo("Ya hay traducciones en vivo en curso; espera a que termine una")
+            return cli, hello
         except Exception:
-            return cli.close()
+            cli.close()
+            return None, None
+
+    def _live_ws(self):
+        """GET /v1/app/live (Upgrade: websocket). Protocolo con la app: 1.er mensaje {t:'auth',token,to}; luego audio PCM16 24 kHz como
+        binarios (app→servidor) y, de vuelta, binarios 0x01+PCM16 (voz traducida) y JSON {t:'in'|'out'|'error'|'end'}.
+        La llave de OpenAI nunca sale del servidor."""
+        import base64 as _b64
+        cli, hello = self._ws_handshake_auth()
+        if cli is None:
+            return
+
+        def aviso(t, **kw):
+            try:
+                cli.send_text(json.dumps({"t": t, **kw}, ensure_ascii=False))
+            except OSError:
+                pass
+
         up = None
         t0 = time.time()
         try:
@@ -1354,6 +1399,179 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             cli.close()
             log.info("live: sesión de %.0f s", time.time() - t0)
+
+    # ---- DONNA EN TIEMPO REAL (voz de OpenAI gpt-realtime-2.1 + el cerebro completo de Donna como herramienta) ----
+    def _donna_ws(self):
+        """GET /v1/app/donna (Upgrade: websocket). Misma mecánica que el traductor en vivo. El modelo de voz habla y escucha; todo dato o acción
+        pasa por `consultar_donna` (core.call_llm con sus herramientas y protecciones). Mensajes a la app: binario 0x01+PCM (voz), JSON
+        {t: listo|speech|in|in_done|out|out_done|tool|tool_done|turn_done|error|end}. De la app: PCM binario, {t:'interrupt'|'text'|'close'}."""
+        import base64 as _b64
+        cli, hello = self._ws_handshake_auth()
+        if cli is None:
+            return
+
+        def aviso(t, **kw):
+            try:
+                cli.send_text(json.dumps({"t": t, **kw}, ensure_ascii=False))
+            except OSError:
+                pass
+
+        up, t0 = None, time.time()
+        try:
+            import app_media as _M
+            apikey = _M.openai_key()
+            if not apikey:
+                aviso("error", m="Falta OPENAI_API_KEY en el servidor")
+                return
+            url = os.environ.get("LIVE_DONNA_URL") or ("wss://api.openai.com/v1/realtime?model=" + os.environ.get("LIVE_DONNA_MODEL", "gpt-realtime-2.1"))
+            try:
+                up = ws_lite.connect_url(url, {"Authorization": f"Bearer {apikey}"})
+            except Exception as e:
+                aviso("error", m="No pude conectar con la voz en tiempo real: " + str(e)[:120])
+                return
+            up.send_text(json.dumps({"type": "session.update", "session": {
+                "type": "realtime", "instructions": core.build_realtime_brief(),
+                "audio": {"input": {"transcription": {"model": "gpt-4o-mini-transcribe"},
+                                    "turn_detection": {"type": "server_vad", "threshold": 0.5, "prefix_padding_ms": 300, "silence_duration_ms": 650,
+                                                       "create_response": True, "interrupt_response": True}},
+                          "output": {"voice": os.environ.get("LIVE_DONNA_VOICE", "marin")}},
+                "tools": _DONNA_TOOLS, "tool_choice": "auto"}}, ensure_ascii=False))
+            stop, hist, hl = threading.Event(), [], threading.Lock()
+            estado = {"cerrar": False}
+
+            def herramienta(call_id, name, args_json):
+                aviso("tool", name=name)
+                salida = ""
+                try:
+                    a = json.loads(args_json or "{}")
+                except ValueError:
+                    a = {}
+                if name == "consultar_donna":
+                    pedido = str(a.get("pedido", "")).strip()
+                    with hl:
+                        h = list(hist[-8:])
+                    caja = {}
+                    th = threading.Thread(target=lambda: caja.update(r=_ask_donna_voice(pedido, h, registrar=False)), daemon=True)
+                    th.start()
+                    th.join(60)
+                    if "r" not in caja:
+                        salida = "Donna tardó demasiado en responder; dile a Polo que lo intente de nuevo."
+                    else:
+                        texto, _modelo, err = caja["r"]
+                        salida = ("No pude consultarlo: " + str(err)) if err else (texto or "(sin respuesta)")
+                    salida = salida[:7000]
+                elif name == "terminar_conversacion":
+                    estado["cerrar"] = True
+                    salida = "Listo. Despídete en una frase corta."
+                else:
+                    salida = "herramienta desconocida"
+                try:
+                    up.send_text(json.dumps({"type": "conversation.item.create", "item": {"type": "function_call_output", "call_id": call_id, "output": salida}}, ensure_ascii=False))
+                    up.send_text(json.dumps({"type": "response.create"}))
+                except OSError:
+                    pass
+                aviso("tool_done", name=name)
+
+            def arriba():                                         # OpenAI → app
+                try:
+                    while not stop.is_set():
+                        r = up.recv_message(timeout=1)
+                        if r is None:
+                            continue
+                        if r[0] == "close":
+                            aviso("end", m="La voz en tiempo real cerró la sesión")
+                            break
+                        if r[0] != "text":
+                            continue
+                        try:
+                            ev = json.loads(r[1])
+                        except ValueError:
+                            continue
+                        tp = ev.get("type", "")
+                        if tp == "response.output_audio.delta":
+                            cli.send_binary(b"\x01" + _b64.b64decode(ev.get("delta", "")))
+                        elif tp == "response.output_audio_transcript.delta":
+                            aviso("out", d=ev.get("delta", ""))
+                        elif tp == "response.output_audio_transcript.done":
+                            txt = ev.get("transcript", "")
+                            aviso("out_done", text=txt)
+                            if txt.strip():
+                                with hl:
+                                    hist.append({"role": "assistant", "content": txt})
+                                _hist_append("assistant", txt)
+                        elif tp == "conversation.item.input_audio_transcription.delta":
+                            aviso("in", d=ev.get("delta", ""))
+                        elif tp == "conversation.item.input_audio_transcription.completed":
+                            txt = ev.get("transcript", "")
+                            aviso("in_done", text=txt)
+                            if txt.strip():
+                                with hl:
+                                    hist.append({"role": "user", "content": txt})
+                                _hist_append("user", txt)
+                        elif tp == "input_audio_buffer.speech_started":
+                            aviso("speech")
+                        elif tp == "response.function_call_arguments.done":
+                            threading.Thread(target=herramienta, args=(ev.get("call_id"), ev.get("name"), ev.get("arguments")), daemon=True).start()
+                        elif tp == "response.done":
+                            aviso("turn_done")
+                            if estado["cerrar"] and not any((o or {}).get("type") == "function_call" for o in (ev.get("response", {}).get("output") or [])):
+                                aviso("end", m="Conversación terminada")
+                                break
+                        elif tp == "error":
+                            e = ev.get("error") or {}
+                            if "cancel" in str(e.get("code", "")) + str(e.get("message", "")).lower():
+                                continue                          # cancelar cuando no hay respuesta en curso: inofensivo
+                            log.warning("donna live upstream error: %s", str(e.get("message", ""))[:200])
+                            aviso("error", m=str(e.get("message", "error de la voz en tiempo real"))[:240])
+                except Exception:
+                    log.exception("donna live: OpenAI→app falló")
+                finally:
+                    stop.set()
+
+            threading.Thread(target=arriba, daemon=True).start()
+            aviso("listo", max=LIVE_MAX_SECONDS)
+            ultimo = time.time()
+            while not stop.is_set():
+                if time.time() - t0 > LIVE_MAX_SECONDS:
+                    aviso("end", m="Se alcanzó el límite de la sesión (%d min)" % (LIVE_MAX_SECONDS // 60))
+                    break
+                r = cli.recv_message(timeout=1)
+                if r is None:
+                    if time.time() - ultimo > 2 * LIVE_IDLE_SECONDS:
+                        aviso("end", m="Sesión cerrada por inactividad")
+                        break
+                    continue
+                if r[0] == "close":
+                    break
+                if r[0] == "binary":
+                    ultimo = time.time()
+                    up.send_text(json.dumps({"type": "input_audio_buffer.append", "audio": _b64.b64encode(r[1]).decode("ascii")}))
+                elif r[0] == "text":
+                    try:
+                        j = json.loads(r[1])
+                    except ValueError:
+                        continue
+                    if j.get("t") == "interrupt":
+                        up.send_text(json.dumps({"type": "response.cancel"}))
+                    elif j.get("t") == "text" and str(j.get("text", "")).strip():
+                        ultimo = time.time()
+                        up.send_text(json.dumps({"type": "conversation.item.create", "item": {"type": "message", "role": "user", "content": [
+                            {"type": "input_text", "text": str(j["text"])[:2000]}]}}, ensure_ascii=False))
+                        up.send_text(json.dumps({"type": "response.create"}))
+                    elif j.get("t") == "close":
+                        break
+            stop.set()
+        except Exception:
+            log.exception("donna live falló")
+            aviso("error", m="Error interno en la voz en tiempo real")
+        finally:
+            _LIVE_SLOTS.release()
+            try:
+                up and up.close()
+            except Exception:
+                pass
+            cli.close()
+            log.info("donna live: sesión de %.0f s", time.time() - t0)
 
     # ---- conversación por voz con Donna ----
     def _voice_post(self, path: str, body: dict) -> bool:
@@ -1495,17 +1713,7 @@ class Handler(BaseHTTPRequestHandler):
             self._sse("fail", {"error": str(e)[:200]})
 
     def _ask_voice(self, user_msg: str, history: list):
-        """Pregunta a Donna en modo voz (bloquea hasta tener respuesta). → (texto, modelo, error)."""
-        if not _CHAT_SLOTS.acquire(blocking=False):
-            return "", "", "Donna está atendiendo otras consultas; reintenta en un momento"
-        rid = "v" + secrets.token_hex(6)
-        res = {"rid": rid, "t0": time.time(), "done": False, "client_gone": False}
-        with _RESULTS_LOCK:
-            _RESULTS[rid] = res
-        _chat_worker(rid, user_msg, history, voz=True)          # libera el cupo al terminar
-        with _RESULTS_LOCK:
-            out = _RESULTS.pop(rid, res)
-        return out.get("text", ""), out.get("model", ""), out.get("error")
+        return _ask_donna_voice(user_msg, history)
 
     def _voice_turn(self):
         """PUT /v1/app/voice/turn?vsid=&nombre= — audio → [stt] lo que dijiste → [respuesta] → [audio]… → [done].

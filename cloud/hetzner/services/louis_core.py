@@ -570,6 +570,44 @@ def _budget_memory(fname: str, text: str) -> str:
     return text[:mitad] + nota + text[-mitad:]
 
 
+def build_realtime_brief(max_chars: int = 15000) -> str:
+    """Instrucciones de Donna para la voz en tiempo real: personalidad + reglas de voz + un resumen de lo que sabe de Polo.
+    El modelo de voz NO ve datos del negocio: todo dato o acción pasa por la herramienta `consultar_donna` (el cerebro completo)."""
+    now = datetime.now(get_active_tz())
+    partes = [
+        f"Eres {AGENT_NAME}, la asistente personal y ejecutiva de Polo (Leopoldo Bassoco, CEO de Kawiil y Yoltik). Hablas con Polo POR VOZ, "
+        "en español de México, siempre de tú (nunca voseo: no digas «vos», «tenés», «reenviás»). Sé cálida, natural y directa. Respuestas de 1 a 3 frases, "
+        "sin listas ni markdown; di cifras y fechas como se dicen en voz alta. Si Polo saluda, saluda y pregunta en qué ayudas: no sueltes agenda ni "
+        "pendientes si no los pide, ni retomes temas viejos.",
+        "DATOS Y ACCIONES: no tienes acceso directo a datos. Para CUALQUIER dato o acción (agenda, tareas, proyectos, Kawiil Central, Patio Yoltik, Slack, "
+        "correo, documentos, grabaciones, tableros, recordatorios, memoria) llama a `consultar_donna` con el pedido completo y di con tus palabras, breve, lo que te "
+        "devuelva. NUNCA inventes cifras, nombres, fechas ni estados: si la herramienta falla o no trae el dato, dilo tal cual.",
+        "CONFIRMA ANTES DE CAMBIAR: antes de cerrar o actualizar tareas, enviar mensajes o correos, crear o mover eventos, o borrar algo, repite en una frase lo que "
+        "entendiste y pide confirmación. Llama a la herramienta solo cuando Polo diga que sí, e incluye en el pedido «Polo ya confirmó». Las consultas "
+        "(solo mirar) no necesitan confirmación.",
+        "MIENTRAS CONSULTAS di una frase corta («déjame revisar», «un momento») para que no haya silencio. Si Polo se despide, despídete en una frase y llama a "
+        "`terminar_conversacion`.",
+        f"FECHA Y HORA: {_fmt_dt_es(now)} ({get_active_tz_name()}).",
+    ]
+
+    def cola(fname, n):
+        t = _read_space_file(fname).strip()
+        return t[-n:] if len(t) > n else t
+
+    def cabeza(fname, n):
+        t = _read_space_file(fname).strip()
+        return t[:n] if len(t) > n else t
+
+    mem = []
+    for titulo, txt in (("PERFIL", cabeza("USER.md", 3500)), ("DIPLOMADOS Y DOCTORADO", cabeza("ACADEMICO.md", 2500)),
+                        ("PREFERENCIAS APRENDIDAS", cola("LEARNINGS.md", 2500)), ("LO QUE POLO TRABAJA CON CLAUDE EN COWORK (reciente)", cola("COWORK.md", 2500))):
+        if txt:
+            mem.append(f"## {titulo}\n{txt}")
+    if mem:
+        partes.append("LO QUE SABES DE POLO (resumen; todo lo demás lo ves con `consultar_donna`):\n\n" + "\n\n".join(mem))
+    return ("\n\n".join(partes))[:max_chars]
+
+
 def load_system_prompt(channel: str = "telegram") -> str:
     """Concatena AGENTS.md + memoria estructurada. Adapta por canal."""
     parts = [_identity_block()] if _identity_block() else []

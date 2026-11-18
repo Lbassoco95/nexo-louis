@@ -222,3 +222,13 @@ La app muestra «⏱ te entendió · respuesta · primera voz» para ver dónde 
 Límites: 2 sesiones a la vez, 30 min por sesión, 90 s sin audio la cierra (`LIVE_MAX_SECONDS`, `LIVE_IDLE_SECONDS`). Con bocina el micrófono se pausa mientras suena la traducción; con audífonos no.
 Al terminar se guarda como conversación (resumen, compartir). `tools/probar-donna-realtime.py` averigua cómo montar a Donna sobre `gpt-realtime-2.1` (siguiente paso).
 Pruebas: `python3 -m unittest tests.test_live`.
+
+## Donna en tiempo real (v15)
+
+🎧 ahora abre a Donna sobre la voz de OpenAI (`gpt-realtime-2.1`, de voz a voz): sin turnos, con detección de cuándo hablas, y se calla si le hablas encima.
+Servidor: WebSocket `/v1/app/donna` (mismo esquema que el traductor en vivo; la llave nunca sale de Hetzner). El modelo de voz tiene la personalidad y un resumen de tu memoria
+(`core.build_realtime_brief`: perfil, ACADEMICO, preferencias aprendidas, COWORK) y UNA herramienta, `consultar_donna(pedido)`, que pasa cualquier dato o acción al cerebro completo de Donna
+(`core.call_llm` con todas sus herramientas y protecciones anti-invención) y devuelve el texto para que lo diga; `terminar_conversacion` cierra. Antes de cambiar algo (tareas, correos, eventos)
+confirma contigo en voz. Las transcripciones (lo que dijiste y lo que dijo) van al historial → memoria de las 23:00. Protocolo verificado con `tools/probar-donna-realtime.py`.
+«Modo clásico (por turnos)» queda como respaldo. Con bocina el micrófono se pausa mientras habla; con audífonos se puede interrumpir hablando; tocar el círculo siempre interrumpe.
+Variables: `LIVE_DONNA_MODEL` (gpt-realtime-2.1), `LIVE_DONNA_VOICE` (marin), `LIVE_MAX_SECONDS`. Pruebas: `python3 -m unittest tests.test_donna_live`.

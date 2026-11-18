@@ -142,6 +142,8 @@ input.search{width:100%;background:var(--panel);color:var(--tx);border:1px solid
 @keyframes speak{50%{transform:scale(1.12)}}
 .vmst{font-size:18px;font-weight:600;text-align:center;min-height:26px}.vmtx{max-height:26dvh;overflow-y:auto;font-size:15px;color:#c9d3ea;text-align:center;margin:10px 0;line-height:1.45;width:100%}
 .vmms{font-size:11px;color:#8b97b3;min-height:14px;margin-bottom:6px}
+.vmhalf{display:flex;gap:8px;align-items:flex-start;font-size:12px;color:#c9d3ea;margin:4px 0 8px;line-height:1.35}
+.vmlink{background:none;border:0;color:#9db6ff;text-decoration:underline;font-size:12px;padding:0}
 .vmhint{font-size:12px;color:#8b97b3;text-align:center;margin-top:10px}
 .trtalk button.off{opacity:.5}
 .trlbl{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--mut);margin:0 0 10px}
@@ -203,7 +205,8 @@ input.f{width:100%;background:var(--panel);color:var(--tx);border:1px solid var(
   <div class="vmst" id="vm-st">Habla con naturalidad; te contesto en voz alta</div>
   <div class="vmtx" id="vm-tx"></div><div class="vmms" id="vm-ms"></div>
   <button class="artcard" id="vm-go">🎙 Empezar</button>
-  <div class="vmhint">Di «adiós» o «eso es todo» para terminar · toca el círculo mientras habla para interrumpirla</div>
+  <label class="vmhalf"><input type="checkbox" id="vm-half" checked> Uso la bocina (pausa el micrófono mientras Donna habla; con audífonos, desmárcalo para poder interrumpirla hablando)</label>
+  <div class="vmhint">Di «adiós» para terminar · toca el círculo para interrumpirla · <button id="vm-classic" class="vmlink">modo clásico (por turnos)</button></div>
 </div></div>
 <div class="sheet" id="sheet"><div class="in"><div class="hd"><b id="sh-t"></b><button id="sh-x">✕</button></div><div class="bd" id="sh-b"></div></div></div>
 <div class="toast" id="toast"></div>
@@ -889,8 +892,11 @@ const VM={on:false,cap:null,aud:null,silent:0,log:[],pl:null,ctl:null,sid:''};
 const SILENT_WAV='data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
 const vmSet=(st,txt)=>{$('#vm-st').textContent=txt;$('#vm-orb').dataset.s=st;if(st!=='listen')$('#vm-orb').style.transform=''};
 function vmUnlock(){try{if(!VM.aud)VM.aud=new Audio();VM.aud.src=SILENT_WAV;VM.aud.play().catch(()=>{})}catch(e){}}
-function vmStop(msg){VM.on=false;if(VM.cap)VM.cap.stop();if(VM.ctl)VM.ctl.abort();if(VM.pl)VM.pl.stop();try{VM.aud&&VM.aud.pause()}catch(e){}vmSet('idle',msg||'Conversación terminada');$('#vm-go').hidden=false;$('#vm-go').textContent='🎙 Empezar de nuevo'}
-function vmShow(who,t){VM.log.push({who,t});VM.log=VM.log.slice(-4);const bx=$('#vm-tx');bx.innerHTML=VM.log.map(x=>'<div><b>'+esc(x.who)+':</b> '+esc(x.t)+'</div>').join('');bx.scrollTop=bx.scrollHeight}
+function vmStop(msg){VM.on=false;dlStop();if(VM.cap)VM.cap.stop();if(VM.ctl)VM.ctl.abort();if(VM.pl)VM.pl.stop();try{VM.aud&&VM.aud.pause()}catch(e){}vmSet('idle',msg||'Conversación terminada');$('#vm-go').hidden=false;$('#vm-go').textContent='🎙 Empezar de nuevo'}
+function vmShow(who,t,parcial){
+  const u=VM.log[VM.log.length-1];
+  if(u&&u.parcial&&u.who===who){u.t=t;u.parcial=!!parcial}else VM.log.push({who,t,parcial:!!parcial});
+  VM.log=VM.log.slice(-4);const bx=$('#vm-tx');bx.innerHTML=VM.log.map(x=>'<div><b>'+esc(x.who)+':</b> '+esc(x.t)+'</div>').join('');bx.scrollTop=bx.scrollHeight}
 async function vmLoop(){
   const H={Authorization:'Bearer '+TOKEN};
   while(VM.on){
@@ -918,9 +924,52 @@ async function vmLoop(){
 }
 function vmStart(){VM.on=true;VM.silent=0;VM.log=[];VM.sid=rid();$('#vm-go').hidden=true;vmUnlock();vmLoop()}
 $('#vmbtn').onclick=()=>{$('#vm').classList.add('on');$('#vm-tx').innerHTML='';$('#vm-ms').textContent='';VM.log=[];$('#vm-go').hidden=false;$('#vm-go').textContent='🎙 Empezar';vmSet('idle','Habla con naturalidad; te contesto en voz alta')};
-$('#vm-go').onclick=vmStart;
+/* ---------- Donna EN TIEMPO REAL: voz de OpenAI (gpt-realtime-2.1) + el cerebro completo de Donna como herramienta ---------- */
+const DL={ws:null,on:false,half:LS.get('dl_half',true),t0:0,max:1800,tick:0,tool:false};
+function dlStop(){
+  if(!DL.on)return;DL.on=false;clearInterval(DL.tick);
+  try{if(DL.ws&&DL.ws.readyState===1)DL.ws.send(JSON.stringify({t:'close'}));DL.ws&&DL.ws.close()}catch(e){}
+  DL.ws=null;laStop();
+}
+async function dlStart(){
+  if(DL.on)return;DL.on=true;DL.tool=false;VM.log=[];$('#vm-go').hidden=true;vmSet('think','Conectando…');
+  try{await laStart(buf=>{if(DL.ws&&DL.ws.readyState===1)DL.ws.send(buf)},()=>DL.half&&laSpeaking())}
+  catch(e){clog('dl mic: '+e.name+' '+e.message);DL.on=false;vmStop('⚠️ Micrófono: '+(e.name==='NotAllowedError'?'permiso denegado (actívalo en Ajustes del teléfono)':e.message));return}
+  const ws=DL.ws=new WebSocket(wsUrl('/v1/app/donna'));ws.binaryType='arraybuffer';
+  ws.onopen=()=>ws.send(JSON.stringify({t:'auth',token:TOKEN}));
+  ws.onmessage=e=>{
+    if(typeof e.data!=='string'){laPlay(new Int16Array(e.data.slice(1)));return}
+    let m;try{m=JSON.parse(e.data)}catch(x){return}
+    if(m.t==='listo'){DL.t0=Date.now();DL.max=m.max||1800;vmSet('listen','Te escucho…')}
+    else if(m.t==='speech'){laFlush();DL.tool=false;vmSet('listen','Te escucho…')}                 // le hablaste encima: se calla al instante
+    else if(m.t==='in'){const u=VM.log[VM.log.length-1];vmShow('Tú',((u&&u.parcial&&u.who==='Tú')?u.t:'')+m.d,true)}
+    else if(m.t==='in_done'){if(m.text&&m.text.trim()){vmShow('Tú',m.text.trim());chat.push({r:'u',t:m.text.trim(),ts:Date.now()});LS.set('chat',chat.slice(-200))}}
+    else if(m.t==='out'){const u=VM.log[VM.log.length-1];vmShow(AGENT,((u&&u.parcial&&u.who===AGENT)?u.t:'')+m.d,true)}
+    else if(m.t==='out_done'){if(m.text&&m.text.trim()){vmShow(AGENT,m.text.trim());chat.push({r:'a',t:m.text.trim(),ts:Date.now(),model:'realtime'});LS.set('chat',chat.slice(-200))}}
+    else if(m.t==='tool'){DL.tool=true;if(!laSpeaking())vmSet('think','🔎 Consultando…')}
+    else if(m.t==='tool_done'){DL.tool=false}
+    else if(m.t==='error'){vmSet('think','⚠️ '+m.m);clog('donna live: '+m.m)}
+    else if(m.t==='end'){vmStop(m.m||'Conversación terminada')}
+  };
+  ws.onclose=()=>{if(DL.on)vmStop('Se cerró la conexión')};
+  ws.onerror=()=>clog('dl ws error');
+  DL.tick=setInterval(()=>{
+    if(!DL.on)return;
+    const orb=$('#vm-orb');
+    if(laSpeaking()){if(orb.dataset.s!=='speak')vmSet('speak','Hablando…')}
+    else if(orb.dataset.s==='speak'){vmSet('listen','Te escucho…')}
+    else if(orb.dataset.s==='listen'){orb.style.transform='scale('+(1+Math.min(.5,LA.level*3))+')'}
+    const s=Math.floor((Date.now()-DL.t0)/1000);$('#vm-ms').textContent=DL.t0?('🔴 En vivo '+fmtMs(s*1000)+(DL.max-s<=120?' · ⏳ quedan '+Math.max(0,DL.max-s)+' s':'')):'';
+  },250);
+}
+$('#vm-go').onclick=dlStart;
+$('#vm-classic').onclick=()=>{$('#vm-go').hidden=true;vmStart()};
+$('#vm-half').onchange=e=>{DL.half=e.target.checked;LS.set('dl_half',DL.half)};
 $('#vm-x').onclick=()=>{vmStop();$('#vm').classList.remove('on');renderChat()};
-$('#vm-orb').onclick=()=>{if(VM.on&&$('#vm-orb').dataset.s!=='listen'){if(VM.ctl)VM.ctl.abort();if(VM.pl)VM.pl.stop()}};
+$('#vm-orb').onclick=()=>{
+  if(DL.on){laFlush();if(DL.ws&&DL.ws.readyState===1)DL.ws.send(JSON.stringify({t:'interrupt'}));vmSet('listen','Te escucho…');return}
+  if(VM.on&&$('#vm-orb').dataset.s!=='listen'){if(VM.ctl)VM.ctl.abort();if(VM.pl)VM.pl.stop()}
+};
 
 /* ---------- Bandeja de notificaciones ---------- */
 function setAppBadge(n){try{if(n>0&&navigator.setAppBadge)navigator.setAppBadge(n);else if(navigator.clearAppBadge)navigator.clearAppBadge()}catch(e){}}
