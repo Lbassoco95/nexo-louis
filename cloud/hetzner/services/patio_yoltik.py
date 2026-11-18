@@ -115,6 +115,16 @@ def resumen() -> str:
          "coalesce(fecha_fin_estimada, fecha_fin) as fin_estimado from public.projects where estatus = 'activo' "
          "order by proximo_hito_fecha nulls last, nombre limit 20", None),
         ("Tareas por estatus", "select estatus, count(*) as n from public.tasks group by 1 order by 2 desc", None),
+        ("Tareas VENCIDAS: total y por responsable (conteo exacto en la base; usa ESTAS cifras, no cuentes filas a mano)",
+         "with v as (select t.id, t.fecha_vencimiento, t.created_at, coalesce(m.nombre, 'SIN ASIGNAR') as resp "
+         "from public.tasks t left join public.team_members m on m.id = t.asignado_a "
+         "where t.fecha_vencimiento < current_date and t.estatus::text not in ('completada','cancelada')) "
+         "select resp as responsable, count(*) as vencidas, min(fecha_vencimiento) as la_mas_vieja, "
+         "max(fecha_vencimiento) as la_mas_reciente, count(*) filter (where created_at < '2026-06-01') as sembradas_mayo "
+         "from v group by resp "
+         "union all select 'TOTAL', count(*), min(fecha_vencimiento), max(fecha_vencimiento), "
+         "count(*) filter (where created_at < '2026-06-01') from v "
+         "order by 2 desc", None),
         ("Tareas VENCIDAS (abiertas con fecha pasada)",
          "select t.titulo, t.estatus, t.prioridad, t.fecha_vencimiento as vencia, p.nombre as proyecto from public.tasks t "
          "left join public.projects p on p.id = t.project_id where t.fecha_vencimiento < current_date "
