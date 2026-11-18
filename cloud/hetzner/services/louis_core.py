@@ -1523,7 +1523,11 @@ def _encargar_a_agente(agente: str, tarea: str, cliente: str = "", contexto: str
                                 estado="borrador", preparado_por=agente)
     if not reg.startswith("OK"):
         return f"{agente} entregó, pero no pude guardar el entregable: {reg}"
-    # Sin push por Telegram: el borrador queda en Cerebro y Louis lo avisa en el chat.
+    _encolar_notificacion(
+        f"🧩 *{agente}* terminó un borrador: *{titulo}*"
+        + (f" ({cliente})" if cliente else "")
+        + "\nQuedó en Cerebro como BORRADOR para tu Vo.Bo. — lo ves en el tablero.",
+        canal="telegram")
     return (f"✅ Encargué a *{agente}* y guardé su trabajo como BORRADOR en Cerebro.\n"
             f"• {titulo}{(' — '+cliente) if cliente else ''}\n"
             f"Revísalo en el tablero; cuando lo apruebes dime «marca {titulo[:30]}… como listo».\n\n"
