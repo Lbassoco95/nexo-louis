@@ -773,8 +773,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(500, {"error": str(e), "trace": traceback.format_exc()})
                 return
 
+            # Archivos generados en este turno: se adjuntan a la respuesta del chat
+            # (antes quedaban en la cola y solo los drenaba el bridge de Telegram).
+            import base64 as _b64
+            attachments = [
+                {"filename": fn, "caption": cap, "content_base64": _b64.b64encode(c).decode()}
+                for c, fn, cap in core.get_pending_files()
+            ]
             now = int(time.time())
             self._send_json(200, {
+                "attachments": attachments,
                 "id": f"openclaw-{now}",
                 "object": "chat.completion",
                 "created": now,

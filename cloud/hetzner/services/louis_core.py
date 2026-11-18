@@ -637,7 +637,21 @@ def load_system_prompt(channel: str = "telegram") -> str:
             "- Listas con `•` o `-`, sin headers Markdown.\n"
             "- Mencionar usuarios con `<@USERID>`."
         )
+    elif channel == "api":
+        canal_text = (
+            "\n\n# CANAL ACTUAL: Chat (aquí)\n"
+            "Polo te escribe en este chat, NO por Telegram. Entrega TODO aquí: responde en el chat; "
+            "los archivos que generes se adjuntan a esta misma conversación. "
+            "Nunca digas que algo se mandó por Telegram. Markdown normal permitido."
+        )
     parts.append(canal_text)
+    parts.append(
+        "\n\n# REGLA DE CANAL — TODO POR EL MISMO CHAT\n"
+        "Polo decidió que TODO se entrega por el canal donde te escribe (el chat actual). "
+        "PROHIBIDO decir 'te lo mandé por Telegram' (o Slack/correo) salvo que ese sea el CANAL ACTUAL. "
+        "Si generas un archivo o dashboard, dile 'aquí en el chat' y resume el contenido en la respuesta. "
+        "No uses ni ofrezcas otro canal sin que Polo lo pida explícitamente."
+    )
 
     parts.append(
         "\n\n# UBICACIÓN ACTUAL\nCorres en Hetzner Cloud (CPX42, Helsinki, IP 204.168.131.21), "
@@ -879,10 +893,10 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "privado, dile: 'reenvíamela aquí o pide que la pongan en el canal #cumplimiento-sylon (u otro) "
         "y la leo'. Para cualquier pregunta de canales, llama `slack_resumen` ANTES de responder."
         "\n\n# DROPBOX Y PDFs — MANDAR ARCHIVOS A POLO\n"
-        "PUEDES leer el Dropbox de Polo y mandarle archivos por Telegram. NO digas que no puedes:\n"
+        "PUEDES leer el Dropbox de Polo y mandarle archivos por el MISMO canal en que te escribe (el chat actual). NO digas que no puedes:\n"
         "- `dropbox_buscar(query)` — busca un archivo por nombre/contenido. Devuelve la ruta exacta.\n"
         "- `dropbox_listar(carpeta)` — navega carpetas (vacío = raíz).\n"
-        "- `dropbox_enviar(path)` — baja el archivo de Dropbox y SE LO MANDA a Polo por Telegram. "
+        "- `dropbox_enviar(path)` — baja el archivo de Dropbox y SE LO ENTREGA a Polo en este mismo chat. "
         "Usa la ruta exacta que te dio dropbox_buscar/dropbox_listar.\n"
         "- `dof_pdf(cod)` — baja el PDF OFICIAL del DOF por su cod_nota y se lo manda a Polo. "
         "Para esto NO necesitas Dropbox ni browser — el PDF se baja directo del DOF.\n"
@@ -948,12 +962,12 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "Cuando Polo pida un documento, dictamen, informe, plan, presentación o tabla 'como PDF', "
         "'en PDF', 'documento', 'PowerPoint', 'Excel', o 'para compartir con el equipo':\n"
         "- DEBES llamar la tool `generar_documento(tipo, titulo, contenido)` EN ESE MISMO TURNO. "
-        "El servidor genera el archivo REAL y se lo manda a Polo por Telegram automáticamente.\n"
+        "El servidor genera el archivo REAL y se lo entrega a Polo en ESTE MISMO chat automáticamente.\n"
         "- `tipo`: 'pdf' para dictámenes/informes/planes de texto; 'pptx' para presentaciones; "
         "'xlsx' para tablas/datos financieros.\n"
         "- `contenido`: el documento COMPLETO en markdown (# para títulos, - para listas, | para tablas).\n"
         "- PROHIBIDO preguntar '¿procedo a generar el PDF?', '¿lo genero ahora?', 'lo dejo listo en tu Mac'. "
-        "NUNCA digas que dejas algo 'en la Mac' — tú corres en el servidor y entregas por Telegram. "
+        "NUNCA digas que dejas algo 'en la Mac' — tú corres en el servidor y entregas en el mismo chat donde Polo te escribe. "
         "Si Polo pidió PDF, llamas `generar_documento` de inmediato. El default es GENERAR Y ENTREGAR.\n"
         "- Flujo cuando un agente ya produjo el contenido: tomas ese texto → llamas `generar_documento` "
         "con él → se manda el archivo. No vuelvas a delegar si ya tienes el contenido.\n"
@@ -1366,7 +1380,7 @@ def _cerebro_crear_brief(tarea: str, cliente: str, insumos: str = "",
     return (
         f"✅ Brief: _briefs/{filepath.name}\n"
         f"Urgencia: {urgencia} | Previos del cliente: {len(previos)}\n"
-        f"Polo fue notificado por Telegram."
+        f"Brief guardado en Cerebro (aviso push al scheduler)."
     )
 
 
@@ -3517,7 +3531,7 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "dropbox_enviar",
-        "description": "Descarga un archivo de Dropbox por su ruta exacta y SE LO MANDA a Polo por Telegram. Usa la ruta (path_display) que devolvió dropbox_buscar/dropbox_listar. Úsala cuando Polo pida que le pases/mandes un archivo para revisarlo.",
+        "description": "Descarga un archivo de Dropbox por su ruta exacta y SE LO ENTREGA a Polo en este mismo chat. Usa la ruta (path_display) que devolvió dropbox_buscar/dropbox_listar. Úsala cuando Polo pida que le pases/mandes un archivo para revisarlo.",
         "input_schema": {
             "type": "object",
             "properties": {"path": {"type": "string", "description": "Ruta exacta del archivo en Dropbox (ej '/Contratos/acuerdo.pdf')"}},
@@ -3538,7 +3552,7 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "dof_pdf",
-        "description": "Descarga el PDF oficial de una publicación del DOF por su cod_nota y se lo MANDA a Polo por Telegram. Usa el cod que devuelve legal_buscar (ej: 5789080). Úsala cuando Polo pida el PDF de una publicación del DOF.",
+        "description": "Descarga el PDF oficial de una publicación del DOF por su cod_nota y se lo ENTREGA a Polo en este mismo chat. Usa el cod que devuelve legal_buscar (ej: 5789080). Úsala cuando Polo pida el PDF de una publicación del DOF.",
         "input_schema": {
             "type": "object",
             "properties": {"cod": {"type": "string", "description": "cod_nota de la publicación DOF"}},
@@ -3596,7 +3610,7 @@ TOOLS_DEFINITION = [
     {
         "name": "generar_documento",
         "description": (
-            "Genera un documento REAL en el servidor y se lo manda a Polo por Telegram. "
+            "Genera un documento REAL en el servidor y se lo entrega a Polo en este mismo chat. "
             "Úsala cuando Polo pida un documento formal para compartir con su equipo: dictámenes, planes, reportes, "
             "presentaciones, tablas. EL FORMATO POR DEFECTO ES HTML interactivo (el estándar de Kawiil: dashboard "
             "colapsable + buscador + chat embebido). SOLO usa otro formato si Polo lo pide explícitamente: "
@@ -5822,7 +5836,7 @@ def _generar_documento_tool(tipo: str, titulo: str, contenido: str, agente: str 
     _queue_file(data, fname, captions.get(tipo, f"📄 {titulo[:60]}"))
     saved = _guardar_generado(data, fname)
     extra = " · guardado en Hetzner (se sincroniza a tu Mac)" if saved else ""
-    return f"✅ {tipo.upper()} generado: {fname} ({len(data):,} bytes) — enviándolo por Telegram ahora{extra}"
+    return f"✅ {tipo.upper()} generado: {fname} ({len(data):,} bytes) — entregado en este chat{extra}"
 
 
 def _doc_tipo_de_mensaje(user_message: str) -> str:
@@ -6046,7 +6060,7 @@ def _dropbox_enviar(path: str) -> str:
         return err.replace("ERROR descargando", "ERROR descargando de Dropbox")
     filename = path.rsplit("/", 1)[-1] or "archivo"
     _queue_file(content, filename, f"📄 {filename} (Dropbox)")
-    return f"Archivo '{filename}' ({len(content) // 1024} KB) descargado de Dropbox — enviándolo por Telegram."
+    return f"Archivo '{filename}' ({len(content) // 1024} KB) descargado de Dropbox — entregado en este chat."
 
 
 def _dropbox_norm_name(s: str) -> str:
@@ -6197,7 +6211,7 @@ def _dof_pdf(cod: str) -> str:
     content = doc.encode("utf-8")
     _queue_file(content, f"DOF_{cod}.html", f"📄 DOF {cod} — {titulo[:60]}")
     return (f"Documento del DOF (cod={cod}, {len(content) // 1024} KB) generado desde la BD — "
-            f"enviándolo por Telegram. Ábrelo en el navegador para leerlo o imprimirlo a PDF.")
+            f"entregado en este chat. Ábrelo en el navegador para leerlo o imprimirlo a PDF.")
 
 
 def _dof_nota_texto(cod: str) -> str:
