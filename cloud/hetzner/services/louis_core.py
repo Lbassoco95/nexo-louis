@@ -431,6 +431,8 @@ TOOL_KEYWORDS = [
     r"\b(kawiil[\s-]?central|kawiil[\s-]?os|mati|matiox)\b",
     r"\b(tarea|tareas|proyecto|proyectos|avance|avances|backlog|pendiente)\b",
     r"\b(supabase|vercel|postgres|base\s+de\s+datos|database)\b",
+    # Patio Yoltik y tableros (artefactos): requieren herramientas; sin ellas el modelo inventaría
+    r"\b(patio|yoltik|tablero|tableros|dashboard|dashboards|artefacto|artefactos)\b",
     # Browser / navegación / vault
     r"\b(navega|abre\s+(?:la\s+)?(?:p[aá]gina|web|sitio|url)|chrome|browser|click|llena|completa\s+(?:el\s+)?formulario|login\s+en|sesi[oó]n\s+en)\b",
     r"\b(screenshot|captura\s+de\s+pantalla|extrae\s+de\s+la\s+p[aá]gina)\b",
@@ -10033,6 +10035,13 @@ def call_llm(
     return response, model_used
 
 
+def _is_light_app_chat(system_prompt: str, user_message: str, first_of_day: bool) -> bool:
+    """Mensaje corto de charla en la app (no pide agenda/datos y no es el primero del día)."""
+    msg = (user_message or "").strip()
+    return ("# CANAL ACTUAL: app móvil" in (system_prompt or "") and not first_of_day
+            and 0 < len(msg.split()) <= 8 and not needs_operational_context(msg) and not needs_tools(msg))
+
+
 def _call_llm_impl(
     api_key: str,
     system_prompt: str,
@@ -10151,6 +10160,10 @@ def _call_llm_impl(
         # el snapshot operativo para que tenga contexto real de AGENDA/IMPORTANT.
         log.info(f"→ DeepSeek (chat) — {tag}")
         ds_system = f"[CONTEXTO OPERATIVO ACTUAL]\n{snapshot}\n\n{system_prompt}"
+        if _is_light_app_chat(system_prompt, user_message, first_of_day):
+            # Saludo o «¿ya estás ahí?» en la app: sin agenda en el contexto (con ella, el modelo la vuelca entera).
+            ds_system = (_identity_block() + "\n\nEstás en la app móvil de Polo y te escribió un mensaje corto de charla. "
+                         "Responde natural en 1–2 líneas. NO menciones agenda, pendientes ni fechas salvo que te los pida.")
         try:
             response = call_deepseek(ds_system, history, user_message)
         except Exception as e:

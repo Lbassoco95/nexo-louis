@@ -94,3 +94,16 @@ class Escritura(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RuteoYCharla(unittest.TestCase):
+    def test_patio_y_tableros_usan_herramientas(self):
+        for m in ("cierra la tarea de Patio", "hazme un dashboard de Yoltik", "¿cómo va patio?"):
+            self.assertTrue(core.needs_tools(m), m)
+
+    def test_charla_corta_sin_agenda(self):
+        app = "# CANAL ACTUAL: app móvil de Donna"
+        self.assertTrue(core._is_light_app_chat(app, "¿Ya estás ahí?", False))
+        self.assertFalse(core._is_light_app_chat(app, "¿Ya estás ahí?", True))       # primero del día
+        self.assertFalse(core._is_light_app_chat(app, "qué pendientes tengo", False))
+        self.assertFalse(core._is_light_app_chat("# CANAL ACTUAL: telegram", "hola", False))
