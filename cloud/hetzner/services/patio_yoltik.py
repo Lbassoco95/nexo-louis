@@ -106,6 +106,46 @@ def estado() -> str:
     return "\n".join(parts)
 
 
+def resumen() -> str:
+    """Panorama de Yoltik en una sola llamada. Cada bloque es independiente: si uno falla se avisa y los demás salen."""
+    bloques = [
+        ("Proyectos por estatus", "select estatus, count(*) as n from public.projects group by 1 order by 2 desc", None),
+        ("Proyectos activos (más urgentes primero)",
+         "select nombre, prioridad, progress_pct as avance_pct, proximo_hito_titulo as proximo_hito, proximo_hito_fecha as hito_fecha, "
+         "coalesce(fecha_fin_estimada, fecha_fin) as fin_estimado from public.projects where estatus = 'activo' "
+         "order by proximo_hito_fecha nulls last, nombre limit 20", None),
+        ("Tareas por estatus", "select estatus, count(*) as n from public.tasks group by 1 order by 2 desc", None),
+        ("Tareas VENCIDAS (abiertas con fecha pasada)",
+         "select t.titulo, t.estatus, t.prioridad, t.fecha_vencimiento as vencia, p.nombre as proyecto from public.tasks t "
+         "left join public.projects p on p.id = t.project_id where t.fecha_vencimiento < current_date "
+         "and t.estatus::text not in ('completada','cancelada') order by t.fecha_vencimiento limit 15", None),
+        ("Tareas que vencen en 7 días",
+         "select t.titulo, t.estatus, t.prioridad, t.fecha_vencimiento as vence, p.nombre as proyecto from public.tasks t "
+         "left join public.projects p on p.id = t.project_id where t.fecha_vencimiento between current_date and current_date + 7 "
+         "and t.estatus::text not in ('completada','cancelada') order by t.fecha_vencimiento limit 15", None),
+        ("Pipeline de deals (etapa · cuántos · monto)",
+         "select etapa, count(*) as n, coalesce(sum(monto),0) as monto from public.deals group by 1 order by 2 desc", None),
+        ("Prospectos por estado", "select estado, count(*) as n from public.prospects group by 1 order by 2 desc", None),
+        ("Leads por estado", "select estado, count(*) as n from public.leads group by 1 order by 2 desc", None),
+        ("Leads recientes (14 días)",
+         "select created_at::date as fecha, form_type, nombre, empresa from public.leads where created_at > now() - interval '14 days' "
+         "order by created_at desc limit 10", None),
+    ]
+    out, fallos = ["🌱 *Yoltik — panorama (Patio Yoltik, datos reales)*"], 0
+    for titulo, sql, _ in bloques:
+        cols, rows, err = _select(sql)
+        if err:
+            if "Falta PATIO" in err or "conectividad" in err:
+                return err                                           # sin conexión no tiene caso seguir
+            fallos += 1
+            out.append(f"\n**{titulo}**: ✗ {err[:140]}")
+            continue
+        out.append(f"\n**{titulo}**\n" + (_tabla(rows, cols) if rows else "(ninguno)"))
+    if fallos:
+        out.append(f"\n⚠️ {fallos} bloque(s) no se pudieron leer: no completes esos datos de memoria.")
+    return "\n".join(out)
+
+
 def tablas() -> str:
     cols, rows, err = _select("select table_name from information_schema.tables where table_schema='public' order by 1")
     return err or f"{len(rows)} tablas: " + ", ".join(r[0] for r in rows)

@@ -96,6 +96,35 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class Resumen(unittest.TestCase):
+    def setUp(self):
+        self._orig = P._select
+
+    def tearDown(self):
+        P._select = self._orig
+
+    def test_bloque_que_falla_no_tumba_el_resto(self):
+        def fake(sql, params=()):
+            if "from public.deals" in sql:
+                return None, None, "❌ Error SQL (Patio Yoltik): column no existe"
+            return ["estatus", "n"], [("activo", 3)], None
+        P._select = fake
+        out = P.resumen()
+        self.assertIn("Proyectos por estatus", out)
+        self.assertIn("activo | 3", out)
+        self.assertIn("Pipeline de deals", out)
+        self.assertIn("no completes esos datos de memoria", out)
+
+    def test_sin_conexion_devuelve_el_error_tal_cual(self):
+        P._select = lambda sql, params=(): (None, None, "❌ Falta PATIO_YOLTIK_DATABASE_URL")
+        self.assertTrue(P.resumen().startswith("❌"))
+
+    def test_prompt_dirige_yoltik_a_patio(self):
+        pr = core.load_system_prompt(channel="api")
+        self.assertIn("patio_resumen", pr)
+        self.assertIn("NO `kawiil_central_*`", pr)
+
+
 class RuteoYCharla(unittest.TestCase):
     def test_patio_y_tableros_usan_herramientas(self):
         for m in ("cierra la tarea de Patio", "hazme un dashboard de Yoltik", "¿cómo va patio?"):

@@ -48,6 +48,12 @@ class Guardia(unittest.TestCase):
 
 
 class CicloDeHerramientas(unittest.TestCase):
+    def setUp(self):                      # estas pruebas reemplazan funciones de core: se restauran para no contaminar otras
+        self._orig = (core.execute_tool, core.http_post_json)
+
+    def tearDown(self):
+        core.execute_tool, core.http_post_json = self._orig
+
     def test_el_modelo_ve_el_fallo_y_se_registra(self):
         bodies = []
         respuestas = [

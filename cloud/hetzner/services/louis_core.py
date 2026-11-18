@@ -1022,6 +1022,14 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "Cuando un usuario te pida algo que NECESITE archivos de la Mac (Projects/ por ejemplo) y veas que "
         "está offline, primero llama `mac_estado()`, luego `mac_wake_request(razon)`, y le explicas que "
         "esperas el heartbeat para continuar."
+        "\n\n# DÓNDE VIVE CADA EMPRESA (elige la fuente correcta; NO mezcles)\n"
+        "- **KAWIIL**: Kawiil Central → herramientas `kawiil_central_*`. Slack/correo de Kawiil: `slack_*` (workspace kawiil) y m365 tenant `kawiil`.\n"
+        "- **YOLTIK**: **Patio Yoltik** (patio-yoltik.mx) → herramientas `patio_*`: `patio_estado`, `patio_proyectos`, `patio_tareas`, `patio_tarea_detalle`, "
+        "`patio_query` (SELECT sobre cualquier tabla: prospects, leads, deals, clients, RH…), y para escribir `patio_actualizar_tarea` (cerrar = estatus `completada`) y `patio_avance`. "
+        "Slack de Yoltik: `slack_*` con `workspace: \"yoltik\"` (ve todo lo que ve Polo). Correo de Yoltik: herramientas de correo con tenant `yoltik`.\n"
+        "- REGLA: si Polo habla de Yoltik, Patio, Ikán, MATI, prospectos o leads de Yoltik, usa `patio_*` (y NO `kawiil_central_*`: ahí Yoltik casi no aparece y darías una imagen pobre y falsa). "
+        "«¿Cómo va Yoltik?» = `patio_resumen` (panorama completo en una llamada; luego `patio_tareas`/`patio_query` para profundizar) y, si pide más, Slack/correo de Yoltik. "
+        "Antes de decir cuántos proyectos o tareas hay, usa la herramienta; nunca respondas esas cifras de memoria. Si una fuente falla, dilo y no completes con otra.\n"
         "\n\n# KAWIIL CENTRAL (PRODUCCIÓN — Vercel + Supabase, NO ES CLON)\n"
         "Kawiil Central es la app que Polo usa para gestionar proyectos y tareas. Está EN PRODUCCIÓN:\n"
         "- Frontend: https://www.kawiil-central.mx (Vercel)\n"
@@ -2922,6 +2930,11 @@ TOOLS_DEFINITION = [
     {
         "name": "patio_estado",
         "description": "Estado de Patio Yoltik (la app de operación/CRM de Yoltik, patio-yoltik.mx): conexión y conteos reales de proyectos, tareas, deals, prospectos, leads y clientes. Úsalo para «cómo va Patio/Yoltik» y para verificar la conexión.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "patio_resumen",
+        "description": "PANORAMA COMPLETO de Yoltik en una llamada (Patio Yoltik): proyectos por estatus y activos con próximo hito, tareas por estatus, tareas vencidas y por vencer, pipeline de deals, prospectos y leads. ÚSALA para «¿cómo va Yoltik?», «qué tengo pendiente en Yoltik», «dame el estado de Patio». Después profundiza con patio_tareas / patio_query.",
         "input_schema": {"type": "object", "properties": {}},
     },
     {
@@ -9740,6 +9753,8 @@ def _tool_patio(name, args):
     try:
         if name == "patio_estado":
             return P.estado()
+        if name == "patio_resumen":
+            return P.resumen()
         if name == "patio_tablas":
             return P.tablas()
         if name == "patio_describir":
