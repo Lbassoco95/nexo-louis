@@ -12,7 +12,9 @@ cnt()  { $SUDO grep -c "$1" "$2" 2>/dev/null || true; }
 
 echo "1) Servicios"
 for s in openclaw-gateway telegram-bridge scheduler slack-bridge; do
-  if systemctl is-active --quiet "$s" 2>/dev/null; then ok "$s activo"; else bad "$s NO activo (journalctl -u $s -n 30)"; fi
+  if systemctl is-active --quiet "$s" 2>/dev/null; then ok "$s activo"
+  elif [[ "$s" == "telegram-bridge" && -e "$OC/state/telegram_off" ]]; then info "telegram-bridge apagado a propósito (existe $OC/state/telegram_off)"
+  else bad "$s NO activo (journalctl -u $s -n 30)"; fi
 done
 
 echo "2) Código instalado en $OC/scripts (versión reciente)"
