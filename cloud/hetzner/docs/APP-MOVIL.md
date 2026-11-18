@@ -194,3 +194,10 @@ Siguiente: traducción simultánea en videollamadas con `gpt-realtime-translate`
   encabezado `Authorization: Bearer [token]`, cuerpo *Archivo*. Sirve para fotos, PDFs, notas, capturas, enlaces y texto. Lo que NO se puede: que una web app lea sola tu
   galería, contactos, mensajes o calendario; solo recibe lo que tú eliges o lo que un Atajo/automatización le envía.
 - Pruebas: `python3 -m unittest tests.test_voice tests.test_pwa_assets`.
+
+## Respuesta al instante (v12)
+
+Voz con Donna y traductor ahora usan **streaming**: `PUT /v1/app/voice/turn` y `PUT /v1/app/translate/stream` devuelven eventos
+(`stt` lo que dijiste → `respuesta`/`tr` → `audio` por trozos de 1-2 frases, sintetizados en paralelo → `done` con tiempos). El primer audio suena sin esperar el resto.
+Transcripción rápida (`gpt-4o-mini-transcribe`). El contexto de la conversación por voz vive en el servidor por `vsid` (solo esa conversación, 30 min), no en el historial del chat.
+La app muestra «⏱ te entendió · respuesta · primera voz» para ver dónde se va el tiempo. Para voz simultánea real (sin turnos): `tools/probar-realtime.py` averigua qué modelos/rutas Realtime tiene la cuenta.

@@ -244,9 +244,10 @@ def _hist_append(role: str, content: str):
 
 _VOZ_BLOQUE = (
     "\n\n# MODO VOZ (tu respuesta se LEERÁ EN VOZ ALTA)\n"
-    "Responde como en una conversación hablada: máximo 3 o 4 frases cortas, español natural, sin markdown, sin listas, sin tablas, sin emojis, "
-    "sin enlaces. Di los números y fechas como se dicen en voz alta. Si la respuesta requiere una lista o una tabla, di que la dejas en el chat "
-    "y da solo lo esencial. Si no entendiste algo, pregunta brevemente."
+    "Responde como en una conversación hablada: máximo 3 o 4 frases cortas, español de México, SIEMPRE de tú (nunca voseo: no digas «vos», «tenés», "
+    "«reenviás»), sin markdown, sin listas, sin tablas, sin emojis, sin enlaces. Di los números y fechas como se dicen en voz alta. Si la respuesta "
+    "requiere una lista o una tabla, di que la dejas en el chat y da solo lo esencial. Responde SOLO a lo último que dijo Polo: si saluda, saluda y "
+    "pregunta en qué le ayudas; no retomes temas viejos (adjuntos, tareas pendientes) si él no los menciona. Si no entendiste algo, pregunta brevemente."
 )
 
 
@@ -362,6 +363,9 @@ _DOC_CHAT_SYSTEM = (
     "con el documento, dilo. Español mexicano, claro y conciso."
 )
 _MAX_BODY = 1_000_000  # 1 MB
+_VSESS: dict = {}                      # vsid -> {"h": [{role, content}], "t": última actividad}: contexto SOLO de esta conversación por voz
+_VSESS_LOCK = threading.Lock()
+_ADIOS_RE = re.compile(r"^\W*(adi[oó]s|hasta luego|eso es todo|terminar|terminamos|ya es todo)\W*$", re.I)
 _CLOG_HITS: deque = deque()
 _CLOG_LOCK = threading.Lock()
 
@@ -1199,6 +1203,131 @@ class Handler(BaseHTTPRequestHandler):
             return True
         return False
 
+    # ---- turnos en streaming: cada parte aparece y suena en cuanto está lista ----
+    def _sse_open(self) -> bool:
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-transform")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            return True
+        except OSError:
+            return False
+
+    def _stream_voz(self, texto: str, idioma: str, t0: float, marks: dict) -> bool:
+        """Manda el audio por trozos (1-2 frases) a medida que se sintetiza. False si el cliente ya no está."""
+        import base64
+        for i, mp3 in app_translate.voz_por_trozos(texto, idioma):
+            if i == 0:
+                marks["audio1"] = int((time.time() - t0) * 1000)
+            if not self._sse("audio", {"i": i, "b64": base64.b64encode(mp3).decode("ascii")}):
+                return False
+        return True
+
+    def _read_audio_body(self):
+        n = int(self.headers.get("Content-Length", "0"))
+        if n <= 0 or n > app_translate.MAX_AUDIO:
+            raise ValueError("el audio de un turno debe pesar entre 1 byte y 25 MB")
+        return self.rfile.read(n)
+
+    def _translate_stream(self):
+        """PUT /v1/app/translate/stream?de=&a=&sid=&nombre= — audio → [stt] texto → [tr] traducción → [audio]… → [done]."""
+        from urllib.parse import urlparse, parse_qs
+        t0 = time.time()
+        q = parse_qs(urlparse(self.path).query)
+        try:
+            audio = self._read_audio_body()
+        except ValueError as e:
+            self._send_json(400, {"error": str(e)})
+            return
+        if not self._sse_open():
+            return
+        marks = {}
+        try:
+            texto = app_translate.voz_a_texto(audio, (q.get("nombre") or ["voz.webm"])[0])
+            marks["stt"] = int((time.time() - t0) * 1000)
+            if not self._sse("stt", {"texto": texto, "ms": marks["stt"]}):
+                return
+            r = app_translate.traducir(texto, (q.get("de") or ["auto"])[0], (q.get("a") or [""])[0])
+            marks["tr"] = int((time.time() - t0) * 1000)
+            sid = (q.get("sid") or [""])[0]
+            if sid:
+                app_translate.registrar_turno(sid, r, "voz")
+            if not self._sse("tr", {**r, "ms": marks["tr"]}):
+                return
+            if (q.get("voz") or ["1"])[0] != "0":
+                if not self._stream_voz(r["traduccion"], r["destino"], t0, marks):
+                    return
+            self._sse("done", {"ms": {**marks, "total": int((time.time() - t0) * 1000)}})
+        except (ValueError, RuntimeError) as e:
+            self._sse("fail", {"error": str(e)})
+        except Exception as e:
+            log.exception("translate stream falló")
+            self._sse("fail", {"error": str(e)[:200]})
+
+    def _ask_voice(self, user_msg: str, history: list):
+        """Pregunta a Donna en modo voz (bloquea hasta tener respuesta). → (texto, modelo, error)."""
+        if not _CHAT_SLOTS.acquire(blocking=False):
+            return "", "", "Donna está atendiendo otras consultas; reintenta en un momento"
+        rid = "v" + secrets.token_hex(6)
+        res = {"rid": rid, "t0": time.time(), "done": False, "client_gone": False}
+        with _RESULTS_LOCK:
+            _RESULTS[rid] = res
+        _chat_worker(rid, user_msg, history, voz=True)          # libera el cupo al terminar
+        with _RESULTS_LOCK:
+            out = _RESULTS.pop(rid, res)
+        return out.get("text", ""), out.get("model", ""), out.get("error")
+
+    def _voice_turn(self):
+        """PUT /v1/app/voice/turn?vsid=&nombre= — audio → [stt] lo que dijiste → [respuesta] → [audio]… → [done].
+        El contexto es SOLO esta conversación por voz (servidor), no el historial viejo del chat."""
+        from urllib.parse import urlparse, parse_qs
+        t0 = time.time()
+        q = parse_qs(urlparse(self.path).query)
+        vsid = re.sub(r"[^A-Za-z0-9_-]", "", (q.get("vsid") or [""])[0])[:40] or "anon"
+        try:
+            audio = self._read_audio_body()
+        except ValueError as e:
+            self._send_json(400, {"error": str(e)})
+            return
+        if not self._sse_open():
+            return
+        marks = {}
+        try:
+            texto = app_translate.voz_a_texto(audio, (q.get("nombre") or ["voz.webm"])[0])
+            marks["stt"] = int((time.time() - t0) * 1000)
+            if not self._sse("stt", {"texto": texto, "ms": marks["stt"]}):
+                return
+            if _ADIOS_RE.match(texto):
+                self._sse("done", {"fin": True, "ms": {**marks, "total": int((time.time() - t0) * 1000)}})
+                return
+            with _VSESS_LOCK:
+                for k in [k for k, v in _VSESS.items() if time.time() - v["t"] > 1800]:
+                    _VSESS.pop(k, None)
+                ses = _VSESS.setdefault(vsid, {"h": [], "t": time.time()})
+                hist = list(ses["h"][-10:])
+            resp, modelo, err = self._ask_voice(texto, hist)
+            marks["llm"] = int((time.time() - t0) * 1000)
+            if err or not resp.strip():
+                self._sse("fail", {"error": err or "Donna no respondió"})
+                return
+            with _VSESS_LOCK:
+                ses["h"] += [{"role": "user", "content": texto}, {"role": "assistant", "content": resp}]
+                ses["h"] = ses["h"][-12:]
+                ses["t"] = time.time()
+            if not self._sse("respuesta", {"texto": resp, "model": modelo, "ms": marks["llm"]}):
+                return
+            if not self._stream_voz(resp, "es", t0, marks):
+                return
+            self._sse("done", {"ms": {**marks, "total": int((time.time() - t0) * 1000)}})
+        except (ValueError, RuntimeError) as e:
+            self._sse("fail", {"error": str(e)})
+        except Exception as e:
+            log.exception("voice turn falló")
+            self._sse("fail", {"error": str(e)[:200]})
+
     def _voice_transcribe(self):
         """PUT /v1/app/voice/transcribe — cuerpo = audio de UN turno → {texto}."""
         try:
@@ -1314,6 +1443,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(401, {"error": "unauthorized"})
                 return
             self._voice_transcribe()
+            return
+        if self.path.split("?", 1)[0] in ("/v1/app/translate/stream", "/v1/app/voice/turn"):
+            if not _require_app_auth(self):
+                self._send_json(401, {"error": "unauthorized"})
+                return
+            if self.path.startswith("/v1/app/translate/stream"):
+                self._translate_stream()
+            else:
+                self._voice_turn()
             return
         if not self.path.startswith("/v1/app/media/"):
             self._send_json(404, {"error": "no encontrado"})

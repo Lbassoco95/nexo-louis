@@ -322,10 +322,10 @@ def _multipart(fields: dict, file_field: str, filename: str, data: bytes) -> tup
     return bytes(body), f"multipart/form-data; boundary={b}"
 
 
-def _openai_transcribe(seg: Path, key: str) -> str:
+def _openai_transcribe(seg: Path, key: str, modelos=None) -> str:
     model = os.environ.get("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-transcribe")
     last = ""
-    for mdl in (model, "whisper-1"):
+    for mdl in (modelos or (model, "whisper-1")):
         body, ctype = _multipart({"model": mdl, "response_format": "text"}, "file", seg.name, seg.read_bytes())
         req = urllib.request.Request("https://api.openai.com/v1/audio/transcriptions", data=body, method="POST",
                                      headers={"Authorization": f"Bearer {key}", "Content-Type": ctype})

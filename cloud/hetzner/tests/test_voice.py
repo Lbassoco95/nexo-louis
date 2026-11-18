@@ -26,7 +26,7 @@ core.call_llm = fake_llm
 core.load_anthropic_key = lambda: "k"
 
 
-class Servidor(unittest.TestCase):
+class Base(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), g.Handler)
@@ -57,6 +57,8 @@ class Servidor(unittest.TestCase):
     def token(self, user, pw):
         return A.login(user, pw, "127.0.0.1")["token"]
 
+
+class Servidor(Base):
     def test_voz_pregunta_a_donna_con_bloque_de_voz(self):
         st, d = self.req("POST", "/v1/app/voice/ask", {"messages": [{"role": "user", "content": "¿cuándo empieza mi diplomado?"}]})
         self.assertEqual(st, 200); self.assertIn("diplomado", d["respuesta"])
@@ -70,7 +72,7 @@ class Servidor(unittest.TestCase):
         g._RESULTS.pop("rtest0001", None)
 
     def test_transcribe_y_habla(self):
-        o = M._openai_transcribe; M._openai_transcribe = lambda p, k: "quiero revisar mi plan de doctorado"
+        o = M._openai_transcribe; M._openai_transcribe = lambda p, k, m=None: "quiero revisar mi plan de doctorado"
         try:
             st, d = self.req("PUT", "/v1/app/voice/transcribe?nombre=v.m4a", raw=b"a" * 3000)
         finally:
@@ -113,6 +115,116 @@ class Servidor(unittest.TestCase):
             self.assertEqual(self.req("POST", "/v1/app/clientlog", {"msg": "x"})[0], 200)
         self.assertEqual(self.req("POST", "/v1/app/clientlog", {"msg": "x"})[0], 200)    # responde igual, pero ya no registra
         self.assertGreaterEqual(len(g._CLOG_HITS), 30)
+
+
+def sse(raw: bytes) -> list:
+    out = []
+    for blk in raw.decode().split("\n\n"):
+        ev, data = "message", ""
+        for l in blk.split("\n"):
+            if l.startswith("event:"):
+                ev = l[6:].strip()
+            elif l.startswith("data:"):
+                data += l[5:].strip()
+        if data:
+            out.append((ev, json.loads(data)))
+    return out
+
+
+class Streaming(Base):
+    """Los turnos en streaming: cada parte (lo que dijiste, la respuesta, el audio) llega en cuanto está lista."""
+    def setUp(self):
+        self._o = (T.voz_a_texto, T.texto_a_voz)
+        T.voz_a_texto = lambda audio, nombre="v.webm", idioma_pista="": VISTO.get("stt", "¿cuándo empieza mi diplomado?")
+        T.texto_a_voz = lambda t, i: b"MP3:" + t.encode()[:20]
+        VISTO.pop("stt", None)
+        core.call_haiku = lambda key, system, hist, user, **kw: json.dumps({"origen": "es", "traduccion": "Hello. How are you today? I hope all is well.", "pinyin": ""})
+        g._VSESS.clear()
+
+    def tearDown(self):
+        T.voz_a_texto, T.texto_a_voz = self._o
+
+    def test_turno_de_voz_orden_de_eventos_y_tiempos(self):
+        st, raw = self.req("PUT", "/v1/app/voice/turn?vsid=s1&nombre=v.m4a", raw=b"a" * 3000)
+        ev = sse(raw)
+        nombres = [e for e, _ in ev]
+        self.assertEqual(st, 200)
+        self.assertEqual(nombres[:2], ["stt", "respuesta"])                    # primero lo que dijiste, luego la respuesta
+        self.assertIn("audio", nombres); self.assertEqual(nombres[-1], "done")
+        self.assertLess(nombres.index("respuesta"), nombres.index("audio"))
+        done = ev[-1][1]["ms"]
+        self.assertTrue({"stt", "llm", "audio1", "total"} <= set(done))
+        self.assertIn("MODO VOZ", VISTO["system"])
+
+    def test_contexto_solo_de_esa_conversacion(self):
+        self.req("PUT", "/v1/app/voice/turn?vsid=a1", raw=b"a" * 3000)
+        VISTO["stt"] = "¿y qué más?"
+        seen = {}
+        orig = core.call_llm
+        core.call_llm = lambda k, system, history, user, history_file=None: (seen.update(h=list(history)) or ("Ok.", "deepseek"))
+        try:
+            self.req("PUT", "/v1/app/voice/turn?vsid=a1", raw=b"a" * 3000)
+            self.assertEqual(len(seen["h"]), 2)                                # recuerda SOLO el turno anterior de esta sesión
+            self.req("PUT", "/v1/app/voice/turn?vsid=otra", raw=b"a" * 3000)
+            self.assertEqual(seen["h"], [])                                    # otra conversación: sin arrastrar nada
+        finally:
+            core.call_llm = orig
+
+    def test_adios_termina_sin_llamar_al_modelo(self):
+        VISTO["stt"] = "Eso es todo."
+        llamadas = []
+        orig = core.call_llm
+        core.call_llm = lambda *a, **k: llamadas.append(1) or ("x", "m")
+        try:
+            st, raw = self.req("PUT", "/v1/app/voice/turn?vsid=z", raw=b"a" * 3000)
+        finally:
+            core.call_llm = orig
+        ev = sse(raw)
+        self.assertTrue(ev[-1][1].get("fin")); self.assertEqual(llamadas, [])
+
+    def test_error_se_avisa_como_evento_fail(self):
+        def mal(*a, **k): raise ValueError("no se escuchó voz")
+        T.voz_a_texto = mal
+        st, raw = self.req("PUT", "/v1/app/voice/turn?vsid=e", raw=b"a" * 3000)
+        self.assertEqual(sse(raw)[-1], ("fail", {"error": "no se escuchó voz"}))
+
+    def test_traductor_en_streaming(self):
+        st, raw = self.req("PUT", "/v1/app/translate/stream?de=es&a=en&sid=tabcdef0123&nombre=v.m4a", raw=b"a" * 3000)
+        ev = sse(raw); nombres = [e for e, _ in ev]
+        self.assertEqual(nombres[:2], ["stt", "tr"]); self.assertEqual(nombres[-1], "done")
+        self.assertGreaterEqual(nombres.count("audio"), 1)
+        self.assertEqual(dict(ev)["tr"]["destino"], "en")
+        st, raw = self.req("PUT", "/v1/app/translate/stream?de=es&a=en&voz=0", raw=b"a" * 3000)
+        self.assertNotIn("audio", [e for e, _ in sse(raw)])                  # voz=0: sin audio
+
+    def test_usuario_atajo_no_puede_usar_voz(self):
+        tok = self.token("atajo-polo", "otra frase larga y segura 2026")
+        self.assertEqual(self.req("PUT", "/v1/app/voice/turn?vsid=x", raw=b"a" * 3000, tok=tok)[0], 401)
+
+
+class Frases(unittest.TestCase):
+    def test_primer_trozo_corto_y_orden(self):
+        t = T.dividir_frases("Hola Polo. Hoy tienes tres cosas importantes. La primera es la junta con Dazon a las diez. Luego la comida. Y al final la llamada.")
+        self.assertGreaterEqual(len(t), 2); self.assertLessEqual(len(t), 5)
+        self.assertTrue(t[0].startswith("Hola Polo")); self.assertEqual(" ".join(t).count("Dazon"), 1)
+
+    def test_chino_sin_espacios(self):
+        t = T.dividir_frases("我们需要确认批次的单价。请在周五之前回复我们。谢谢你的帮助！", min_chars=12)
+        self.assertGreaterEqual(len(t), 2)
+
+    def test_quita_formato_para_hablar(self):
+        self.assertEqual(T.texto_hablado("**Hola** [enlace](http://x.com) `código` | tabla"), "Hola enlace código tabla")
+
+    def test_voz_por_trozos_en_orden(self):
+        o = T.texto_a_voz
+        T.texto_a_voz = lambda t, i: t.encode()
+        try:
+            out = list(T.voz_por_trozos("Primera frase larga de prueba aquí. Segunda frase larga de prueba aquí. Tercera.", "es"))
+        finally:
+            T.texto_a_voz = o
+        self.assertEqual([i for i, _ in out], list(range(len(out))))
+        self.assertTrue(out[0][1].startswith(b"Primera"))
+
 
 
 class Avisos(unittest.TestCase):

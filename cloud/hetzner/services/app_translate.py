@@ -121,6 +121,9 @@ def traducir(texto: str, de: str, a: str) -> dict:
 
 
 # ------------------------------------------------------------------ voz
+STT_RAPIDO = ("gpt-4o-mini-transcribe", "gpt-4o-transcribe", "whisper-1")
+
+
 def voz_a_texto(audio: bytes, nombre: str = "voz.webm", idioma_pista: str = "") -> str:
     import app_media as M
     if not audio or len(audio) < 800:
@@ -134,7 +137,7 @@ def voz_a_texto(audio: bytes, nombre: str = "voz.webm", idioma_pista: str = "") 
     with tempfile.TemporaryDirectory() as td:
         p = Path(td) / ("turno" + suf)
         p.write_bytes(audio)
-        t = M._openai_transcribe(p, key)
+        t = M._openai_transcribe(p, key, STT_RAPIDO)
     t = re.sub(r"\s+", " ", t or "").strip()
     if not t:
         raise ValueError("no se escuchó voz; acércate al micrófono e intenta de nuevo")
@@ -229,3 +232,46 @@ def guardar_sesion(sid: str, titulo: str = "") -> dict:
         pass
     nombre = (titulo.strip()[:60] or "Conversación traducida") + " " + time.strftime("%Y-%m-%d %H:%M", time.localtime(ts[0]["ts"]))
     return M.register_text(nombre, texto, tipo="conversacion", resumen=resumen, origen="traductor")
+
+
+# ------------------------------------------------------------------ voz por frases (el primer audio sale sin esperar el resto)
+def texto_hablado(md: str) -> str:
+    """Quita el formato (Markdown, tablas, enlaces) para que se lea natural en voz alta."""
+    t = re.sub(r"```.*?```", " ", md or "", flags=re.S)
+    t = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", t)
+    t = re.sub(r"[*_`#>|~]+", "", t)
+    t = re.sub(r"^\s*[-•]\s+", "", t, flags=re.M)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def dividir_frases(texto: str, min_chars: int = 40, max_trozos: int = 5) -> list:
+    """Parte el texto en trozos de 1-2 frases (también chino). El primero es corto para que suene pronto."""
+    partes = [p for p in re.split(r"(?<=[.!?。！？;；])\s*", (texto or "").strip()) if p.strip()]
+    if not partes:
+        return []
+    trozos, cur = [], ""
+    for p in partes:
+        cur = (cur + " " + p).strip() if cur else p
+        if len(cur) >= min_chars:
+            trozos.append(cur)
+            cur = ""
+    if cur:
+        if trozos and len(cur) < min_chars // 2:
+            trozos[-1] += " " + cur
+        else:
+            trozos.append(cur)
+    while len(trozos) > max_trozos:                      # demasiados trozos: une los últimos
+        trozos[-2:] = [trozos[-2] + " " + trozos[-1]]
+    return trozos
+
+
+def voz_por_trozos(texto: str, idioma: str):
+    """Genera (indice, mp3) EN ORDEN, pero sintetizando los trozos en paralelo: el 1.º suena en cuanto está listo."""
+    from concurrent.futures import ThreadPoolExecutor
+    trozos = dividir_frases(texto_hablado(texto)[:2500])
+    if not trozos:
+        return
+    with ThreadPoolExecutor(max_workers=min(3, len(trozos))) as ex:
+        futs = [ex.submit(texto_a_voz, t, idioma) for t in trozos]
+        for i, f in enumerate(futs):
+            yield i, f.result()

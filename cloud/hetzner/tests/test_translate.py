@@ -87,7 +87,7 @@ class Voz(unittest.TestCase):
 
     def test_transcribe_con_openai(self):
         orig = M._openai_transcribe
-        M._openai_transcribe = lambda path, key: "  buenos   días  a todos "
+        M._openai_transcribe = lambda path, key, m=None: "  buenos   días  a todos "
         try:
             self.assertEqual(T.voz_a_texto(b"a" * 2000, "turno.m4a"), "buenos días a todos")
         finally:
@@ -95,7 +95,7 @@ class Voz(unittest.TestCase):
 
     def test_silencio(self):
         orig = M._openai_transcribe
-        M._openai_transcribe = lambda path, key: " "
+        M._openai_transcribe = lambda path, key, m=None: " "
         try:
             with self.assertRaises(ValueError):
                 T.voz_a_texto(b"a" * 2000)
@@ -188,7 +188,7 @@ class Gateway(unittest.TestCase):
         sid = json.loads(b)["sid"]
         st, _, b = self.req("POST", "/v1/app/translate", {"texto": "Hola, ¿cómo estás?", "de": "es", "a": "zh", "sid": sid})
         self.assertEqual(st, 200); self.assertEqual(json.loads(b)["traduccion"], "你好，你好吗？")
-        orig = M._openai_transcribe; M._openai_transcribe = lambda p, k: "Hola, ¿cómo estás?"
+        orig = M._openai_transcribe; M._openai_transcribe = lambda p, k, m=None: "Hola, ¿cómo estás?"
         try:
             st, _, b = self.req("PUT", f"/v1/app/translate/audio?de=es&a=en&sid={sid}&nombre=voz.m4a", raw=b"a" * 3000)
         finally:

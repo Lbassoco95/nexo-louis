@@ -141,6 +141,7 @@ input.search{width:100%;background:var(--panel);color:var(--tx);border:1px solid
 .orb[data-s=speak]{animation:speak 1.2s infinite;background:radial-gradient(circle at 35% 30%,#a7f0cf,#34d399 55%,#0f8a5f)}
 @keyframes speak{50%{transform:scale(1.12)}}
 .vmst{font-size:18px;font-weight:600;text-align:center;min-height:26px}.vmtx{max-height:26dvh;overflow-y:auto;font-size:15px;color:#c9d3ea;text-align:center;margin:10px 0;line-height:1.45;width:100%}
+.vmms{font-size:11px;color:#8b97b3;min-height:14px;margin-bottom:6px}
 .vmhint{font-size:12px;color:#8b97b3;text-align:center;margin-top:10px}
 .trlbl{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--mut);margin:0 0 10px}
 .btn{background:linear-gradient(135deg,var(--acc),var(--acc2));color:#fff;border:0;border-radius:12px;padding:12px 16px;font:inherit;font-weight:600;width:100%}
@@ -199,7 +200,7 @@ input.f{width:100%;background:var(--panel);color:var(--tx);border:1px solid var(
   <div class="vmhd"><b>Conversación con {{AGENT_NAME}}</b><button id="vm-x">✕ Terminar</button></div>
   <div class="orbw"><div class="orb" id="vm-orb" data-s="idle"></div></div>
   <div class="vmst" id="vm-st">Habla con naturalidad; te contesto en voz alta</div>
-  <div class="vmtx" id="vm-tx"></div>
+  <div class="vmtx" id="vm-tx"></div><div class="vmms" id="vm-ms"></div>
   <button class="artcard" id="vm-go">🎙 Empezar</button>
   <div class="vmhint">Di «adiós» o «eso es todo» para terminar · toca el círculo mientras habla para interrumpirla</div>
 </div></div>
@@ -605,6 +606,40 @@ async function micCapture({vad=false,maxMs=120000,onLevel=()=>{},onTick=()=>{}}=
 const fmtMs=ms=>{const s=Math.floor(ms/1000);return Math.floor(s/60)+':'+String(s%60).padStart(2,'0')};
 const extOf=t=>/mp4/.test(t)?'.m4a':/ogg/.test(t)?'.ogg':'.webm';
 
+
+/* ---------- streaming: cada parte aparece y suena en cuanto el servidor la tiene lista ---------- */
+async function sseFetch(url,opts,on){
+  const r=await fetch(url,opts);
+  if(r.status===401){logout(true);throw new Error('Sesión vencida')}
+  if(!r.ok||!r.body){let m='';try{m=(await r.json()).error}catch(e){}throw new Error(m||('Error '+r.status))}
+  const rd=r.body.getReader(),dec=new TextDecoder();let buf='';
+  for(;;){
+    const {value,done}=await rd.read();if(done)break;buf+=dec.decode(value,{stream:true});
+    let i;while((i=buf.indexOf('\n\n'))>=0){
+      const blk=buf.slice(0,i);buf=buf.slice(i+2);let ev='message',data='';
+      blk.split('\n').forEach(l=>{if(l.startsWith('event:'))ev=l.slice(6).trim();else if(l.startsWith('data:'))data+=l.slice(5).trim()});
+      if(data){try{on(ev,JSON.parse(data))}catch(e){clog('sse '+ev+': '+e.message)}}
+    }
+  }
+}
+function mkPlayer(el){
+  const q=[];let playing=false,stopped=false,idle=null;
+  const fin=()=>{if(idle){const f=idle;idle=null;f()}};
+  const next=()=>{
+    if(stopped){playing=false;fin();return}
+    const u=q.shift();if(!u){playing=false;fin();return}
+    playing=true;el.onended=next;el.onerror=next;el.src=u;el.play().catch(next);
+  };
+  return {
+    add(b64){if(stopped)return;const bin=atob(b64),a=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)a[i]=bin.charCodeAt(i);
+      q.push(URL.createObjectURL(new Blob([a],{type:'audio/mpeg'})));if(!playing)next()},
+    stop(){stopped=true;q.length=0;try{el.pause()}catch(e){}playing=false;fin()},
+    whenIdle(){return new Promise(res=>{if(stopped||(!playing&&!q.length))res();else idle=res})}
+  };
+}
+const msLine=m=>m?('⏱ '+[m.stt!=null&&'te entendió '+(m.stt/1000).toFixed(1)+'s',m.tr!=null&&'traducción '+(m.tr/1000).toFixed(1)+'s',m.llm!=null&&'respuesta '+(m.llm/1000).toFixed(1)+'s',
+  m.audio1!=null&&'primera voz '+(m.audio1/1000).toFixed(1)+'s'].filter(Boolean).join(' · ')):'';
+
 /* ---------- traductor: español ⇄ inglés ⇄ chino (por turnos; se escucha y se guarda) ---------- */
 const TRL={es:'Español',en:'English',zh:'中文 (简体)'};
 let TR={sid:null,de:LS.get('tr_de','es'),a:LS.get('tr_a','en'),turns:[],auto:LS.get('tr_auto',true),rec:null,busy:false,aud:null};
@@ -640,6 +675,7 @@ async function trText(txt,de,a){
 async function trTalk(de,a,btn){
   if(TR.rec){TR.rec.stop();return}
   if(TR.busy)return;
+  trUnlock();
   const st=$('#tr-st'),lv=$('#tr-lvl');
   let cap;
   try{cap=await micCapture({onLevel:l=>{if(lv)lv.style.width=Math.min(100,Math.round(l*400))+'%'},onTick:ms=>{st.textContent='🔴 Escuchando… '+fmtMs(ms)+' — toca de nuevo para terminar'}})}
@@ -651,17 +687,22 @@ async function trTalk(de,a,btn){
   TR.rec=null;btn.classList.remove('rec');btn.textContent=btn.dataset.old;if(lv)lv.style.width='0';
   document.querySelectorAll('.trtalk button').forEach(b=>b.disabled=false);
   if(!r){st.textContent='⚠️ No se pudo grabar el audio';return}
-  trUnlock();
   if(r.blob.size<800){st.textContent='⚠️ El audio salió vacío ('+r.blob.size+' bytes). Revisa el permiso del micrófono.';clog('trTalk audio vacío '+r.blob.size+' '+r.mime);return}
   if(!r.spoke&&r.peak<0.012){st.textContent='⚠️ No se escuchó voz (el micrófono casi no captó sonido). Acércate e intenta de nuevo.';clog('trTalk sin voz peak='+r.peak);return}
-  TR.busy=true;st.textContent='Traduciendo el audio ('+fmtB(r.blob.size)+')…';
+  TR.busy=true;st.textContent='Enviando…';
+  const pl=mkPlayer(TR.aud||(TR.aud=new Audio()));let err='',ms=null;
   try{
     const sid=await trEnsureSid();
-    const rs=await fetch('/v1/app/translate/audio?de='+de+'&a='+a+'&sid='+sid+'&nombre=voz'+extOf(r.blob.type),{method:'PUT',headers:{Authorization:'Bearer '+TOKEN},body:r.blob});
-    if(rs.status===401){logout(true);return}
-    const j=await rs.json();if(!rs.ok)throw new Error(j.error||('Error '+rs.status));
-    st.textContent='';trResult(j);
-  }catch(e){st.textContent='⚠️ '+e.message;clog('trTalk envío: '+e.message)}
+    await sseFetch('/v1/app/translate/stream?de='+de+'&a='+a+'&sid='+sid+'&voz='+(TR.auto?1:0)+'&nombre=voz'+extOf(r.blob.type),
+      {method:'PUT',headers:{Authorization:'Bearer '+TOKEN},body:r.blob},(ev,d)=>{
+        if(ev==='stt')st.textContent='Escuché: «'+d.texto+'» · traduciendo…';
+        else if(ev==='tr'){TR.turns.push(d);trPaint();const bx=$('#tr-turns');if(bx)bx.scrollTop=bx.scrollHeight;st.textContent=''}
+        else if(ev==='audio')pl.add(d.b64);
+        else if(ev==='fail')err=d.error;
+        else if(ev==='done')ms=d.ms});
+  }catch(e){err=e.message}
+  if(err){st.textContent='⚠️ '+err;clog('trTalk: '+err)}
+  else{const el=$('#tr-ms');if(el)el.textContent=msLine(ms)}
   TR.busy=false;
 }
 async function trFinish(){
@@ -681,7 +722,7 @@ function openTranslator(){
     '<div class="trtalk"><button id="tr-b1"></button><button id="tr-b2"></button></div>'+
     '<div class="trin"><input id="tr-in" placeholder="O escribe aquí…" enterkeyhint="send"><button id="tr-go">Traducir</button></div>'+
     '<label class="trlbl"><input type="checkbox" id="tr-auto"'+(TR.auto?' checked':'')+'> Leer la traducción en voz alta</label>'+
-    '<div class="lvl"><i id="tr-lvl"></i></div><div id="tr-st" class="sub" style="min-height:18px;margin-bottom:6px"></div>'+
+    '<div class="lvl"><i id="tr-lvl"></i></div><div id="tr-st" class="sub" style="min-height:18px;margin-bottom:2px"></div><div id="tr-ms" class="sub" style="font-size:11px;min-height:14px;margin-bottom:6px"></div>'+
     '<div id="tr-turns" style="max-height:34dvh;overflow-y:auto"></div>'+
     '<button class="artcard" id="tr-fin" style="margin-top:10px">💾 Terminar y guardar la conversación</button>');
   const sync=()=>{TR.de=$('#tr-de').value;TR.a=$('#tr-a').value;LS.set('tr_de',TR.de);LS.set('tr_a',TR.a);
@@ -699,54 +740,42 @@ $('#trbtn').onclick=openTranslator;
 
 
 /* ---------- conversación por voz con Donna (manos libres: escucha → piensa → habla → vuelve a escuchar) ---------- */
-const VM={on:false,cap:null,aud:null,silent:0};
+const VM={on:false,cap:null,aud:null,silent:0,log:[],pl:null,ctl:null,sid:''};
 const SILENT_WAV='data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
 const vmSet=(st,txt)=>{$('#vm-st').textContent=txt;$('#vm-orb').dataset.s=st;if(st!=='listen')$('#vm-orb').style.transform=''};
 function vmUnlock(){try{if(!VM.aud)VM.aud=new Audio();VM.aud.src=SILENT_WAV;VM.aud.play().catch(()=>{})}catch(e){}}
-function vmStop(msg){VM.on=false;if(VM.cap)VM.cap.stop();try{VM.aud&&VM.aud.pause()}catch(e){}vmSet('idle',msg||'Conversación terminada');$('#vm-go').hidden=false;$('#vm-go').textContent='🎙 Empezar de nuevo'}
-function vmShow(who,t){$('#vm-tx').innerHTML='<div><b>'+who+':</b> '+esc(t)+'</div>'+$('#vm-tx').innerHTML;$('#vm-tx').innerHTML=$('#vm-tx').innerHTML.split('</div>').slice(0,4).join('</div>')}
-async function vmSpeak(txt){
-  const clean=String(txt||'').replace(/[*_`#>|]/g,'').replace(/\s+/g,' ').trim().slice(0,1500);if(!clean)return;
-  const rs=await fetch('/v1/app/speak',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+TOKEN},body:JSON.stringify({texto:clean,idioma:'es'})});
-  if(!rs.ok){let m='';try{m=(await rs.json()).error}catch(e){}throw new Error(m||('voz '+rs.status))}
-  const url=URL.createObjectURL(await rs.blob());
-  await new Promise(res=>{const a=VM.aud;a.onended=res;a.onpause=res;a.onerror=res;a.src=url;a.play().catch(res)});
-}
+function vmStop(msg){VM.on=false;if(VM.cap)VM.cap.stop();if(VM.ctl)VM.ctl.abort();if(VM.pl)VM.pl.stop();try{VM.aud&&VM.aud.pause()}catch(e){}vmSet('idle',msg||'Conversación terminada');$('#vm-go').hidden=false;$('#vm-go').textContent='🎙 Empezar de nuevo'}
+function vmShow(who,t){VM.log.push({who,t});VM.log=VM.log.slice(-4);const bx=$('#vm-tx');bx.innerHTML=VM.log.map(x=>'<div><b>'+esc(x.who)+':</b> '+esc(x.t)+'</div>').join('');bx.scrollTop=bx.scrollHeight}
 async function vmLoop(){
   const H={Authorization:'Bearer '+TOKEN};
   while(VM.on){
     vmSet('listen','Te escucho…');
     let r;
-    try{VM.cap=await micCapture({vad:true,maxMs:90000,onLevel:l=>{if(VM.on)$('#vm-orb').style.transform='scale('+(1+Math.min(.5,l*3))+')'}});r=await VM.cap.done}
+    try{VM.cap=await micCapture({vad:true,maxMs:90000,onLevel:l=>{if(VM.on&&$('#vm-orb').dataset.s==='listen')$('#vm-orb').style.transform='scale('+(1+Math.min(.5,l*3))+')'}});r=await VM.cap.done}
     catch(e){clog('vm mic: '+e.name+' '+e.message);vmStop('⚠️ Micrófono: '+(e.name==='NotAllowedError'?'permiso denegado':e.message));return}
     VM.cap=null;if(!VM.on)return;
     if(!r.spoke||r.blob.size<1500){if(++VM.silent>=2){vmStop('No te escuché. Toca «Empezar» para continuar.');return}continue}
     VM.silent=0;vmSet('think','Entendiendo…');
-    let texto;
-    try{const rs=await fetch('/v1/app/voice/transcribe?nombre=v'+extOf(r.blob.type),{method:'PUT',headers:H,body:r.blob});
-      if(rs.status===401){logout(true);vmStop();return}
-      const j=await rs.json();if(!rs.ok)throw new Error(j.error||('Error '+rs.status));texto=j.texto}
-    catch(e){clog('vm transcribe: '+e.message);if(/voz|audio/i.test(e.message)){vmSet('listen','No te entendí, repítelo…');continue}vmStop('⚠️ '+e.message);return}
-    vmShow('Tú',texto);
-    if(/^\W*(adi[oó]s|hasta luego|eso es todo|terminar|terminamos|ya es todo)\W*$/i.test(texto)){vmStop('Hasta luego 👋');return}
-    vmSet('think','Pensando…');
-    chat.push({r:'u',t:texto,ts:Date.now()});
-    const hist=chat.slice(0,-1).slice(-16).map(m=>({role:m.r==='u'?'user':'assistant',content:m.t}));
-    let rep;
-    try{const rs=await fetch('/v1/app/voice/ask',{method:'POST',headers:{...H,'Content-Type':'application/json'},body:JSON.stringify({messages:[...hist,{role:'user',content:texto}]})});
-      if(rs.status===401){logout(true);vmStop();return}
-      const j=await rs.json();if(!rs.ok)throw new Error(j.error||('Error '+rs.status));rep=j}
-    catch(e){clog('vm ask: '+e.message);chat.pop();LS.set('chat',chat.slice(-200));vmStop('⚠️ '+e.message);return}
-    chat.push({r:'a',t:rep.respuesta,ts:Date.now(),model:rep.model});LS.set('chat',chat.slice(-200));
-    vmShow(AGENT,rep.respuesta);vmSet('speak','Hablando…');
-    try{await vmSpeak(rep.respuesta)}catch(e){clog('vm speak: '+e.message);vmSet('think','(No pude leerla en voz alta: '+e.message+')')}
+    const pl=VM.pl=mkPlayer(VM.aud);VM.ctl=new AbortController();let err='',fin=false,ms=null;
+    try{
+      await sseFetch('/v1/app/voice/turn?vsid='+VM.sid+'&nombre=v'+extOf(r.blob.type),{method:'PUT',headers:H,body:r.blob,signal:VM.ctl.signal},(ev,d)=>{
+        if(ev==='stt'){vmShow('Tú',d.texto);vmSet('think','Pensando…');chat.push({r:'u',t:d.texto,ts:Date.now()});LS.set('chat',chat.slice(-200))}
+        else if(ev==='respuesta'){vmShow(AGENT,d.texto);vmSet('speak','Hablando…');chat.push({r:'a',t:d.texto,ts:Date.now(),model:d.model});LS.set('chat',chat.slice(-200))}
+        else if(ev==='audio')pl.add(d.b64);
+        else if(ev==='fail')err=d.error;
+        else if(ev==='done'){fin=!!d.fin;ms=d.ms}});
+    }catch(e){if(e.name==='AbortError'){pl.stop();continue}err=e.message}
+    if(err){clog('vm turn: '+err);if(/voz|audio|escuch|entend/i.test(err)){vmSet('listen','No te entendí, repítelo…');continue}vmStop('⚠️ '+err);return}
+    if(fin){vmStop('Hasta luego 👋');return}
+    $('#vm-ms').textContent=msLine(ms);
+    await pl.whenIdle();
   }
 }
-function vmStart(){VM.on=true;VM.silent=0;$('#vm-go').hidden=true;vmUnlock();vmLoop()}
-$('#vmbtn').onclick=()=>{$('#vm').classList.add('on');$('#vm-tx').innerHTML='';$('#vm-go').hidden=false;$('#vm-go').textContent='🎙 Empezar';vmSet('idle','Habla con naturalidad; te contesto en voz alta')};
+function vmStart(){VM.on=true;VM.silent=0;VM.log=[];VM.sid=rid();$('#vm-go').hidden=true;vmUnlock();vmLoop()}
+$('#vmbtn').onclick=()=>{$('#vm').classList.add('on');$('#vm-tx').innerHTML='';$('#vm-ms').textContent='';VM.log=[];$('#vm-go').hidden=false;$('#vm-go').textContent='🎙 Empezar';vmSet('idle','Habla con naturalidad; te contesto en voz alta')};
 $('#vm-go').onclick=vmStart;
 $('#vm-x').onclick=()=>{vmStop();$('#vm').classList.remove('on');renderChat()};
-$('#vm-orb').onclick=()=>{if($('#vm-orb').dataset.s==='speak'&&VM.aud)VM.aud.pause()};
+$('#vm-orb').onclick=()=>{if(VM.on&&$('#vm-orb').dataset.s!=='listen'){if(VM.ctl)VM.ctl.abort();if(VM.pl)VM.pl.stop()}};
 
 /* ---------- Bandeja de notificaciones ---------- */
 function setAppBadge(n){try{if(n>0&&navigator.setAppBadge)navigator.setAppBadge(n);else if(navigator.clearAppBadge)navigator.clearAppBadge()}catch(e){}}
