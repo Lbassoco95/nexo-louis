@@ -1353,8 +1353,8 @@ def _cerebro_proyecto_estado(nombre: str) -> str:
 def _cerebro_crear_brief(tarea: str, cliente: str, insumos: str = "",
                          urgencia: str = "normal", contexto: str = "") -> str:
     """
-    Crea un brief de dispatch en el almacén compartido (sin aviso por Telegram;
-    Louis lo avisa en el chat).
+    Crea un brief de dispatch en el almacén compartido y envía notificación
+    inmediata a Polo por Telegram ('brief listo, ábrelo en Cowork').
     """
     BRIEFS_PATH.mkdir(parents=True, exist_ok=True)
     ahora = datetime.now(TZ_CDMX)
@@ -1402,10 +1402,21 @@ def _cerebro_crear_brief(tarea: str, cliente: str, insumos: str = "",
     )
     filepath.write_text(content, encoding="utf-8")
 
+    # Notificación inmediata vía Telegram (scheduler la toma en el próximo tick)
+    try:
+        notif = (
+            f"📋 *Brief listo en Cerebro Kawiil*\n"
+            f"Tarea: {tarea}\nCliente: {cliente} | Urgencia: {urgencia}\n"
+            f"Ábrelo en Cowork para tomarlo."
+        )
+        _encolar_notificacion(notif, canal="telegram")
+    except Exception:
+        pass  # la notificación es best-effort
+
     return (
         f"✅ Brief: _briefs/{filepath.name}\n"
         f"Urgencia: {urgencia} | Previos del cliente: {len(previos)}\n"
-        f"Brief guardado en Cerebro. Dile a Polo aquí en el chat que quedó listo."
+        f"Brief guardado en Cerebro (aviso push al scheduler)."
     )
 
 
@@ -4078,7 +4089,7 @@ TOOLS_DEFINITION = [
         "name": "cerebro_crear_brief",
         "description": (
             "Crea un brief de dispatch en el cerebro para que Cowork produzca un entregable. "
-            "No envía push por Telegram: avisa a Polo en el chat. "
+            "Notifica a Polo por Telegram inmediatamente ('brief listo, ábrelo en Cowork'). "
             "Usar cuando Louis identifica trabajo que debe delegarse a Cowork."
         ),
         "input_schema": {
