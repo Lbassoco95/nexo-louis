@@ -53,6 +53,12 @@ for v in TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN M365_KAWIIL_CLIENT_ID OP_SERVICE_ACC
   n=$(cnt "^$v=." "$OC/openclaw.env"); [[ "${n:-0}" -ge 1 ]] && ok "$v" || info "$v: no configurada"
 done
 
+echo "3d) Acceso a la app (usuario y contraseña)"
+NU=$(PUSH_STATE_DIR="$OC/state" python3 -c "import sys; sys.path.insert(0,'$OC/scripts'); import app_auth as A; print(len(A.list_users()))" 2>/dev/null)
+if [[ -z "$NU" ]]; then bad "no está instalado app_auth.py en $OC/scripts (la app aún pide token)"
+elif [[ "$NU" -ge 1 ]]; then ok "$NU usuario(s) con contraseña (se guardan solo como hash)"
+else bad "no hay ningún usuario con contraseña → python3 /opt/louis/tools/donna-passwd.py polo"; fi
+
 echo "4) Conversación real (¿Ya estás ahí?)"
 if [[ -n "$TOKEN" ]]; then
   ERR=$(mktemp); OUT=$(DONNA_URL="$URL" DONNA_TOKEN="$TOKEN" python3 "$HERE/donna-chat.py" "¿Ya estás ahí?" 2>"$ERR")

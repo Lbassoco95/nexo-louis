@@ -32,6 +32,7 @@ import json
 import time
 import hmac
 import base64
+import ipaddress
 import logging
 import threading
 import traceback
@@ -45,6 +46,7 @@ if SCRIPTS_DIR.exists():
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import louis_core as core  # noqa: E402
+import app_auth  # noqa: E402  (usuario/contraseña de la app, sesiones propias)
 
 # Solo StreamHandler: el servicio de systemd ya redirige stdout/stderr al log
 # (StandardOutput=append:.../openclaw-gateway.log). Con FileHandler además, cada
@@ -85,6 +87,32 @@ def _require_auth(handler) -> bool:
     if not TOKEN:
         return ALLOW_NO_AUTH
     return _same(_bearer(handler), TOKEN)
+
+
+def _client_ip(handler) -> str:
+    """IP real del cliente. Detrás de Caddy (loopback) se confía en X-Real-IP; si no, en la conexión directa."""
+    peer = handler.client_address[0] if handler.client_address else "?"
+    if peer in ("127.0.0.1", "::1"):
+        real = (handler.headers.get("X-Real-IP") or "").strip()
+        try:
+            return str(ipaddress.ip_address(real))
+        except ValueError:
+            pass
+    return peer
+
+
+def _require_app_auth(handler) -> bool:
+    """Rutas /v1/app/*: acepta el token MAESTRO (administrador, CLI) o una SESIÓN de usuario/contraseña
+    (prefijo dns_). Las sesiones SOLO valen aquí: /v1/tools, /v1/agents y /v1/chat/completions siguen
+    exigiendo el token maestro. Deja en handler._auth = ('admin'|'sesion', sesión)."""
+    if _require_auth(handler):
+        handler._auth = ("admin", None)
+        return True
+    s = app_auth.check_session(_bearer(handler))
+    if s:
+        handler._auth = ("sesion", s)
+        return True
+    return False
 
 
 def _require_doc_auth(handler) -> bool:
@@ -655,12 +683,14 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass  # cliente desconectó — normal en health-checks, no es error
 
-    def _send_json(self, code, payload):
+    def _send_json(self, code, payload, headers=None):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         try:
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Access-Control-Allow-Origin", "*")
+            for k, v in (headers or {}).items():
+                self.send_header(k, str(v))
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
@@ -757,12 +787,17 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if _r0.startswith("/v1/app/"):
-            if not _require_auth(self):
+            if not _require_app_auth(self):
                 self._send_json(401, {"error": "unauthorized"})
                 return
             try:
                 if _r0 == "/v1/app/ping":
-                    self._send_json(200, {"ok": True})
+                    kind, ses = self._auth
+                    self._send_json(200, {"ok": True, "modo": kind, "user": (ses or {}).get("user", "")})
+                elif _r0 == "/v1/app/sessions":
+                    kind, ses = self._auth
+                    self._send_json(200, {"sesiones": app_auth.list_sessions(
+                        (ses or {}).get("user") if kind == "sesion" else None, _bearer(self))})
                 elif _r0 == "/v1/app/chat/result":
                     from urllib.parse import urlparse, parse_qs
                     rid = (parse_qs(urlparse(self.path).query).get("rid") or [""])[0]
@@ -1052,12 +1087,38 @@ class Handler(BaseHTTPRequestHandler):
             if finished:
                 _push_answer(res)
 
+    def _login(self):
+        """POST /v1/app/login {user, password} → {token, expires, user}. Sin autenticación previa, con límite de intentos."""
+        try:
+            body = self._read_json()
+        except Exception:
+            self._send_json(400, {"error": "JSON inválido"})
+            return
+        res = app_auth.login(str(body.get("user", "")), str(body.get("password", "")),
+                             _client_ip(self), self.headers.get("User-Agent", ""))
+        if res.get("ok"):
+            log.info("login ok: %s desde %s", res["user"], _client_ip(self))
+            self._send_json(200, {"ok": True, "token": res["token"], "expires": res["expires"], "user": res["user"]})
+            return
+        time.sleep(0.6)  # frena la adivinanza en línea (el límite de intentos hace el resto)
+        log.warning("login FALLIDO desde %s (%s)", _client_ip(self), res.get("error"))
+        if res.get("retry_after"):
+            self._send_json(429, {"error": res["error"], "retry_after": res["retry_after"]},
+                            headers={"Retry-After": res["retry_after"]})
+        else:
+            self._send_json(401, {"error": res["error"]})
+
     def do_POST(self):
         if self.path == "/v1/doc-chat":
             self._doc_chat()
             return
 
-        if not _require_auth(self):
+        if self.path == "/v1/app/login":
+            self._login()
+            return
+
+        # /v1/app/* acepta token maestro o sesión de usuario; todo lo demás (tools, agentes, completions) SOLO el maestro.
+        if not (_require_app_auth(self) if self.path.startswith("/v1/app/") else _require_auth(self)):
             self._send_json(401, {"error": "unauthorized"})
             return
 
@@ -1070,6 +1131,17 @@ class Handler(BaseHTTPRequestHandler):
         # App móvil: chat en streaming (SSE)
         if self.path == "/v1/app/chat/stream":
             self._chat_stream(body)
+            return
+
+        # App móvil: cerrar sesión (esta o todas las del usuario)
+        if self.path == "/v1/app/logout":
+            kind, ses = self._auth
+            self._send_json(200, {"ok": bool(kind == "sesion" and app_auth.revoke(_bearer(self)))})
+            return
+        if self.path == "/v1/app/sessions/revoke-all":
+            kind, ses = self._auth
+            n = app_auth.revoke_all((ses or {}).get("user") if kind == "sesion" else None)
+            self._send_json(200, {"ok": True, "cerradas": n})
             return
 
         # App móvil: bandeja de notificaciones (marcar leídas / ejecutar un botón de confirmación)

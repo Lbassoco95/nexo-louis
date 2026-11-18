@@ -115,6 +115,11 @@ input.f{width:100%;background:var(--panel);color:var(--tx);border:1px solid var(
 .toast.on{opacity:1}
 #login{position:fixed;inset:0;background:var(--bg);z-index:40;display:none;flex-direction:column;justify-content:center;padding:28px}
 #login.on{display:flex}
+#login input.f{margin-bottom:10px}
+#login label.chk{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--mut);margin:2px 0 0}
+#login details{margin-top:22px;text-align:center;color:var(--mut);font-size:13px}
+#login details summary{cursor:pointer;padding:6px}
+#login details input.f{margin-top:10px}
 #login img{width:84px;height:84px;margin:0 auto 14px;display:block}
 #login h2{text-align:center;margin:0 0 4px}#login p{text-align:center;color:var(--mut);margin:0 0 18px;font-size:14px}
 .err{color:var(--bad);font-size:13px;margin-top:10px;min-height:18px;text-align:center}
@@ -153,10 +158,18 @@ input.f{width:100%;background:var(--panel);color:var(--tx);border:1px solid var(
 
 <div id="login">
   <img src="/app/icon.svg" alt="">
-  <h2>{{AGENT_NAME}}</h2><p>Pega tu token de acceso. Se guarda solo en este teléfono.</p>
-  <input class="f" id="tok" type="password" placeholder="Token de acceso" autocomplete="off" autocapitalize="off" autocorrect="off">
-  <div class="err" id="lerr"></div>
-  <button class="btn" id="lgo" style="margin-top:12px">Entrar</button>
+  <h2>{{AGENT_NAME}}</h2><p>Entra con tu usuario y contraseña.</p>
+  <form id="lform" method="post" action="#" autocomplete="on">
+    <input class="f" id="lu" name="username" type="text" placeholder="Usuario" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="next">
+    <input class="f" id="lp" name="password" type="password" placeholder="Contraseña" autocomplete="current-password" enterkeyhint="go">
+    <label class="chk"><input type="checkbox" id="lshow"> Mostrar contraseña</label>
+    <div class="err" id="lerr"></div>
+    <button class="btn" id="lgo" type="submit" style="margin-top:12px">Entrar</button>
+  </form>
+  <details id="ladv"><summary>Entrar con token (avanzado)</summary>
+    <input class="f" id="tok" type="password" placeholder="Token de administrador" autocomplete="off" autocapitalize="off" autocorrect="off">
+    <button class="btn ghost" id="ltok" type="button">Entrar con token</button>
+  </details>
 </div>
 
 <script>
@@ -201,26 +214,49 @@ function md(src){
 /* ---------- red ---------- */
 async function api(path,opt={}){
   const r=await fetch(path,{...opt,headers:{'Content-Type':'application/json',...(opt.headers||{}),Authorization:'Bearer '+TOKEN}});
-  if(r.status===401){logout(true);throw new Error('Token inválido')}
+  if(r.status===401){logout(true);throw new Error('Sesión vencida')}
   if(!r.ok){let m='';try{m=(await r.json()).error}catch(e){}throw new Error(m||('Error '+r.status))}
   return r.json();
 }
 function online(ok){$('#dot').classList.toggle('on',ok);$('#banner').classList.toggle('on',!ok)}
 
 /* ---------- login ---------- */
-function showLogin(msg){$('#login').classList.add('on');$('#lerr').textContent=msg||''}
-function logout(expired){TOKEN='';LS.del('token');showLogin(expired?'Token inválido o vencido.':'')}
-$('#lgo').onclick=async()=>{
+function showLogin(msg){
+  $('#login').classList.add('on');$('#lerr').textContent=msg||'';
+  const u=LS.get('user','');if(u&&!$('#lu').value)$('#lu').value=u;
+  setTimeout(()=>{try{($('#lu').value?$('#lp'):$('#lu')).focus()}catch(e){}},60)}
+async function logout(expired){
+  const t=TOKEN;TOKEN='';LS.del('token');
+  if(!expired&&t){try{await fetch('/v1/app/logout',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+t},body:'{}'})}catch(e){}}  // invalida la sesión EN EL SERVIDOR
+  showLogin(expired?'Tu sesión venció. Entra de nuevo.':'')}
+// usuario y contraseña → el servidor entrega una sesión propia (revocable); el token maestro ya no se teclea en el teléfono
+$('#lform').addEventListener('submit',async e=>{
+  e.preventDefault();
+  const user=$('#lu').value.trim(),pass=$('#lp').value;if(!user||!pass)return;
+  const btn=$('#lgo');btn.disabled=true;$('#lerr').textContent='Entrando…';
+  try{
+    const r=await fetch('/v1/app/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user,password:pass})});
+    let d={};try{d=await r.json()}catch(_){}
+    if(r.ok&&d.token){TOKEN=d.token;LS.set('token',d.token);LS.set('user',d.user||user);$('#lp').value='';$('#login').classList.remove('on');boot();btn.disabled=false;return}
+    if(r.status===429){const m=Math.max(1,Math.ceil((d.retry_after||60)/60));$('#lerr').textContent='Demasiados intentos. Espera '+m+' min y vuelve a intentar.'}
+    else if(r.status===401){$('#lerr').textContent=d.error||'Usuario o contraseña incorrectos.';$('#lp').value='';$('#lp').focus()}
+    else $('#lerr').textContent='No pude entrar (error '+r.status+').';
+  }catch(err){$('#lerr').textContent='No pude conectar con {{AGENT_NAME}}.'}
+  btn.disabled=false;
+});
+$('#lshow').onchange=()=>{$('#lp').type=$('#lshow').checked?'text':'password'};
+// opción avanzada: token de administrador (como antes)
+$('#ltok').onclick=async()=>{
   const t=$('#tok').value.trim();if(!t)return;
   $('#lerr').textContent='Verificando…';
   try{
     const r=await fetch('/v1/app/ping',{headers:{Authorization:'Bearer '+t}});
     if(r.status===401){$('#lerr').textContent='Token incorrecto.';return}
     if(!r.ok)throw 0;
-    TOKEN=t;LS.set('token',t);$('#tok').value='';$('#login').classList.remove('on');boot();
+    TOKEN=t;LS.set('token',t);LS.set('user','');$('#tok').value='';$('#login').classList.remove('on');boot();
   }catch(e){$('#lerr').textContent='No pude conectar con {{AGENT_NAME}}.'}
 };
-$('#tok').addEventListener('keydown',e=>{if(e.key==='Enter')$('#lgo').click()});
+$('#tok').addEventListener('keydown',e=>{if(e.key==='Enter')$('#ltok').click()});
 
 /* ---------- navegación ---------- */
 const titles={chat:'{{AGENT_NAME}}',hoy:'Hoy',ent:'Entregables',cfg:'Ajustes'};
@@ -271,7 +307,7 @@ async function sendMsg(text){
     const r=await fetch('/v1/app/chat/stream',{method:'POST',signal:ctl.signal,
       headers:{'Content-Type':'application/json',Authorization:'Bearer '+TOKEN},
       body:JSON.stringify({rid:id,messages:[...hist,{role:'user',content:text}]})});
-    if(r.status===401){logout(true);throw new Error('Token inválido')}
+    if(r.status===401){logout(true);throw new Error('Sesión vencida')}
     if(!r.ok){let m='';try{m=(await r.json()).error}catch(e){}throw new Error(m||('Error '+r.status))}
     online(true);
     const onEv=(ev,data)=>{
@@ -440,9 +476,12 @@ function renderCfg(){
   <div class="sec">Chat</div><div class="card"><button class="btn ghost" id="clr" style="margin:0">Borrar historial de este teléfono</button></div>
   <div class="sec">Widget de pendientes (iPhone)</div><div class="card"><div class="sub" style="margin-bottom:10px">Una app web no puede crear un widget nativo; esta alternativa usa la app gratuita <b>Scriptable</b>:<br>1) Instálala desde la App Store.<br>2) Toca «Copiar script» y en Scriptable crea un script nuevo (+) y pégalo.<br>3) Ejecútalo una vez (▶): te pide el token y lo guarda en tu iPhone.<br>4) Mantén presionada la pantalla de inicio → + → Scriptable → elige el script.</div><button class="btn ghost" id="wcopy" style="margin:0">Copiar script del widget</button></div>
   <div class="sec">Instalar</div><div class="card sub">iPhone: Safari → Compartir → <b>Agregar a pantalla de inicio</b>.<br>Android: Chrome → ⋮ → <b>Instalar app</b>.</div>
-  <div class="sec">Sesión</div><div class="card"><button class="btn ghost" id="out" style="margin:0;color:var(--bad)">Cerrar sesión</button></div>`;
+  <div class="sec">Sesión</div><div class="card"><div class="sub" id="who" style="margin-bottom:10px">…</div><button class="btn ghost" id="out" style="margin:0;color:var(--bad)">Cerrar sesión</button><button class="btn ghost" id="outall" style="color:var(--bad)">Cerrar sesión en todos los dispositivos</button></div>`;
   $('#clr').onclick=()=>{if(confirm('¿Borrar la conversación guardada en este teléfono?')){chat=[];LS.set('chat',[]);renderChat();toast('Historial borrado')}};
   $('#out').onclick=()=>{if(confirm('¿Cerrar sesión?'))logout(false)};
+  $('#outall').onclick=async()=>{if(!confirm('¿Cerrar la sesión en TODOS tus dispositivos (este incluido)? Tendrás que volver a entrar.'))return;
+    try{await api('/v1/app/sessions/revoke-all',{method:'POST',body:'{}'});toast('Sesiones cerradas')}catch(e){toast('⚠️ '+e.message)}logout(false)};
+  api('/v1/app/ping').then(w=>{$('#who').textContent=w.modo==='sesion'?'Sesión de «'+w.user+'»':'Acceso con token de administrador'}).catch(()=>{$('#who').textContent=''});
   $('#wcopy').onclick=async()=>{try{const t=await (await fetch('/app/widget-scriptable.js')).text();
     await navigator.clipboard.writeText(t);toast('Script copiado ✓ — pégalo en Scriptable')}
     catch(e){toast('No pude copiar. Abre /app/widget-scriptable.js y copia el texto')}};

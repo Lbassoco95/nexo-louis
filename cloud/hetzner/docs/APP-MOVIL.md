@@ -92,3 +92,22 @@ confirmaciones pendientes; se refresca cada ~15 min y al tocarlo abre Hoy. Un wi
 nativa (Xcode + WidgetKit + cuenta de Apple Developer).
 Pruebas: `python3 cloud/hetzner/tests/test_notifs.py`, `node cloud/hetzner/tests/test_widget_scriptable.js` (con un
 simulador de la API de Scriptable; no sustituye probarlo en el iPhone).
+
+## Entrar con usuario y contraseña (v4)
+La app ya no pide pegar el token. Se entra con **usuario y contraseña** y el servidor entrega una **sesión propia**
+(`dns_…`): aleatoria, de 30 días (se renueva con el uso), revocable. El token maestro del gateway queda como
+credencial de administrador (CLI `donna-chat.py`, `verificar-donna.sh`, opción «Entrar con token (avanzado)»).
+
+**Crear o cambiar la contraseña** (en el servidor; la pide sin mostrarla, mínimo 12 caracteres, mejor una frase):
+`python3 /opt/louis/tools/donna-passwd.py polo`. Otros comandos: `--listar` (usuarios y sesiones), `--cerrar-sesiones
+[usuario]`, `--borrar usuario`. Al cambiar la contraseña se cierran las sesiones anteriores. No requiere reiniciar.
+
+**Seguridad (`services/app_auth.py`, solo stdlib):** contraseña con scrypt y sal propia, nunca en texto; en disco
+(`/opt/openclaw/state/app_users.json`, `app_sessions.json`, 0600) la sesión se guarda solo como SHA-256; límite de
+intentos (5 por IP, 10 por usuario y 30 globales en 15 min — bloquea aun con la contraseña correcta); usuario
+inexistente y contraseña mala responden igual y tardan igual. **Alcance:** una sesión solo vale en `/v1/app/*`
+(chat, Hoy, entregables, bandeja, push); `/v1/tools`, `/v1/agents` y `/v1/chat/completions` siguen exigiendo el token
+maestro. Cerrar sesión la invalida en el servidor; «Cerrar sesión en todos los dispositivos» las invalida todas
+(también `donna-passwd.py --cerrar-sesiones` si pierdes un teléfono). Endpoints: `POST /v1/app/login`,
+`/v1/app/logout`, `/v1/app/sessions/revoke-all`, `GET /v1/app/sessions`.
+Pruebas: `python3 cloud/hetzner/tests/test_app_auth.py` (22 casos, incluye el servidor HTTP real).
