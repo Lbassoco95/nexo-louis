@@ -160,3 +160,11 @@ Pruebas: `python3 -m unittest tests.test_slack_workspaces`.
 - Archivos en `/opt/openclaw/state/media/<id>/` (0700/0600). Endpoints: `POST /v1/app/media/init`, `PUT …/<id>/chunk?i=N`, `POST …/<id>/finish`,
   `GET /v1/app/media`, `GET …/<id>`, `…/<id>/text`, `…/<id>/file`.
 - Pruebas: `python3 -m unittest tests.test_media`.
+
+## Cowork → Cerebro → Donna (v9)
+
+El conector Cerebro (MCP) ahora tiene `memoria_registrar(tema, resumen, tipo, proyecto, hecho, pendiente, aprendizaje)`: al terminar un trabajo
+relevante en Cowork, Claude lo guarda en `spaces/general/COWORK.md` (credenciales retiradas, sin duplicados del mismo día, rotación a
+`COWORK-ARCHIVO.md` al pasar de 60 KB). Si hay `aprendizaje`, también se anota en `LEARNINGS.md`. Donna carga `COWORK.md` en su contexto (lo más
+reciente) y lo destila cada noche. Las instrucciones del servidor MCP piden a Cowork usarlo al cerrar cada trabajo.
+Para que Cowork vea la herramienta nueva: reconectar el conector Cerebro (o abrir una sesión nueva). Pruebas: `python3 -m pytest tests/test_cerebro_memoria.py`.

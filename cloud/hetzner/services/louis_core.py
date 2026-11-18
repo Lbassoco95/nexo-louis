@@ -534,6 +534,7 @@ MEMORY_FILES = [
     "VIAJES.md",        # Viajes pasados/próximos + preferencias (aerolínea, hotel)
     "FINANZAS.md",      # Notas financieras personales (NO números de cuenta) — pagos recurrentes, deadlines fiscales
     "COACH.md",         # Briefing de coach ejecutivo: perfil psicométrico de Polo + prioridades de desarrollo
+    "COWORK.md",        # Lo que Polo trabaja con Claude en Cowork (decisiones, entregables, pendientes, aprendizajes)
 ]
 
 
@@ -549,6 +550,7 @@ CLAUDE_MEMORY_LIMITS = {
     "IMPORTANT.md": 8000,
     "PROJECTS.md": 10000,
     "PEOPLE.md": 6000,
+    "COWORK.md": 7000,
 }
 CLAUDE_MEMORY_DEFAULT_LIMIT = 4000
 
@@ -561,7 +563,7 @@ def _budget_memory(fname: str, text: str) -> str:
         return text
     omitted = len(text) - limit
     nota = f"\n…[{omitted} chars omitidos — usa la tool memoria_leer('{fname}') para el archivo completo]…\n"
-    if fname == "JOURNAL.md":
+    if fname in ("JOURNAL.md", "COWORK.md"):          # bitácoras: lo más reciente está al final
         return nota + text[-limit:]
     mitad = limit // 2
     return text[:mitad] + nota + text[-mitad:]
@@ -695,6 +697,8 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "\n\n# ARCHIVOS DE MEMORIA — QUÉ VA DÓNDE\n"
         "- USER.md: rol de Polo, preferencias generales (no editar mucho)\n"
         "- AGENDA.md: pendientes operativos del día/semana\n"
+        "- COWORK.md: bitácora de lo que Polo trabaja con Claude en Cowork (decisiones, entregables, pendientes, aprendizajes). "
+        "La escribe Cowork, no tú: úsala como contexto de lo que Polo ya hizo y decidió; no la edites.\n"
         "- IMPORTANT.md: decisiones críticas y contexto que NO debes olvidar\n"
         "- LEARNINGS.md: reglas/preferencias que Polo te enseña en conversación\n"
         "- PROJECTS.md: proyectos Kawiil/Yoltik (Ikán, Kailash Sprints, Nexo, etc) con estado\n"

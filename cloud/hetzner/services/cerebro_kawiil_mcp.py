@@ -125,6 +125,10 @@ mcp = FastMCP(
         "  lo no confirmable va como «por validar»; un reporte regulatorio solo es «presentado» con acuse/folio\n"
         "  (obligacion_estado); plazos_vigentes() separa lo vigente de lo histórico; entregables_auditar() da el\n"
         "  estado real; memoria_depurar() retira credenciales; agenda_vs_tablero() liga con Kawiil Central.\n"
+        "MEMORIA COMPARTIDA (Donna aprende de lo que se trabaja aquí): al TERMINAR un trabajo relevante en Cowork —un entregable,\n"
+        "  una decisión, un análisis, una reunión, tareas realizadas— llama memoria_registrar(tema, resumen, ...) con un resumen corto y\n"
+        "  concreto (qué se hizo/decidió, qué quedó pendiente, y si aprendiste una preferencia de Polo, `aprendizaje`). Sin contraseñas ni\n"
+        "  tokens. Eso queda en COWORK.md y Donna lo lee en su contexto; no repitas lo que ya registraste.\n"
         "Principio: datos duros, sin interpretación."
     ),
     # Detrás de Caddy con dominio propio: el Host no es localhost. Desactivamos
@@ -504,7 +508,7 @@ def memoria_leer(archivo: str = "IMPORTANT", max_chars: int = 2000, offset: int 
     IMPORTANT se entrega con los plazos vencidos separados como HISTÓRICO (no críticos).
     Nunca devuelve credenciales.
     """
-    PERMITIDOS = {"IMPORTANT", "JOURNAL", "LEARNINGS", "PEOPLE", "PROJECTS"}
+    PERMITIDOS = {"IMPORTANT", "JOURNAL", "LEARNINGS", "PEOPLE", "PROJECTS", "COWORK"}
     nombre = archivo.upper()
     if nombre not in PERMITIDOS:
         return f"Archivo no permitido. Opciones: {', '.join(sorted(PERMITIDOS))}"
@@ -810,7 +814,7 @@ def dispatch_preparar_brief(
 # CALIDAD / CONFIABILIDAD (v1.2) — ver cerebro_calidad.py
 # ══════════════════════════════════════════════════════════════════════════
 
-MEMORIA_ARCHIVOS = ("AGENDA", "IMPORTANT", "JOURNAL", "LEARNINGS", "PEOPLE", "PROJECTS")
+MEMORIA_ARCHIVOS = ("AGENDA", "IMPORTANT", "JOURNAL", "LEARNINGS", "PEOPLE", "PROJECTS", "COWORK")
 
 
 def _respaldar(path: Path) -> Path:
@@ -837,6 +841,82 @@ def agenda_normalizar(aplicar: bool = False) -> str:
         _invalidate(f)
         return f"✅ {n} línea(s) normalizadas. Respaldo: {bak.name}"
     return "Nada que normalizar."
+
+
+COWORK_FILE_MAX = 60_000          # al pasar de esto, lo más viejo se archiva en COWORK-ARCHIVO.md
+COWORK_KEEP = 40_000
+_TIPOS_MEMORIA = {"trabajo", "decision", "aprendizaje", "reunion", "tarea"}
+
+
+def _cdmx_now() -> datetime:
+    return datetime.now(ZoneInfo("America/Mexico_City"))
+
+
+def _cap(t: str, n: int) -> str:
+    t = re.sub(r"\n{3,}", "\n\n", (t or "").strip())
+    return t if len(t) <= n else t[:n].rstrip() + " […]"
+
+
+@mcp.tool()
+def memoria_registrar(
+    tema: str,
+    resumen: str,
+    tipo: str = "trabajo",
+    proyecto: str = "",
+    hecho: str = "",
+    pendiente: str = "",
+    aprendizaje: str = "",
+) -> str:
+    """
+    Guarda en la memoria compartida (COWORK.md) lo trabajado en Cowork para que Donna aprenda de Polo y de lo que se hace.
+    tipo: trabajo | decision | aprendizaje | reunion | tarea.  tema: título corto.  resumen: qué pasó, 2-6 líneas.
+    hecho / pendiente: viñetas opcionales («quién · qué · cuándo»). aprendizaje: una regla o preferencia de Polo
+    detectada (además se anota en LEARNINGS.md). Las credenciales se retiran solas. Evita duplicados del mismo día.
+    """
+    import fcntl
+    tipo = (tipo or "trabajo").lower()
+    if tipo not in _TIPOS_MEMORIA:
+        return f"tipo inválido. Opciones: {', '.join(sorted(_TIPOS_MEMORIA))}"
+    tema, resumen = _cap(tema, 120), _cap(resumen, 1800)
+    if len(tema) < 3 or len(resumen) < 10:
+        return "Falta contenido: pon un tema y un resumen concreto (mín. 10 caracteres)."
+    ahora = _cdmx_now()
+    partes = [f"### {ahora.strftime('%Y-%m-%d %H:%M')} · {tipo} · {tema}" + (f" · {_cap(proyecto, 60)}" if proyecto else ""), resumen]
+    if hecho.strip():
+        partes.append("**Hecho:**\n" + _cap(hecho, 1200))
+    if pendiente.strip():
+        partes.append("**Pendiente:**\n" + _cap(pendiente, 1200))
+    if aprendizaje.strip():
+        partes.append("**Aprendizaje sobre Polo:** " + _cap(aprendizaje, 500))
+    entrada, hall = cc.redactar_credenciales("\n".join(partes))
+    h = hashlib.sha1((tema + resumen).lower().encode()).hexdigest()[:10]
+    entrada += f"\n<!--h:{h}-->\n"
+    SPACES_PATH.mkdir(parents=True, exist_ok=True)
+    f, lock = SPACES_PATH / "COWORK.md", SPACES_PATH / ".cowork.lock"
+    with open(lock, "a") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        actual = f.read_text(encoding="utf-8") if f.exists() else "# COWORK — lo trabajado con Claude en Cowork (más reciente al final)\n\n"
+        hoy = ahora.strftime("%Y-%m-%d")
+        if any(f"<!--h:{h}-->" in blk and hoy in blk[:40] for blk in actual.split("### ")[-30:]):
+            return "Ya estaba registrado hoy (mismo tema y resumen); no dupliqué."
+        actual = actual.rstrip("\n") + "\n\n" + entrada
+        if len(actual) > COWORK_FILE_MAX:                        # rotación: lo viejo pasa al archivo, nada se pierde
+            corte = actual.find("\n### ", len(actual) - COWORK_KEEP)
+            corte = corte if corte > 0 else len(actual) - COWORK_KEEP
+            with open(SPACES_PATH / "COWORK-ARCHIVO.md", "a", encoding="utf-8") as af:
+                af.write(actual[actual.find("\n### "):corte].rstrip() + "\n")
+            actual = "# COWORK — lo trabajado con Claude en Cowork (más reciente al final)\n" + actual[corte:]
+        f.write_text(actual, encoding="utf-8")
+        _invalidate(f)
+        if aprendizaje.strip():
+            lr = SPACES_PATH / "LEARNINGS.md"
+            lr.parent.mkdir(parents=True, exist_ok=True)
+            with open(lr, "a", encoding="utf-8") as lh:
+                lh.write(f"\n- [{hoy}] Cowork · {tema[:60]}: {cc.redactar_credenciales(_cap(aprendizaje, 400))[0]}\n"
+                         f"  Contexto: registrado desde Cowork ({tipo}).\n")
+            _invalidate(lr)
+    extra = f" · ⚠ retiré {len(hall)} credencial(es) del texto" if hall else ""
+    return f"✅ Registrado en COWORK.md ({tipo}: {tema[:50]}){' + LEARNINGS.md' if aprendizaje.strip() else ''}{extra}"
 
 
 @mcp.tool()
