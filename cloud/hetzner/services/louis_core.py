@@ -1583,7 +1583,15 @@ def _cerebro_sync_agenda() -> str:
         )
 
     reporte = "\n".join(discrepancias)
-    # Sin push por Telegram: Louis reporta las discrepancias en el chat.
+    # Notificar a Polo
+    try:
+        _encolar_notificacion(
+            f"🔄 *Cerebro Kawiil — discrepancias detectadas*\n\n{reporte[:800]}\n\n"
+            f"Louis puede actualizar AGENDA con `agenda_marcar_hecho()` si ya está listo.",
+            canal="telegram",
+        )
+    except Exception:
+        pass
 
     return f"⚠️ {len(discrepancias)} discrepancia(s):\n\n{reporte}"
 
@@ -4144,7 +4152,7 @@ TOOLS_DEFINITION = [
         "description": (
             "Compara los pendientes abiertos de AGENDA.md con el estado real del cerebro. "
             "Detecta lo que Louis reporta como 'pendiente' pero ya está 'listo' o 'aprobado' en Cowork. "
-            "Reporta las discrepancias en el chat (sin push por Telegram). "
+            "Notifica a Polo por Telegram si hay discrepancias. "
             "Usar en briefing matutino o cuando Polo pregunta por el estado de proyectos."
         ),
         "input_schema": {"type": "object", "properties": {}},
@@ -8569,13 +8577,11 @@ def run_agenda_steward(force: bool = False) -> str:
         lines += [f"• {s}" for s in salud]
     if len(lines) <= 2:
         return f"OK steward: {len(items)} pendientes, nada que reportar"
-    # Sin push por Telegram: el reporte se guarda y se devuelve para mostrarlo en el chat.
-    reporte_txt = "\n".join(lines)[:3800]
     try:
-        (STATE_DIR / "steward_ultimo_reporte.md").write_text(reporte_txt, encoding="utf-8")
+        _encolar_notificacion("\n".join(lines)[:3800], canal="telegram")
     except Exception as e:
-        log.warning(f"steward: no pude guardar el reporte: {e}")
-    return (f"{reporte_txt}\n\nOK steward: {len(items)} pendientes, {len(cerrar)} a cerrar, {len(verificar)} a verificar, "
+        log.warning(f"steward: no pude encolar el reporte: {e}")
+    return (f"OK steward: {len(items)} pendientes, {len(cerrar)} a cerrar, {len(verificar)} a verificar, "
             f"{len(replantear)} a replantear, {len(dups)} duplicados")
 
 
