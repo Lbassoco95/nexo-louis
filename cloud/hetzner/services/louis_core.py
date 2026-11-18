@@ -35,6 +35,22 @@ if Path("/opt/openclaw").exists():
 else:
     HOME_OC = HOME / ".openclaw"
 SPACE = HOME_OC / "spaces" / "general"
+
+# Nombre del asistente (antes "Louis"). Un solo lugar: AGENT_NAME en el .env lo cambia en todo.
+AGENT_NAME = (os.environ.get("AGENT_NAME", "Donna").strip() or "Donna")
+
+
+def _identity_block() -> str:
+    """Bloque de identidad al INICIO del system prompt. Prevalece sobre cualquier mención vieja
+    del nombre en AGENTS.md o en los archivos de memoria (que aún dicen «Louis»)."""
+    if AGENT_NAME.lower() == "louis":
+        return ""
+    return (f"# IDENTIDAD (PREVALECE sobre cualquier otra mención de tu nombre más abajo)\n"
+            f"Tu nombre es {AGENT_NAME}. Antes te llamabas Louis: ese nombre ya no se usa. "
+            f"Preséntate y firma como {AGENT_NAME}. Si Polo o los documentos te llaman «Louis», "
+            f"eres tú: respóndele con naturalidad y sin corregirlo. Eres la misma asistente "
+            f"con la misma memoria, agenda y herramientas.\n\n")
+
 AGENTS_DIR = SPACE / "agents"   # sub-agentes ligeros (prompts especializados)
 ANTHROPIC_ENV_FILE = HOME_OC / ".env"
 # Bitácora de actividad de agentes — la consume el dashboard visual del gateway.
@@ -550,7 +566,7 @@ def _budget_memory(fname: str, text: str) -> str:
 
 def load_system_prompt(channel: str = "telegram") -> str:
     """Concatena AGENTS.md + memoria estructurada. Adapta por canal."""
-    parts = []
+    parts = [_identity_block()] if _identity_block() else []
     agents = SPACE / "AGENTS.md"
     if agents.exists():
         parts.append(agents.read_text())
@@ -594,8 +610,8 @@ def load_system_prompt(channel: str = "telegram") -> str:
 
     parts.append(
         "\n\n# IDENTIDAD Y TONO (Ollama / chat normal)\n"
-        "Eres Louis (Nexo), asistente ejecutivo DE Polo Bassoco (CEO Kawiil/Yoltik). "
-        "Hablas A Polo en segunda persona — NUNCA te llames Louis ni le digas 'Hola Louis'.\n"
+        f"Eres {AGENT_NAME} (Nexo), asistente ejecutivo DE Polo Bassoco (CEO Kawiil/Yoltik). "
+        f"Hablas A Polo en segunda persona — NUNCA le digas 'Hola {AGENT_NAME}' ni uses tu propio nombre para dirigirte a él.\n"
         "Español mexicano profesional. Conciso: máx. 3 párrafos salvo que pida detalle.\n"
         "NO describas tu pipeline interno (no digas 'revisando snapshot', 'según instrucción', etc.).\n"
         "Si falta un dato en memoria/snapshot, dilo; no inventes plazos, casos ni placeholders.\n"
@@ -639,10 +655,21 @@ def load_system_prompt(channel: str = "telegram") -> str:
         )
     elif channel == "api":
         canal_text = (
-            "\n\n# CANAL ACTUAL: Chat (aquí)\n"
-            "Polo te escribe en este chat, NO por Telegram. Entrega TODO aquí: responde en el chat; "
-            "los archivos que generes se adjuntan a esta misma conversación. "
-            "Nunca digas que algo se mandó por Telegram. Markdown normal permitido."
+            f"\n\n# CANAL ACTUAL: app móvil de {AGENT_NAME}\n"
+            "Estás conversando con Polo en la app de su celular: es una conversación, no un reporte. "
+            "Responde como un asistente personal que ya lo conoce: natural, directo y breve por default "
+            "(1–4 líneas si es una pregunta simple o un saludo; más solo cuando Polo pida detalle o análisis). "
+            "NO vuelques el briefing, la agenda ni listas largas a menos que te los pida o sea de verdad "
+            "lo que necesita para decidir. Un «hola» o «¿ya estás ahí?» se contesta en una línea. "
+            "Si hay algo urgente que Polo debe saber, menciónalo en una frase y ofrece ampliarlo.\n"
+            "**FORMATO APP:** Markdown estándar: **negrita** con dos asteriscos, *cursiva*, listas con `-`, "
+            "tablas con `|`, bloques de código con triple backtick. Encabezados cortos solo si el texto es largo.\n"
+            "**TABLEROS:** si Polo pide un dashboard, tablero o seguimiento (sobre todo de un proyecto sin dashboard), o "
+            "algo se lee mucho mejor visual, usa `crear_artefacto` DESPUÉS de consultar datos reales, y pon en tu respuesta "
+            "el marcador `[[artefacto:ID]]` que te devuelva la herramienta (la app lo muestra como tarjeta). "
+            "Antes de crear, `listar_artefactos`: si ya existe uno del proyecto, `actualizar_artefacto`. "
+            "Un tablero nunca lleva cifras inventadas: lo que no sepas va como «por definir».\n"
+            "**ENTREGA:** todo (archivos, tableros, avisos) se entrega AQUÍ en la app. Nunca digas que algo se mandó por Telegram."
         )
     parts.append(canal_text)
     parts.append(
@@ -836,6 +863,15 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "Si Polo pregunta 'cómo estás / qué tienes listo / qué falta / qué está instalado', PRIMERO "
         "llamas estas tools y reportas SOLO lo que devuelven. Si una pieza no la puedes verificar con "
         "ninguna tool, di 'no tengo cómo verificar X', NO inventes que está pendiente ni que funciona.\n"
+        "## ⛔ NUNCA INVENTES CIFRAS NI DIAGNÓSTICOS DEL NEGOCIO (Kawiil Central, tareas, proyectos)\n"
+        "Conteos de tareas/proyectos/vencidas, 'estado real', tablas de métricas, desgloses por proyecto "
+        "o cliente: SOLO pueden salir de la salida REAL de una tool `kawiil_central_*` llamada en ESTE "
+        "turno. Si la tool falló, devolvió ✗/❌ o no la llamaste, NO tienes esos datos: dilo así ('no pude "
+        "consultar Kawiil Central: <motivo que reportó la tool>') y propón el siguiente paso (revisar la "
+        "conexión). PROHIBIDO rellenar con cifras 'razonables', estimar, extrapolar de turnos anteriores o "
+        "de memoria, ni titular algo como 'ESTADO REAL' si no viene de una consulta. Una cifra inventada "
+        "presentada como real es el peor error posible: Polo toma decisiones con ella. Es mejor responder "
+        "'no tengo el dato' que una tabla bonita sin respaldo.\n"
         "## CUANDO LA BD NO TIENE EL TEXTO (ej: publicaciones recientes sin HTML descargado)\n"
         "Si `legal_buscar` no encuentra algo reciente (la BD tiene el índice pero no el texto "
         "completo), tienes DOS caminos REALES — y si ninguno funciona, lo dices claramente:\n"
@@ -1717,6 +1753,27 @@ def build_tablero_data() -> dict:
     }
 
 
+def build_app_hoy() -> dict:
+    """Datos para la pestaña «Hoy» de la app móvil (/v1/app/hoy): urgentes, con fecha/hora,
+    conteos de la AGENDA y entregables LISTO esperando Vo.Bo."""
+    agenda = _read_space_file("AGENDA.md")
+    abiertos = sum(1 for l in agenda.splitlines() if re.match(r"^\s*-\s*\[\s*\]\s+", l))
+    cerrados = sum(1 for l in agenda.splitlines() if re.match(r"^\s*-\s*\[[xX]\]", l))
+    ds = _extract_deadlines(agenda, 40)
+    def _urg(d):
+        low = d.lower()
+        return ("vence hoy" in low or "urgente" in low or bool(re.search(r"\bhoy\b", low)))
+    urgentes = [{"texto": d} for d in ds if _urg(d)][:15]
+    resto = [{"texto": d} for d in ds if not _urg(d)][:20]
+    listos = [e for e in _entregables_lista_tablero() if e.get("estado") == "listo"][:15]
+    return {
+        "generado": datetime.now(TZ_CDMX).strftime("%d %b %H:%M"),
+        "abiertos": abiertos, "cerrados": cerrados,
+        "urgentes": urgentes, "vencimientos": resto,
+        "entregables_listos": listos,
+    }
+
+
 def build_intraday_nudge(slot: str = "tarde") -> str | None:
     """Fase 3 — Chequeo intradía. Devuelve un mensaje CORTO de seguimiento SOLO si hay
     algo accionable hoy (vencimientos abiertos, entregables LISTO esperando Vo.Bo.,
@@ -2576,7 +2633,7 @@ def _reason_briefing(snapshot: str) -> str | None:
         return None
     hoy = _fmt_dt_es(datetime.now(get_active_tz()))
     sys = (
-        "Eres Louis, asistente ejecutivo de Polo (CEO de Kawiil). Redacta su BRIEFING "
+        f"Eres {AGENT_NAME}, asistente ejecutivo de Polo (CEO de Kawiil). Redacta su BRIEFING "
         "matutino a partir de los datos de AGENDA/IMPORTANT/JOURNAL/CLIENTES de abajo. "
         "REGLAS: saluda en 1 línea; PRIORIZA lo crítico de hoy en máx. 5 viñetas, agrupando "
         "y descartando duplicados, ruido y entradas viejas; sé conciso y accionable; resalta "
@@ -2675,6 +2732,12 @@ def _trim_history_for_ollama(history: list) -> list:
     if len(history) <= OLLAMA_MAX_HISTORY_TURNS:
         return history
     return history[-OLLAMA_MAX_HISTORY_TURNS:]
+
+
+def _chat_unavailable_msg() -> str:
+    """Aviso corto cuando ningún modelo de conversación respondió (en lugar de volcar el briefing)."""
+    return ("No pude contestarte en este momento: el modelo de conversación no respondió. "
+            "Inténtalo de nuevo en un minuto. Si sigue igual, dímelo y revisamos la conexión con el modelo.")
 
 
 def _ollama_unavailable_msg(reason: str = "") -> str:
@@ -2838,6 +2901,90 @@ TOOLS_DEFINITION = [
             },
             "required": ["text", "datetime"],
         },
+    },
+    {
+        "name": "patio_estado",
+        "description": "Estado de Patio Yoltik (la app de operación/CRM de Yoltik, patio-yoltik.mx): conexión y conteos reales de proyectos, tareas, deals, prospectos, leads y clientes. Úsalo para «cómo va Patio/Yoltik» y para verificar la conexión.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "patio_tablas",
+        "description": "Lista las tablas legibles de Patio Yoltik.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "patio_describir",
+        "description": "Columnas de una tabla de Patio Yoltik (descubre el modelo antes de consultar; no asumas nombres).",
+        "input_schema": {"type": "object", "properties": {"tabla": {"type": "string"}}, "required": ["tabla"]},
+    },
+    {
+        "name": "patio_query",
+        "description": "SELECT de solo lectura (una sentencia, máx 100 filas) sobre Patio Yoltik. Para ver CUALQUIER dato: leads, deals, clientes, RH, etc.",
+        "input_schema": {"type": "object", "properties": {"sql": {"type": "string"}, "razon": {"type": "string"}}, "required": ["sql"]},
+    },
+    {
+        "name": "patio_tareas",
+        "description": "Lista tareas de Patio Yoltik con su UUID (necesario para actualizar). Filtros: estatus (pendiente, en_progreso, revision, en_revision, bloqueada, completada, cancelada) y proyecto (parte del nombre).",
+        "input_schema": {"type": "object", "properties": {"estatus": {"type": "string"}, "proyecto": {"type": "string"}, "limit": {"type": "integer"}}},
+    },
+    {
+        "name": "patio_proyectos",
+        "description": "Lista proyectos de Patio Yoltik.",
+        "input_schema": {"type": "object", "properties": {"limit": {"type": "integer"}}},
+    },
+    {
+        "name": "patio_tarea_detalle",
+        "description": "Detalle completo de una tarea de Patio Yoltik (UUID completo) con sus últimos comentarios.",
+        "input_schema": {"type": "object", "properties": {"tarea_id": {"type": "string"}}, "required": ["tarea_id"]},
+    },
+    {
+        "name": "patio_actualizar_tarea",
+        "description": "ESCRIBE en Patio Yoltik: cambia una tarea (UUID completo). Campos: estatus, prioridad (baja/media/alta/urgente), fecha_vencimiento (YYYY-MM-DD), asignado_a (UUID de team_members), titulo, descripcion. Para CERRAR: {\"estatus\": \"completada\"}. Úsala solo cuando Polo lo pida o lo confirme; di exactamente qué cambiaste y reporta el resultado real de la herramienta. No puede borrar.",
+        "input_schema": {"type": "object", "properties": {"tarea_id": {"type": "string"}, "cambios": {"type": "object"}}, "required": ["tarea_id", "cambios"]},
+    },
+    {
+        "name": "patio_avance",
+        "description": "ESCRIBE en Patio Yoltik: agrega un comentario/avance a una tarea (UUID completo).",
+        "input_schema": {"type": "object", "properties": {"tarea_id": {"type": "string"}, "texto": {"type": "string"}}, "required": ["tarea_id", "texto"]},
+    },
+    {
+        "name": "crear_artefacto",
+        "description": ("Crea un TABLERO/ARTEFACTO visual que Polo ve en la app (seguimiento de un proyecto, tabla, KPIs, "
+                        "checklist). Úsalo cuando Polo pida un dashboard/tablero/seguimiento de algo que no tiene uno, o cuando "
+                        "una tabla grande se lee mejor visual. PRIMERO consulta los datos reales con tus herramientas (Kawiil "
+                        "Central, Slack, etc.); NUNCA inventes cifras: si no tienes el dato, escribe «por definir». "
+                        "HTML sencillo SIN JavaScript, sin enlaces, sin imágenes remotas, sin formularios (se eliminan). "
+                        "Clases listas: .kpis>.kpi(.v valor,.l etiqueta), .card, .grid2, .tag(.ok/.warn/.bad/.info), "
+                        ".bar(.ok/.warn/.bad)>i style=width:60%, table, details>summary. Responde después con una frase y el "
+                        "marcador exacto que devuelve esta herramienta."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "titulo": {"type": "string"},
+                "proyecto": {"type": "string", "description": "Proyecto al que pertenece (para agrupar)"},
+                "html": {"type": "string", "description": "Fragmento HTML del cuerpo (sin <html>/<head>)"},
+            },
+            "required": ["titulo", "html"],
+        },
+    },
+    {
+        "name": "actualizar_artefacto",
+        "description": "Reemplaza el contenido de un artefacto existente (misma regla: datos reales, HTML sin JS). Guarda la versión anterior.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "html": {"type": "string"},
+                "titulo": {"type": "string"},
+                "nota": {"type": "string", "description": "Qué cambió"},
+            },
+            "required": ["id", "html"],
+        },
+    },
+    {
+        "name": "listar_artefactos",
+        "description": "Lista los artefactos/tableros ya creados (id, título, proyecto). Úsalo antes de crear uno nuevo para no duplicar.",
+        "input_schema": {"type": "object", "properties": {"proyecto": {"type": "string"}}},
     },
     {
         "name": "save_learning",
@@ -5038,6 +5185,13 @@ def _mac_wake_request(razon: str) -> str:
 def _send_telegram_direct(text: str) -> None:
     """Envía un mensaje directo por Telegram usando las creds del env."""
     try:
+        import louis_push
+        if louis_push.telegram_muted():  # Telegram apagado → solo push
+            louis_push.notify_text_async(text)
+            return
+    except Exception:
+        pass
+    try:
         env = load_env_file(ANTHROPIC_ENV_FILE)
         token = os.environ.get("TELEGRAM_BOT_TOKEN") or env.get("TELEGRAM_BOT_TOKEN")
         chat_id = os.environ.get("TELEGRAM_ALLOWED_CHAT_ID") or env.get("TELEGRAM_ALLOWED_CHAT_ID")
@@ -5048,6 +5202,11 @@ def _send_telegram_direct(text: str) -> None:
         body = json.dumps({"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}).encode("utf-8")
         req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
         urllib.request.urlopen(req, timeout=10).read()
+        try:
+            import louis_push
+            louis_push.notify_text_async(text)
+        except Exception:
+            pass
     except Exception:
         log.exception("_send_telegram_direct falló")
 
@@ -6755,14 +6914,19 @@ KAWIIL_CENTRAL_AUDIT_LOG = HOME_OC / "logs" / "kawiil-central-ops.log"
 def _kawiil_central_creds() -> tuple[str, str, str, str]:
     """Devuelve (vercel_url, supabase_url, supabase_key, database_url). Soporta envs nuevas KAWIIL_CENTRAL_* y legacy KAWIIL_OS_*."""
     env = load_env_file(ANTHROPIC_ENV_FILE)
+    # Archivo propio de estas credenciales (lo escribe setup-kawiil-central-creds.sh, 0600). A diferencia de
+    # openclaw.env —que se regenera en cada deploy— este archivo SOBREVIVE, así que es la fuente de respaldo.
+    kc = load_env_file(HOME_OC / "credentials" / "kawiil-central.env")
     vercel_url = (
         os.environ.get("KAWIIL_CENTRAL_VERCEL_URL")
         or env.get("KAWIIL_CENTRAL_VERCEL_URL")
+        or kc.get("KAWIIL_CENTRAL_VERCEL_URL")
         or "https://www.kawiil-central.mx"
     )
     sup_url = (
         os.environ.get("KAWIIL_CENTRAL_SUPABASE_URL")
         or env.get("KAWIIL_CENTRAL_SUPABASE_URL")
+        or kc.get("KAWIIL_CENTRAL_SUPABASE_URL")
         or os.environ.get("KAWIIL_OS_SUPABASE_URL")  # legacy
         or env.get("KAWIIL_OS_SUPABASE_URL")
         or ""
@@ -6770,6 +6934,7 @@ def _kawiil_central_creds() -> tuple[str, str, str, str]:
     sup_key = (
         os.environ.get("KAWIIL_CENTRAL_SUPABASE_KEY")
         or env.get("KAWIIL_CENTRAL_SUPABASE_KEY")
+        or kc.get("KAWIIL_CENTRAL_SUPABASE_KEY")
         or os.environ.get("KAWIIL_OS_SUPABASE_KEY")
         or env.get("KAWIIL_OS_SUPABASE_KEY")
         or ""
@@ -6777,6 +6942,7 @@ def _kawiil_central_creds() -> tuple[str, str, str, str]:
     db_url = (
         os.environ.get("KAWIIL_CENTRAL_DATABASE_URL")
         or env.get("KAWIIL_CENTRAL_DATABASE_URL")
+        or kc.get("KAWIIL_CENTRAL_DATABASE_URL")
         or os.environ.get("KAWIIL_OS_DATABASE_URL")
         or env.get("KAWIIL_OS_DATABASE_URL")
         or ""
@@ -7966,8 +8132,9 @@ _DISTILL_TARGETS = {
 }
 
 _DISTILL_SYSTEM = (
-    "Eres el módulo de memoria de Louis, asistente ejecutivo de Polo (Kawiil, despacho "
-    "legal/tech en México). Te paso la conversación de HOY entre Polo y Louis. Extrae SOLO "
+    "Eres el módulo de memoria de " + AGENT_NAME + ", asistente ejecutivo de Polo (Kawiil, despacho "
+    "legal/tech en México). Te paso la conversación de HOY entre Polo y " + AGENT_NAME + " "
+    "(antes se llamaba Louis; es la misma asistente). Extrae SOLO "
     "hechos DURABLES y ESPECÍFICOS que valga la pena recordar a largo plazo y clasifícalos. "
     "Devuelve EXCLUSIVAMENTE un JSON válido con estas llaves (arrays de strings, una frase "
     'corta por hecho; usa [] si no hay nada):\n'
@@ -8010,9 +8177,9 @@ def _distill_save_state(today: str, resumen: str):
 
 
 def _distill_collect_today(today: str, max_chars: int = 18000) -> str:
-    """Junta los turnos de HOY (telegram+slack) en un transcript para destilar."""
+    """Junta los turnos de HOY (telegram+slack+app) en un transcript para destilar."""
     turns = []
-    for fname in ("telegram-history.jsonl", "slack-history.jsonl"):
+    for fname in ("telegram-history.jsonl", "slack-history.jsonl", "app-history.jsonl"):
         p = SPACE / fname
         if not p.exists():
             continue
@@ -8028,7 +8195,7 @@ def _distill_collect_today(today: str, max_chars: int = 18000) -> str:
                 continue
             content = (d.get("content") or "").strip()
             if content:
-                quien = "Polo" if d.get("role") == "user" else "Louis"
+                quien = "Polo" if d.get("role") == "user" else AGENT_NAME
                 turns.append((str(d.get("ts", "")), f"{quien}: {content}"))
     turns.sort(key=lambda t: t[0])
     txt = "\n".join(t[1] for t in turns)
@@ -8133,7 +8300,7 @@ _STEWARD_AGE_RE = re.compile(r"\[(?:auto|capturado|visto)\s+(\d{4}-\d{2}-\d{2})\
 REGULATORY_RE = re.compile(
     r"oficio|cnbv|\buif\b|\bpld\b|lfpiorpi|pr[oó]rroga|plazo|vencid|vencimiento|amparo|juzgad|expediente|"
     r"demanda|denuncia|audiencia|requerimiento|sanci[oó]n|multa|\bsat\b|ministerio p[uú]blico", re.I)
-_MESES_ES = {"ene": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6, "jul": 7, "ago": 8, "sep": 9,
+_MESES_NUM_ES = {"ene": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6, "jul": 7, "ago": 8, "sep": 9,
              "oct": 10, "nov": 11, "dic": 12}
 
 _STEWARD_SYSTEM = (
@@ -8206,7 +8373,7 @@ def _steward_fechas_pasadas(texto: str, today) -> list:
     for m in re.finditer(r"\b(\d{1,2})\s*(?:de\s+)?[-/ ]?\s*(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)[a-záéíóú]*\.?",
                          (texto or "").lower()):
         try:
-            f = _d(today.year, _MESES_ES[m.group(2)], int(m.group(1)))
+            f = _d(today.year, _MESES_NUM_ES[m.group(2)], int(m.group(1)))
         except ValueError:
             continue
         if f > today + timedelta(days=180):
@@ -9019,6 +9186,10 @@ def execute_tool(name: str, args: dict) -> str:
             if r.returncode == 0:
                 return f"OK recordatorio creado: {r.stdout.strip()}"
             return f"ERROR creando recordatorio: {r.stderr.strip()}"
+        elif name.startswith("patio_"):
+            return _tool_patio(name, args)
+        elif name in ("crear_artefacto", "actualizar_artefacto", "listar_artefactos"):
+            return _tool_artefacto(name, args)
         elif name == "save_learning":
             path = SPACE / "LEARNINGS.md"
             entry = (
@@ -9521,6 +9692,131 @@ def _sanitize_tool_blocks(messages: list) -> list:
     return out
 
 
+def _tool_patio(name, args):
+    try:
+        import patio_yoltik as P
+    except Exception as e:
+        return f"❌ módulo patio_yoltik no disponible: {e}"
+    try:
+        if name == "patio_estado":
+            return P.estado()
+        if name == "patio_tablas":
+            return P.tablas()
+        if name == "patio_describir":
+            return P.describir(args.get("tabla", ""))
+        if name == "patio_query":
+            return P.query(args.get("sql", ""), args.get("razon", ""))
+        if name == "patio_tareas":
+            return P.tareas(args.get("estatus", ""), args.get("proyecto", ""), args.get("limit", 30))
+        if name == "patio_proyectos":
+            return P.proyectos(args.get("limit", 30))
+        if name == "patio_tarea_detalle":
+            return P.tarea_detalle(args.get("tarea_id", ""))
+        if name == "patio_actualizar_tarea":
+            return P.actualizar_tarea(args.get("tarea_id", ""), args.get("cambios") or {})
+        if name == "patio_avance":
+            return P.avance(args.get("tarea_id", ""), args.get("texto", ""))
+    except Exception as e:
+        return f"❌ error con Patio Yoltik: {e}"
+    return f"❌ herramienta desconocida: {name}"
+
+
+# ===== Artefactos (tableros visuales en la app) =====
+_ART_NON_DATA = {"crear_artefacto", "actualizar_artefacto", "listar_artefactos", "save_learning"}
+
+
+def _artefacto_procedencia():
+    """Sello que pone el SERVIDOR (no el modelo): de qué herramientas de datos salió este turno."""
+    ok = sorted({n for n in getattr(_TURN, "ok", []) if n not in _ART_NON_DATA})
+    fail = sorted({n for n in getattr(_TURN, "failed", []) if n not in _ART_NON_DATA})
+    stamp = datetime.now(timezone(timedelta(hours=-6))).strftime("%d/%m/%Y %H:%M")
+    if ok:
+        txt = f"Datos consultados el {stamp} (CDMX) con: {', '.join(ok)}."
+        if fail:
+            txt += f" Fallaron: {', '.join(fail)}; lo que dependa de ellas puede estar incompleto."
+        return txt, True
+    return (f"Sin consulta de datos al crear este tablero ({stamp}): las cifras NO están verificadas."), False
+
+
+def _tool_artefacto(name, args):
+    try:
+        import app_artifacts as _A
+    except Exception as e:
+        return f"❌ módulo de artefactos no disponible: {e}"
+    try:
+        if name == "listar_artefactos":
+            items = _A.listar(args.get("proyecto"))
+            if not items:
+                return "(no hay artefactos todavía)"
+            return "\n".join(f"- [[artefacto:{i['id']}]] {i['titulo']}"
+                             + (f" · {i['proyecto']}" if i["proyecto"] else "") + f" · v{i['version']}" for i in items)
+        prov, verif = _artefacto_procedencia()
+        if name == "crear_artefacto":
+            r = _A.crear(args.get("titulo", ""), args.get("html", ""), args.get("proyecto", ""), prov, verif)
+        else:
+            r = _A.actualizar(args.get("id", ""), args.get("html", ""), args.get("titulo"), prov, verif, args.get("nota", ""))
+        msg = f"OK artefacto «{r['titulo']}» v{r['version']} guardado. Incluye EXACTAMENTE este marcador en tu respuesta: [[artefacto:{r['id']}]]"
+        if r["quitado"]:
+            msg += f" (el sistema quitó por seguridad: {', '.join(r['quitado'])}; no uses scripts, enlaces ni imágenes remotas)"
+        if not verif:
+            msg += " AVISO: no consultaste datos en este turno; el tablero lleva sello de «no verificado». Díselo a Polo."
+        return msg
+    except ValueError as e:
+        return f"❌ no se pudo guardar el artefacto: {e}"
+    except Exception as e:
+        return f"❌ error con artefactos: {e}"
+
+
+# ===== Freno a datos inventados (cifras del negocio) =====
+# Herramientas usadas en el turno actual. call_claude las registra y call_llm las usa para
+# verificar, DESPUÉS de que el modelo responde, que una «diagnóstico/estado real» con cifras de
+# Kawiil Central venga de una consulta real. Si no, la respuesta lleva un aviso visible.
+_TURN = _threading.local()
+_TOOL_FAIL_PREFIXES = ("❌", "🔒", "⛔", "(error", "(Error", "Error:")
+_KC_MENTION_RE = re.compile(r"kawiil[\s-]*central", re.I)
+_BIZ_CLAIM_RE = re.compile(
+    r"estado real|datos reales|diagn[oó]stico ejecutivo|total (?:de )?tareas|"
+    r"tareas (?:vencidas|vivas)|proyectos activos", re.I)
+_NUM_RE = re.compile(r"\b\d{1,3}(?:[.,]\d{3})+\b|\b\d{2,}\b")
+
+
+def _tool_failed(result) -> bool:
+    """¿La salida de una tool es un fallo (❌/🔒/(error…) o un reporte con ✗ de algo caído/faltante)?"""
+    s = (result if isinstance(result, str) else str(result or "")).lstrip()
+    return s.startswith(_TOOL_FAIL_PREFIXES) or "✗" in s[:800]
+
+
+def _tool_fail_note(name: str) -> str:
+    return (f"\n\n⚠️ ESTA HERRAMIENTA ({name}) FALLÓ O DEVOLVIÓ DATOS INCOMPLETOS. NO tienes esos datos. "
+            "Prohibido inventar cifras, listas o estados, ni presentar estimaciones como datos reales. "
+            "Dile a Polo qué falló, tal cual lo reporta la herramienta, y qué haría falta para obtenerlos.")
+
+
+def _turn_track(kind: str, name: str) -> None:
+    lst = getattr(_TURN, kind, None)
+    if isinstance(lst, list):
+        lst.append(name)
+
+
+def guard_unverified_business_data(text, ok_tools, failed_tools):
+    """Si la respuesta presenta un diagnóstico/tabla con cifras atribuidas a Kawiil Central y en este turno
+    NINGUNA tool kawiil_central_* devolvió datos, antepone un aviso visible. No altera el resto del texto."""
+    if not text or not isinstance(text, str):
+        return text
+    if not (_KC_MENTION_RE.search(text) and _BIZ_CLAIM_RE.search(text) and len(_NUM_RE.findall(text)) >= 6):
+        return text
+    if any(n.startswith("kawiil_central_") for n in ok_tools):
+        return text
+    caidas = sorted({n for n in failed_tools if n.startswith("kawiil_central_")})
+    if caidas:
+        aviso = (f"⚠️ **No pude consultar Kawiil Central** ({', '.join(caidas)} falló). "
+                 "Las cifras de abajo NO son datos verificados: no las uses.\n\n")
+    else:
+        aviso = ("⚠️ **Esta respuesta no consultó Kawiil Central.** Las cifras de abajo no vienen de la base "
+                 "de datos y pueden ser inventadas: no las uses.\n\n")
+    return aviso + text
+
+
 def call_claude(api_key: str, system_prompt: str, history: list, user_message: str,
                 model: str | None = None) -> str:
     """Llama Claude con tools. Loop hasta que termine.
@@ -9604,7 +9900,7 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
     for _loop_i in range(max_loops):  # noqa: B007
         body = {
             "model": model,
-            "max_tokens": 4096,
+            "max_tokens": 8192,
             "system": _system_cached,
             "tools": _tools_cached,
             "messages": _sanitize_tool_blocks(messages),
@@ -9674,6 +9970,10 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
             result = execute_tool(tc["name"], tc.get("input", {}))
             if tc["name"] in ("append_to_memory", "write_memory"):
                 memory_tool_results.append(result)
+            fallo = _tool_failed(result)
+            _turn_track("failed" if fallo else "ok", tc["name"])
+            if fallo:  # el modelo debe VER que falló y no rellenar el hueco con datos inventados
+                result = f"{result}{_tool_fail_note(tc['name'])}"
             tool_results.append({"type": "tool_result", "tool_use_id": tc["id"], "content": result})
         messages.append({"role": "user", "content": tool_results})
 
@@ -9701,6 +10001,26 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
 
 
 def call_llm(
+    api_key: str,
+    system_prompt: str,
+    history: list,
+    user_message: str,
+    history_file: Path | None = None,
+) -> tuple:
+    """Punto de entrada único (Telegram, Slack, app, API). Enruta con `_call_llm_impl` y después verifica que
+    las cifras de Kawiil Central de la respuesta vengan de una consulta real (ver guard_unverified_business_data).
+    Returns: (response, model_used)."""
+    _TURN.ok, _TURN.failed = [], []
+    response, model_used = _call_llm_impl(api_key, system_prompt, history, user_message, history_file=history_file)
+    try:
+        response = guard_unverified_business_data(
+            response, list(getattr(_TURN, "ok", [])), list(getattr(_TURN, "failed", [])))
+    except Exception:
+        log.warning("guard_unverified_business_data falló", exc_info=True)
+    return response, model_used
+
+
+def _call_llm_impl(
     api_key: str,
     system_prompt: str,
     history: list,
@@ -9831,10 +10151,26 @@ def call_llm(
                 except Exception:
                     log.warning("No pude guardar last-briefing.json", exc_info=True)
             return response, "deepseek"
-        # DeepSeek falló → briefing determinístico (NO caemos en Ollama lento de CPU).
-        log.warning(f"DeepSeek no respondió ({tag}) — fallback determinístico")
-        fb, _ = deterministic_operational_response(snapshot)
-        return fb, "deepseek-fallback"
+        # DeepSeek falló (sin llave, sin saldo, caído…). Antes se respondía con el briefing completo a
+        # CUALQUIER mensaje («¿ya estás ahí?» recibía la agenda entera). Ahora: 1) Haiku conversacional
+        # (barato, sin tools; se apaga con CHAT_FALLBACK_HAIKU=0), 2) si pidió agenda/pendientes, el
+        # briefing sí sirve, 3) si no, un aviso honesto y corto. NO caemos en Ollama lento de CPU.
+        log.warning(f"DeepSeek no respondió ({tag}) — intento con Haiku")
+        hk = None
+        if os.environ.get("CHAT_FALLBACK_HAIKU", "1") != "0":
+            try:
+                hk = call_haiku(load_anthropic_key(), ds_system, history, user_message, max_tokens=1024, timeout=45)
+            except Exception as e:
+                log.warning(f"Haiku de respaldo falló ({e})")
+        if hk and hk.strip() and not hk.lstrip().startswith(("(error", "(sin respuesta", "(respuesta vac")):
+            _mark_last_route("haiku-fallback")
+            return hk, "haiku-fallback"
+        if needs_operational_context(user_message):
+            log.warning(f"Sin modelo ({tag}) — pidió contexto operativo: briefing determinístico")
+            fb, _ = deterministic_operational_response(snapshot)
+            return fb, "deepseek-fallback"
+        log.warning(f"Sin modelo de conversación disponible ({tag})")
+        return _chat_unavailable_msg(), "chat-error"
 
     if msg.startswith(OLLAMA_QUALITY_PREFIXES):
         return _ollama_route("override /oss")

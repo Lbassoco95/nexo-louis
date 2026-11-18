@@ -73,7 +73,24 @@ log = logging.getLogger("scheduler")
 
 
 # ===== Send helpers =====
+def _push_copia(text: str):
+    """Todo lo que el scheduler manda por Telegram (briefings, recordatorios, seguimientos)
+    también llega como notificación push a la app. Best-effort: nunca rompe el envío."""
+    try:
+        import louis_push
+        louis_push.notify_text_async(text)
+    except Exception:
+        log.exception("push (copia de Telegram) falló")
+
+
 def send_telegram(text: str):
+    try:
+        import louis_push
+        if louis_push.telegram_muted():  # Telegram apagado (touch /opt/openclaw/state/telegram_off)
+            louis_push.notify_text_async(text)
+            return True
+    except Exception:
+        log.exception("chequeo de telegram_off falló; se envía por Telegram")
     creds = core.load_env_file(CREDS_TELEGRAM)
     token = creds.get("TELEGRAM_BOT_TOKEN")
     chat_id = creds.get("TELEGRAM_CHAT_ID")
@@ -90,6 +107,7 @@ def send_telegram(text: str):
     body = {"chat_id": chat_id, "text": formatted[:4000], "parse_mode": "HTML", "disable_web_page_preview": True}
     try:
         core.http_post_json(url, headers={}, body=body, timeout=15)
+        _push_copia(text)
         return True
     except urllib.error.HTTPError:
         # Fallback: quitar tags HTML y desescapar → texto plano legible (NO el markdown crudo).
@@ -98,6 +116,7 @@ def send_telegram(text: str):
         body["text"] = raw[:4000]
         try:
             core.http_post_json(url, headers={}, body=body, timeout=15)
+            _push_copia(text)
             return True
         except Exception as e:
             log.error(f"Telegram send falló: {e}")
@@ -144,7 +163,7 @@ def enrich_with_ollama(raw_message: str) -> str:
     """Reformula recordatorio en tono Louis vía Ollama local. Si Ollama devuelve un
     rechazo/basura (o algo demasiado distinto/largo), manda el mensaje ORIGINAL."""
     sys_prompt = (
-        "Eres Louis, asistente ejecutivo de Polo. Reformula este recordatorio en tono "
+        f"Eres {core.AGENT_NAME}, asistente ejecutivo de Polo. Reformula este recordatorio en tono "
         "directo y cálido, 1-2 líneas, en español. Telegram *negrita* legacy. NO inventes "
         "hechos, NO pidas permiso, NO te disculpes: SOLO devuelve el recordatorio reformulado."
     )

@@ -159,11 +159,16 @@ mkdir -p /opt/openclaw/scripts /opt/openclaw/scripts/m365 /opt/openclaw/logs
 # dependen de él fallan en silencio (self_update → ImportError; browser_* → error).
 for svc in louis_core.py telegram-bridge.py slack-bridge.py scheduler.py \
            openclaw_gateway.py self_update.py browser_runner.py cerebro_kawiil_mcp.py cerebro_calidad.py \
-           gather_bridge.py biblioteca.py legal_indexer.py; do
+           gather_bridge.py biblioteca.py legal_indexer.py louis_push.py app_auth.py app_artifacts.py patio_yoltik.py; do
   if [[ -f "services/${svc}" ]]; then
     install -m 0755 -o "$SYSTEM_USER" -g "$SYSTEM_USER" "services/${svc}" "/opt/openclaw/scripts/${svc}"
   fi
 done
+# App móvil de Louis (PWA servida por el gateway en /app).
+if [[ -d services/app ]]; then
+  mkdir -p /opt/openclaw/scripts/app
+  install -m 0644 -o "$SYSTEM_USER" -g "$SYSTEM_USER" services/app/* /opt/openclaw/scripts/app/
+fi
 # Puente Gather (Smart Object Bot Status Monitor): helper Node + SDK oficial.
 if [[ -d services/gather ]]; then
   mkdir -p /opt/openclaw/scripts/gather

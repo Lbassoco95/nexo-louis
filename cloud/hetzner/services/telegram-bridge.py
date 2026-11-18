@@ -630,7 +630,7 @@ def process_update(update, telegram_token, chat_id, api_key, system_prompt):
     if not pending_files and core.needs_doc_sonnet(user_input) and len(response) > 1200:
         try:
             titulo = (user_input or "documento")[:70].strip().rstrip(".?!")
-            pdf = core._generar_pdf(titulo, response, "Louis")
+            pdf = core._generar_pdf(titulo, response, core.AGENT_NAME)
             if pdf:
                 fname = f"{titulo[:40].replace(' ', '_')}_{_dt_mod.datetime.now().strftime('%H%M%S')}.pdf"
                 pending_files = [(pdf, fname, f"📄 {titulo[:60]}")]
