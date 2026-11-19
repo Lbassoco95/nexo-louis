@@ -418,7 +418,8 @@ nav .badge{background:#b91c1c;color:#fff}
 body.docked #dock{display:flex}
 @media (min-width:760px){#dock{top:16px;right:16px;bottom:16px;border-radius:26px;padding-top:0;z-index:12}body.docked #app{margin-right:calc(min(48vw,820px) + 32px)}}
 @media (min-width:760px) and (max-width:1099px){body.docked #app{margin-right:16px}#dock{width:calc(100vw - 354px)}}
-@media (max-width:759px){#dock{width:100%;z-index:34;border-radius:0}}
+@media (max-width:759px){#dock{width:100%;z-index:34;border-radius:0;background:var(--base);-webkit-backdrop-filter:none;backdrop-filter:none}}
+#dock{background:var(--drawer)}
 body.dkfull #dock{width:calc(100vw - 32px);left:16px;z-index:34}body.dkfull.docked #app{margin-right:16px}
 /* hoja / panel flotante */
 .sheet{z-index:35}
