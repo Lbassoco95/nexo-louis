@@ -195,6 +195,9 @@ header .tool,header #morebtn{display:inline-block}
 .sdnav button,.sdtools button{display:flex;align-items:center;gap:10px;width:100%;background:none;border:0;border-radius:10px;color:var(--mut);padding:9px 10px;font:inherit;font-size:14.5px;text-align:left;position:relative}
 .sdnav button.on{background:var(--panel2);color:var(--acc);font-weight:600}.sdnav button:hover,.sdtools button:hover{background:var(--panel2)}
 .sdnav .badge{margin-left:auto;background:var(--bad);color:#fff;border-radius:9px;font-size:10px;padding:0 6px;line-height:16px}
+ #pop{position:fixed;z-index:60;min-width:190px;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:0 10px 32px #0006;padding:5px}
+#pop button{display:flex;align-items:center;gap:10px;width:100%;background:none;border:0;color:var(--tx);padding:10px 12px;border-radius:10px;font:inherit;font-size:14.5px;text-align:left}
+#pop button:hover,#pop button:active{background:var(--panel2)}#pop button.bad{color:var(--bad)}
 .sdfoot{padding:4px 8px 6px;border-top:1px solid var(--line)}
 .sdfoot button{width:100%;background:none;border:0;color:var(--mut);padding:9px 10px;font:inherit;font-size:14px;text-align:left;border-radius:10px}
 #fab{bottom:calc(var(--navh,60px) + 138px + env(safe-area-inset-bottom))}
@@ -1329,14 +1332,25 @@ function paintConvs(){
   L.innerHTML=h;
   $$('#sdlist .cv').forEach(r=>{const id=r.dataset.id,c=convs.find(x=>x.id===id);
     r.querySelector('.ct').onclick=()=>abrirConv(id);
-    r.querySelector('.mo').onclick=e=>{e.stopPropagation();convMenu(c)}});
+    r.querySelector('.mo').onclick=e=>{e.stopPropagation();convMenu(c,e.currentTarget)}});
 }
-function convMenu(c){
-  sheet(c.titulo,'<button class="menurow" id="cv-ren"><span style="font-size:22px">✏️</span><span><b>Cambiar nombre</b></span></button><button class="menurow" id="cv-del"><span style="font-size:22px">🗑️</span><span><b>Borrar conversación</b><small>No se puede deshacer</small></span></button>');
-  $('#cv-ren').onclick=async()=>{closeSheet();const t=prompt('Nombre de la conversación',c.titulo);if(t==null||!t.trim())return;
-    try{await api('/v1/app/chats/renombrar',{method:'POST',body:JSON.stringify({id:c.id,titulo:t})});loadConvs(true)}catch(e){toast('⚠️ '+e.message)}};
-  $('#cv-del').onclick=async()=>{closeSheet();if(!confirm('¿Borrar «'+c.titulo+'»?'))return;
-    try{await api('/v1/app/chats/borrar',{method:'POST',body:JSON.stringify({id:c.id})});if(c.id===cid){clearTimeout(saveT);chat=[];busy=false;await nuevaConv()}else loadConvs(true);toast('Borrada')}catch(e){toast('⚠️ '+e.message)}};
+function popMenu(anchor,items){
+  closePop();const m=document.createElement('div');m.id='pop';
+  items.forEach(([ic,tx,fn,bad])=>{const b=document.createElement('button');b.innerHTML='<span>'+ic+'</span>'+tx;if(bad)b.className='bad';b.onclick=e=>{e.stopPropagation();closePop();fn()};m.appendChild(b)});
+  document.body.appendChild(m);
+  const r=anchor.getBoundingClientRect(),w=m.offsetWidth,h=m.offsetHeight;
+  m.style.left=Math.max(8,Math.min(innerWidth-w-8,r.right-w))+'px';
+  m.style.top=(r.bottom+h+8>innerHeight?Math.max(8,r.top-h-4):r.bottom+4)+'px';
+  setTimeout(()=>{document.addEventListener('pointerdown',popOut,true);document.addEventListener('keydown',popEsc,true)},0);
+}
+function popOut(e){if(!e.target.closest('#pop'))closePop()}
+function popEsc(e){if(e.key==='Escape')closePop()}
+function closePop(){const m=$('#pop');if(m)m.remove();document.removeEventListener('pointerdown',popOut,true);document.removeEventListener('keydown',popEsc,true)}
+function convMenu(c,anchor){
+  popMenu(anchor,[['✏️','Cambiar nombre',async()=>{const t=prompt('Nombre de la conversación',c.titulo);if(t==null||!t.trim())return;
+    try{await api('/v1/app/chats/renombrar',{method:'POST',body:JSON.stringify({id:c.id,titulo:t})});loadConvs(true)}catch(e){toast('⚠️ '+e.message)}}],
+   ['🗑️','Borrar',async()=>{if(!confirm('¿Borrar «'+c.titulo+'»?'))return;
+    try{await api('/v1/app/chats/borrar',{method:'POST',body:JSON.stringify({id:c.id})});if(c.id===cid){clearTimeout(saveT);chat=[];busy=false;await nuevaConv()}else loadConvs(true);toast('Borrada')}catch(e){toast('⚠️ '+e.message)}},true]]);
 }
 async function abrirConv(id){
   if(busy){toast('Espera a que termine de contestar');return}
