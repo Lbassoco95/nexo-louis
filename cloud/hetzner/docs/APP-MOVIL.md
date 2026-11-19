@@ -273,7 +273,7 @@ Cuando un pedido es demasiado grande para contestarlo en la conversación (voz o
 - **Tablero al lado del chat:** en compu/tableta un tablero se abre en un panel fijo a la derecha (⤢ pantalla completa, ✕ cerrar) y, si Donna lo crea o lo actualiza en el chat, se abre/refresca solo. En teléfono ocupa toda la pantalla (‹ Donna para volver).
 - **Se trabaja dentro del tablero:** el panel trae su propio hilo + caja (con atajos: resumir, qué falta, agregar columna, actualizar). Donna recibe el contenido del tablero como contexto (solo para el modelo) y puede `actualizar_artefacto`. Todo lo hablado queda **guardado en la conversación** (mensajes con `art`, etiqueta «🧩 Conversación del tablero») y en el historial que alimenta la memoria nocturna (solo «[Tablero «título»] pregunta», sin el volcado del contenido).
 - **Paneles tipo menú** en pantallas grandes: notificaciones, trabajos, traductor… salen como panel flotante a la derecha (sin oscurecer todo); ⋯ de conversaciones es menú contextual.
-- **Aspecto «Cristal»** (opcional, Ajustes → Apariencia o `?skin=cristal`): vidrio esmerilado, fondo con degradados suaves, barras flotantes, claro/oscuro automático. Solo CSS (`backdrop-filter`), sin dependencias; probado como técnica inspirada en proyectos públicos de «liquid glass» (ninguno copiado). La refracción real con filtros SVG solo funciona en Chromium, no en Safari/iPhone, por eso no se usa.
+- **Aspecto «Cristal»** (desde v21 es el único aspecto; ya no hay selector): vidrio esmerilado, fondo con degradados suaves, barras flotantes, claro/oscuro automático. Solo CSS (`backdrop-filter`), sin dependencias; probado como técnica inspirada en proyectos públicos de «liquid glass» (ninguno copiado). La refracción real con filtros SVG solo funciona en Chromium, no en Safari/iPhone, por eso no se usa.
 - Pruebas: `python3 -m unittest tests.test_chats tests.test_pwa_assets`.
 
 ## Escuchar y subtitular (v20)
@@ -287,3 +287,19 @@ Traducción **pasiva**: tocas «Escuchar» y Donna va escribiendo **en español*
 - **«¿De qué hablan?»** resume lo escuchado hasta ahora (tema, puntos clave, pendientes). **«Terminar y guardar»** archiva la conversación (con quién habló cada frase) como transcripción buscable y la lleva a la memoria de Donna.
 - **Compu:** Opciones (Aa) → «Escuchar el audio de una pestaña» para subtitular una videollamada o video (Chrome/Edge, marcando «Compartir audio de la pestaña»); en iPhone solo por micrófono (iOS no deja capturar el audio de otras apps).
 - WebSocket `/v1/app/live` con `{modo:'escuchar'}`; mensajes extra: `ping`, `seguir` (app→servidor) y `silencio`, `voz` (servidor→app). Pruebas: `python3 -m unittest tests.test_live` y `node tests/test_escuchar_voz.js`.
+
+## Nueva interfaz «Cristal» + Escuchar y transcribir + frente a frente (v21)
+
+- **Aspecto único «Cristal»** (vidrio esmerilado) según el diseño aprobado; claro/oscuro lo decide el sistema. Íconos de línea (los emoji solo viven dentro del texto de Donna y de quien escribe: un convertidor
+  los sustituye en la interfaz). Escritorio: barra lateral de 290 px (conversaciones, buscador, secciones) + panel central + panel de contexto «Esperan tu decisión / Tablero reciente» (≥1280 px, solo en la conversación);
+  tableta: barra lateral + panel; teléfono: una columna con encabezado y campo de escritura flotantes, 4 secciones abajo y el resto (Escuchar, Tableros, Traductor, Ajustes) en el menú ☰.
+- **Botones siempre disponibles** (abajo a la derecha): «Hablar con Donna» y «Escuchar» (se vuelve «Escuchando · 04:12»); en teléfono, círculos sobre el campo de escritura.
+- **Secciones nuevas:** Escuchar, Tableros (lista) y Traductor son secciones de la barra lateral; la voz y el traductor frente a frente son pantallas completas.
+- **Traductor frente a frente:** dos mitades (español / 中文); la del chino gira 180° para quien está al otro lado (en tableta, opción «Lado a lado»). Cada mitad tiene su botón de hablar; mientras uno habla el otro se deshabilita;
+  «Dijiste/Te dicen» (你说/对方说); el lado en español muestra además el chino con pinyin y se escucha en chino. «Terminar» regresa al traductor (los turnos quedan para «Terminar y guardar»).
+- **Escuchar y transcribir:** transcribe al español lo que dicen otros (chino, inglés…), con voces numeradas y de color (siempre con número), hora, chino original opcional, frase «Hablando ahora», subrayado punteado en lo dudoso,
+  panel de voces con «Nombrar» (el nombre se recuerda), pausar/continuar/detener y guardar, y tres interruptores. Indicador rojo «Escuchando · tiempo» en el encabezado de todas las pantallas (tira en teléfono). Aviso de
+  silencio al minuto (banner + notificación con «Seguir escuchando» / «Detener y guardar»); si nadie responde **no se detiene sola**, solo vuelve a preguntar. Al guardar queda como **entregable** (con voces y horas) y como documento
+  que Donna puede consultar. **Privacidad:** confirmación de consentimiento una vez por sesión; solo se guarda texto, nunca audio. Contrato con el servidor: `docs/ESCUCHAR-CONTRATO.md`.
+- Accesibilidad: contraste ≥4.5:1 (probado en claro y oscuro), controles ≥44 px, teclado y nombres accesibles, `prefers-reduced-motion` detiene las animaciones, el desenfoque se apaga solo en equipos modestos (`html.lowfx`).
+- Pruebas: `python3 -m unittest tests.test_live tests.test_escucha tests.test_chats tests.test_pwa_assets`, `node tests/test_escuchar_voz.js`, `node tests/test_pwa_offline.js http://127.0.0.1:PUERTO`.

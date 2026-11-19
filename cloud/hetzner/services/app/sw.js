@@ -1,5 +1,5 @@
 // Service worker: solo cachea el cascarón de la app (nunca datos). Los datos siempre van a la red.
-const V = 'louis-app-v19';
+const V = 'louis-app-v20';
 const SHELL = ['/app/', '/app/manifest.webmanifest', '/app/icon.svg'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(V).then(c => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener('activate', e => {
@@ -25,7 +25,7 @@ self.addEventListener('push', e => {
     cs.forEach(c => c.postMessage({ type: 'push' }));
     await self.registration.showNotification(d.title || '{{AGENT_NAME}}', {
       body: d.body || '', tag: d.tag || 'louis', renotify: true,
-      icon: '/app/icon.svg', badge: '/app/icon.svg', data: { tab: d.tab || 'chat', nid: d.nid || '', link: d.link || '' }
+      icon: '/app/icon.svg', badge: '/app/icon.svg', actions: (d.acts || []).slice(0, 2), data: { tab: d.tab || 'chat', nid: d.nid || '', link: d.link || '', kind: d.kind || '' }
     });
   })());
 });
@@ -33,7 +33,8 @@ self.addEventListener('notificationclick', e => {
   e.notification.close();
   const tab = (e.notification.data && e.notification.data.tab) || 'chat';
   const nid = (e.notification.data && e.notification.data.nid) || '';
-  const link = (e.notification.data && e.notification.data.link) || '';
+  let link = (e.notification.data && e.notification.data.link) || '';
+  if (e.action && e.notification.data && e.notification.data.kind === 'escuchar') link = 'escuchar:' + e.action;   // «Seguir escuchando» / «Detener y guardar»
   e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(cs => {
     for (const c of cs) { if ('focus' in c) { c.postMessage(link ? { type: 'link', link } : { type: 'tab', tab, nid }); return c.focus(); } }
     return self.clients.openWindow('/app/?tab=' + tab + (nid ? '&nid=' + encodeURIComponent(nid) : '') + (link ? '&link=' + encodeURIComponent(link) : ''));

@@ -5,9 +5,9 @@
   "start_url": "/app/",
   "scope": "/app/",
   "display": "standalone",
-  "orientation": "portrait",
-  "background_color": "#0b1220",
-  "theme_color": "#0b1220",
+  "orientation": "any",
+  "background_color": "#e9edfa",
+  "theme_color": "#e9edfa",
   "lang": "es-MX",
   "icons": [
     {"src": "/app/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"},

@@ -528,7 +528,7 @@ _LIVE_SLOTS = threading.BoundedSemaphore(2)          # máximo 2 traducciones en
 LIVE_MAX_SECONDS = int(os.environ.get("LIVE_MAX_SECONDS", "1800"))
 LIVE_IDLE_SECONDS = int(os.environ.get("LIVE_IDLE_SECONDS", "90"))
 LIVE_ESCUCHAR_SILENCIO = int(os.environ.get("LIVE_ESCUCHAR_SILENCIO", "60"))      # sin oír a nadie este tiempo → pregunta «¿sigo escuchando?» (aviso + notificación)
-LIVE_ESCUCHAR_CIERRE = int(os.environ.get("LIVE_ESCUCHAR_CIERRE", "180"))        # y si nadie responde en este tiempo, pausa la escucha (cada minuto cuesta)
+LIVE_ESCUCHAR_REPREGUNTA = int(os.environ.get("LIVE_ESCUCHAR_REPREGUNTA", "300")) # si nadie responde, la escucha NO se detiene sola: solo se vuelve a preguntar cada tanto
 LIVE_ESCUCHAR_MAX_SECONDS = int(os.environ.get("LIVE_ESCUCHAR_MAX_SECONDS", "7200"))   # modo «escuchar y subtitular»: hasta 2 h por sesión
 _LIVE_LANGS = {"es": "es", "en": "en", "zh": os.environ.get("LIVE_ZH_CODE", "zh")}
 _DONNA_TOOLS = [
@@ -1516,7 +1516,7 @@ class Handler(BaseHTTPRequestHandler):
             up.send_text(json.dumps({"type": "session.update", "session": {"audio": {
                 "input": {"transcription": {"model": "gpt-realtime-whisper"}}, "output": {"language": to}}}}))
             stop = threading.Event()
-            est = {"voz": time.time(), "pregunto": None}           # escuchar: última vez que se oyó a alguien / cuándo se preguntó «¿sigo?»
+            est = {"voz": time.time(), "pregunto": None, "pausa": False, "aviso": True}           # escuchar: última vez que se oyó a alguien / cuándo se preguntó «¿sigo?»
 
             def arriba():                                         # OpenAI → app
                 try:
@@ -1566,20 +1566,20 @@ class Handler(BaseHTTPRequestHandler):
                 if time.time() - t0 > limite:
                     aviso("end", m="Se alcanzó el límite de la sesión (%d min)" % (limite // 60))
                     break
-                if escuchar:
+                if escuchar and est["aviso"] and not est["pausa"]:
                     ahora = time.time()
-                    if est["pregunto"] is None and ahora - est["voz"] > LIVE_ESCUCHAR_SILENCIO:
+                    primera = est["pregunto"] is None and ahora - est["voz"] > LIVE_ESCUCHAR_SILENCIO
+                    otra_vez = est["pregunto"] is not None and ahora - est["pregunto"] > LIVE_ESCUCHAR_REPREGUNTA
+                    if primera or otra_vez:                               # nunca corta la escucha: solo pregunta (en la app y con una notificación)
                         est["pregunto"] = ahora
-                        aviso("silencio", seg=int(ahora - est["voz"]), cierre=LIVE_ESCUCHAR_CIERRE)
+                        aviso("silencio", seg=int(ahora - est["voz"]), repite=LIVE_ESCUCHAR_REPREGUNTA)
                         try:
                             import louis_push
-                            louis_push.notify_async("👂 ¿Sigo escuchando?", "Llevo %d min sin oír a nadie. Toca para seguir o terminar." % max(1, LIVE_ESCUCHAR_SILENCIO // 60),
-                                                    tab="chat", tag="escuchar", kind="escuchar", link="escuchar:1")
+                            louis_push.notify_async("¿Seguimos escuchando?", "Llevo %d min sin oír voces. Toca para seguir o detener y guardar." % max(1, int((ahora - est["voz"]) // 60)),
+                                                    tab="chat", tag="escuchar", kind="escuchar", link="escuchar:1",
+                                                    acts=[{"action": "seguir", "title": "Seguir escuchando"}, {"action": "detener", "title": "Detener y guardar"}])
                         except Exception:
                             log.warning("no pude avisar del silencio", exc_info=True)
-                    elif est["pregunto"] is not None and ahora - est["pregunto"] > LIVE_ESCUCHAR_CIERRE:
-                        aviso("end", m="Pausé la escucha: nadie habló y no respondiste. Toca «Escuchar» para retomar.", fin=True)
-                        break
                 r = cli.recv_message(timeout=1)
                 if r is None:
                     if time.time() - ultimo > LIVE_IDLE_SECONDS:
@@ -1599,6 +1599,12 @@ class Handler(BaseHTTPRequestHandler):
                         continue
                     if j.get("t") == "seguir":
                         est["voz"], est["pregunto"], ultimo = time.time(), None, time.time()      # «sigue escuchando»
+                    elif j.get("t") == "pausa":
+                        est["pausa"], ultimo = True, time.time()                                  # en pausa no se pregunta nada
+                    elif j.get("t") == "continuar":
+                        est["pausa"], est["voz"], est["pregunto"], ultimo = False, time.time(), None, time.time()
+                    elif j.get("t") == "cfg":
+                        est["aviso"] = bool(j.get("aviso", True))
                     elif j.get("t") == "ping":
                         ultimo = time.time()                              # el modo escuchar no manda audio en los silencios: esto lo mantiene vivo
                     elif j.get("t") == "lang" and not escuchar:
@@ -2045,6 +2051,49 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(500, {"error": str(e)[:200]})
 
     # ---- traductor ----
+    def _escucha_guardar(self, body: dict):
+        """POST /v1/app/escucha/guardar — la transcripción de «Escuchar» queda como entregable del usuario (con voces y horas) y como
+        documento buscable por Donna. Solo texto: el audio nunca se guarda."""
+        import app_media as _M
+        from datetime import datetime
+        lineas = body.get("lineas")
+        if not isinstance(lineas, list) or not lineas or len(lineas) > 4000:
+            raise ValueError("no hay transcripción que guardar")
+        voces = body.get("voces") if isinstance(body.get("voces"), list) else []
+        ahora = datetime.now(core.TZ_CDMX)
+        dur = max(0, min(int(body.get("duracion") or 0), 86400))
+        L, md_lines = [], []
+        for l in lineas:
+            if not isinstance(l, dict):
+                continue
+            es, orig = str(l.get("es", ""))[:3000], str(l.get("orig", ""))[:3000]
+            if not (es.strip() or orig.strip()):
+                continue
+            quien = (str(l.get("nombre") or "") or ("Voz %s" % l.get("voz") if l.get("voz") else "Voz por identificar"))[:40]
+            tono = str(l.get("tono") or "")[:10]
+            hora = str(l.get("t", ""))[:8]
+            L.append("[%s] %s%s: %s%s" % (hora, quien, " (voz %s)" % tono if tono else "", es, ("\n   (%s) %s" % ("中文" if l.get("idioma") == "zh" else "EN", orig)) if orig.strip() else ""))
+            md_lines.append("**%s** · %s%s — %s%s" % (hora, quien, " · voz %s" % tono if tono else "", es.replace("\n", " "),
+                                                     ("  \n<sub>%s</sub>" % orig.replace("\n", " ")) if orig.strip() else "") + ("  _(audio débil: revisar)_" if l.get("bajo") else ""))
+        if not L:
+            raise ValueError("no hay transcripción que guardar")
+        quienes = ["- Voz %s — %s%s" % (v.get("n"), str(v.get("nombre", ""))[:40], " (voz %s)" % str(v.get("tono", ""))[:10] if v.get("tono") else "")
+                   for v in voces if isinstance(v, dict)]
+        titulo = "Transcripción Escuchar " + ahora.strftime("%Y-%m-%d %H:%M")
+        contenido = ("Transcripción en español de una escucha en vivo (solo texto; no se guardó audio).\n\n- Fecha: %s\n- Duración: %d min %02d s\n\n## Voces\n%s\n\n## Transcripción\n\n%s\n"
+                     % (ahora.strftime("%Y-%m-%d %H:%M"), dur // 60, dur % 60, "\n".join(quienes) or "- (sin identificar)", "\n\n".join(md_lines)))
+        r = core._entregable_registrar(titulo, "", contenido, tipo="transcripcion", estado="aprobado", preparado_por="Donna · Escuchar")
+        if r.startswith("ERROR"):
+            raise ValueError(r)
+        texto = "\n".join(L)
+        resumen = ""
+        try:
+            resumen = _M.summarize("Conversación escuchada en vivo (voces y horas):\n" + texto) if len(texto) > 200 else ""
+        except Exception:
+            pass
+        m = _M.register_text(titulo, texto, tipo="conversacion", resumen=resumen, origen="escuchar")
+        return {"ok": True, "nombre": titulo, "archivo": r.split(":", 1)[-1].strip().split(" ")[0], "mid": m.get("id", ""), "resumen": resumen, "lineas": len(L)}
+
     def _translate_post(self, path: str, body: dict) -> bool:
         try:
             if path == "/v1/app/translate/new":
@@ -2336,6 +2385,15 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json(200, app_trabajos.accion(str(body.get("id", "")), str(body.get("accion", "")), body.get("paso")))
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
+            return
+        if self.path == "/v1/app/escucha/guardar":
+            try:
+                self._send_json(200, self._escucha_guardar(body))
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
+            except Exception as e:
+                log.exception("escucha/guardar falló")
+                self._send_json(500, {"error": str(e)[:200]})
             return
         if self.path.startswith("/v1/app/translate") and self._translate_post(self.path.split("?", 1)[0], body):
             return

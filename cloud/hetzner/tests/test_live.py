@@ -184,10 +184,10 @@ class Puente(unittest.TestCase):
         c.close()
         self.assertFalse(any(k == "text" and d.get("t") == "end" for k, d in ms))
 
-    def _silencio(self, silencio=1, cierre=3):
-        ant = (g.LIVE_ESCUCHAR_SILENCIO, g.LIVE_ESCUCHAR_CIERRE)
-        g.LIVE_ESCUCHAR_SILENCIO, g.LIVE_ESCUCHAR_CIERRE = silencio, cierre
-        self.addCleanup(lambda: setattr(g, "LIVE_ESCUCHAR_SILENCIO", ant[0]) or setattr(g, "LIVE_ESCUCHAR_CIERRE", ant[1]))
+    def _silencio(self, silencio=1, repregunta=2):
+        ant = (g.LIVE_ESCUCHAR_SILENCIO, g.LIVE_ESCUCHAR_REPREGUNTA)
+        g.LIVE_ESCUCHAR_SILENCIO, g.LIVE_ESCUCHAR_REPREGUNTA = silencio, repregunta
+        self.addCleanup(lambda: setattr(g, "LIVE_ESCUCHAR_SILENCIO", ant[0]) or setattr(g, "LIVE_ESCUCHAR_REPREGUNTA", ant[1]))
         c = W.connect_url(f"ws://127.0.0.1:{self.port}/v1/app/live")
         c.send_text(json.dumps({"t": "auth", "token": "master-secret-123", "modo": "escuchar"}))
         return c
@@ -202,27 +202,32 @@ class Puente(unittest.TestCase):
             out += self.leer(c, 0.8, quiero)
         return out
 
-    def test_escuchar_pregunta_si_sigue_y_pausa_si_nadie_responde(self):
+    def test_escuchar_pregunta_y_NUNCA_se_detiene_sola(self):
         c = self._silencio(1, 2)
         ms = self.leer_con_ping(c, 5, lambda o: any(k == "text" and d.get("t") == "silencio" for k, d in o))
-        self.assertTrue(any(k == "text" and d.get("t") == "silencio" and d["cierre"] == 2 for k, d in ms))        # pregunta «¿sigo escuchando?»
-        ms = self.leer_con_ping(c, 6, lambda o: any(k == "text" and d.get("t") == "end" for k, d in o))
-        fin = [d for k, d in ms if k == "text" and d.get("t") == "end"]
-        self.assertTrue(fin and fin[0].get("fin") is True and "Pausé" in fin[0]["m"])                              # nadie respondió → pausa
+        self.assertTrue(any(k == "text" and d.get("t") == "silencio" and d["repite"] == 2 for k, d in ms))        # pregunta «¿seguimos escuchando?»
+        ms = self.leer_con_ping(c, 6)                                                                               # nadie responde: vuelve a preguntar, pero NO corta
+        self.assertGreaterEqual(sum(1 for k, d in ms if k == "text" and d.get("t") == "silencio"), 1)             # se vuelve a preguntar
+        self.assertFalse(any(k == "text" and d.get("t") == "end" for k, d in ms))                                  # y la escucha sigue viva
         c.close()
 
-    def test_escuchar_seguir_reinicia_la_cuenta_y_voz_cancela_la_pregunta(self):
-        c = self._silencio(1, 2)
+    def test_escuchar_seguir_voz_pausa_y_apagar_el_aviso(self):
+        c = self._silencio(1, 100)
         self.leer_con_ping(c, 5, lambda o: any(k == "text" and d.get("t") == "silencio" for k, d in o))
-        c.send_text(json.dumps({"t": "seguir"}))                                                                   # «seguir escuchando»
+        c.send_text(json.dumps({"t": "seguir"}))                                                                   # «seguir escuchando» no corta ni pierde nada
         ms = self.leer_con_ping(c, 1.6)
-        self.assertFalse(any(k == "text" and d.get("t") == "end" for k, d in ms))                                  # no se pausó
-        self.leer_con_ping(c, 3, lambda o: any(k == "text" and d.get("t") == "silencio" for k, d in o))            # vuelve a preguntar tras otro silencio
+        self.assertFalse(any(k == "text" and d.get("t") in ("end", "error") for k, d in ms))
         for _ in range(6):
             c.send_binary(b"\x00\x01" * 2400)                                                                      # alguien habla
-        ms = self.leer(c, 3, lambda o: any(k == "text" and d.get("t") == "voz" for k, d in o))
+        ms = self.leer_con_ping(c, 3, lambda o: any(k == "text" and d.get("t") == "in" for k, d in o))
+        self.assertTrue(any(k == "text" and d.get("t") == "in" for k, d in ms))                                    # el texto sigue llegando tras «seguir»
+        c.send_text(json.dumps({"t": "pausa"}))                                                                    # en pausa no pregunta nada
+        ms = self.leer_con_ping(c, 3)
+        self.assertFalse(any(k == "text" and d.get("t") == "silencio" for k, d in ms))
+        c.send_text(json.dumps({"t": "continuar"})); c.send_text(json.dumps({"t": "cfg", "aviso": False}))        # con el aviso apagado tampoco
+        ms = self.leer_con_ping(c, 3)
+        self.assertFalse(any(k == "text" and d.get("t") == "silencio" for k, d in ms))
         c.close()
-        self.assertTrue(any(k == "text" and d.get("t") == "voz" for k, d in ms))                                   # la pregunta se retira sola
 
     def test_sin_autorizacion_se_rechaza(self):
         for tok in ("malo", ""):
