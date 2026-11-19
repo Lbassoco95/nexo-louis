@@ -8,7 +8,11 @@ P=0; ok(){ printf "  \033[32m✓\033[0m %s\n" "$*"; }; bad(){ printf "  \033[31m
 echo "1) Servicio"
 if systemctl is-active --quiet openclaw-gateway; then ok "openclaw-gateway activo"; else
   bad "openclaw-gateway NO está activo"; hint "mira por qué: sudo journalctl -u openclaw-gateway -n 30 --no-pager"; fi
-n=$(systemctl show openclaw-gateway -p NRestarts --value 2>/dev/null); [[ "${n:-0}" -gt 3 ]] && { bad "se ha reiniciado $n veces (se cae al arrancar)"; hint "casi siempre es un archivo sin instalar: ver el punto 2"; }
+# NRestarts es un contador HISTÓRICO (no se borra solo): solo es problema si el servicio lleva muy poco corriendo (se está cayendo ahora)
+n=$(systemctl show openclaw-gateway -p NRestarts --value 2>/dev/null); pid=$(systemctl show openclaw-gateway -p MainPID --value 2>/dev/null)
+up=$(ps -o etimes= -p "${pid:-0}" 2>/dev/null | tr -d ' '); up=${up:-0}
+if [[ "${n:-0}" -gt 3 && "$up" -lt 45 ]]; then bad "lleva solo ${up}s corriendo y $n reinicios (se está cayendo al arrancar)"; hint "casi siempre es un archivo sin instalar: ver el punto 2"
+elif [[ "${n:-0}" -gt 3 ]]; then ok "estable: lleva $((up/60)) min corriendo (el contador de $n reinicios es histórico; se limpia con: sudo systemctl reset-failed openclaw-gateway)"; fi
 
 echo "2) Archivos instalados en $OC/scripts"
 FALTA=0
