@@ -198,6 +198,8 @@ header .tool,header #morebtn{display:inline-block}
  #pop{position:fixed;z-index:60;min-width:190px;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:0 10px 32px #0006;padding:5px}
 #pop button{display:flex;align-items:center;gap:10px;width:100%;background:none;border:0;color:var(--tx);padding:10px 12px;border-radius:10px;font:inherit;font-size:14.5px;text-align:left}
 #pop button:hover,#pop button:active{background:var(--panel2)}#pop button.bad{color:var(--bad)}
+.cuando{display:inline-block;font-size:11.5px;font-weight:700;color:var(--acc);background:var(--panel2);border-radius:8px;padding:1px 8px;margin-right:4px;white-space:nowrap}
+.agg>summary{cursor:pointer;list-style:none}.agg>summary::-webkit-details-marker{display:none}
 .sdfoot{padding:4px 8px 6px;border-top:1px solid var(--line)}
 .sdfoot button{width:100%;background:none;border:0;color:var(--mut);padding:9px 10px;font:inherit;font-size:14px;text-align:left;border-radius:10px}
 #fab{bottom:calc(var(--navh,60px) + 138px + env(safe-area-inset-bottom))}
@@ -1184,7 +1186,7 @@ $('#arts').onclick=openArtList;
 document.addEventListener('click',e=>{const b=e.target.closest&&e.target.closest('[data-art]');if(b){e.preventDefault();openArt(b.dataset.art)}});
 
 /* ---------- Hoy ---------- */
-function taskHtml(t,i){return `<div class="card task${t.urgente?' hot':''}" data-i="${i}"><button class="ck" aria-label="Marcar hecho"></button><div class="tt">${esc(t.texto.replace(/\s*·?\s*\[(?:auto|visto|capturado)[^\]]*\]/g,'').trim())}</div></div>`}
+function taskHtml(t,i){return `<div class="card task${t.urgente?' hot':''}" data-i="${i}"><button class="ck" aria-label="Marcar hecho"></button><div class="tt">${t.cuando?`<span class="cuando">${esc(t.cuando)}</span> `:''}${esc(t.texto.replace(/\s*·?\s*\[(?:auto|visto|capturado)[^\]]*\]/g,'').trim())}</div></div>`}
 async function loadHoy(){
   const el=$('#hoy');if(!el.innerHTML)el.innerHTML='<div class="empty">Cargando…</div>';
   try{
@@ -1193,14 +1195,22 @@ async function loadHoy(){
     paintBell(d.sin_leer||0);
     let h=d.confirmaciones?`<div class="card" id="confcard" style="border-left:4px solid var(--warn);cursor:pointer"><b>⚠️ ${d.confirmaciones} confirmación${d.confirmaciones>1?'es':''} pendiente${d.confirmaciones>1?'s':''}</b><div class="sub">Toca para revisar${d.confirmaciones>1?'las':'la'} y confirmar</div></div>`:'';
     h+=`<div class="stats"><div class="stat"><b>${d.abiertos}</b><span>Abiertos</span></div><div class="stat"><b>${d.urgentes.length}</b><span>Para hoy</span></div><div class="stat"><b>${d.cerrados}</b><span>Cerrados</span></div></div>`;
-    if(d.urgentes.length)h+='<div class="sec">Para hoy / urgente</div>'+d.urgentes.map((t,i)=>taskHtml({...t,urgente:true},'u'+i)).join('');
-    if(d.vencimientos.length)h+='<div class="sec">Con fecha u hora</div>'+d.vencimientos.map((t,i)=>taskHtml(t,'v'+i)).join('');
+    window._ag=[];
+    const AG=d.agenda,GR=[['hoy','📅 Hoy',1,1],['manana','Mañana',1,0],['semana','Esta semana',1,0],['proximas','Más adelante',0,0],['sin_fecha','Sin fecha precisa',0,0],['vencidas','⚠️ Vencidas · revisar o archivar',0,0]];
+    if(AG){
+      GR.forEach(([k,t,abierto,hot])=>{const L=AG[k]||[];if(!L.length)return;
+        const body=L.map(x=>{window._ag.push(x);return taskHtml({...x,urgente:hot||k==='vencidas'},'a'+(window._ag.length-1))}).join('');
+        h+=abierto?`<div class="sec">${t} · ${L.length}</div>${body}`:`<details class="agg"><summary class="sec">${t} · ${L.length}</summary>${body}</details>`});
+    }else{
+      if(d.urgentes.length)h+='<div class="sec">Para hoy / urgente</div>'+d.urgentes.map((t,i)=>taskHtml({...t,urgente:true},'u'+i)).join('');
+      if(d.vencimientos.length)h+='<div class="sec">Con fecha u hora</div>'+d.vencimientos.map((t,i)=>taskHtml(t,'v'+i)).join('');
+    }
     if(d.entregables_listos.length)h+='<div class="sec">Esperan tu Vo.Bo.</div>'+d.entregables_listos.map(e=>`<div class="card" data-f="${esc(e.archivo)}"><div class="row"><b>${esc(e.titulo)}</b><span class="pill listo">listo</span></div><div class="sub">${esc(e.cliente||'')}</div></div>`).join('');
-    if(!d.urgentes.length&&!d.vencimientos.length&&!d.entregables_listos.length)h+='<div class="empty">🎉 Nada urgente. Pregúntale a {{AGENT_NAME}} qué sigue.</div>';
+    if(!d.urgentes.length&&!d.vencimientos.length&&!window._ag.length&&!d.entregables_listos.length)h+='<div class="empty">🎉 Nada urgente. Pregúntale a {{AGENT_NAME}} qué sigue.</div>';
     h+=`<div class="sub" style="text-align:center;margin-top:14px">Actualizado ${esc(d.generado)}</div>`;
     el.innerHTML=h;
     $$('#hoy .task').forEach(c=>c.querySelector('.ck').onclick=()=>{
-      const i=c.dataset.i,t=i[0]==='u'?d.urgentes[+i.slice(1)]:d.vencimientos[+i.slice(1)];completar(t.texto,c)});
+      const i=c.dataset.i,t=i[0]==='a'?window._ag[+i.slice(1)]:i[0]==='u'?d.urgentes[+i.slice(1)]:d.vencimientos[+i.slice(1)];completar(t.texto,c)});
     $$('#hoy [data-f]').forEach(c=>c.onclick=()=>openEnt(c.dataset.f));
     const cc=$('#confcard');if(cc)cc.onclick=()=>openInbox();
   }catch(e){online(false);if(!el.querySelector('.card'))el.innerHTML='<div class="empty">No pude cargar. Toca ⟳</div>'}

@@ -1293,6 +1293,105 @@ def _extract_deadlines(agenda_text: str, max_items: int = 12) -> list[str]:
     return out[:max_items]
 
 
+_MESES = {"ene": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6, "jul": 7, "ago": 8, "sep": 9, "oct": 10, "nov": 11, "dic": 12}
+_DIAS = {"lunes": 0, "martes": 1, "miercoles": 2, "miércoles": 2, "jueves": 3, "viernes": 4, "sabado": 5, "sábado": 5, "domingo": 6}
+_DIAS_TXT = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"]
+_MESES_TXT = ["", "ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
+_FECHA_RE = re.compile(r"(?i)\b(\d{1,2})\s*(?:de\s+)?[-/ ]?\s*(ene(?:ro)?|feb(?:rero)?|mar(?:zo)?|abr(?:il)?|may(?:o)?|jun(?:io)?|jul(?:io)?|ago(?:sto)?|sept?(?:iembre)?|oct(?:ubre)?|nov(?:iembre)?|dic(?:iembre)?)\b\.?(?:\s*(?:de\s+)?(\d{4}))?")
+_ISO_RE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
+_HORA_RE = re.compile(r"\b([01]?\d|2[0-3]):([0-5]\d)\b")
+
+
+def parse_agenda_fecha(texto: str, hoy):
+    """(fecha|None, 'HH:MM'|None) de una línea de la AGENDA. Ignora las etiquetas [auto …]/[visto …] (son cuándo se capturó, no cuándo vence).
+    Sin año, elige el año que deja la fecha más cerca de hoy. Con varias fechas: la próxima futura; si todas pasaron, la más reciente.
+    Palabras sueltas: «hoy», «mañana» y días de la semana (la siguiente ocurrencia)."""
+    from datetime import date
+    t = re.sub(r"\[[^\]]*\]", " ", texto or "")
+    cand = []
+    for m in _ISO_RE.finditer(t):
+        try:
+            cand.append(date(int(m.group(1)), int(m.group(2)), int(m.group(3))))
+        except ValueError:
+            pass
+    for m in _FECHA_RE.finditer(t):
+        mes = _MESES.get(m.group(2).lower()[:3])
+        dia = int(m.group(1))
+        try:
+            if m.group(3):
+                cand.append(date(int(m.group(3)), mes, dia))
+            else:
+                best = None
+                for y in (hoy.year - 1, hoy.year, hoy.year + 1):
+                    try:
+                        d = date(y, mes, dia)
+                    except ValueError:
+                        continue
+                    if best is None or abs((d - hoy).days) < abs((best - hoy).days):
+                        best = d
+                if best:
+                    cand.append(best)
+        except (ValueError, TypeError):
+            pass
+    low = t.lower()
+    hora = None
+    mh = _HORA_RE.search(t)
+    if mh:
+        hora = "%02d:%s" % (int(mh.group(1)), mh.group(2))
+    if cand:
+        fut = sorted(d for d in cand if d >= hoy)
+        return (fut[0] if fut else max(cand)), hora
+    if re.search(r"\bhoy\b", low):
+        return hoy, hora
+    if re.search(r"\bma[ñn]ana\b", low):
+        return hoy + timedelta(days=1), hora
+    for nombre, idx in _DIAS.items():
+        if re.search(r"\b%s\b" % nombre, low):
+            return hoy + timedelta(days=(idx - hoy.weekday()) % 7), hora
+    return None, hora
+
+
+def agenda_por_fechas(agenda_text: str, hoy=None, max_items: int = 150) -> dict:
+    """Pendientes abiertos de la AGENDA ordenados como CALENDARIO: vencidas · hoy · mañana · esta semana · próximas · sin fecha precisa.
+    Dentro de cada grupo van por fecha y hora. Cada ítem: {texto, fecha (ISO|''), hora, cuando (texto legible)}."""
+    hoy = hoy or datetime.now(TZ_CDMX).date()
+    grupos = {"vencidas": [], "hoy": [], "manana": [], "semana": [], "proximas": [], "sin_fecha": []}
+    vistos = set()
+    for line in agenda_text.splitlines():
+        if not re.match(r"^\s*-\s*\[\s*\]\s+", line):
+            continue
+        clean = re.sub(r"^\s*-\s*\[\s*\]\s*", "", line).replace("**", "").strip().strip("*").strip()
+        k = clean.lower()[:60]
+        if not clean or k in vistos:
+            continue
+        f, h = parse_agenda_fecha(clean, hoy)
+        senal = _DEADLINE_RE.search(re.sub(r"\[[^\]]*\]", " ", clean)) is not None
+        if f is None and not senal:
+            continue
+        vistos.add(k)
+        it = {"texto": clean, "fecha": f.isoformat() if f else "", "hora": h or ""}
+        if f is None:
+            g = "sin_fecha"
+            it["cuando"] = "urgente" if re.search(r"(?i)urgente", clean) else ""
+        else:
+            dd = (f - hoy).days
+            g = "vencidas" if dd < 0 else "hoy" if dd == 0 else "manana" if dd == 1 else "semana" if dd <= 7 else "proximas"
+            etq = {0: "hoy", 1: "mañana"}.get(dd) or ("hace %d d" % -dd if dd < 0 else "%s %d %s" % (_DIAS_TXT[f.weekday()], f.day, _MESES_TXT[f.month]))
+            if dd < 0:
+                etq = "%s %d %s" % (_DIAS_TXT[f.weekday()], f.day, _MESES_TXT[f.month]) + (" %d" % f.year if f.year != hoy.year else "") + " · hace %d d" % -dd
+            it["cuando"] = etq + (" · " + h if h else "")
+        grupos[g].append(it)
+    clave = lambda x: (x["fecha"] or "9999", x["hora"] or "99:99")
+    for g in ("hoy", "manana", "semana", "proximas"):
+        grupos[g].sort(key=clave)
+    grupos["vencidas"].sort(key=lambda x: (x["fecha"], x["hora"] or "99:99"), reverse=True)     # la más reciente primero
+    total = 0
+    for g in grupos:
+        grupos[g] = grupos[g][:max(0, max_items - total)]
+        total += len(grupos[g])
+    return grupos
+
+
 def build_operational_snapshot(compact: bool = True) -> str:
     """Datos reales de AGENDA/IMPORTANT/JOURNAL para anclar respuestas (sin inventar)."""
     agenda = _read_space_file("AGENDA.md")
@@ -1862,6 +1961,7 @@ def build_app_hoy() -> dict:
         "generado": datetime.now(TZ_CDMX).strftime("%d %b %H:%M"),
         "abiertos": abiertos, "cerrados": cerrados,
         "urgentes": urgentes, "vencimientos": resto,
+        "agenda": agenda_por_fechas(agenda),
         "entregables_listos": listos,
     }
 
