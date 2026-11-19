@@ -12,6 +12,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="{{AGENT_NAME}}">
+<script>try{var _u=new URLSearchParams(location.search).get('skin');if(_u){localStorage.setItem('skin',JSON.stringify(_u))}var _k=JSON.parse(localStorage.getItem('skin')||'null');if(_k==='cristal')document.documentElement.setAttribute('data-skin','cristal')}catch(e){}</script>
 <style>
 :root{--bg:#0b1220;--panel:#121a2c;--panel2:#18233a;--line:#243049;--tx:#e8edf7;--mut:#8b97b3;--acc:#4f8cff;--acc2:#7c3aed;--ok:#34d399;--warn:#fbbf24;--bad:#f87171;--r:16px}
 @media (prefers-color-scheme:light){:root{--bg:#f4f6fb;--panel:#fff;--panel2:#eef2fa;--line:#dde3f0;--tx:#111a2e;--mut:#5d6985}}
@@ -228,6 +229,61 @@ header .tool,header #morebtn{display:inline-block}
   .chips,.composer,.atts,.recbar{max-width:960px}
 }
 @media (min-width:760px) and (max-height:520px){#app{margin-left:290px}}
+
+/* ---------- paneles flotantes en pantallas grandes (notificaciones, trabajos, traductor…) ---------- */
+@media (min-width:760px){
+  .sheet{background:transparent;align-items:stretch;justify-content:flex-end;padding:76px 18px 18px}
+  .sheet .in{width:440px;height:auto;max-height:calc(100dvh - 94px);border-radius:20px;border:1px solid var(--line);box-shadow:0 18px 60px #0006;padding-bottom:0}
+}
+/* ---------- tablero acoplado a la derecha (compu/tableta) o en pantalla completa (teléfono) ---------- */
+#dock{position:fixed;top:0;right:0;bottom:0;width:min(48vw,820px);z-index:25;background:var(--bg);border-left:1px solid var(--line);display:none;flex-direction:column;padding-top:env(safe-area-inset-top)}
+body.docked #dock{display:flex}
+.dkhd{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line)}
+.dkhd b{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:15px}
+.dkhd button{background:none;border:0;color:var(--mut);font-size:19px;padding:4px 8px}
+#dk-back{display:none;color:var(--acc);font-size:15px;font-weight:600}
+#dk-f{flex:1;min-height:0;width:100%;border:0;background:#fff}
+.dkft{font-size:12px;color:var(--mut);padding:6px 14px 0}
+.dkact{display:flex;gap:8px;align-items:flex-end;padding:8px 12px calc(10px + env(safe-area-inset-bottom))}
+.dkact textarea{flex:1;resize:none;max-height:110px;background:var(--panel);color:var(--tx);border:1px solid var(--line);border-radius:18px;padding:10px 14px;font:inherit;outline:none}
+.dkact button{border:0;border-radius:50%;width:42px;height:42px;font-size:17px;color:#fff;background:linear-gradient(135deg,var(--acc),var(--acc2));flex:none}
+.dkact button.g{background:var(--panel);color:var(--tx);border:1px solid var(--line)}
+.dkth{max-height:34%;overflow-y:auto;padding:8px 12px 0;border-top:1px solid var(--line)}
+.dkth .msg{max-width:100%;font-size:14px}
+.dkchips{display:flex;gap:6px;overflow-x:auto;padding:6px 12px 0;scrollbar-width:none}.dkchips .chip{font-size:12px;padding:5px 10px}
+.artlbl{font-size:11px;color:var(--mut);margin:0 2px 3px}.msg.u+.artlbl{text-align:right}
+@media (min-width:760px){body.docked #app{margin-right:min(48vw,820px)}}
+@media (min-width:760px) and (max-width:1099px){body.docked #app{margin-right:0}#dock{width:calc(100vw - 290px)}}
+@media (max-width:759px){#dock{width:100%;z-index:34}#dk-back{display:inline-block}#dk-x,#dk-fs{display:none}}
+body.dkfull #dock{width:100%;z-index:34}body.dkfull.docked #app{margin-right:0}
+/* ---------- aspecto «Cristal»: vidrio esmerilado, minimalista (se activa en Ajustes → Apariencia) ---------- */
+html[data-skin="cristal"]{--glass:rgba(255,255,255,.64);--glass2:rgba(255,255,255,.82);--gline:rgba(255,255,255,.7);--base:#e9edfa;--hl:rgba(255,255,255,.75);--sh:rgba(40,50,110,.14);--bgb1:#7c6cff55;--bgb2:#22d3ee44;--bgb3:#f472b644;--r:20px}
+@media (prefers-color-scheme:dark){html[data-skin="cristal"]{--glass:rgba(24,29,52,.58);--glass2:rgba(34,41,70,.74);--gline:rgba(255,255,255,.13);--base:#080b16;--hl:rgba(255,255,255,.16);--sh:rgba(0,0,0,.45);--bgb1:#6d5dfc50;--bgb2:#0ea5c944;--bgb3:#ec489944}}
+html[data-skin="cristal"]{--bg:var(--base);--panel:var(--glass);--panel2:var(--glass2);--line:var(--gline);background:var(--base)}
+html[data-skin="cristal"] body{background:transparent}
+html[data-skin="cristal"] body::before{content:"";position:fixed;inset:-25%;z-index:-1;pointer-events:none;
+  background:radial-gradient(40% 36% at 14% 8%,var(--bgb1),transparent 70%),radial-gradient(34% 40% at 92% 22%,var(--bgb2),transparent 70%),radial-gradient(46% 40% at 68% 96%,var(--bgb3),transparent 70%)}
+html[data-skin="cristal"] #app{background:transparent}
+html[data-skin="cristal"] header{margin:10px 12px 0;border:1px solid var(--gline);border-radius:22px;background:var(--glass);box-shadow:inset 0 1px 0 var(--hl),0 10px 30px var(--sh);padding:9px 14px}
+html[data-skin="cristal"] header h1{font-weight:650;font-size:17px}
+html[data-skin="cristal"] nav{margin:0 12px 8px;border:1px solid var(--gline);border-radius:26px;background:var(--glass);box-shadow:inset 0 1px 0 var(--hl),0 10px 30px var(--sh);padding-bottom:0;overflow:hidden}
+html[data-skin="cristal"] nav button.on{color:var(--acc)}
+html[data-skin="cristal"] .card,html[data-skin="cristal"] .stat,html[data-skin="cristal"] .menurow,html[data-skin="cristal"] .artrow,html[data-skin="cristal"] .trturn,html[data-skin="cristal"] .msg.a{border-color:var(--gline);box-shadow:inset 0 1px 0 var(--hl),0 6px 22px var(--sh)}
+html[data-skin="cristal"] .msg.u{background:linear-gradient(135deg,var(--acc),#8b7bff);box-shadow:inset 0 1px 0 rgba(255,255,255,.4),0 8px 22px rgba(79,124,255,.3)}
+html[data-skin="cristal"] .composer{margin:0 12px 8px;padding:8px;border:1px solid var(--gline);border-radius:30px;background:var(--glass);box-shadow:inset 0 1px 0 var(--hl),0 10px 30px var(--sh);-webkit-backdrop-filter:blur(22px) saturate(1.5);backdrop-filter:blur(22px) saturate(1.5)}
+html[data-skin="cristal"] .composer textarea,html[data-skin="cristal"] .rb.mic{background:transparent;border-color:transparent}
+html[data-skin="cristal"] .chip{background:var(--glass);border-color:var(--gline);box-shadow:inset 0 1px 0 var(--hl)}
+html[data-skin="cristal"] #side{background:var(--glass);border-right:1px solid var(--gline);-webkit-backdrop-filter:blur(28px) saturate(1.6);backdrop-filter:blur(28px) saturate(1.6)}
+html[data-skin="cristal"] .cv.on,html[data-skin="cristal"] .sdnav button.on{background:var(--glass2);box-shadow:inset 0 1px 0 var(--hl)}
+html[data-skin="cristal"] .sheet .in,html[data-skin="cristal"] #pop,html[data-skin="cristal"] #dock{background:var(--glass2);border:1px solid var(--gline);box-shadow:inset 0 1px 0 var(--hl),0 22px 70px var(--sh);-webkit-backdrop-filter:blur(30px) saturate(1.7);backdrop-filter:blur(30px) saturate(1.7)}
+html[data-skin="cristal"] .sheet{-webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px)}
+html[data-skin="cristal"] #fab{background:linear-gradient(135deg,var(--acc),#8b7bff);box-shadow:inset 0 1px 0 rgba(255,255,255,.45),0 10px 30px rgba(79,124,255,.45)}
+html[data-skin="cristal"] .sdnew,html[data-skin="cristal"] .btn{box-shadow:inset 0 1px 0 rgba(255,255,255,.4),0 8px 22px rgba(79,124,255,.3)}
+html[data-skin="cristal"] .btn.ghost{box-shadow:inset 0 1px 0 var(--hl)}
+html[data-skin="cristal"] input.f,html[data-skin="cristal"] input.search,html[data-skin="cristal"] .trbar select,html[data-skin="cristal"] .trin input{background:var(--glass);border-color:var(--gline);box-shadow:inset 0 1px 0 var(--hl)}
+html[data-skin="cristal"] .task.hot{border-left-width:3px}
+.skinopts{display:flex;gap:8px}.skinopts button{flex:1;border:1px solid var(--line);background:var(--panel);color:var(--tx);border-radius:14px;padding:12px 8px;font:inherit}.skinopts button.on{border-color:var(--acc);box-shadow:0 0 0 2px var(--acc) inset;font-weight:700}
+@media (min-width:760px){html[data-skin="cristal"] .composer{width:calc(100% - 24px);margin-left:auto;margin-right:auto}html[data-skin="cristal"] nav{display:none}html[data-skin="cristal"] #app{margin-left:290px}html[data-skin="cristal"] #side{width:290px}}
 </style>
 </head>
 <body>
@@ -283,6 +339,11 @@ header .tool,header #morebtn{display:inline-block}
     <button id="sd-arts"><span>🧩</span>Tableros</button>
   </div>
 </aside>
+<section id="dock" aria-label="Tablero"><div class="dkhd"><button id="dk-back">‹ Donna</button><b id="dk-t"></b><button id="dk-fs" title="Pantalla completa">⤢</button><button id="dk-x" title="Cerrar">✕</button></div>
+  <iframe id="dk-f" sandbox="" referrerpolicy="no-referrer" title="Tablero"></iframe><div class="dkft" id="dk-ft"></div>
+  <div class="dkth" id="dk-th" hidden></div>
+  <div class="dkchips" id="dk-chips"></div>
+  <div class="dkact"><textarea id="dk-in" rows="1" placeholder="Pregunta o pide cambios…" enterkeyhint="send"></textarea><button id="dk-send" aria-label="Enviar">➤</button><button class="g" id="dk-list" title="Todos los tableros">🧩</button></div></section>
 <div class="vm" id="vm"><div class="vmin">
   <div class="vmhd"><b>Conversación con {{AGENT_NAME}}</b><button id="vm-x">✕ Terminar</button></div>
   <div class="orbw"><div class="orb" id="vm-orb" data-s="idle"></div></div>
@@ -426,14 +487,16 @@ function bubble(m,i){
 function renderChat(){
   const log=$('#log');log.innerHTML='';
   if(!chat.length){log.innerHTML='<div class="empty"><div style="font-size:42px">🧠</div><b>Listo, Polo.</b><br>Pregúntame lo que sea de tu agenda, entregables o clientes.</div>'}
-  chat.forEach((m,i)=>log.appendChild(bubble(m,i)));scrollDown();
+  chat.forEach((m,i)=>{if(m.art&&(i===0||chat[i-1].art!==m.art)){const l=document.createElement('div');l.className='artlbl';l.textContent='🧩 Conversación del tablero';log.appendChild(l)}log.appendChild(bubble(m,i))});scrollDown();paintDock();
 }
 function scrollDown(){const l=$('#log');requestAnimationFrame(()=>l.scrollTop=l.scrollHeight)}
 let ctl=null;
 const rid=()=>(crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random().toString(36).slice(2)).replace(/[^A-Za-z0-9_-]/g,'');
 function setBusy(b){busy=b;const s=$('#send');s.classList.toggle('stop',b);s.textContent=b?'■':'➤';s.setAttribute('aria-label',b?'Detener':'Enviar')}
-function finishMsg(t,model){chat.push({r:'a',t,ts:Date.now(),model});LS.set('chat',chat.slice(-200));LS.del('pending')}
-async function sendMsg(text){
+function finishMsg(t,model){chat.push(curArt?{r:'a',t,ts:Date.now(),model,art:curArt}:{r:'a',t,ts:Date.now(),model});{const m=String(t).match(/\[\[artefacto:(a[0-9a-f]{10})\]\]/);if(m&&(innerWidth>=760||dkId===m[1]))setTimeout(()=>openArt(m[1],true),300)}LS.set('chat',chat.slice(-200));LS.del('pending')}
+let curArt='';
+async function sendMsg(text,art){
+  art=(typeof art==='string'&&art)?art:'';
   text=(text||'').trim();
   if(PEND.some(a=>a.state==='subiendo')){toast('Espera a que termine de subir el adjunto');return}
   const atts=PEND.filter(a=>a.id&&a.state!=='error');
@@ -443,18 +506,19 @@ async function sendMsg(text){
   if(atts.length)text+='\n'+atts.map(a=>'📎 '+a.name).join('\n');
   PEND=[];paintPend();
   setBusy(true);$('#inp').value='';autosize();
-  chat.push({r:'u',t:text,ts:Date.now()});LS.set('chat',chat.slice(-200));renderChat();
+  curArt=art;chat.push(art?{r:'u',t:text,ts:Date.now(),art}:{r:'u',t:text,ts:Date.now()});LS.set('chat',chat.slice(-200));renderChat();
   const id=rid();LS.set('pending',{id,ts:Date.now()});
   const log=$('#log'),d=document.createElement('div');d.className='msg a live';
   d.innerHTML='<span class="typing"><i></i><i></i><i></i></span><div class="st"></div>';log.appendChild(d);scrollDown();
+  let dd=null;if(art){const th=$('#dk-th');th.hidden=false;dd=d.cloneNode(true);th.appendChild(dd);th.scrollTop=th.scrollHeight}
   const hist=chat.slice(0,-1).slice(-16).map(m=>({role:m.r==='u'?'user':'assistant',content:m.t}));
   let acc='',model='',gotDone=false,failed='',raf=0;
-  const paint=()=>{raf=0;d.classList.add('has');d.innerHTML=md(acc);scrollDown()};
+  const paint=()=>{raf=0;d.classList.add('has');d.innerHTML=md(acc);scrollDown();if(dd){dd.className='msg a live has';dd.innerHTML=d.innerHTML;const th=$('#dk-th');th.scrollTop=th.scrollHeight}};
   ctl=new AbortController();
   try{
     const r=await fetch('/v1/app/chat/stream',{method:'POST',signal:ctl.signal,
       headers:{'Content-Type':'application/json',Authorization:'Bearer '+TOKEN},
-      body:JSON.stringify({rid:id,attachments:attIds,messages:[...hist,{role:'user',content:text}]})});
+      body:JSON.stringify({rid:id,attachments:attIds,tablero:art||undefined,messages:[...hist,{role:'user',content:text}]})});
     if(r.status===401){logout(true);throw new Error('Sesión vencida')}
     if(!r.ok){let m='';try{m=(await r.json()).error}catch(e){}throw new Error(m||('Error '+r.status))}
     online(true);
@@ -477,7 +541,7 @@ async function sendMsg(text){
       online(false);setBusy(false);ctl=null;renderChat();recoverPending(true);return}
     else{chat.push({r:'a',t:acc?acc+'\n\n⚠️ '+e.message:'⚠️ '+e.message+'. Vuelve a enviar.',ts:Date.now()});LS.del('pending');LS.set('chat',chat.slice(-200));online(false)}
   }
-  ctl=null;setBusy(false);renderChat();
+  ctl=null;curArt='';setBusy(false);renderChat();
 }
 function parseSSE(txt,cb){for(const blk of txt.split('\n\n')){if(!blk.trim())continue;let ev='message',data='';
   for(const l of blk.split('\n')){if(l.startsWith('event:'))ev=l.slice(6).trim();else if(l.startsWith('data:'))data+=l.slice(5).trim()}
@@ -1165,15 +1229,27 @@ function renderInbox(items,focusId){
 }
 $('#bell').onclick=()=>openInbox();
 /* ---------- tableros (artefactos): iframe sandbox="" = sin scripts, sin red, sin acceso a tu sesión ---------- */
-async function openArt(id){
-  sheet('Tablero…','<div class="empty">Cargando…</div>');
+let dkId='',dkTitle='';
+async function openArt(id,silent){
   try{
     const a=await api('/v1/app/artefacto?id='+encodeURIComponent(id));
-    sheet(a.titulo||'Tablero','<iframe class="artframe" sandbox="" referrerpolicy="no-referrer" title="Tablero"></iframe>'+
-      '<div class="sub" style="margin-top:8px">v'+esc(String(a.version))+' · '+(a.verificado?'✓ ':'⚠️ ')+esc(a.procedencia||'')+'</div>');
-    $('#sh-b iframe').srcdoc=a.doc;
-  }catch(e){sheet('Tablero','<div class="empty">No pude abrirlo. '+esc(e.message)+'</div>')}
+    dkId=id;dkTitle=a.titulo||'Tablero';
+    $('#dk-t').textContent=dkTitle;$('#dk-f').srcdoc=a.doc;
+    $('#dk-ft').textContent='v'+a.version+' · '+(a.verificado?'✓ ':'⚠️ ')+(a.procedencia||'');
+    closeSheet();document.body.classList.add('docked');paintDock();
+  }catch(e){if(!silent)toast('⚠️ No pude abrir el tablero: '+e.message)}
 }
+function closeDock(){document.body.classList.remove('docked','dkfull');dkId='';$('#dk-f').srcdoc=''}
+$('#dk-x').onclick=closeDock;$('#dk-back').onclick=closeDock;
+$('#dk-fs').onclick=()=>document.body.classList.toggle('dkfull');
+$('#dk-list').onclick=openArtList;
+const DKCH=['Resúmelo en 3 puntos','¿Qué falta o está en riesgo?','Agrega una columna de responsable','Actualízalo con datos de hoy'];
+$('#dk-chips').innerHTML=DKCH.map(c=>'<button class="chip">'+esc(c)+'</button>').join('');
+$$('#dk-chips .chip').forEach(b=>b.onclick=()=>askTablero(b.textContent));
+function askTablero(t){t=(t||$('#dk-in').value).trim();if(!t||!dkId)return;if(busy){toast('Espera a que termine de contestar');return}$('#dk-in').value='';sendMsg(t,dkId)}
+$('#dk-send').onclick=()=>askTablero();
+$('#dk-in').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&innerWidth>=760){e.preventDefault();askTablero()}});
+function paintDock(){const th=$('#dk-th');if(!th)return;const L=dkId?chat.filter(m=>m.art===dkId):[];th.hidden=!L.length;th.innerHTML='';L.forEach(m=>th.appendChild(bubble(m,-1)));th.scrollTop=th.scrollHeight}
 async function openArtList(){
   sheet('Tableros','<div class="empty">Cargando…</div>');
   try{
@@ -1260,10 +1336,13 @@ $('#sh-x').onclick=closeSheet;$('#sheet').onclick=e=>{if(e.target.id==='sheet')c
 function renderCfg(){
   $('#cfg').innerHTML=`<div class="sec">Conexión</div><div class="card"><div class="row"><span>Servidor</span><span class="sub">${esc(location.host)}</span></div><div class="row" style="margin-top:6px"><span>Estado</span><span class="sub" id="st">…</span></div></div>
   <div class="sec">Notificaciones</div><div class="card" id="pushcard"><div class="sub" id="pushst">…</div></div>
+  <div class="sec">Apariencia</div><div class="card"><div class="skinopts"><button data-sk="clasico">Clásico</button><button data-sk="cristal">✨ Cristal</button></div><div class="sub" style="margin-top:8px">Cristal: vidrio esmerilado y más minimalista. Puedes volver al Clásico cuando quieras.</div></div>
   <div class="sec">Chat</div><div class="card"><button class="btn ghost" id="clr" style="margin:0">Empezar una conversación nueva</button></div>
   <div class="sec">Widget de pendientes (iPhone)</div><div class="card"><div class="sub" style="margin-bottom:10px">Una app web no puede crear un widget nativo; esta alternativa usa la app gratuita <b>Scriptable</b>:<br>1) Instálala desde la App Store.<br>2) Toca «Copiar script» y en Scriptable crea un script nuevo (+) y pégalo.<br>3) Ejecútalo una vez (▶): te pide el token y lo guarda en tu iPhone.<br>4) Mantén presionada la pantalla de inicio → + → Scriptable → elige el script.</div><button class="btn ghost" id="wcopy" style="margin:0">Copiar script del widget</button></div>
   <div class="sec">Instalar</div><div class="card sub">iPhone: Safari → Compartir → <b>Agregar a pantalla de inicio</b>.<br>Android: Chrome → ⋮ → <b>Instalar app</b>.</div>
   <div class="sec">Sesión</div><div class="card"><div class="sub" id="who" style="margin-bottom:10px">…</div><button class="btn ghost" id="out" style="margin:0;color:var(--bad)">Cerrar sesión</button><button class="btn ghost" id="outall" style="color:var(--bad)">Cerrar sesión en todos los dispositivos</button></div>`;
+  const curSk=document.documentElement.getAttribute('data-skin')==='cristal'?'cristal':'clasico';
+  $$('[data-sk]').forEach(b=>{b.classList.toggle('on',b.dataset.sk===curSk);b.onclick=()=>{LS.set('skin',b.dataset.sk);if(b.dataset.sk==='cristal')document.documentElement.setAttribute('data-skin','cristal');else document.documentElement.removeAttribute('data-skin');$$('[data-sk]').forEach(x=>x.classList.toggle('on',x===b))}});
   $('#clr').onclick=()=>{if(confirm('¿Empezar una conversación nueva? La actual queda guardada en el menú ☰.')){nuevaConv();toast('Conversación nueva')}};
   $('#out').onclick=()=>{if(confirm('¿Cerrar sesión?'))logout(false)};
   $('#outall').onclick=async()=>{if(!confirm('¿Cerrar la sesión en TODOS tus dispositivos (este incluido)? Tendrás que volver a entrar.'))return;

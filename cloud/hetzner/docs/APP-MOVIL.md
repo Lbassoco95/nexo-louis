@@ -267,3 +267,11 @@ Cuando un pedido es demasiado grande para contestarlo en la conversación (voz o
 - API: `GET /v1/app/chats[?q=]`, `GET /v1/app/chat?id=`, `POST /v1/app/chats/guardar|renombrar|borrar|nuevo`.
 - Arreglos: el botón 🎙 ya no tapa las sugerencias; burbujas ajustadas a su texto; hoja inferior sobre el cajón.
 - Pruebas: `python3 -m unittest tests.test_chats tests.test_pwa_assets`.
+
+## Tableros acoplados e interactivos, paneles y aspecto «Cristal» (v19)
+
+- **Tablero al lado del chat:** en compu/tableta un tablero se abre en un panel fijo a la derecha (⤢ pantalla completa, ✕ cerrar) y, si Donna lo crea o lo actualiza en el chat, se abre/refresca solo. En teléfono ocupa toda la pantalla (‹ Donna para volver).
+- **Se trabaja dentro del tablero:** el panel trae su propio hilo + caja (con atajos: resumir, qué falta, agregar columna, actualizar). Donna recibe el contenido del tablero como contexto (solo para el modelo) y puede `actualizar_artefacto`. Todo lo hablado queda **guardado en la conversación** (mensajes con `art`, etiqueta «🧩 Conversación del tablero») y en el historial que alimenta la memoria nocturna (solo «[Tablero «título»] pregunta», sin el volcado del contenido).
+- **Paneles tipo menú** en pantallas grandes: notificaciones, trabajos, traductor… salen como panel flotante a la derecha (sin oscurecer todo); ⋯ de conversaciones es menú contextual.
+- **Aspecto «Cristal»** (opcional, Ajustes → Apariencia o `?skin=cristal`): vidrio esmerilado, fondo con degradados suaves, barras flotantes, claro/oscuro automático. Solo CSS (`backdrop-filter`), sin dependencias; probado como técnica inspirada en proyectos públicos de «liquid glass» (ninguno copiado). La refracción real con filtros SVG solo funciona en Chromium, no en Safari/iPhone, por eso no se usa.
+- Pruebas: `python3 -m unittest tests.test_chats tests.test_pwa_assets`.

@@ -26,6 +26,12 @@ class T(unittest.TestCase):
         self.assertIsNone(C.obtener("otro", cid))
         self.assertTrue(C.borrar("polo", cid)); self.assertFalse(C.borrar("polo", cid))
 
+    def test_etiqueta_de_tablero(self):
+        cid = C.nuevo_id()
+        C.guardar("t1", cid, [{"r": "u", "t": "¿cuántos?", "art": "a0123456789"}, {"r": "a", "t": "uno", "art": "a0123456789"}, {"r": "u", "t": "x", "art": "../mal"}])
+        m = C.obtener("t1", cid)["msgs"]
+        self.assertEqual([x.get("art") for x in m], ["a0123456789", "a0123456789", None])      # etiqueta válida se conserva, inválida se descarta
+
     def test_validacion(self):
         for malo in ("../x", "c1", "", "cZZZZZZZZZZ"):
             with self.assertRaises(ValueError): C.guardar("polo", malo, [{"r": "u", "t": "x"}])

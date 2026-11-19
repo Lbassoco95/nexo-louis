@@ -279,15 +279,15 @@ _VOZ_BLOQUE = (
 )
 
 
-def _chat_worker(rid: str, user_msg: str, history: list, voz: bool = False, registrar: bool = True):
+def _chat_worker(rid: str, user_msg: str, history: list, voz: bool = False, registrar: bool = True, extra: str = "", etiqueta: str = ""):
     res = _RESULTS[rid]
     try:
         api_key = core.load_anthropic_key()
         sys_prompt = core.load_system_prompt(channel="api") + (_VOZ_BLOQUE if voz else "")
         # Mismo orden que telegram-bridge: el mensaje entra al historial ANTES de call_llm.
         if registrar:
-            _hist_append("user", user_msg)
-        text, model = core.call_llm(api_key, sys_prompt, history, user_msg, history_file=APP_HISTORY_FILE)
+            _hist_append("user", (etiqueta + " " if etiqueta else "") + user_msg)
+        text, model = core.call_llm(api_key, sys_prompt, history, user_msg + extra, history_file=APP_HISTORY_FILE)
         if text and registrar:
             _hist_append("assistant", text)
         out = {"text": text or "(sin respuesta)", "model": model, "error": None}
@@ -300,6 +300,28 @@ def _chat_worker(rid: str, user_msg: str, history: list, voz: bool = False, regi
     _CHAT_SLOTS.release()
     if gone:
         _push_answer(res)
+
+
+def _tablero_contexto(aid: str):
+    """(etiqueta, contexto) para preguntas hechas DESDE un tablero abierto: título + texto plano de su contenido (sin HTML).
+    El contexto va solo al modelo; en el historial/memoria queda únicamente la etiqueta corta + la pregunta."""
+    try:
+        import app_artifacts
+        rec = app_artifacts._read(aid)
+    except Exception:
+        rec = None
+    if not rec:
+        return "", ""
+    plano = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", rec.get("html", ""), flags=re.S | re.I)
+    plano = re.sub(r"</(p|div|li|tr|h[1-6]|table|section)>", "\n", plano, flags=re.I)
+    plano = re.sub(r"<[^>]+>", " ", plano)
+    plano = re.sub(r"[ \t]+", " ", re.sub(r"\n\s*\n+", "\n", plano)).strip()[:9000]
+    et = "[Tablero «%s»]" % rec.get("titulo", "")[:80]
+    ctx = ("\n\n---\nCONTEXTO: Polo tiene abierto el TABLERO «%s» (id %s, versión %s) y la pregunta es sobre él. Contenido actual del tablero:\n%s\n---\n"
+           "Responde con base en ese contenido y en datos reales (consúltalos con tus herramientas si hace falta; no inventes). "
+           "Si pide cambios, agregar columnas/datos o actualizarlo, usa `actualizar_artefacto` con id %s y pon [[artefacto:%s]] en tu respuesta."
+           % (rec.get("titulo", ""), aid, rec.get("version", 1), plano, aid, aid))
+    return et, ctx
 
 
 def _ask_donna_voice(user_msg: str, history: list, registrar: bool = True, voz: bool = True):
@@ -2159,7 +2181,8 @@ class Handler(BaseHTTPRequestHandler):
         res = {"rid": rid, "t0": time.time(), "done": False, "client_gone": False}
         with _RESULTS_LOCK:
             _RESULTS[rid] = res
-        threading.Thread(target=_chat_worker, args=(rid, user_msg, history), daemon=True).start()
+        _et, _cx = _tablero_contexto(str(body.get("tablero", ""))) if re.match(r"^a[0-9a-f]{10}$", str(body.get("tablero", ""))) else ("", "")
+        threading.Thread(target=_chat_worker, args=(rid, user_msg, history), kwargs={"extra": _cx, "etiqueta": _et}, daemon=True).start()
         try:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")

@@ -47,6 +47,8 @@ def _limpiar(msgs) -> list:
         e = {"r": m["r"], "t": t, "ts": int(m.get("ts") or time.time() * 1000)}
         if m.get("model"):
             e["model"] = str(m["model"])[:40]
+        if re.match(r"^a[0-9a-f]{10}$", str(m.get("art", ""))):
+            e["art"] = m["art"]
         out.append(e)
     return out
 
