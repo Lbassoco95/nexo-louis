@@ -71,7 +71,7 @@ class OpenAIDeMentira:
             ev = json.loads(m[1])
             if ev["type"] == "session.update":
                 self.updates.append(ev["session"])
-                if ev["session"]["audio"]["output"].get("language") == "es":              # el traductor de mentira rechaza «es» (prueba de errores)
+                if ev["session"]["audio"]["output"].get("language") == "es" and "input" not in ev["session"]["audio"]:              # el traductor de mentira rechaza «es» (prueba de errores)
                     ws.send_text(json.dumps({"type": "error", "error": {"message": "Unsupported output language: es"}}))
                 else:
                     ws.send_text(json.dumps({"type": "session.updated"}))
@@ -152,6 +152,77 @@ class Puente(unittest.TestCase):
         ms = self.leer(c, 2, lambda o: any(k == "text" and d.get("t") == "error" for k, d in o))
         c.close()
         self.assertTrue(any(k == "text" and d.get("t") == "error" and "Unsupported output language" in d["m"] for k, d in ms))
+
+    def test_modo_escuchar_solo_subtitulos_en_espanol(self):
+        n0 = len(self.fake.updates)
+        c = W.connect_url(f"ws://127.0.0.1:{self.port}/v1/app/live")
+        c.send_text(json.dumps({"t": "auth", "token": "master-secret-123", "modo": "escuchar", "to": "zh"}))   # aunque pidan otro idioma, escuchar es SIEMPRE al español
+        ms = self.leer(c, 2, lambda o: any(k == "text" and d.get("t") == "listo" for k, d in o))
+        listo = [d for k, d in ms if k == "text" and d.get("t") == "listo"][0]
+        self.assertEqual((listo["to"], listo["modo"], listo["max"]), ("es", "escuchar", g.LIVE_ESCUCHAR_MAX_SECONDS))
+        self.assertEqual(self.fake.updates[n0]["audio"]["output"]["language"], "es")
+        for _ in range(6):
+            c.send_binary(b"\x00\x01" * 2400)
+        ms = self.leer(c, 3, lambda o: any(k == "text" and d.get("t") == "out" for k, d in o))
+        c.send_text(json.dumps({"t": "lang", "to": "en"}))                                              # cambiar de idioma no aplica en este modo
+        c.send_text(json.dumps({"t": "ping"}))
+        ms += self.leer(c, 1.0)
+        c.close()
+        self.assertTrue(any(k == "text" and d.get("t") == "out" and d["d"] == "Good" for k, d in ms))
+        self.assertFalse(any(k == "binary" for k, _ in ms))                                              # no se reenvía la voz traducida
+        self.assertEqual(len(self.fake.updates), n0 + 1)
+
+    def test_ping_mantiene_viva_la_sesion_en_silencio(self):
+        c = W.connect_url(f"ws://127.0.0.1:{self.port}/v1/app/live")
+        c.send_text(json.dumps({"t": "auth", "token": "master-secret-123", "modo": "escuchar"}))
+        self.leer(c, 1.5, lambda o: any(k == "text" and d.get("t") == "listo" for k, d in o))
+        fin = time.time() + g.LIVE_IDLE_SECONDS + 2                                                      # más que el límite de inactividad, sin audio pero con ping
+        ms = []
+        while time.time() < fin:
+            c.send_text(json.dumps({"t": "ping"}))
+            ms += self.leer(c, 1.0)
+        c.close()
+        self.assertFalse(any(k == "text" and d.get("t") == "end" for k, d in ms))
+
+    def _silencio(self, silencio=1, cierre=3):
+        ant = (g.LIVE_ESCUCHAR_SILENCIO, g.LIVE_ESCUCHAR_CIERRE)
+        g.LIVE_ESCUCHAR_SILENCIO, g.LIVE_ESCUCHAR_CIERRE = silencio, cierre
+        self.addCleanup(lambda: setattr(g, "LIVE_ESCUCHAR_SILENCIO", ant[0]) or setattr(g, "LIVE_ESCUCHAR_CIERRE", ant[1]))
+        c = W.connect_url(f"ws://127.0.0.1:{self.port}/v1/app/live")
+        c.send_text(json.dumps({"t": "auth", "token": "master-secret-123", "modo": "escuchar"}))
+        return c
+
+    def leer_con_ping(self, c, hasta, quiero=lambda ms: False):            # el cliente real manda un ping cada 20 s; aquí cada segundo (la inactividad de prueba es de 3 s)
+        out, fin = [], time.time() + hasta
+        while time.time() < fin and not quiero(out):
+            try:
+                c.send_text(json.dumps({"t": "ping"}))
+            except OSError:
+                break
+            out += self.leer(c, 0.8, quiero)
+        return out
+
+    def test_escuchar_pregunta_si_sigue_y_pausa_si_nadie_responde(self):
+        c = self._silencio(1, 2)
+        ms = self.leer_con_ping(c, 5, lambda o: any(k == "text" and d.get("t") == "silencio" for k, d in o))
+        self.assertTrue(any(k == "text" and d.get("t") == "silencio" and d["cierre"] == 2 for k, d in ms))        # pregunta «¿sigo escuchando?»
+        ms = self.leer_con_ping(c, 6, lambda o: any(k == "text" and d.get("t") == "end" for k, d in o))
+        fin = [d for k, d in ms if k == "text" and d.get("t") == "end"]
+        self.assertTrue(fin and fin[0].get("fin") is True and "Pausé" in fin[0]["m"])                              # nadie respondió → pausa
+        c.close()
+
+    def test_escuchar_seguir_reinicia_la_cuenta_y_voz_cancela_la_pregunta(self):
+        c = self._silencio(1, 2)
+        self.leer_con_ping(c, 5, lambda o: any(k == "text" and d.get("t") == "silencio" for k, d in o))
+        c.send_text(json.dumps({"t": "seguir"}))                                                                   # «seguir escuchando»
+        ms = self.leer_con_ping(c, 1.6)
+        self.assertFalse(any(k == "text" and d.get("t") == "end" for k, d in ms))                                  # no se pausó
+        self.leer_con_ping(c, 3, lambda o: any(k == "text" and d.get("t") == "silencio" for k, d in o))            # vuelve a preguntar tras otro silencio
+        for _ in range(6):
+            c.send_binary(b"\x00\x01" * 2400)                                                                      # alguien habla
+        ms = self.leer(c, 3, lambda o: any(k == "text" and d.get("t") == "voz" for k, d in o))
+        c.close()
+        self.assertTrue(any(k == "text" and d.get("t") == "voz" for k, d in ms))                                   # la pregunta se retira sola
 
     def test_sin_autorizacion_se_rechaza(self):
         for tok in ("malo", ""):

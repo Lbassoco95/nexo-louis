@@ -275,3 +275,15 @@ Cuando un pedido es demasiado grande para contestarlo en la conversación (voz o
 - **Paneles tipo menú** en pantallas grandes: notificaciones, trabajos, traductor… salen como panel flotante a la derecha (sin oscurecer todo); ⋯ de conversaciones es menú contextual.
 - **Aspecto «Cristal»** (opcional, Ajustes → Apariencia o `?skin=cristal`): vidrio esmerilado, fondo con degradados suaves, barras flotantes, claro/oscuro automático. Solo CSS (`backdrop-filter`), sin dependencias; probado como técnica inspirada en proyectos públicos de «liquid glass» (ninguno copiado). La refracción real con filtros SVG solo funciona en Chromium, no en Safari/iPhone, por eso no se usa.
 - Pruebas: `python3 -m unittest tests.test_chats tests.test_pwa_assets`.
+
+## Escuchar y subtitular (v20)
+
+Traducción **pasiva**: tocas «Escuchar» y Donna va escribiendo **en español** lo que oye en inglés o chino, sin voz, mientras tú sigues con lo tuyo.
+- **Acceso en cualquier momento:** 👂 en la cabecera (compu), ⋯ → «Escuchar y subtitular» (teléfono), barra lateral, menú del traductor, atajo de la pantalla de inicio («Escuchar», `/app/?escuchar=1`).
+- **Sigue escuchando si sales de la pantalla:** ⌄ minimiza y queda una pastilla con el último subtítulo (tócala para volver); se detiene solo con «■ Detener». En iPhone la app debe seguir abierta y la pantalla encendida (iOS pausa el micrófono de las apps web al bloquear).
+- **Quién habla:** etiqueta «Voz 1 · grave/media/aguda» por tono de voz (detector de tono + brillo en el teléfono, sin enviar nada extra). Tocas la etiqueta para ponerle nombre. Es **aproximado**: separa bien voces de tono distinto (hombre/mujer, niño…), no distingue dos voces parecidas ni si hablan encimadas; el tono no es un dato fiable del género, por eso solo se describe como grave/media/aguda.
+- **Silencio:** si en 1 min nadie habla, avisa en la app y manda una notificación «¿Sigo escuchando?» (toca → te lleva a Seguir / Terminar); si en 3 min más nadie responde, pausa sola (cada minuto cuesta). Variables: `LIVE_ESCUCHAR_SILENCIO` (60), `LIVE_ESCUCHAR_CIERRE` (180), `LIVE_ESCUCHAR_MAX_SECONDS` (7200 = 2 h; reconecta solo si OpenAI corta antes).
+- **Ahorro:** en los silencios no se manda audio; cada frase se cierra con ~1.8 s de cola.
+- **«¿De qué hablan?»** resume lo escuchado hasta ahora (tema, puntos clave, pendientes). **«Terminar y guardar»** archiva la conversación (con quién habló cada frase) como transcripción buscable y la lleva a la memoria de Donna.
+- **Compu:** Opciones (Aa) → «Escuchar el audio de una pestaña» para subtitular una videollamada o video (Chrome/Edge, marcando «Compartir audio de la pestaña»); en iPhone solo por micrófono (iOS no deja capturar el audio de otras apps).
+- WebSocket `/v1/app/live` con `{modo:'escuchar'}`; mensajes extra: `ping`, `seguir` (app→servidor) y `silencio`, `voz` (servidor→app). Pruebas: `python3 -m unittest tests.test_live` y `node tests/test_escuchar_voz.js`.

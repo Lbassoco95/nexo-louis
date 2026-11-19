@@ -15,6 +15,8 @@
   ],
   "shortcuts": [
     {"name": "Hablar con {{AGENT_NAME}}", "short_name": "Hablar", "description": "Abre {{AGENT_NAME}} listo para conversar por voz",
-     "url": "/app/?hablar=1", "icons": [{"src": "/app/icon.svg", "sizes": "any", "type": "image/svg+xml"}]}
+     "url": "/app/?hablar=1", "icons": [{"src": "/app/icon.svg", "sizes": "any", "type": "image/svg+xml"}]},
+    {"name": "Escuchar y subtitular", "short_name": "Escuchar", "description": "Subtítulos en español en tiempo real de lo que se habla en otro idioma",
+     "url": "/app/?escuchar=1", "icons": [{"src": "/app/icon.svg", "sizes": "any", "type": "image/svg+xml"}]}
   ]
 }

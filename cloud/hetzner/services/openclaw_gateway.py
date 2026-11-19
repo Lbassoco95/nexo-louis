@@ -527,6 +527,9 @@ _MAX_BODY = 1_000_000  # 1 MB
 _LIVE_SLOTS = threading.BoundedSemaphore(2)          # máximo 2 traducciones en vivo a la vez (cada minuto cuesta)
 LIVE_MAX_SECONDS = int(os.environ.get("LIVE_MAX_SECONDS", "1800"))
 LIVE_IDLE_SECONDS = int(os.environ.get("LIVE_IDLE_SECONDS", "90"))
+LIVE_ESCUCHAR_SILENCIO = int(os.environ.get("LIVE_ESCUCHAR_SILENCIO", "60"))      # sin oír a nadie este tiempo → pregunta «¿sigo escuchando?» (aviso + notificación)
+LIVE_ESCUCHAR_CIERRE = int(os.environ.get("LIVE_ESCUCHAR_CIERRE", "180"))        # y si nadie responde en este tiempo, pausa la escucha (cada minuto cuesta)
+LIVE_ESCUCHAR_MAX_SECONDS = int(os.environ.get("LIVE_ESCUCHAR_MAX_SECONDS", "7200"))   # modo «escuchar y subtitular»: hasta 2 h por sesión
 _LIVE_LANGS = {"es": "es", "en": "en", "zh": os.environ.get("LIVE_ZH_CODE", "zh")}
 _DONNA_TOOLS = [
     {"type": "function", "name": "consultar_donna",
@@ -1507,10 +1510,13 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 aviso("error", m="No pude conectar con el traductor en vivo: " + str(e)[:120])
                 return
-            to = _LIVE_LANGS.get(str(hello.get("to", "en")), "en")
+            escuchar = str(hello.get("modo", "")) == "escuchar"      # solo subtítulos en español: no se reenvía la voz traducida
+            to = "es" if escuchar else _LIVE_LANGS.get(str(hello.get("to", "en")), "en")
+            limite = LIVE_ESCUCHAR_MAX_SECONDS if escuchar else LIVE_MAX_SECONDS
             up.send_text(json.dumps({"type": "session.update", "session": {"audio": {
                 "input": {"transcription": {"model": "gpt-realtime-whisper"}}, "output": {"language": to}}}}))
             stop = threading.Event()
+            est = {"voz": time.time(), "pregunto": None}           # escuchar: última vez que se oyó a alguien / cuándo se preguntó «¿sigo?»
 
             def arriba():                                         # OpenAI → app
                 try:
@@ -1529,10 +1535,17 @@ class Handler(BaseHTTPRequestHandler):
                             continue
                         tp = ev.get("type", "")
                         if tp == "session.output_audio.delta":
+                            if escuchar:
+                                continue
                             cli.send_binary(b"\x01" + _b64.b64decode(ev.get("delta", "")))
                         elif tp == "session.output_transcript.delta":
                             aviso("out", d=ev.get("delta", ""), ms=ev.get("elapsed_ms"))
                         elif tp == "session.input_transcript.delta":
+                            if ev.get("delta", "").strip():
+                                est["voz"] = time.time()
+                                if est["pregunto"]:
+                                    est["pregunto"] = None
+                                    aviso("voz")
                             aviso("in", d=ev.get("delta", ""), ms=ev.get("elapsed_ms"))
                         elif tp == "error":
                             msg = (ev.get("error") or {}).get("message", "error del traductor")
@@ -1547,12 +1560,26 @@ class Handler(BaseHTTPRequestHandler):
 
             th = threading.Thread(target=arriba, daemon=True)
             th.start()
-            aviso("listo", to=to, max=LIVE_MAX_SECONDS)
+            aviso("listo", to=to, max=limite, modo="escuchar" if escuchar else "")
             ultimo = time.time()
             while not stop.is_set():
-                if time.time() - t0 > LIVE_MAX_SECONDS:
-                    aviso("end", m="Se alcanzó el límite de la sesión (%d min)" % (LIVE_MAX_SECONDS // 60))
+                if time.time() - t0 > limite:
+                    aviso("end", m="Se alcanzó el límite de la sesión (%d min)" % (limite // 60))
                     break
+                if escuchar:
+                    ahora = time.time()
+                    if est["pregunto"] is None and ahora - est["voz"] > LIVE_ESCUCHAR_SILENCIO:
+                        est["pregunto"] = ahora
+                        aviso("silencio", seg=int(ahora - est["voz"]), cierre=LIVE_ESCUCHAR_CIERRE)
+                        try:
+                            import louis_push
+                            louis_push.notify_async("👂 ¿Sigo escuchando?", "Llevo %d min sin oír a nadie. Toca para seguir o terminar." % max(1, LIVE_ESCUCHAR_SILENCIO // 60),
+                                                    tab="chat", tag="escuchar", kind="escuchar", link="escuchar:1")
+                        except Exception:
+                            log.warning("no pude avisar del silencio", exc_info=True)
+                    elif est["pregunto"] is not None and ahora - est["pregunto"] > LIVE_ESCUCHAR_CIERRE:
+                        aviso("end", m="Pausé la escucha: nadie habló y no respondiste. Toca «Escuchar» para retomar.", fin=True)
+                        break
                 r = cli.recv_message(timeout=1)
                 if r is None:
                     if time.time() - ultimo > LIVE_IDLE_SECONDS:
@@ -1570,7 +1597,11 @@ class Handler(BaseHTTPRequestHandler):
                         j = json.loads(r[1])
                     except ValueError:
                         continue
-                    if j.get("t") == "lang":
+                    if j.get("t") == "seguir":
+                        est["voz"], est["pregunto"], ultimo = time.time(), None, time.time()      # «sigue escuchando»
+                    elif j.get("t") == "ping":
+                        ultimo = time.time()                              # el modo escuchar no manda audio en los silencios: esto lo mantiene vivo
+                    elif j.get("t") == "lang" and not escuchar:
                         up.send_text(json.dumps({"type": "session.update", "session": {"audio": {
                             "output": {"language": _LIVE_LANGS.get(str(j.get("to", "")), "en")}}}}))
                     elif j.get("t") == "close":
@@ -2051,6 +2082,18 @@ class Handler(BaseHTTPRequestHandler):
                                                         "original": o, "traduccion": tr, "pinyin": ""}, "vivo")
                     n += 1
                 self._send_json(200, {"ok": True, "turnos": n})
+                return True
+            if path == "/v1/app/translate/resumen":                   # «¿de qué están hablando?» sobre lo escuchado hasta ahora
+                import app_media as _M
+                texto = str(body.get("texto", ""))[-9000:]
+                if len(texto.strip()) < 20:
+                    raise ValueError("aún no hay suficiente conversación")
+                if not app_translate._rate_ok(20):
+                    raise ValueError("demasiadas solicitudes seguidas; espera un momento")
+                r = _M.summarize("Fragmento de una conversación escuchada EN VIVO (cada bloque trae el original y su traducción al español). "
+                                 "Dime en español, breve: de qué están hablando, puntos clave y, si los hay, acuerdos o pendientes (quién, qué, cuándo). "
+                                 "No inventes nada que no esté en el texto.\n\n" + texto)
+                self._send_json(200, {"resumen": r or "(sin resumen todavía)"})
                 return True
             if path == "/v1/app/translate/finish":
                 m = app_translate.guardar_sesion(str(body.get("sid", "")), str(body.get("titulo", "")))
