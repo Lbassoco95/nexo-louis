@@ -100,7 +100,7 @@ header button{position:relative}
 .filters{display:flex;gap:8px;overflow-x:auto;margin-bottom:10px;scrollbar-width:none}
 .filters .chip.on{background:var(--acc);border-color:var(--acc);color:#fff}
 input.search{width:100%;background:var(--panel);color:var(--tx);border:1px solid var(--line);border-radius:12px;padding:10px 14px;font:inherit;margin-bottom:10px;outline:none}
-.sheet{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:flex-end;z-index:20}
+.sheet{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:flex-end;z-index:35}
 .sheet.on{display:flex}
 .sheet .in{background:var(--bg);width:100%;max-height:88dvh;border-radius:22px 22px 0 0;display:flex;flex-direction:column;padding-bottom:env(safe-area-inset-bottom)}
 .sheet .hd{display:flex;align-items:center;gap:8px;padding:14px 16px;border-bottom:1px solid var(--line)}
@@ -170,11 +170,64 @@ input.f{width:100%;background:var(--panel);color:var(--tx);border:1px solid var(
 .err{color:var(--bad);font-size:13px;margin-top:10px;min-height:18px;text-align:center}
 .banner{background:#78350f;color:#fde68a;font-size:12.5px;padding:8px 16px;display:none}
 .banner.on{display:block}
+/* ---------- diseño adaptable: teléfono = cajón de conversaciones · tableta/compu = barra lateral fija ---------- */
+html{background:var(--bg)}
+nav{position:relative;z-index:12}
+header .tool,header #morebtn{display:inline-block}
+#menubtn,#newbtn{display:inline-block;color:var(--tx)}
+#side{position:fixed;top:0;bottom:0;left:0;width:min(86vw,320px);z-index:30;background:var(--panel);border-right:1px solid var(--line);
+  display:flex;flex-direction:column;transform:translateX(-102%);transition:transform .22s ease;padding:calc(env(safe-area-inset-top) + 12px) 0 env(safe-area-inset-bottom)}
+#side.on{transform:none;box-shadow:0 0 40px #0008}
+#scrim{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:29;display:none}
+#scrim.on{display:block}
+.sdhd{display:flex;align-items:center;gap:10px;padding:2px 14px 10px}.sdhd b{flex:1;font-size:17px}.sdhd button{background:none;border:0;color:var(--mut);font-size:22px;padding:2px 6px}
+.sdnew{margin:0 12px 8px;width:calc(100% - 24px);border:0;border-radius:12px;padding:11px;font:inherit;font-weight:700;color:#fff;background:linear-gradient(135deg,var(--acc),var(--acc2))}
+#side input.search{margin:0 12px 6px;width:calc(100% - 24px);padding:9px 12px}
+#sdlist{flex:1;overflow-y:auto;padding:0 8px 8px;-webkit-overflow-scrolling:touch}
+.sdg{font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:var(--mut);margin:12px 8px 4px}
+.cv{display:flex;align-items:center;gap:4px;border-radius:12px;padding:2px 2px 2px 10px}
+.cv.on{background:var(--panel2)}.cv:hover{background:var(--panel2)}
+.cv .ct{flex:1;min-width:0;background:none;border:0;color:var(--tx);text-align:left;padding:8px 0;font:inherit}
+.cv .ct b{display:block;font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cv .ct small{display:block;color:var(--mut);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cv .mo{background:none;border:0;color:var(--mut);font-size:18px;padding:8px 10px}
+.sdnav,.sdtools{display:none;padding:6px 8px;border-top:1px solid var(--line)}
+.sdnav button,.sdtools button{display:flex;align-items:center;gap:10px;width:100%;background:none;border:0;border-radius:10px;color:var(--mut);padding:9px 10px;font:inherit;font-size:14.5px;text-align:left;position:relative}
+.sdnav button.on{background:var(--panel2);color:var(--acc);font-weight:600}.sdnav button:hover,.sdtools button:hover{background:var(--panel2)}
+.sdnav .badge{margin-left:auto;background:var(--bad);color:#fff;border-radius:9px;font-size:10px;padding:0 6px;line-height:16px}
+.sdfoot{padding:4px 8px 6px;border-top:1px solid var(--line)}
+.sdfoot button{width:100%;background:none;border:0;color:var(--mut);padding:9px 10px;font:inherit;font-size:14px;text-align:left;border-radius:10px}
+#fab{bottom:calc(var(--navh,60px) + 138px + env(safe-area-inset-bottom))}
+.msg{width:fit-content}
+@media (max-width:759px){
+  header .tool{display:none}
+  #morebtn,#menubtn,#newbtn{display:inline-block}
+}
+@media (min-width:760px){
+  #menubtn,#newbtn,#morebtn,#scrim{display:none!important}
+  #side{transform:none;width:290px;box-shadow:none;z-index:5}
+  .sdnav,.sdtools{display:block}
+  #app{margin-left:290px}
+  nav{display:none}
+  #fab,#sd-x{display:none}
+  .scroll{padding-left:max(16px,calc((100% - 880px)/2));padding-right:max(16px,calc((100% - 880px)/2))}
+  .chips,.composer,.atts,.recbar{margin-left:auto;margin-right:auto;width:100%;max-width:880px;box-sizing:border-box}
+  .chips{padding-right:16px}
+  .composer{padding-bottom:18px}
+  .msg{max-width:78%}
+  header{padding:12px 24px}
+  .stats{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+@media (min-width:1200px){
+  .scroll{padding-left:max(24px,calc((100% - 960px)/2));padding-right:max(24px,calc((100% - 960px)/2))}
+  .chips,.composer,.atts,.recbar{max-width:960px}
+}
+@media (min-width:760px) and (max-height:520px){#app{margin-left:290px}}
 </style>
 </head>
 <body>
 <div id="app">
-  <header><span class="dot" id="dot"></span><h1 id="title">{{AGENT_NAME}}</h1><button id="bell" aria-label="Notificaciones">🔔<span class="bbadge" id="bbadge" hidden></span></button><button id="vmbtn" aria-label="Hablar con {{AGENT_NAME}}">🎧</button><button id="trbtn" aria-label="Traductor">🌐</button><button id="arts" aria-label="Tableros">🧩</button><button id="refresh" aria-label="Actualizar">⟳</button></header>
+  <header><button id="menubtn" aria-label="Conversaciones">☰</button><span class="dot" id="dot"></span><h1 id="title">{{AGENT_NAME}}</h1><button id="newbtn" aria-label="Nueva conversación">✏️</button><button id="bell" aria-label="Notificaciones">🔔<span class="bbadge" id="bbadge" hidden></span></button><button id="vmbtn" class="tool" aria-label="Hablar con {{AGENT_NAME}}">🎧</button><button id="trbtn" class="tool" aria-label="Traductor">🌐</button><button id="arts" class="tool" aria-label="Tableros">🧩</button><button id="refresh" class="tool" aria-label="Actualizar">⟳</button><button id="morebtn" aria-label="Más">⋯</button></header>
   <div class="banner" id="banner">Sin conexión con {{AGENT_NAME}}. Reintentando…</div>
   <main>
     <section class="view on" id="v-chat">
@@ -206,6 +259,25 @@ input.f{width:100%;background:var(--panel);color:var(--tx);border:1px solid var(
   </nav>
 </div>
 
+<div id="scrim"></div>
+<aside id="side" aria-label="Conversaciones">
+  <div class="sdhd"><b>{{AGENT_NAME}}</b><button id="sd-x" aria-label="Cerrar">✕</button></div>
+  <button class="sdnew" id="sd-new">＋ Nueva conversación</button>
+  <input class="f search" id="sd-q" type="search" placeholder="Buscar en conversaciones…">
+  <div id="sdlist"></div>
+  <div class="sdnav" id="sdnav">
+    <button data-v="chat"><span>💬</span>Conversación</button>
+    <button data-v="hoy"><span>✅</span>Hoy<span class="badge" id="sb-hoy" hidden></span></button>
+    <button data-v="trab"><span>🛠️</span>Trabajos<span class="badge" id="sb-trab" hidden></span></button>
+    <button data-v="ent"><span>📦</span>Entregables</button>
+    <button data-v="cfg"><span>⚙️</span>Ajustes</button>
+  </div>
+  <div class="sdtools">
+    <button id="sd-voz"><span>🎧</span>Conversar por voz</button>
+    <button id="sd-tr"><span>🌐</span>Traductor</button>
+    <button id="sd-arts"><span>🧩</span>Tableros</button>
+  </div>
+</aside>
 <div class="vm" id="vm"><div class="vmin">
   <div class="vmhd"><b>Conversación con {{AGENT_NAME}}</b><button id="vm-x">✕ Terminar</button></div>
   <div class="orbw"><div class="orb" id="vm-orb" data-s="idle"></div></div>
@@ -326,12 +398,12 @@ $('#tok').addEventListener('keydown',e=>{if(e.key==='Enter')$('#ltok').click()})
 const titles={chat:'{{AGENT_NAME}}',hoy:'Hoy',trab:'Trabajos',ent:'Entregables',cfg:'Ajustes'};
 function go(v){
   $$('.view').forEach(x=>x.classList.toggle('on',x.id==='v-'+v));
-  $$('nav button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
+  $$('nav button,#sdnav button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
   $('#title').textContent=titles[v];LS.set('tab',v);
   if(v==='hoy')loadHoy();if(v==='ent')loadEnt();if(v==='cfg')renderCfg();if(v==='trab')loadTrab();
   if(v==='chat')scrollDown();
 }
-$$('nav button').forEach(b=>b.onclick=()=>go(b.dataset.v));
+$$('nav button,#sdnav button').forEach(b=>b.onclick=()=>{go(b.dataset.v);closeSide()});
 $('#refresh').onclick=()=>{const v=LS.get('tab','chat');if(v==='hoy')loadHoy();else if(v==='ent')loadEnt();else if(v==='trab')loadTrab();else ping();toast('Actualizado')};
 
 /* ---------- chat ---------- */
@@ -997,7 +1069,7 @@ const tbActivo=e=>e==='planeando'||e==='en curso';
 async function trabBadge(){
   try{
     const d=await api('/v1/app/trabajos'),n=d.items.filter(i=>tbActivo(i.estado)||i.estado==='espera confirmación').length,b=$('#b-trab');
-    if(b){b.textContent=n;b.hidden=!n}return d;
+    if(b){b.textContent=n;b.hidden=!n}const sb=$('#sb-trab');if(sb){sb.textContent=n;sb.hidden=!n}return d;
   }catch(e){}
 }
 async function loadTrab(){
@@ -1114,7 +1186,7 @@ async function loadHoy(){
   const el=$('#hoy');if(!el.innerHTML)el.innerHTML='<div class="empty">Cargando…</div>';
   try{
     const d=await api('/v1/app/hoy');online(true);window._hoy=d;
-    const b=$('#b-hoy');b.hidden=!d.urgentes.length;b.textContent=d.urgentes.length;
+    const b=$('#b-hoy');b.hidden=!d.urgentes.length;b.textContent=d.urgentes.length;{const sb=$('#sb-hoy');sb.hidden=b.hidden;sb.textContent=b.textContent}
     paintBell(d.sin_leer||0);
     let h=d.confirmaciones?`<div class="card" id="confcard" style="border-left:4px solid var(--warn);cursor:pointer"><b>⚠️ ${d.confirmaciones} confirmación${d.confirmaciones>1?'es':''} pendiente${d.confirmaciones>1?'s':''}</b><div class="sub">Toca para revisar${d.confirmaciones>1?'las':'la'} y confirmar</div></div>`:'';
     h+=`<div class="stats"><div class="stat"><b>${d.abiertos}</b><span>Abiertos</span></div><div class="stat"><b>${d.urgentes.length}</b><span>Para hoy</span></div><div class="stat"><b>${d.cerrados}</b><span>Cerrados</span></div></div>`;
@@ -1175,11 +1247,11 @@ $('#sh-x').onclick=closeSheet;$('#sheet').onclick=e=>{if(e.target.id==='sheet')c
 function renderCfg(){
   $('#cfg').innerHTML=`<div class="sec">Conexión</div><div class="card"><div class="row"><span>Servidor</span><span class="sub">${esc(location.host)}</span></div><div class="row" style="margin-top:6px"><span>Estado</span><span class="sub" id="st">…</span></div></div>
   <div class="sec">Notificaciones</div><div class="card" id="pushcard"><div class="sub" id="pushst">…</div></div>
-  <div class="sec">Chat</div><div class="card"><button class="btn ghost" id="clr" style="margin:0">Borrar historial de este teléfono</button></div>
+  <div class="sec">Chat</div><div class="card"><button class="btn ghost" id="clr" style="margin:0">Empezar una conversación nueva</button></div>
   <div class="sec">Widget de pendientes (iPhone)</div><div class="card"><div class="sub" style="margin-bottom:10px">Una app web no puede crear un widget nativo; esta alternativa usa la app gratuita <b>Scriptable</b>:<br>1) Instálala desde la App Store.<br>2) Toca «Copiar script» y en Scriptable crea un script nuevo (+) y pégalo.<br>3) Ejecútalo una vez (▶): te pide el token y lo guarda en tu iPhone.<br>4) Mantén presionada la pantalla de inicio → + → Scriptable → elige el script.</div><button class="btn ghost" id="wcopy" style="margin:0">Copiar script del widget</button></div>
   <div class="sec">Instalar</div><div class="card sub">iPhone: Safari → Compartir → <b>Agregar a pantalla de inicio</b>.<br>Android: Chrome → ⋮ → <b>Instalar app</b>.</div>
   <div class="sec">Sesión</div><div class="card"><div class="sub" id="who" style="margin-bottom:10px">…</div><button class="btn ghost" id="out" style="margin:0;color:var(--bad)">Cerrar sesión</button><button class="btn ghost" id="outall" style="color:var(--bad)">Cerrar sesión en todos los dispositivos</button></div>`;
-  $('#clr').onclick=()=>{if(confirm('¿Borrar la conversación guardada en este teléfono?')){chat=[];LS.set('chat',[]);renderChat();toast('Historial borrado')}};
+  $('#clr').onclick=()=>{if(confirm('¿Empezar una conversación nueva? La actual queda guardada en el menú ☰.')){nuevaConv();toast('Conversación nueva')}};
   $('#out').onclick=()=>{if(confirm('¿Cerrar sesión?'))logout(false)};
   $('#outall').onclick=async()=>{if(!confirm('¿Cerrar la sesión en TODOS tus dispositivos (este incluido)? Tendrás que volver a entrar.'))return;
     try{await api('/v1/app/sessions/revoke-all',{method:'POST',body:'{}'});toast('Sesiones cerradas')}catch(e){toast('⚠️ '+e.message)}logout(false)};
@@ -1230,7 +1302,70 @@ navigator.serviceWorker&&navigator.serviceWorker.addEventListener('message',e=>{
   else if(m.type==='push'){refreshBell();if(LS.get('tab')==='hoy')loadHoy()}});
 
 /* ---------- arranque ---------- */
-function boot(){renderChips();renderChat();ping();
+/* ---------- conversaciones guardadas (nueva / cargar anteriores) ---------- */
+let cid=LS.get('cid',''),saveT=null,convs=[];
+const newCid=()=>'c'+Array.from(crypto.getRandomValues(new Uint8Array(5)),b=>b.toString(16).padStart(2,'0')).join('');
+const rawSet=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}};
+{const _set=LS.set;LS.set=function(k,v){_set.call(LS,k,v);if(k==='chat')queueSave()}}
+function queueSave(){if(!TOKEN||!chat.length)return;if(!cid){cid=newCid();rawSet('cid',cid)}clearTimeout(saveT);saveT=setTimeout(saveNow,1500)}
+async function saveNow(){clearTimeout(saveT);saveT=null;if(!TOKEN||!chat.length||!cid)return;
+  try{await api('/v1/app/chats/guardar',{method:'POST',body:JSON.stringify({id:cid,msgs:chat.slice(-200)})});if($('#side').classList.contains('on')||innerWidth>=760)loadConvs(true)}catch(e){}}
+function openSide(){$('#side').classList.add('on');$('#scrim').classList.add('on');loadConvs()}
+function closeSide(){$('#side').classList.remove('on');$('#scrim').classList.remove('on')}
+$('#menubtn').onclick=openSide;$('#scrim').onclick=closeSide;$('#sd-x').onclick=closeSide;
+function grupoFecha(ts){const d=new Date(ts),n=new Date(),z=x=>new Date(x.getFullYear(),x.getMonth(),x.getDate()).getTime(),dd=(z(n)-z(d))/864e5;
+  return dd<=0?'Hoy':dd<=1?'Ayer':dd<7?'Esta semana':dd<31?'Este mes':'Antes'}
+async function loadConvs(quiet){
+  const q=($('#sd-q').value||'').trim();
+  try{convs=(await api('/v1/app/chats'+(q?'?q='+encodeURIComponent(q):''))).items||[]}catch(e){if(!quiet)$('#sdlist').innerHTML='<div class="empty">Sin conexión.</div>';return}
+  paintConvs();
+}
+function paintConvs(){
+  const L=$('#sdlist');
+  if(!convs.length){L.innerHTML='<div class="empty" style="padding:24px 12px;font-size:13px">'+($('#sd-q').value?'Nada coincide.':'Aquí aparecerán tus conversaciones. Se guardan solas.')+'</div>';return}
+  let g='',h='';
+  convs.forEach(c=>{const gg=grupoFecha(c.actualizado);if(gg!==g){g=gg;h+='<div class="sdg">'+g+'</div>'}
+    h+='<div class="cv'+(c.id===cid?' on':'')+'" data-id="'+c.id+'"><button class="ct"><b>'+esc(c.titulo)+'</b><small>'+esc(c.resumen)+'</small></button><button class="mo" aria-label="Opciones">⋯</button></div>'});
+  L.innerHTML=h;
+  $$('#sdlist .cv').forEach(r=>{const id=r.dataset.id,c=convs.find(x=>x.id===id);
+    r.querySelector('.ct').onclick=()=>abrirConv(id);
+    r.querySelector('.mo').onclick=e=>{e.stopPropagation();convMenu(c)}});
+}
+function convMenu(c){
+  sheet(c.titulo,'<button class="menurow" id="cv-ren"><span style="font-size:22px">✏️</span><span><b>Cambiar nombre</b></span></button><button class="menurow" id="cv-del"><span style="font-size:22px">🗑️</span><span><b>Borrar conversación</b><small>No se puede deshacer</small></span></button>');
+  $('#cv-ren').onclick=async()=>{closeSheet();const t=prompt('Nombre de la conversación',c.titulo);if(t==null||!t.trim())return;
+    try{await api('/v1/app/chats/renombrar',{method:'POST',body:JSON.stringify({id:c.id,titulo:t})});loadConvs(true)}catch(e){toast('⚠️ '+e.message)}};
+  $('#cv-del').onclick=async()=>{closeSheet();if(!confirm('¿Borrar «'+c.titulo+'»?'))return;
+    try{await api('/v1/app/chats/borrar',{method:'POST',body:JSON.stringify({id:c.id})});if(c.id===cid){clearTimeout(saveT);chat=[];busy=false;await nuevaConv()}else loadConvs(true);toast('Borrada')}catch(e){toast('⚠️ '+e.message)}};
+}
+async function abrirConv(id){
+  if(busy){toast('Espera a que termine de contestar');return}
+  if(id===cid){closeSide();go('chat');return}
+  await saveNow();
+  try{const c=await api('/v1/app/chat?id='+encodeURIComponent(id));
+    chat=c.msgs||[];cid=c.id;LS.del('pending');rawSet('chat',chat.slice(-200));rawSet('cid',cid);
+    renderChat();closeSide();go('chat');paintConvs()}catch(e){toast('⚠️ No pude abrirla: '+e.message)}
+}
+async function nuevaConv(){
+  if(busy){toast('Espera a que termine de contestar');return}
+  await saveNow();
+  chat=[];cid='';LS.del('cid');LS.del('pending');rawSet('chat',[]);
+  renderChat();closeSide();go('chat');paintConvs();loadConvs(true);setTimeout(()=>$('#inp').focus(),50);
+}
+$('#newbtn').onclick=nuevaConv;$('#sd-new').onclick=nuevaConv;
+let sdT=null;$('#sd-q').oninput=()=>{clearTimeout(sdT);sdT=setTimeout(loadConvs,250)};
+$('#sd-voz').onclick=()=>$('#vmbtn').click();$('#sd-tr').onclick=()=>$('#trbtn').click();$('#sd-arts').onclick=()=>$('#arts').click();
+$('#morebtn').onclick=()=>{
+  sheet('Más','<button class="menurow" id="mo-voz"><span style="font-size:22px">🎧</span><span><b>Conversar por voz</b><small>Manos libres con '+AGENT+'</small></span></button>'+
+    '<button class="menurow" id="mo-tr"><span style="font-size:22px">🌐</span><span><b>Traductor</b></span></button>'+
+    '<button class="menurow" id="mo-arts"><span style="font-size:22px">🧩</span><span><b>Tableros</b></span></button>'+
+    '<button class="menurow" id="mo-ref"><span style="font-size:22px">⟳</span><span><b>Actualizar</b></span></button>');
+  [['mo-voz','vmbtn'],['mo-tr','trbtn'],['mo-arts','arts'],['mo-ref','refresh']].forEach(([a,b])=>$('#'+a).onclick=()=>{closeSheet();$('#'+b).click()});
+};
+addEventListener('pagehide',()=>{if(chat.length&&cid&&TOKEN)try{fetch('/v1/app/chats/guardar',{method:'POST',keepalive:true,headers:{'Content-Type':'application/json',Authorization:'Bearer '+TOKEN},body:JSON.stringify({id:cid,msgs:chat.slice(-200)})})}catch(e){}});
+function navH(){const n=$('nav');document.documentElement.style.setProperty('--navh',(n&&n.offsetHeight?n.offsetHeight:60)+'px')}
+addEventListener('resize',navH);
+function boot(){renderChips();renderChat();ping();navH();if(chat.length)queueSave();if(innerWidth>=760)loadConvs(true);
   const qs=new URLSearchParams(location.search),q=qs.get('tab');go(titles[q]?q:LS.get('tab','chat'));
   refreshBell();if(qs.get('hablar'))abrirVoz(false);else if(qs.get('link'))openLink(qs.get('link'));else if(q==='notifs')openInbox(qs.get('nid')||'');
   loadHoy().catch(()=>{});recoverPending(true);pushResync()}

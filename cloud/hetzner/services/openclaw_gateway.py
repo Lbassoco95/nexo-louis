@@ -76,6 +76,7 @@ app_media = _opcional("app_media")            # adjuntos, grabaciones y archivos
 app_translate = _opcional("app_translate")    # traductor español/inglés/chino
 ws_lite = _opcional("ws_lite")                # WebSocket mínimo: traducción en vivo y Donna en tiempo real
 donna_voz = _opcional("donna_voz")            # acciones directas por voz: guardar, reglas, recordatorios
+app_chats = _opcional("app_chats")            # conversaciones guardadas: nueva / cargar / renombrar / borrar
 app_trabajos = _opcional("app_trabajos")      # trabajos grandes de Donna: plan por pasos con avance visible
 
 # Solo StreamHandler: el servicio de systemd ya redirige stdout/stderr al log
@@ -1052,6 +1053,17 @@ class Handler(BaseHTTPRequestHandler):
                         lim = 50
                     self._send_json(200, {"items": louis_push.inbox_list(lim), "unread": louis_push.unread_count(),
                                           "confirmaciones": louis_push.pending_confirmations()})
+                elif _r0 == "/v1/app/chats":
+                    from urllib.parse import urlparse, parse_qs
+                    qs = parse_qs(urlparse(self.path).query)
+                    self._send_json(200, {"items": app_chats.listar(self._media_user(), (qs.get("q") or [""])[0]) if app_chats else []})
+                elif _r0 == "/v1/app/chat":
+                    from urllib.parse import urlparse, parse_qs
+                    try:
+                        c = app_chats.obtener(self._media_user(), (parse_qs(urlparse(self.path).query).get("id") or [""])[0]) if app_chats else None
+                    except ValueError:
+                        c = None
+                    self._send_json(200 if c else 404, c or {"error": "no existe esa conversación"})
                 elif _r0 == "/v1/app/trabajos":
                     self._send_json(200, {"items": app_trabajos.listar()})
                 elif _r0 == "/v1/app/trabajo":
@@ -2232,6 +2244,23 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if self.path.startswith("/v1/app/media/") and self._media_post(self.path.split("?", 1)[0], body):
+            return
+        if self.path in ("/v1/app/chats/guardar", "/v1/app/chats/renombrar", "/v1/app/chats/borrar", "/v1/app/chats/nuevo"):
+            if not app_chats:
+                self._send_json(503, {"error": "conversaciones guardadas no disponibles en este servidor"})
+                return
+            try:
+                u, cid = self._media_user(), str(body.get("id", ""))
+                if self.path.endswith("nuevo"):
+                    self._send_json(200, {"id": app_chats.nuevo_id()})
+                elif self.path.endswith("guardar"):
+                    self._send_json(200, app_chats.guardar(u, cid, body.get("msgs"), str(body.get("titulo", ""))))
+                elif self.path.endswith("renombrar"):
+                    self._send_json(200, app_chats.renombrar(u, cid, str(body.get("titulo", ""))))
+                else:
+                    self._send_json(200, {"ok": app_chats.borrar(u, cid)})
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
             return
         if self.path in ("/v1/app/trabajos/crear", "/v1/app/trabajo/accion"):
             try:

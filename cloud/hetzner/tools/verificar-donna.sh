@@ -105,7 +105,7 @@ echo "3j) Traducción en vivo"
 [[ -f "$OC/scripts/ws_lite.py" ]] && ok "ws_lite.py instalado (WebSocket del traductor en vivo)" || bad "falta ws_lite.py → sudo install -m 0755 -o polo -g polo ~/donna-deploy/cloud/hetzner/services/ws_lite.py $OC/scripts/"
 
 echo "3k) Trabajos de Donna y acciones por voz"
-for f in app_trabajos.py donna_voz.py; do
+for f in app_trabajos.py donna_voz.py app_chats.py; do
   [[ -f "$OC/scripts/$f" ]] && ok "$f instalado" || bad "falta $f → sudo install -m 0755 -o polo -g polo ~/donna-deploy/cloud/hetzner/services/$f $OC/scripts/"
 done
 TR=$(curl -s --max-time 10 -H "Authorization: Bearer $TOKEN" "$URL/v1/app/trabajos" | python3 -c 'import sys,json; print(len(json.load(sys.stdin).get("items",[])))' 2>/dev/null)

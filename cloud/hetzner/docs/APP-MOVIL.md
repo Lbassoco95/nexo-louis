@@ -259,3 +259,11 @@ Cuando un pedido es demasiado grande para contestarlo en la conversación (voz o
 - También puedes crear uno directo desde la pestaña Trabajos. Límites: 3 corriendo a la vez, 8 pasos, 100 guardados. Estado en `/opt/openclaw/state/trabajos/*.json`.
 - API: `GET /v1/app/trabajos`, `GET /v1/app/trabajo?id=`, `POST /v1/app/trabajos/crear`, `POST /v1/app/trabajo/accion` (`pausar|reanudar|cancelar|confirmar`+`paso`).
 - Pruebas: `python3 -m unittest tests.test_trabajos`.
+
+## Diseño adaptable y conversaciones guardadas (v18)
+
+- **Se ajusta al dispositivo:** teléfono (<760 px) = barra superior limpia (☰ conversaciones · ✏️ nueva · 🔔 · ⋯ más) + barra inferior; tableta/computadora (≥760 px) = barra lateral fija con conversaciones, secciones (Hoy, Trabajos, Entregables, Ajustes) y herramientas (voz, traductor, tableros), contenido centrado y sin barra inferior.
+- **Conversaciones guardadas en el servidor** (`app_chats.py`, `/opt/openclaw/state/chats/<usuario>/`): se guardan solas ~1.5 s después de cada mensaje, se ven iguales en iPhone, tableta y compu. ☰ → lista agrupada (Hoy/Ayer/Esta semana…), búsqueda en títulos y contenido, abrir, ⋯ → cambiar nombre / borrar, «＋ Nueva conversación». El título sale del primer mensaje.
+- API: `GET /v1/app/chats[?q=]`, `GET /v1/app/chat?id=`, `POST /v1/app/chats/guardar|renombrar|borrar|nuevo`.
+- Arreglos: el botón 🎙 ya no tapa las sugerencias; burbujas ajustadas a su texto; hoja inferior sobre el cajón.
+- Pruebas: `python3 -m unittest tests.test_chats tests.test_pwa_assets`.

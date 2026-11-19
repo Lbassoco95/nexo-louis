@@ -16,7 +16,7 @@ elif [[ "${n:-0}" -gt 3 ]]; then ok "estable: lleva $((up/60)) min corriendo (el
 
 echo "2) Archivos instalados en $OC/scripts"
 FALTA=0
-for f in openclaw_gateway.py louis_core.py app_auth.py louis_push.py app_media.py app_translate.py ws_lite.py donna_voz.py app_trabajos.py app_artifacts.py patio_yoltik.py slack_digest.py; do
+for f in openclaw_gateway.py louis_core.py app_auth.py louis_push.py app_media.py app_translate.py ws_lite.py donna_voz.py app_chats.py app_trabajos.py app_artifacts.py patio_yoltik.py slack_digest.py; do
   [[ -s "$OC/scripts/$f" ]] || { bad "falta $f"; FALTA=1; }
 done
 for f in sw.js index.html manifest.webmanifest; do [[ -s "$OC/scripts/app/$f" ]] || { bad "falta app/$f"; FALTA=1; }; done
