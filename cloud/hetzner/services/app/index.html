@@ -256,19 +256,19 @@ body.dkfull #dock{width:100%;z-index:34}body.dkfull.docked #app{margin-right:0}
 :root{color-scheme:light dark;
   --base:#e9edfa;--glass:rgba(255,255,255,.64);--glass2:rgba(255,255,255,.82);--gline:rgba(255,255,255,.7);--hl:rgba(255,255,255,.75);--sh:rgba(40,50,110,.14);
   --b1:#7c6cff55;--b2:#22d3ee44;--b3:#f472b644;
-  --tx:#111a2e;--mut:#55617d;--at:#2553c7;--ok:#0a6b4a;--wn:#92400e;--wnb:rgba(251,191,36,.28);--recc:#b91c1c;--bad:#a61b1b;--drawer:rgba(251,252,255,.97);
+  --tx:#111a2e;--mut:#4a5671;--at:#2553c7;--ok:#0a6b4a;--wn:#92400e;--wnb:rgba(251,191,36,.28);--recc:#9f1515;--bad:#a61b1b;--drawer:rgba(251,252,255,.97);
   --ctl:rgba(17,26,46,.5);--okb:rgba(15,138,95,.16);--blur:blur(24px) saturate(1.6);
   --grad:linear-gradient(135deg,#2f66e8,#7c3aed);--grad90:linear-gradient(90deg,#2f66e8,#7c3aed);
+  --blobs:radial-gradient(400px 330px at 180px 110px,var(--b1) 52%,transparent 100%),radial-gradient(360px 360px at calc(100% - 170px) 270px,var(--b2) 52%,transparent 100%),radial-gradient(430px 330px at calc(100% - 540px) calc(100% - 70px),var(--b3) 52%,transparent 100%);
   --bg:var(--base);--panel:var(--glass);--panel2:var(--glass2);--line:var(--gline);--acc:var(--at);--acc2:#7c3aed;--warn:var(--wn);--r:20px}
 @media (prefers-color-scheme:dark){:root{
   --base:#080b16;--glass:rgba(24,29,52,.58);--glass2:rgba(34,41,70,.74);--gline:rgba(255,255,255,.13);--hl:rgba(255,255,255,.16);--sh:rgba(0,0,0,.45);
   --b1:#6d5dfc50;--b2:#0ea5c944;--b3:#ec489944;
-  --tx:#e8edf7;--mut:#a3aecb;--at:#7aa5ff;--ok:#34d399;--wn:#fcd34d;--wnb:rgba(120,53,15,.55);--recc:#fca5a5;--bad:#f87171;
+  --tx:#e8edf7;--mut:#b0bad6;--at:#7aa5ff;--ok:#34d399;--wn:#fcd34d;--wnb:rgba(120,53,15,.55);--recc:#fca5a5;--bad:#f87171;
   --ctl:rgba(255,255,255,.55);--okb:rgba(52,211,153,.22);--drawer:rgba(18,23,44,.97)}}
 html,body{background:var(--base);color:var(--tx)}
 body{background:transparent!important}
-body::before{content:"";position:fixed;inset:-20%;z-index:-1;pointer-events:none;
-  background:radial-gradient(40% 38% at 12% 6%,var(--b1),transparent 70%),radial-gradient(34% 40% at 92% 22%,var(--b2),transparent 70%),radial-gradient(46% 40% at 68% 96%,var(--b3),transparent 70%)}
+body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;background:var(--blobs)}
 .ic{flex:none;vertical-align:-.2em}
 :focus-visible{outline:2px solid var(--at);outline-offset:2px}
 button,[role=button],select,summary{cursor:pointer}
@@ -279,7 +279,7 @@ button,.chip,.artcard,.menurow,.artrow,select,summary{min-height:44px}
 .msg .meta button,.nitem .more,.vmlink,.cv .mo{min-height:44px;min-width:44px}
 input[type=checkbox],input[type=radio]{width:22px;height:22px;accent-color:#2f66e8;flex:none}
 /* superficies */
-.glass,#side,#app,#ctx,#dock,.sheet .in,#pop,.vm .vmin{background:var(--glass);border:1px solid var(--gline);box-shadow:inset 0 1px 0 var(--hl),0 10px 30px var(--sh);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur)}
+.glass,.gl,#side,#app,#ctx,#dock,.sheet .in,#pop,.vm .vmin{background:var(--glass);border:1px solid var(--gline);box-shadow:inset 0 1px 0 var(--hl),0 10px 30px var(--sh);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur)}
 .card,.stat,.menurow,.artrow,.trturn,.msg.a,.essum,.nitem,.esvoz,.frm{background:var(--glass2);border:1px solid var(--gline);box-shadow:inset 0 1px 0 var(--hl),0 6px 22px var(--sh)}
 .card,.stat,.nitem,.trturn{border-radius:20px}
 .msg.u{background:var(--grad);color:#fff;box-shadow:inset 0 1px 0 rgba(255,255,255,.4),0 8px 22px rgba(79,124,255,.3);border-bottom-right-radius:4px}
@@ -392,10 +392,13 @@ nav button.on{background:var(--glass2);color:var(--at);font-weight:650;box-shado
 nav .badge{background:#b91c1c;color:#fff}
 @media (max-width:759px){
   header{margin:10px 12px 8px;border:1px solid var(--gline);border-radius:22px;background:var(--glass);box-shadow:inset 0 1px 0 var(--hl),0 10px 30px var(--sh);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);padding:6px 8px 6px 12px}
-  .hbrand{display:flex}header h1{flex:0 1 auto;margin-right:auto;font-size:17px}
+  .hbrand{display:flex}header h1{flex:0 1 auto;margin-right:0;font-size:17px}header #dot{margin-right:auto}
   #menubtn{order:20;display:inline-flex}
+  #hsub,#vmbtn{display:none}
+  body.vista-es #hback{display:inline-flex}body.vista-es .hbrand,body.vista-es header #dot{display:none}body.vista-es.esrec header .recpill{display:inline-flex}
+  body.vista-es .eshead h2{display:none}body.vista-es .eshead .sub{font-size:12px;letter-spacing:.8px;text-transform:uppercase;margin:0}
   header #dot{order:2}
-  body.esrec .recstrip{display:flex}
+  body.esrec .recstrip{display:flex}body.vista-es .recstrip{display:none!important}
   body.esrec header .recpill{display:none}
   #sdnav .only-d{display:none}
   #side{background:var(--drawer)}
@@ -455,10 +458,11 @@ body.dkfull #dock{width:calc(100vw - 32px);left:16px;z-index:34}body.dkfull.dock
 .tgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
 .tgrid .card{cursor:pointer;text-align:left;color:var(--tx);font:inherit;display:block;width:100%}
 /* -------- reducir movimiento -------- */
+@media (max-width:759px) and (prefers-color-scheme:light){:root{--mut:#3d4866;--b1:#7c6cff40;--b2:#22d3ee36;--b3:#f472b636}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 .ico-i{display:inline-flex;vertical-align:-.17em}.ico-i.c-red{color:#dc2626}.ico-i.c-green{color:var(--ok)}.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
 /* ---------- Escuchar y transcribir ---------- */
-.chk{display:flex;gap:12px;align-items:flex-start;font-size:14.5px;cursor:pointer}.chk input{margin-top:1px}
+.chk{display:flex;gap:12px;align-items:flex-start;font-size:14.5px;cursor:pointer;color:var(--tx);margin:0}.chk input{margin-top:1px}
 #v-es{overflow:hidden}
 .esgrid{display:flex;gap:16px;height:100%;padding:16px 18px 18px;min-height:0}
 .escol{flex:1;min-width:0;display:flex;flex-direction:column;gap:12px;min-height:0}
@@ -498,18 +502,20 @@ body.dkfull #dock{width:calc(100vw - 32px);left:16px;z-index:34}body.dkfull.dock
 .esvoz>summary::-webkit-details-marker{display:none}
 .vrow{display:flex;gap:12px;align-items:center;padding:10px 12px;border-radius:18px;background:var(--glass2);border:1px solid var(--gline);margin-bottom:8px}
 .vrow .vi{flex:1;min-width:0}.vname{background:none;border:0;color:var(--at);font-weight:650;font-size:13px;padding:0 6px}
-.swr{display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:48px;font-size:14.5px;cursor:pointer}
+.swr{display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:48px;font-size:14.5px;cursor:pointer;color:var(--tx);margin:0}
 .sw{position:relative;display:inline-block;width:52px;height:30px;flex:none}
 .sw input{position:absolute;inset:0;width:100%;height:100%;opacity:0;margin:0;cursor:pointer}
 .sw i{position:absolute;inset:0;border-radius:999px;background:var(--gline);border:1px solid var(--mut);pointer-events:none}
 .sw i::after{content:"";position:absolute;left:3px;top:3px;width:22px;height:22px;border-radius:50%;background:var(--mut);transition:transform .15s}
 .sw input:checked+i{background:#2f66e8;border-color:#2f66e8}.sw input:checked+i::after{transform:translateX(22px);background:#fff}
 .sw input:focus-visible+i{outline:2px solid var(--at);outline-offset:3px}
+@media (min-width:760px){.esctl{flex-wrap:nowrap}.ctls{flex-wrap:nowrap;flex:none}.ib2 .t{display:none}.ib2{width:48px;padding:0;justify-content:center}.ctxt{flex:1 1 auto}}
+@media (max-width:759px){.ctls{width:100%}.ctls #es-pause,.ctls #es-save{flex:1;justify-content:center}.ctls #es-sum{flex:1 1 100%;order:3;justify-content:center}.esctl{padding:12px}}
 @media (max-width:1099px){.esgrid{flex-direction:column;padding:12px}.esvoz{flex:none;max-height:40%;padding:12px 14px}.esvoz>summary{cursor:pointer;margin:0;min-height:44px;display:flex;align-items:center}.esvoz[open]>summary{margin-bottom:8px}}
 @media (min-width:1100px){.esvoz>summary{pointer-events:none}}
 /* ---------- Voz (pantalla completa) ---------- */
 .vm{background:transparent}.vm.on{display:block}
-.vm::before{content:"";position:absolute;inset:0;z-index:-1;background:var(--base)}
+.vm::before{content:"";position:absolute;inset:0;z-index:-1;background:var(--blobs),linear-gradient(var(--base),var(--base))}
 .vm .vmin{border-radius:0;border:0;box-shadow:none;background:transparent;-webkit-backdrop-filter:none;backdrop-filter:none;color:var(--tx);max-width:760px;margin:0 auto}
 .vm{color:var(--tx)}
 .vmhd b{font-size:15px;font-weight:650}.vmhd button{background:var(--glass2);color:var(--tx);border:1px solid var(--gline);border-radius:999px;padding:0 18px;font-weight:650;display:inline-flex;align-items:center;gap:8px}
@@ -522,12 +528,12 @@ body.dkfull #dock{width:calc(100vw - 32px);left:16px;z-index:34}body.dkfull.dock
 @media (prefers-reduced-motion:no-preference){.orb[data-s=listen]{animation:vl 1.8s ease-in-out infinite}@keyframes vl{50%{transform:scale(1.05)}}
   .orb[data-s=think]{animation:vb 1.1s ease-in-out infinite}.orb[data-s=speak]{animation:vs 1.2s ease-in-out infinite}
   @keyframes vp{50%{transform:scale(1.08);opacity:.5}}@keyframes vb{50%{opacity:.7}}@keyframes vs{50%{transform:scale(1.08)}}}
-.vmst{font-size:24px;font-weight:650;color:var(--tx)}.vmtx{color:var(--tx)}.vmms,.vmhint{color:var(--mut)}.vmhalf{color:var(--mut);font-size:13px}
+.vmst{font-size:24px;font-weight:650;color:var(--tx)}.vmtx{color:var(--tx)}.vmms,.vmhint{color:var(--tx)}.vmhalf{color:var(--tx);font-size:13px;margin:0}
 .vmlink{color:var(--at)}
 .vm .artcard{border-radius:999px;min-height:52px;padding:0 26px;font-size:16px}
 /* ---------- Traductor frente a frente ---------- */
 .fr{position:fixed;inset:0;z-index:36;display:none;background:var(--base)}.fr.on{display:block}
-.fr::before{content:"";position:absolute;inset:0;background:radial-gradient(40% 38% at 12% 6%,var(--b1),transparent 70%),radial-gradient(34% 40% at 92% 22%,var(--b2),transparent 70%),radial-gradient(46% 40% at 68% 96%,var(--b3),transparent 70%);pointer-events:none}
+.fr::before{content:"";position:absolute;inset:0;background:var(--blobs);pointer-events:none}
 .frin{position:relative;height:100%;display:flex;flex-direction:column;gap:12px;padding:calc(env(safe-area-inset-top) + 12px) 12px calc(env(safe-area-inset-bottom) + 12px)}
 .fr.lado .frin{flex-direction:row}
 .hf{position:relative;flex:1;min-height:0;min-width:0;display:flex;flex-direction:column;gap:12px;padding:16px 18px 18px;border-radius:28px}
@@ -549,7 +555,7 @@ body.dkfull #dock{width:calc(100vw - 32px);left:16px;z-index:34}body.dkfull.dock
 .frlayout button{min-height:44px;padding:0 16px;border-radius:999px;font-weight:600;font-size:13.5px}
 /* ---------- Login ---------- */
 #login{background:var(--base);align-items:center}
-#login::before{content:"";position:absolute;inset:0;background:radial-gradient(40% 38% at 12% 6%,var(--b1),transparent 70%),radial-gradient(34% 40% at 92% 22%,var(--b2),transparent 70%),radial-gradient(46% 40% at 68% 96%,var(--b3),transparent 70%);pointer-events:none}
+#login::before{content:"";position:absolute;inset:0;background:var(--blobs);pointer-events:none}
 #login>*{position:relative;width:100%;max-width:380px}
 #login.on{display:flex}
 #login form,#login details{background:transparent}
@@ -559,7 +565,7 @@ body.dkfull #dock{width:calc(100vw - 32px);left:16px;z-index:34}body.dkfull.dock
 /* ---------- Hoy / Trabajos / Entregables ---------- */
 .hoyalert{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 16px;border-radius:20px;background:var(--glass2);border:1px solid rgba(251,191,36,.6);margin-bottom:12px;cursor:pointer;text-align:left;width:100%;color:var(--tx);font:inherit}
 .hoyalert span.t{flex:1 1 200px;font-size:14px;color:var(--mut)}.hoyalert b.go{background:var(--grad);color:#fff;border-radius:999px;min-height:40px;padding:0 18px;display:inline-flex;align-items:center;font-size:14px}
-.stat{padding:14px 10px}.stat span{font-size:12px;color:var(--mut)}
+.stat{padding:16px 10px}.stat b{font-size:28px;line-height:1.2}.task{padding:14px 18px;min-height:68px}.task .tt{font-size:15px}.task .ck{margin:-8px 4px -8px -12px}.task .ck::before{inset:5px;border-radius:10px}.stat span{font-size:12px;color:var(--mut)}
 .pbar{background:var(--gline)}
 @media (max-width:759px){.scroll{padding:8px 16px 96px}.esgrid{padding:8px 12px 12px}}
 .fr.lado .hf.rot{transform:none}
@@ -570,12 +576,18 @@ body.vista-es #fab-es{display:none}
 html.lowfx{--blur:none;--glass:rgba(255,255,255,.92);--glass2:rgba(255,255,255,.97)}
 @media (prefers-color-scheme:dark){html.lowfx{--glass:rgba(24,29,52,.94);--glass2:rgba(34,41,70,.97)}}
 html.lowfx body::before{display:none}
+.trbar select{min-height:52px;border-radius:16px;padding:0 14px}.trbar button{min-height:44px;min-width:44px;border-radius:50%}
+.trtalk button{min-height:56px;border-radius:18px;font-size:15.5px}
+.trtalk button#tr-b2{background:var(--glass2);color:var(--tx);border:1px solid var(--gline);box-shadow:inset 0 1px 0 var(--hl)}
+.trin input{min-height:52px;border-radius:14px}.trin button{min-height:52px;border-radius:14px;background:var(--glass2);color:var(--tx);border:1px solid var(--gline);padding:0 18px}
+.menurow{padding:16px 18px;border-radius:22px;gap:14px}
 .menurow .ico{flex:none}
 </style>
 </head>
 <body>
 <div id="app">
   <header>
+    <button class="ib" id="hback" hidden aria-label="Volver a la conversación" style="order:-1"><i data-i="back"></i></button>
     <span class="hbrand"><img src="/app/icon.svg" alt=""></span>
     <span class="dot" id="dot"></span>
     <h1 id="h1" style="order:1"><span id="title">{{AGENT_NAME}}</span><small id="hsub"> · en línea</small></h1>
@@ -1393,13 +1405,14 @@ function esPaint(){
 }
 function esUI(){                                            // indicador de grabación SIEMPRE visible mientras escucha: cabecera, tira en teléfono, botón flotante
   const on=ES.on,t=esClock(esElapsed()),txt=(ES.paused?'En pausa':'Escuchando')+' · '+t;
+  if(document.body.classList.contains('vista-es'))$('#title').textContent=on?(ES.paused?'En pausa':'Escuchando'):'Escuchar';
   document.body.classList.toggle('esrec',on);
   const a=$('#rec-t');if(a)a.textContent=txt;const b=$('#strip-t');if(b)b.textContent=(ES.paused?'Escucha en pausa':'Escuchando en segundo plano')+' · '+t;
   const f=$('#fab-es');if(f){f.classList.toggle('on',on);$('#fab-es-t').textContent=on?t:'Escuchar';f.dataset.tip=on?txt+' · abrir':'Escuchar y transcribir';f.setAttribute('aria-label',on?'Abrir la escucha ('+txt+')':'Empezar a escuchar y transcribir')}
   const sn=$('#sdn-es');if(sn){const d=sn.querySelector('.rdot');if(on&&!d)sn.insertAdjacentHTML('beforeend','<span class="rdot" aria-hidden="true"></span>');else if(!on&&d)d.remove()}
   const go=$('#es-go'),pz=$('#es-pause'),ctl=$('#es-ctl');
   if(ctl){ctl.classList.toggle('idle',!on);$('#es-live').hidden=!on;$('#es-go').hidden=on}
-  if(pz){pz.innerHTML=ES.paused?svg('play',18)+' Continuar':svg('pause',18)+' Pausar';pz.setAttribute('aria-label',ES.paused?'Continuar la escucha':'Pausar la escucha')}
+  if(pz){pz.innerHTML=ES.paused?svg('play',18)+'<span class="t">Continuar</span>':svg('pause',18)+'<span class="t">Pausar</span>';pz.title=ES.paused?'Continuar':'Pausar';pz.setAttribute('aria-label',ES.paused?'Continuar la escucha':'Pausar la escucha')}
   const m=$('#es-meter');if(m)m.classList.toggle('live',on&&!ES.paused);
   if(ES.t0&&on)esSt((ES.paused?'En pausa':'Sigue escuchando si sales de esta pantalla')+(ES.fuente==='pestana'?' · audio de la pestaña':''));
 }
@@ -1516,7 +1529,7 @@ function esView(){
       '<div class="esctl gl" id="es-ctl"><div class="meter" id="es-meter" aria-hidden="true">'+[10,22,32,18,28,14,26,34,20,12,24,16].map(h=>'<i style="height:'+h+'px"></i>').join('')+'</div>'+
         '<div class="lvl" style="display:none"><i id="es-lvl"></i></div><span class="ctxt" id="es-st">Listo para escuchar.</span>'+
         '<button class="gb big" id="es-go"><i data-i="mic" data-s="20"></i>Empezar a escuchar</button>'+
-        '<span id="es-live" class="ctls" hidden><button class="gl2 ib2" id="es-pause"></button><button class="gl2 ib2" id="es-sum"><i data-i="spark" data-s="18"></i>¿De qué hablan?</button><button class="stopb" id="es-save">Detener y guardar</button></span></div>'+
+        '<span id="es-live" class="ctls" hidden><button class="gl2 ib2" id="es-pause"></button><button class="gl2 ib2" id="es-sum" aria-label="¿De qué hablan? Resumen hasta ahora" title="¿De qué hablan?"><i data-i="spark" data-s="18"></i><span class="t">¿De qué hablan?</span></button><button class="stopb" id="es-save">Detener y guardar</button></span></div>'+
       '</div>'+
       '<details class="esvoz glass" id="es-vd" open><summary>Voces detectadas · <span id="es-vn">0</span></summary><div id="es-vlist"></div>'+
         '<p class="ds" style="margin:10px 2px">Distingo las voces por su timbre y tono. Ponles nombre y se recordarán en la siguiente sesión (es aproximado).</p>'+
@@ -1746,7 +1759,7 @@ function abrirVoz(iniciar){
   if(iniciar)dlStart();
 }
 $('#vmbtn').onclick=()=>abrirVoz(true);
-$('#fab-voz').onclick=()=>abrirVoz(true);$('#fab-es').onclick=()=>{if(ES.on)go('es');else{go('es');esAskStart()}};$('#recpill').onclick=()=>go('es');$('#recstrip').onclick=()=>go('es');
+$('#hback').onclick=()=>go('chat');$('#fab-voz').onclick=()=>abrirVoz(true);$('#fab-es').onclick=()=>{if(ES.on)go('es');else{go('es');esAskStart()}};$('#recpill').onclick=()=>go('es');$('#recstrip').onclick=()=>go('es');
 /* ---------- Donna EN TIEMPO REAL: voz de OpenAI (gpt-realtime-2.1) + el cerebro completo de Donna como herramienta ---------- */
 const DL={ws:null,on:false,half:LS.get('dl_half',true),t0:0,max:1800,tick:0,tool:false};
 function dlStop(){
