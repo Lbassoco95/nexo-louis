@@ -342,7 +342,8 @@ body.esrec .recpill{display:inline-flex}
 #app{height:100dvh;display:flex;flex-direction:column;padding-top:env(safe-area-inset-top);border:0;background:transparent;box-shadow:none;-webkit-backdrop-filter:none;backdrop-filter:none}
 main{flex:1;min-height:0;position:relative}
 .scroll{padding:16px 18px 96px}
-.view>.scroll>*{max-width:880px;margin-left:auto;margin-right:auto}
+.view>.scroll>*:not(.msg):not(.artlbl){max-width:880px;margin-left:auto;margin-right:auto}
+.msg.u{margin-left:auto;margin-right:0}.msg.a{margin-right:auto;margin-left:0}
 .banner{background:var(--wnb);color:var(--wn);border-radius:0}
 /* -------- chat -------- */
 #log{display:flex;flex-direction:column}
@@ -364,17 +365,24 @@ main{flex:1;min-height:0;position:relative}
 .rb.mic.rec{background:#b91c1c;color:#fff}
 .atts,.recbar{margin-left:16px;margin-right:16px}
 /* -------- botones siempre disponibles -------- */
-#fabs{position:fixed;right:16px;bottom:calc(var(--navh,64px) + 96px + env(safe-area-inset-bottom));z-index:22;display:flex;align-items:center;gap:10px;pointer-events:none}
+#app{position:relative}
+#fabs{position:absolute;z-index:22;top:68px;right:14px;display:flex;flex-direction:column-reverse;align-items:flex-end;gap:8px;pointer-events:none}
 #fabs>*{pointer-events:auto}
-.fabp{display:flex;align-items:center;gap:10px;min-height:60px;padding:6px 22px 6px 8px;border-radius:999px;font-weight:650;font-size:15px;color:var(--tx);background:var(--glass2);border:1px solid var(--gline);box-shadow:inset 0 1px 0 var(--hl),0 10px 30px var(--sh);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur)}
-.fabp .o{width:46px;height:46px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex:none}
-#fab-voz .o{background:radial-gradient(circle at 35% 30%,#9db6ff,#4f7cff 55%,#2b3fa8);box-shadow:0 0 18px #4f7cff88;color:#fff}
-#fab-es .o{background:var(--glass);color:var(--at)}
-#fab-es.on{border-color:rgba(220,38,38,.45)}#fab-es.on .o{background:rgba(220,38,38,.16);color:var(--recc)}
-.fabp:hover{transform:translateY(-2px)}
+.fabp{position:relative;display:flex;align-items:center;justify-content:center;gap:6px;width:44px;height:44px;min-height:44px;padding:0;border-radius:999px;font-weight:650;font-size:13px;color:var(--tx);background:var(--glass2);border:1px solid var(--gline);box-shadow:inset 0 1px 0 var(--hl),0 6px 18px var(--sh);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);opacity:.8}
+.fabp .o{width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex:none}
+.fabp .lbl{display:none}
+#fab-voz .o{background:radial-gradient(circle at 35% 30%,#9db6ff,#4f7cff 55%,#2b3fa8);box-shadow:0 0 10px #4f7cff88;color:#fff}
+#fab-es .o{width:auto;height:auto;background:transparent;color:var(--at)}
+#fab-es.on{border-color:rgba(220,38,38,.55);background:rgba(220,38,38,.12);opacity:1}#fab-es.on .o{color:var(--recc)}
+.fabp:hover,.fabp:focus-visible{opacity:1}
+.fabp::after{content:attr(data-tip);position:absolute;top:50%;right:calc(100% + 8px);transform:translateY(-50%);white-space:nowrap;background:var(--glass2);border:1px solid var(--gline);border-radius:10px;padding:5px 10px;font-size:12.5px;font-weight:600;color:var(--tx);box-shadow:0 6px 18px var(--sh);opacity:0;pointer-events:none;z-index:2}
+.fabp:hover::after,.fabp:focus-visible::after{opacity:1}
+@media (prefers-reduced-motion:no-preference){.fabp{transition:opacity .15s ease,transform .15s ease}.fabp:hover{transform:translateY(-1px)}.fabp::after{transition:opacity .15s ease}}
+@media (min-width:760px){.scroll{padding-right:72px}#log{padding-left:max(18px,calc((100% - 880px)/2));padding-right:max(72px,calc((100% - 880px)/2))}}
 @media (max-width:759px){
-  .fabp{padding:0;width:58px;min-height:58px;justify-content:center}.fabp .lbl{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-  #fab-es{width:50px;min-height:50px}#fab-es .o{width:40px;height:40px}
+  #fabs{top:auto;right:16px;bottom:calc(var(--navh,64px) + 88px);flex-direction:row-reverse;align-items:center}
+  .fabp{width:54px;height:54px;min-height:54px;opacity:1}.fabp .o{width:38px;height:38px}#fab-es .o{width:auto;height:auto}
+  .fabp::after{display:none}
   body.esrec #fab-es{display:none}
 }
 /* -------- barra inferior (teléfono) -------- */
@@ -398,7 +406,6 @@ nav .badge{background:#b91c1c;color:#fff}
   #sd-x,#menubtn,#scrim{display:none!important}
   #app{margin:16px 16px 16px 320px;height:calc(100dvh - 32px);padding-top:0;border-radius:26px;overflow:hidden;background:var(--glass);border:1px solid var(--gline);box-shadow:inset 0 1px 0 var(--hl),0 10px 30px var(--sh);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur)}
   nav,.recstrip{display:none!important}
-  #fabs{bottom:104px;right:36px}
   .composer{margin:0 auto 16px;width:calc(100% - 44px);max-width:860px}
   .atts,.recbar{max-width:860px;margin-left:auto;margin-right:auto;width:calc(100% - 44px)}
   .msg{max-width:78%}
@@ -557,9 +564,7 @@ body.dkfull #dock{width:calc(100vw - 32px);left:16px;z-index:34}body.dkfull.dock
 @media (max-width:759px){.scroll{padding:8px 16px 96px}.esgrid{padding:8px 12px 12px}}
 .fr.lado .hf.rot{transform:none}
 body.vista-es #fab-es{display:none}
-@media (min-width:1100px){body.docked #fabs{right:calc(min(48vw,820px) + 52px)}}
-@media (min-width:1100px){body.vista-es:not(.docked) #fabs{right:352px;bottom:104px}}
-@media (min-width:760px) and (max-width:1099px){body.docked #fabs{display:none}}
+@media (min-width:1100px){body.vista-es #fabs{right:336px}}
 @media (max-width:1099px){body.vista-es #fabs{display:none}}
 @media (max-width:759px){.fr .hlbl,.fr .end{font-size:13.5px}.hbtn{min-height:72px;font-size:18px}}
 html.lowfx{--blur:none;--glass:rgba(255,255,255,.92);--glass2:rgba(255,255,255,.97)}
@@ -611,12 +616,12 @@ html.lowfx body::before{display:none}
     <button data-v="trab"><i data-i="wrench"></i>Trabajos<span class="badge" id="b-trab" hidden></span></button>
     <button data-v="ent"><i data-i="box"></i>Entregables</button>
   </nav>
+  <div id="fabs">
+  <button class="fabp" id="fab-es" aria-label="Empezar a escuchar y transcribir" data-tip="Escuchar y transcribir"><span class="o"><i data-i="wave"></i></span><span class="lbl" id="fab-es-t">Escuchar</span></button>
+  <button class="fabp" id="fab-voz" aria-label="Hablar con {{AGENT_NAME}}" data-tip="Hablar con {{AGENT_NAME}}"><span class="o"><i data-i="mic"></i></span><span class="lbl">Hablar con {{AGENT_NAME}}</span></button>
+</div>
 </div>
 
-<div id="fabs">
-  <button class="fabp" id="fab-es" aria-label="Empezar a escuchar y transcribir"><span class="o"><i data-i="wave"></i></span><span class="lbl" id="fab-es-t">Escuchar</span></button>
-  <button class="fabp" id="fab-voz" aria-label="Hablar con {{AGENT_NAME}}"><span class="o"><i data-i="mic"></i></span><span class="lbl">Hablar con {{AGENT_NAME}}</span></button>
-</div>
 <div id="scrim"></div>
 <aside id="side" aria-label="Conversaciones y secciones">
   <div class="sdhd"><img src="/app/icon.svg" alt=""><b>{{AGENT_NAME}}</b><button class="ib" id="sd-x" aria-label="Cerrar el menú"><i data-i="x"></i></button></div>
@@ -1390,7 +1395,7 @@ function esUI(){                                            // indicador de grab
   const on=ES.on,t=esClock(esElapsed()),txt=(ES.paused?'En pausa':'Escuchando')+' · '+t;
   document.body.classList.toggle('esrec',on);
   const a=$('#rec-t');if(a)a.textContent=txt;const b=$('#strip-t');if(b)b.textContent=(ES.paused?'Escucha en pausa':'Escuchando en segundo plano')+' · '+t;
-  const f=$('#fab-es');if(f){f.classList.toggle('on',on);$('#fab-es-t').textContent=on?txt:'Escuchar';f.setAttribute('aria-label',on?'Abrir la escucha ('+txt+')':'Empezar a escuchar y transcribir')}
+  const f=$('#fab-es');if(f){f.classList.toggle('on',on);$('#fab-es-t').textContent=on?t:'Escuchar';f.dataset.tip=on?txt+' · abrir':'Escuchar y transcribir';f.setAttribute('aria-label',on?'Abrir la escucha ('+txt+')':'Empezar a escuchar y transcribir')}
   const sn=$('#sdn-es');if(sn){const d=sn.querySelector('.rdot');if(on&&!d)sn.insertAdjacentHTML('beforeend','<span class="rdot" aria-hidden="true"></span>');else if(!on&&d)d.remove()}
   const go=$('#es-go'),pz=$('#es-pause'),ctl=$('#es-ctl');
   if(ctl){ctl.classList.toggle('idle',!on);$('#es-live').hidden=!on;$('#es-go').hidden=on}
