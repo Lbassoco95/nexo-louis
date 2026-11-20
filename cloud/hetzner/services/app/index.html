@@ -581,6 +581,13 @@ html.lowfx body::before{display:none}
 .trtalk button#tr-b2{background:var(--glass2);color:var(--tx);border:1px solid var(--gline);box-shadow:inset 0 1px 0 var(--hl)}
 .trin input{min-height:52px;border-radius:14px}.trin button{min-height:52px;border-radius:14px;background:var(--glass2);color:var(--tx);border:1px solid var(--gline);padding:0 18px}
 .menurow{padding:16px 18px;border-radius:22px;gap:14px}
+.queue{margin:0 16px 6px}
+.qi{display:flex;align-items:center;gap:4px;background:var(--glass2);border:1px solid var(--gline);border-radius:18px;padding:2px 4px 2px 14px;margin-bottom:6px;font-size:13.5px;box-shadow:inset 0 1px 0 var(--hl)}
+.qi .qt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qi button{min-height:44px;min-width:44px;border:0;border-radius:14px;padding:0 12px;font-weight:650;font-size:13px;background:transparent;color:var(--at);display:inline-flex;align-items:center;justify-content:center}
+@media (min-width:760px){.queue{margin:0 auto 6px;width:calc(100% - 44px);max-width:860px}}
+@media (max-width:759px){body.hay-fila #fabs{bottom:calc(var(--navh,64px) + 152px)}}
+.udot{flex:none;width:9px;height:9px;border-radius:50%;background:var(--at);margin:0 -2px 0 8px;align-self:center}
 .menurow .ico{flex:none}
 </style>
 </head>
@@ -604,6 +611,7 @@ html.lowfx body::before{display:none}
       <div class="scroll" id="log"></div>
       <div class="chips" id="chips"></div>
       <div class="recbar" id="recbar"><span class="dotr"></span><b id="rectime">00:00</b><button class="g" id="reccancel">Descartar</button><button id="recstop">Detener y guardar</button></div>
+      <div class="queue" id="queue" hidden aria-live="polite"></div>
       <div class="atts" id="atts"></div>
       <input type="file" id="f-any" multiple hidden>
       <input type="file" id="f-cam" accept="image/*" capture="environment" hidden>
@@ -873,43 +881,71 @@ function renderChat(){
   const log=$('#log');log.innerHTML='';
   if(!chat.length){log.innerHTML='<div class="hero"><div><h2>¿En qué te ayudo hoy?</h2><p>Escribe, habla o elige un atajo.</p></div><div class="heroac">'+HERO.map((h,i)=>'<button class="ac" data-h="'+i+'"><span class="ico">'+svg(h.i,22)+'</span><span><b>'+esc(h.t)+'</b><span class="h">'+esc(h.h)+'</span></span></button>').join('')+'</div></div>';
     log.querySelectorAll('[data-h]').forEach(b=>b.onclick=()=>{const h=HERO[+b.dataset.h];if(h.fill){const i=$('#inp');i.value=h.fill;autosize();i.focus();i.setSelectionRange(h.fill.length,h.fill.length)}else sendMsg(h.q||h.t)})}
-  chat.forEach((m,i)=>{if(m.art&&(i===0||chat[i-1].art!==m.art)){const l=document.createElement('div');l.className='artlbl';l.textContent='🧩 Conversación del tablero';log.appendChild(l)}log.appendChild(bubble(m,i))});scrollDown();paintDock();
+  chat.forEach((m,i)=>{if(m.art&&(i===0||chat[i-1].art!==m.art)){const l=document.createElement('div');l.className='artlbl';l.textContent='🧩 Conversación del tablero';log.appendChild(l)}log.appendChild(bubble(m,i))});if(REQ.has(cid)){if(LIVE&&LIVE.org===cid)log.appendChild(LIVE.el);else{const t=document.createElement('div');t.className='msg a live';t.innerHTML='<span class="typing"><i></i><i></i><i></i></span><div class="st">Donna sigue trabajando en esto…</div>';log.appendChild(t)}}
+  scrollDown();paintDock();paintQueue();
 }
 function scrollDown(){const l=$('#log');requestAnimationFrame(()=>l.scrollTop=l.scrollHeight)}
-let ctl=null;
+let ctl=null;                                       // (heredado) la detención ahora se hace por conversación
+const REQ=new Map(),QUEUE=new Map();                // respuestas en curso y mensajes en fila, por conversación
+let LIVE=null;                                      // burbuja en vivo de la última respuesta en curso
 const rid=()=>(crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random().toString(36).slice(2)).replace(/[^A-Za-z0-9_-]/g,'');
-function setBusy(b){busy=b;const s=$('#send');s.classList.toggle('stop',b);s.textContent=b?'■':'➤';s.setAttribute('aria-label',b?'Detener':'Enviar')}
+function sendBtn(){const s=$('#send'),tiene=!!($('#inp').value.trim()||PEND.length),stop=busy&&!tiene;s.classList.toggle('stop',stop);s.innerHTML=svg(stop?'stop':'send',20);
+  s.setAttribute('aria-label',stop?'Detener la respuesta':busy?'Poner el mensaje en fila':'Enviar')}
+function setBusy(b){busy=b;sendBtn()}
+const unreadSet=()=>new Set(LS.get('unread',[]));
+function markUnread(c){const u=unreadSet();u.add(c);LS.set('unread',[...u].slice(-50))}
+function clearUnread(c){const u=unreadSet();if(u.delete(c))LS.set('unread',[...u])}
 function finishMsg(t,model){chat.push(curArt?{r:'a',t,ts:Date.now(),model,art:curArt}:{r:'a',t,ts:Date.now(),model});{const m=String(t).match(/\[\[artefacto:(a[0-9a-f]{10})\]\]/);if(m&&(innerWidth>=760||dkId===m[1]))setTimeout(()=>openArt(m[1],true),300)}LS.set('chat',chat.slice(-200));LS.del('pending')}
 let curArt='';
-async function sendMsg(text,art){
+function paintQueue(){
+  const q=QUEUE.get(cid)||[],box=$('#queue');if(!box)return;box.hidden=!q.length;document.body.classList.toggle('hay-fila',q.length>0);
+  box.innerHTML=q.map((m,i)=>'<div class="qi"><span class="qt"><b>En fila</b> · '+esc(m.text.replace(/\n.*/s,'').slice(0,90))+'</span><button data-qa="upd" data-n="'+i+'" title="Une este mensaje al anterior y vuelve a preguntar con las dos cosas">Actualizar el anterior</button><button data-qa="x" data-n="'+i+'" aria-label="Quitar de la fila"><i data-i="x" data-s="16"></i></button></div>').join('');
+  box.querySelectorAll('[data-qa]').forEach(b=>b.onclick=()=>{const i=+b.dataset.n;if(b.dataset.qa==='x'){q.splice(i,1);paintQueue();sendBtn();return}mergeInto(i)});
+}
+function mergeInto(i){                              // «actualizar el mensaje anterior»: se descarta la respuesta en curso y se vuelve a preguntar con las dos cosas
+  const q=QUEUE.get(cid)||[],m=q.splice(i,1)[0],R=REQ.get(cid);if(!m)return;
+  if(!R){sendMsg(m.text,m.art,{attIds:m.attIds});return}
+  R.merge=m;api('/v1/app/chat/cancel',{method:'POST',body:JSON.stringify({rid:R.rid})}).catch(()=>{});R.ctl.abort();paintQueue();
+}
+function drainQueue(){const q=QUEUE.get(cid);if(q&&q.length&&!busy){const m=q.shift();paintQueue();sendMsg(m.text,m.art,{attIds:m.attIds})}}
+function bgDone(org,text,model){                    // terminó mientras estabas en otro chat: ya quedó guardada en SU conversación
+  markUnread(org);const c=convs.find(x=>x.id===org);toast('Donna terminó'+(c?' en «'+String(c.titulo).slice(0,40)+'»':' en otra conversación'));loadConvs(true);
+}
+async function sendMsg(text,art,pre){
   art=(typeof art==='string'&&art)?art:'';
   text=(text||'').trim();
-  if(PEND.some(a=>a.state==='subiendo')){toast('Espera a que termine de subir el adjunto');return}
-  const atts=PEND.filter(a=>a.id&&a.state!=='error');
-  if((!text&&!atts.length)||busy)return;
+  if(!pre&&PEND.some(a=>a.state==='subiendo')){toast('Espera a que termine de subir el adjunto');return}
+  const atts=pre?[]:PEND.filter(a=>a.id&&a.state!=='error');
+  if(!text&&!atts.length)return;
   if(!text)text='Revisa lo que te mando.';
-  const attIds=atts.map(a=>a.id);
-  if(atts.length)text+='\n'+atts.map(a=>'📎 '+a.name).join('\n');
-  PEND=[];paintPend();
-  setBusy(true);$('#inp').value='';autosize();
+  const attIds=pre?(pre.attIds||[]):atts.map(a=>a.id);
+  if(!pre&&atts.length)text+='\n'+atts.map(a=>'📎 '+a.name).join('\n');
+  if(!cid){cid=newCid();rawSet('cid',cid)}
+  if(busy){                                         // Donna sigue con la respuesta anterior: el mensaje se pone en fila
+    const q=QUEUE.get(cid)||[];q.push({text,attIds,art});QUEUE.set(cid,q);
+    PEND=[];paintPend();$('#inp').value='';autosize();sendBtn();paintQueue();toast('En fila: se manda en cuanto Donna termine');return}
+  const org=cid,here=()=>cid===org;
+  PEND=[];paintPend();$('#inp').value='';autosize();
   curArt=art;chat.push(art?{r:'u',t:text,ts:Date.now(),art}:{r:'u',t:text,ts:Date.now()});LS.set('chat',chat.slice(-200));renderChat();
-  const id=rid();LS.set('pending',{id,ts:Date.now()});
-  const log=$('#log'),d=document.createElement('div');d.className='msg a live';
-  d.innerHTML='<span class="typing"><i></i><i></i><i></i></span><div class="st"></div>';log.appendChild(d);scrollDown();
+  const id=rid(),R={rid:id,ctl:new AbortController(),text,art,userIdx:chat.length-1,merge:null};REQ.set(org,R);setBusy(true);
+  LS.set('pending',{id,ts:Date.now(),cid:org});
+  await saveNow();                                  // la conversación ya está en el servidor: la respuesta llegará a ella aunque te vayas a otro chat
+  const d=document.createElement('div');d.className='msg a live';
+  d.innerHTML='<span class="typing"><i></i><i></i><i></i></span><div class="st"></div>';LIVE={org,el:d};
+  if(here()){$('#log').appendChild(d);scrollDown()}
   let dd=null;if(art){const th=$('#dk-th');th.hidden=false;dd=d.cloneNode(true);th.appendChild(dd);th.scrollTop=th.scrollHeight}
-  const hist=chat.slice(0,-1).slice(-16).map(m=>({role:m.r==='u'?'user':'assistant',content:m.t}));
+  const hist=chat.slice(0,R.userIdx).slice(-16).map(m=>({role:m.r==='u'?'user':'assistant',content:m.t}));
   let acc='',model='',gotDone=false,failed='',raf=0;
-  const paint=()=>{raf=0;d.classList.add('has');d.innerHTML=md(acc);scrollDown();if(dd){dd.className='msg a live has';dd.innerHTML=d.innerHTML;const th=$('#dk-th');th.scrollTop=th.scrollHeight}};
-  ctl=new AbortController();
+  const paint=()=>{raf=0;d.classList.add('has');d.innerHTML=md(acc);if(here())scrollDown();if(dd){dd.className='msg a live has';dd.innerHTML=d.innerHTML;const th=$('#dk-th');th.scrollTop=th.scrollHeight}};
   try{
-    const r=await fetch('/v1/app/chat/stream',{method:'POST',signal:ctl.signal,
+    const r=await fetch('/v1/app/chat/stream',{method:'POST',signal:R.ctl.signal,
       headers:{'Content-Type':'application/json',Authorization:'Bearer '+TOKEN},
-      body:JSON.stringify({rid:id,attachments:attIds,tablero:art||undefined,messages:[...hist,{role:'user',content:text}]})});
+      body:JSON.stringify({rid:id,cid:org,attachments:attIds,tablero:art||undefined,messages:[...hist,{role:'user',content:text}]})});
     if(r.status===401){logout(true);throw new Error('Sesión vencida')}
     if(!r.ok){let m='';try{m=(await r.json()).error}catch(e){}throw new Error(m||('Error '+r.status))}
     online(true);
     const onEv=(ev,data)=>{
-      if(ev==='status'){const st=d.querySelector('.st');if(st&&!acc)st.textContent='Pensando… '+data.s+' s'}
+      if(ev==='status'){const st=d.querySelector('.st');if(st&&!acc)st.textContent='Pensando… '+data.s+' s'+(data.s>=20?' · puedes seguir en otro chat: te aviso cuando termine':'')}
       else if(ev==='delta'){acc+=data.d;if(!raf)raf=requestAnimationFrame(paint)}
       else if(ev==='done'){gotDone=true;model=data.model}
       else if(ev==='fail'){failed=data.error}
@@ -920,14 +956,21 @@ async function sendMsg(text,art){
         const k=buf.lastIndexOf('\n\n');if(k>=0){parseSSE(buf.slice(0,k+2),onEv);buf=buf.slice(k+2)}}}
     if(failed)throw new Error(failed);
     if(!gotDone&&!acc)throw new Error('conexión interrumpida');
-    finishMsg(acc,model);if(navigator.vibrate)navigator.vibrate(15);
+    if(here()){curArt=art;finishMsg(acc,model);curArt='';if(navigator.vibrate)navigator.vibrate(15)}else bgDone(org,acc,model);
   }catch(e){
-    if(e.name==='AbortError'){ if(acc)finishMsg(acc+'\n\n_(detenido)_',model); else {LS.del('pending');chat.push({r:'a',t:'_(detenido)_',ts:Date.now()})} LS.set('chat',chat.slice(-200)) }
-    else if(!acc&&!failed&&LS.get('pending')){ // se cortó la conexión: la respuesta puede seguir en el servidor
-      online(false);setBusy(false);ctl=null;renderChat();recoverPending(true);return}
-    else{chat.push({r:'a',t:acc?acc+'\n\n⚠️ '+e.message:'⚠️ '+e.message+'. Vuelve a enviar.',ts:Date.now()});LS.del('pending');LS.set('chat',chat.slice(-200));online(false)}
+    if(e.name==='AbortError'){
+      if(R.merge){                                   // «actualizar el anterior»: se descarta lo que había y se pregunta de nuevo con la corrección
+        if(here()){chat.splice(R.userIdx);LS.set('chat',chat.slice(-200));LS.del('pending')}
+        REQ.delete(org);if(LIVE&&LIVE.org===org)LIVE=null;setBusy(REQ.has(cid));renderChat();
+        sendMsg(R.text+'\n\n(Actualización: '+R.merge.text+')',R.art,{attIds:R.merge.attIds});return}
+      if(here()){ if(acc){curArt=art;finishMsg(acc+'\n\n_(detenido)_',model);curArt=''} else {LS.del('pending');chat.push({r:'a',t:'_(detenido)_',ts:Date.now()})} LS.set('chat',chat.slice(-200)) }
+    }
+    else if(!acc&&!failed&&LS.get('pending')&&here()){ // se cortó la conexión: la respuesta puede seguir en el servidor
+      online(false);REQ.delete(org);if(LIVE&&LIVE.org===org)LIVE=null;setBusy(false);renderChat();recoverPending(true);return}
+    else if(here()){chat.push({r:'a',t:acc?acc+'\n\n⚠️ '+e.message:'⚠️ '+e.message+'. Vuelve a enviar.',ts:Date.now()});LS.del('pending');LS.set('chat',chat.slice(-200));online(false)}
   }
-  ctl=null;curArt='';setBusy(false);renderChat();
+  REQ.delete(org);if(LIVE&&LIVE.org===org)LIVE=null;
+  if(here()){curArt='';setBusy(false);renderChat();drainQueue()}else setBusy(REQ.has(cid));
 }
 function parseSSE(txt,cb){for(const blk of txt.split('\n\n')){if(!blk.trim())continue;let ev='message',data='';
   for(const l of blk.split('\n')){if(l.startsWith('event:'))ev=l.slice(6).trim();else if(l.startsWith('data:'))data+=l.slice(5).trim()}
@@ -936,6 +979,7 @@ function parseSSE(txt,cb){for(const blk of txt.split('\n\n')){if(!blk.trim())con
 let recovering=false;
 async function recoverPending(show){
   const p=LS.get('pending');if(!p||recovering||busy||!TOKEN)return;
+  if(p.cid&&p.cid!==cid){LS.del('pending');return}
   if(Date.now()-p.ts>3600e3){LS.del('pending');return}
   recovering=true;
   if(show){const l=$('#log'),d=document.createElement('div');d.className='msg a';d.id='rec';d.innerHTML='<span class="typing"><i></i><i></i><i></i></span><div class="st">Recuperando la respuesta…</div>';l.appendChild(d);scrollDown()}
@@ -950,9 +994,9 @@ async function recoverPending(show){
   recovering=false;renderChat();
 }
 function autosize(){const t=$('#inp');t.style.height='auto';t.style.height=Math.min(t.scrollHeight,140)+'px'}
-$('#inp').addEventListener('input',autosize);
+$('#inp').addEventListener('input',()=>{autosize();sendBtn()});
 $('#inp').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&matchMedia('(hover:hover)').matches){e.preventDefault();sendMsg($('#inp').value)}});
-$('#send').onclick=()=>{if(busy&&ctl)ctl.abort();else sendMsg($('#inp').value)};
+$('#send').onclick=()=>{const tiene=!!($('#inp').value.trim()||PEND.length);if(busy&&!tiene){const R=REQ.get(cid);R&&R.ctl.abort()}else sendMsg($('#inp').value)};
 
 /* voz → texto (Web Speech; en iPhone usa también el micrófono del teclado) */
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;let rec=null;
@@ -1926,7 +1970,7 @@ $('#dk-list').onclick=openArtList;
 const DKCH=['Resúmelo en 3 puntos','¿Qué falta o está en riesgo?','Agrega una columna de responsable','Actualízalo con datos de hoy'];
 $('#dk-chips').innerHTML=DKCH.map(c=>'<button class="chip">'+esc(c)+'</button>').join('');
 $$('#dk-chips .chip').forEach(b=>b.onclick=()=>askTablero(b.textContent));
-function askTablero(t){t=(t||$('#dk-in').value).trim();if(!t||!dkId)return;if(busy){toast('Espera a que termine de contestar');return}$('#dk-in').value='';sendMsg(t,dkId)}
+function askTablero(t){t=(t||$('#dk-in').value).trim();if(!t||!dkId)return;$('#dk-in').value='';sendMsg(t,dkId)}
 $('#dk-send').onclick=()=>askTablero();
 $('#dk-in').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&innerWidth>=760){e.preventDefault();askTablero()}});
 function paintDock(){const th=$('#dk-th');if(!th)return;const L=dkId?chat.filter(m=>m.art===dkId):[];th.hidden=!L.length;th.innerHTML='';L.forEach(m=>th.appendChild(bubble(m,-1)));th.scrollTop=th.scrollHeight}
@@ -2105,7 +2149,7 @@ function paintConvs(){
   if(!convs.length){L.innerHTML='<div class="empty" style="padding:24px 12px;font-size:13px">'+($('#sd-q').value?'Nada coincide.':'Aquí aparecerán tus conversaciones. Se guardan solas.')+'</div>';return}
   let g='',h='';
   convs.forEach(c=>{const gg=grupoFecha(c.actualizado);if(gg!==g){g=gg;h+='<div class="sdg">'+g+'</div>'}
-    h+='<div class="cv'+(c.id===cid?' on':'')+'" data-id="'+c.id+'"><button class="ct"><b>'+esc(c.titulo)+'</b><small>'+esc(c.resumen)+'</small></button><button class="mo" aria-label="Opciones">⋯</button></div>'});
+    h+='<div class="cv'+(c.id===cid?' on':'')+'" data-id="'+c.id+'">'+(unreadSet().has(c.id)&&c.id!==cid?'<span class="udot" role="img" aria-label="Respuesta nueva"></span>':'')+'<button class="ct"><b>'+esc(c.titulo)+'</b><small>'+esc(c.resumen)+'</small></button><button class="mo" aria-label="Opciones">⋯</button></div>'});
   L.innerHTML=h;
   $$('#sdlist .cv').forEach(r=>{const id=r.dataset.id,c=convs.find(x=>x.id===id);
     r.querySelector('.ct').onclick=()=>abrirConv(id);
@@ -2130,17 +2174,15 @@ function convMenu(c,anchor){
     try{await api('/v1/app/chats/borrar',{method:'POST',body:JSON.stringify({id:c.id})});if(c.id===cid){clearTimeout(saveT);chat=[];busy=false;await nuevaConv()}else loadConvs(true);toast('Borrada')}catch(e){toast('⚠️ '+e.message)}},true]]);
 }
 async function abrirConv(id){
-  if(busy){toast('Espera a que termine de contestar');return}
   if(id===cid){closeSide();go('chat');return}
   await saveNow();
   try{const c=await api('/v1/app/chat?id='+encodeURIComponent(id));
-    chat=c.msgs||[];cid=c.id;LS.del('pending');rawSet('chat',chat.slice(-200));rawSet('cid',cid);
+    chat=c.msgs||[];cid=c.id;rawSet('chat',chat.slice(-200));rawSet('cid',cid);clearUnread(id);setBusy(REQ.has(cid));
     renderChat();closeSide();go('chat');paintConvs()}catch(e){toast('⚠️ No pude abrirla: '+e.message)}
 }
 async function nuevaConv(){
-  if(busy){toast('Espera a que termine de contestar');return}
   await saveNow();
-  chat=[];cid='';LS.del('cid');LS.del('pending');rawSet('chat',[]);
+  chat=[];cid='';LS.del('cid');rawSet('chat',[]);setBusy(false);
   renderChat();closeSide();go('chat');paintConvs();loadConvs(true);setTimeout(()=>$('#inp').focus(),50);
 }
 $('#newbtn').onclick=nuevaConv;$('#sd-new').onclick=nuevaConv;

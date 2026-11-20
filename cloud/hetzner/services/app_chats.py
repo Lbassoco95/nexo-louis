@@ -134,3 +134,26 @@ def borrar(user: str, cid: str) -> bool:
     existed = p.exists()
     p.unlink(missing_ok=True)
     return existed
+
+
+def agregar_respuesta(user: str, cid: str, texto: str, model: str = "") -> bool:
+    """Agrega la respuesta de Donna al final de una conversación guardada (si existe y esa respuesta no está ya).
+    Así una respuesta larga queda en SU conversación aunque el usuario ya esté en otro chat o haya cerrado la app."""
+    texto = str(texto or "").strip()
+    if not texto:
+        return False
+    with _LOCK:
+        d = obtener(user, cid)
+        if not d:
+            return False
+        msgs = d.get("msgs", [])
+        if msgs and msgs[-1].get("r") == "a" and msgs[-1].get("t", "").strip() == texto[:MAX_TEXTO].strip():
+            return False
+        e = {"r": "a", "t": texto[:MAX_TEXTO], "ts": int(time.time() * 1000)}
+        if model:
+            e["model"] = str(model)[:40]
+        msgs.append(e)
+        d["msgs"] = msgs[-MAX_MSGS:]
+        d["actualizado"] = int(time.time() * 1000)
+        _path(user, cid).write_text(json.dumps(d, ensure_ascii=False))
+    return True

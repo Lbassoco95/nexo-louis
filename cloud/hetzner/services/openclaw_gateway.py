@@ -279,7 +279,7 @@ _VOZ_BLOQUE = (
 )
 
 
-def _chat_worker(rid: str, user_msg: str, history: list, voz: bool = False, registrar: bool = True, extra: str = "", etiqueta: str = ""):
+def _chat_worker(rid: str, user_msg: str, history: list, voz: bool = False, registrar: bool = True, extra: str = "", etiqueta: str = "", cid: str = "", user: str = ""):
     res = _RESULTS[rid]
     try:
         api_key = core.load_anthropic_key()
@@ -291,6 +291,11 @@ def _chat_worker(rid: str, user_msg: str, history: list, voz: bool = False, regi
         if text and registrar:
             _hist_append("assistant", text)
         out = {"text": text or "(sin respuesta)", "model": model, "error": None}
+        if cid and text and app_chats and not res.get("cancelled"):          # la respuesta queda en SU conversación aunque el usuario ya esté en otra
+            try:
+                app_chats.agregar_respuesta(user, cid, text, model)
+            except Exception:
+                log.warning("no pude agregar la respuesta a la conversación", exc_info=True)
     except Exception as e:
         log.exception("chat stream falló")
         out = {"text": "", "model": "", "error": str(e)[:200] or "error"}
@@ -436,7 +441,7 @@ def _bg_lanzar(pedido: str, notificar: bool = True, historial: list = None, tare
 
 def _push_answer(res: dict):
     """El cliente se fue antes de recibir la respuesta → avisa por push (si hay suscripciones)."""
-    if res.get("pushed"):
+    if res.get("pushed") or res.get("cancelled"):
         return
     res["pushed"] = True
     try:
@@ -2274,7 +2279,9 @@ class Handler(BaseHTTPRequestHandler):
         with _RESULTS_LOCK:
             _RESULTS[rid] = res
         _et, _cx = _tablero_contexto(str(body.get("tablero", ""))) if re.match(r"^a[0-9a-f]{10}$", str(body.get("tablero", ""))) else ("", "")
-        threading.Thread(target=_chat_worker, args=(rid, user_msg, history), kwargs={"extra": _cx, "etiqueta": _et}, daemon=True).start()
+        _cid = str(body.get("cid", ""))
+        _cid = _cid if (app_chats and re.match(r"^c[0-9a-f]{10}$", _cid)) else ""
+        threading.Thread(target=_chat_worker, args=(rid, user_msg, history), kwargs={"extra": _cx, "etiqueta": _et, "cid": _cid, "user": self._media_user()}, daemon=True).start()
         try:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -2385,6 +2392,14 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json(200, app_trabajos.accion(str(body.get("id", "")), str(body.get("accion", "")), body.get("paso")))
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
+            return
+        if self.path == "/v1/app/chat/cancel":                        # «actualizar el mensaje anterior»: la respuesta en curso se descarta
+            rid = str(body.get("rid", ""))
+            with _RESULTS_LOCK:
+                r = _RESULTS.get(rid)
+                if r is not None:
+                    r["cancelled"] = True
+            self._send_json(200, {"ok": r is not None})
             return
         if self.path == "/v1/app/escucha/guardar":
             try:

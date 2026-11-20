@@ -32,6 +32,16 @@ class T(unittest.TestCase):
         m = C.obtener("t1", cid)["msgs"]
         self.assertEqual([x.get("art") for x in m], ["a0123456789", "a0123456789", None])      # etiqueta válida se conserva, inválida se descarta
 
+    def test_respuesta_llega_a_su_conversacion(self):
+        cid = C.nuevo_id()
+        C.guardar("r1", cid, [{"r": "u", "t": "pregunta larga"}])
+        self.assertTrue(C.agregar_respuesta("r1", cid, "Respuesta lista", "deepseek"))
+        self.assertFalse(C.agregar_respuesta("r1", cid, "Respuesta lista", "deepseek"))      # no se duplica
+        self.assertFalse(C.agregar_respuesta("r1", C.nuevo_id(), "nada"))                   # conversación inexistente: no la crea
+        self.assertFalse(C.agregar_respuesta("r1", cid, "   "))
+        self.assertEqual([m["r"] for m in C.obtener("r1", cid)["msgs"]], ["u", "a"])
+        self.assertEqual(C.listar("r1")[0]["resumen"], "Respuesta lista")
+
     def test_validacion(self):
         for malo in ("../x", "c1", "", "cZZZZZZZZZZ"):
             with self.assertRaises(ValueError): C.guardar("polo", malo, [{"r": "u", "t": "x"}])

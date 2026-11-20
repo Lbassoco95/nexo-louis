@@ -10345,6 +10345,61 @@ def _is_light_app_chat(system_prompt: str, user_message: str, first_of_day: bool
             and 0 < len(msg.split()) <= 8 and not needs_operational_context(msg) and not needs_tools(msg))
 
 
+_AGENDA_Q = (
+    ("hoy", re.compile(r"(?i)\bqu[eé]\s+(tengo|hay|me\s+toca)\s+(para\s+)?hoy\b|\b(mi\s+)?agenda\s+(de|para)\s+hoy\b|\bqu[eé]\s+(tengo\s+)?pendientes?\s+(para\s+)?hoy\b|\bpendientes\s+de\s+hoy\b")),
+    ("manana", re.compile(r"(?i)\bqu[eé]\s+(tengo|hay|me\s+toca)\s+(para\s+)?ma[ñn]ana\b|\bagenda\s+de\s+ma[ñn]ana\b")),
+    ("semana", re.compile(r"(?i)\bqu[eé]\s+(vence|vencen|tengo|hay)\s+(para\s+)?(esta|la)\s+semana\b|\bpendientes\s+de\s+(esta|la)\s+semana\b|\bagenda\s+de\s+(esta|la)\s+semana\b")),
+    ("vencidas", re.compile(r"(?i)\bqu[eé]\s+(est[aá]n?\s+)?(vencid[oa]s?|atrasad[oa]s?)\b|\bpendientes\s+(vencid[oa]s|atrasad[oa]s)\b")),
+)
+
+
+def _agenda_item_txt(x: dict, n: int = 150) -> str:
+    txt = re.sub(r"\s*·?\s*\[[^\]]*\]", "", x.get("texto", "")).strip()
+    txt = (txt[:n] + "…") if len(txt) > n else txt
+    return ("• %s · %s" % (x["hora"], txt)) if x.get("hora") else "• " + txt
+
+
+def try_deterministic_agenda_query(user_message: str):
+    """«¿Qué tengo hoy?», «¿qué vence esta semana?», «¿qué hay mañana?», «¿qué está vencido?» → se responde DIRECTO con la AGENDA real
+    ordenada por fecha (agenda_por_fechas). Antes lo contestaba un modelo sin herramientas, que a veces inventaba «no tienes nada»."""
+    msg = (user_message or "").strip()
+    if not msg or len(msg) > 90:
+        return None
+    clave = next((k for k, rx in _AGENDA_Q if rx.search(msg)), None)
+    if not clave:
+        return None
+    hoy = datetime.now(TZ_CDMX).date()
+    g = agenda_por_fechas(_read_space_file("AGENDA.md"), hoy)
+    et = "%s %d %s" % (_DIAS_ES[hoy.weekday()], hoy.day, _MESES_ES[hoy.month - 1])
+
+    def bloque(titulo, items, n=8):
+        if not items:
+            return ""
+        extra = "\n• … y %d más (están en la pestaña Hoy)" % (len(items) - n) if len(items) > n else ""
+        return "**%s (%d)**\n%s%s\n\n" % (titulo, len(items), "\n".join(_agenda_item_txt(x) for x in items[:n]), extra)
+
+    out = ""
+    if clave == "hoy":
+        out += bloque("Hoy · " + et, g["hoy"]) or ("**Hoy · %s**\nNo hay nada con fecha de hoy en tu AGENDA.\n\n" % et)
+        out += bloque("Mañana", g["manana"], 5)
+        if not g["hoy"]:
+            out += bloque("Lo próximo esta semana", g["semana"], 5)
+    elif clave == "manana":
+        out += bloque("Mañana", g["manana"]) or "**Mañana**\nNo hay nada con fecha de mañana en tu AGENDA.\n\n"
+    elif clave == "semana":
+        out += bloque("Hoy · " + et, g["hoy"], 6) + bloque("Mañana", g["manana"], 6) + bloque("Esta semana", g["semana"], 12)
+        if not (g["hoy"] or g["manana"] or g["semana"]):
+            out += "No hay nada con fecha esta semana en tu AGENDA.\n\n"
+    else:
+        out += bloque("Vencidas sin cerrar", g["vencidas"], 10) or "No tienes pendientes vencidos en la AGENDA.\n\n"
+    if clave != "vencidas" and g["vencidas"]:
+        out += "⚠️ Tienes **%d vencidos** sin cerrar: pregúntame «¿qué está vencido?» para verlos.\n\n" % len(g["vencidas"])
+    if g["sin_fecha"] and clave in ("hoy", "semana"):
+        out += "Además hay %d pendiente(s) sin fecha clara.\n\n" % len(g["sin_fecha"])
+    out += "_Fuente: tu AGENDA. No consulté tu calendario de Outlook; si quieres, también lo reviso._"
+    return out.strip()
+
+
 def _call_llm_impl(
     api_key: str,
     system_prompt: str,
@@ -10376,6 +10431,12 @@ def _call_llm_impl(
     if det_mem is not None:
         _mark_last_route("memoria-directa")
         return det_mem, "memoria-directa"
+
+    # «¿Qué tengo hoy?» y similares: respuesta directa con la AGENDA real (no depende del modelo).
+    det_ag = try_deterministic_agenda_query(user_message)
+    if det_ag is not None:
+        _mark_last_route("agenda-directa")
+        return det_ag, "agenda-directa"
 
     # Captura activa (Fase 2): tarea en lenguaje natural ("hay que…", "pendiente: …",
     # "recuérdame que …" sin hora) → la registra en AGENDA al instante y confirma.
@@ -10472,6 +10533,19 @@ def _call_llm_impl(
         except Exception as e:
             log.warning(f"DeepSeek excepción ({e})")
             response = None
+        # DeepSeek a veces «intenta llamar una herramienta» y suelta su markup como TEXTO (<| DSML | invoke …>) o se queda en
+        # «déjame checar…» sin hacerlo. Nunca se le muestra eso a Polo: se reintenta con Haiku, que SÍ tiene herramientas.
+        if response and (_TOOL_LEAK_RE.search(response) or (len(response.strip()) < 350 and _es_stall(response))):
+            log.warning(f"DeepSeek soltó markup de herramienta o se quedó a medias ({tag}) — reintento con Haiku + herramientas")
+            try:
+                r2 = call_claude(api_key, system_prompt, history, strip_override_prefix(user_message), model=CLAUDE_HAIKU) or ""
+            except Exception as e:
+                log.warning(f"Reintento con Haiku falló ({e})")
+                r2 = ""
+            if r2.strip() and not _is_billing_error(r2) and not _TOOL_LEAK_RE.search(r2):
+                _mark_last_route("haiku-tools")
+                return r2, "haiku-tools"
+            response = _strip_tool_leak(response)
         if response and response.strip() and not response.lstrip().startswith(("(error", "(sin respuesta", "(respuesta vac")):
             _mark_last_route("deepseek")
             if first_of_day or _wants_follow_up_briefing(user_message) or wants_explicit_briefing(user_message):
