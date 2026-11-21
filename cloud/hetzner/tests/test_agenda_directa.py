@@ -58,3 +58,25 @@ class T(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Compras(unittest.TestCase):
+    def test_boton_de_pago_solo_en_comercios_permitidos(self):
+        ok = "Listo.\n[[pagar:https://www.cinemex.com/compra/123|Cinemex · Dune · hoy 8:30 pm · 2 boletos · $190]]"
+        self.assertEqual(C.sanitize_pay_markers(ok), ok)
+        ok2 = "[[pagar:https://tickets.cinepolis.com/x?y=1|Cinépolis · 2 boletos]]"
+        self.assertEqual(C.sanitize_pay_markers(ok2), ok2)
+
+    def test_enlaces_falsos_no_se_vuelven_boton(self):
+        for u in ("https://cinemex.com.evil.com/pago", "http://www.cinemex.com/compra", "https://pagos-seguros.example/cinepolis.com", "https://evil.com/?u=cinemex.com"):
+            r = C.sanitize_pay_markers("[[pagar:%s|Cinemex 2 boletos]]" % u)
+            self.assertNotIn("[[pagar:", r, u)
+            self.assertIn("NO verificado", r, u)
+
+    def test_marcador_mal_formado(self):
+        r = C.sanitize_pay_markers("[[pagar:javascript:alert(1)|x]] y [[pagar:]]")
+        self.assertNotIn("[[pagar:javascript", r)
+
+    def test_llega_por_la_ruta_de_herramientas(self):
+        for m in ("Necesito comprar boletos del cine", "¿qué hay en cartelera en Cinemex hoy?", "compra entradas para el concierto"):
+            self.assertTrue(C.needs_tools(m), m)

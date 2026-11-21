@@ -303,3 +303,15 @@ Traducción **pasiva**: tocas «Escuchar» y Donna va escribiendo **en español*
   que Donna puede consultar. **Privacidad:** confirmación de consentimiento una vez por sesión; solo se guarda texto, nunca audio. Contrato con el servidor: `docs/ESCUCHAR-CONTRATO.md`.
 - Accesibilidad: contraste ≥4.5:1 (probado en claro y oscuro), controles ≥44 px, teclado y nombres accesibles, `prefers-reduced-motion` detiene las animaciones, el desenfoque se apaga solo en equipos modestos (`html.lowfx`).
 - Pruebas: `python3 -m unittest tests.test_live tests.test_escucha tests.test_chats tests.test_pwa_assets`, `node tests/test_escuchar_voz.js`, `node tests/test_pwa_offline.js http://127.0.0.1:PUERTO`.
+
+## Compras: Donna prepara, tú pagas (Paso 1)
+
+Pides «cómprame boletos del cine» y Donna, con el navegador del servidor (Chromium headless), busca cartelera, horarios y precios reales, recorre la compra hasta ANTES del pago (`browser_pasos`: varios pasos en la misma
+página) y te entrega un botón **«Abrir y pagar con Apple Pay»** (`[[pagar:URL|descripción]]`) que abre el sitio del comercio. El pago lo haces tú con Face ID: Apple Pay no se puede automatizar y no hay tarjetas en el servidor.
+- **Candados por código** (`browser_guard.py`, no solo instrucciones): el navegador NO teclea en campos de pago (tarjeta, CVV, vencimiento, CLABE, NIP, códigos SMS) y NO pulsa «Pagar / Confirmar compra / Apple Pay…»; «Comprar boletos» (que abre asientos) sí.
+- El botón de pago solo aparece para comercios permitidos (Cinépolis, Cinemex, Cinemark, Ticketmaster MX, Boletia, Superboletos…) y con https, verificado en servidor y en la app; cualquier otro enlace se muestra como «no verificado».
+- Lo que diga una página web se trata como información, nunca como instrucciones.
+- Limitaciones reales: **Cinemex** se deja leer; **Cinépolis** bloquea a los navegadores automáticos (Cloudflare) — Donna lo dice y te da el enlace directo. Si el sitio pide login o código SMS, lo haces tú.
+- Arreglo de fondo: antes cada comando del navegador abría una página nueva en blanco (leer/clic después de navegar no veían nada); ahora recuerda la última página y `navegar` devuelve el texto.
+- Instalación del navegador en el servidor: `sudo bash ~/donna-deploy/cloud/hetzner/scripts/install-playwright.sh` (el verificador, sección 3l, lo comprueba).
+- Pruebas: `tests/test_browser_guard.py` (candados + navegador real contra una página local; requiere Playwright en Python) y `tests/test_agenda_directa.py` (marcadores de pago).

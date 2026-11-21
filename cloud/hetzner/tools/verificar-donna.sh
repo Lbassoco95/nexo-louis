@@ -111,6 +111,18 @@ done
 TR=$(curl -s --max-time 10 -H "Authorization: Bearer $TOKEN" "$URL/v1/app/trabajos" | python3 -c 'import sys,json; print(len(json.load(sys.stdin).get("items",[])))' 2>/dev/null)
 [[ -n "$TR" ]] && ok "módulo Trabajos responde ($TR trabajo(s))" || bad "el módulo Trabajos no responde (reinstalar openclaw_gateway.py y reiniciar)"
 
+echo "3l) Navegador de Donna (compras: ella prepara, tú pagas)"
+for f in browser_runner.py browser_guard.py; do
+  [[ -f "$OC/scripts/$f" ]] && ok "$f instalado" || bad "falta $f → sudo install -m 0755 -o polo -g polo ~/donna-deploy/cloud/hetzner/services/$f $OC/scripts/"
+done
+if python3 -c "import playwright" 2>/dev/null; then
+  PWB=$(grep -h '^PLAYWRIGHT_BROWSERS_PATH=' "$OC/openclaw.env" 2>/dev/null | head -1 | cut -d= -f2-)
+  R=$(echo '{"cmd":"navigate","url":"https://example.com","wait_until":"domcontentloaded"}' | PLAYWRIGHT_BROWSERS_PATH="${PWB:-/opt/openclaw/playwright-browsers}" timeout 60 python3 "$OC/scripts/browser_runner.py" 2>&1)
+  echo "$R" | grep -q '"ok": true' && ok "navegador funciona (abrió example.com)" || bad "el navegador no abre páginas → sudo bash ~/donna-deploy/cloud/hetzner/scripts/install-playwright.sh"
+else
+  bad "falta Playwright → sudo bash ~/donna-deploy/cloud/hetzner/scripts/install-playwright.sh"
+fi
+
 echo "4) Conversación real (¿Ya estás ahí?)"
 if [[ -n "$TOKEN" ]]; then
   ERR=$(mktemp); OUT=$(DONNA_URL="$URL" DONNA_TOKEN="$TOKEN" python3 "$HERE/donna-chat.py" "¿Ya estás ahí?" 2>"$ERR")

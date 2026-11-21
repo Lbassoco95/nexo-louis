@@ -19,6 +19,10 @@ Comandos soportados:
   {"cmd": "press", "key": "Enter|Tab|..."}
   {"cmd": "wait_for", "selector": "...", "timeout_ms": 5000}
   {"cmd": "eval", "script": "..."}           # Devuelve resultado JSON-serializable
+  {"cmd": "steps", "url": "https://...", "steps": [{"do": "click|fill|press|wait|read|screenshot|navigate", ...}]}
+                                             # VARIOS pasos en la MISMA página y sesión (formularios, selección de función, etc.)
+Cada comando suelto es un proceso nuevo: recuerda la última página (browser-last.json) y la vuelve a abrir antes de leer/hacer clic.
+Los candados de browser_guard.py impiden pagar o teclear datos de tarjeta (el pago lo hace Polo).
   {"cmd": "history"}                         # Últimas N páginas visitadas
   {"cmd": "reset_storage"}                   # Borra cookies/localStorage del perfil
 
@@ -33,11 +37,15 @@ import base64
 import traceback
 from pathlib import Path
 
-STATE_DIR = Path("/opt/openclaw/state")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import browser_guard as guard
+
+STATE_DIR = Path(os.environ.get("BROWSER_STATE_DIR", "/opt/openclaw/state"))
 STATE_FILE = STATE_DIR / "browser-context.json"
 CACHE_DIR = STATE_DIR / "browser-cache"
 HISTORY_FILE = STATE_DIR / "browser-history.jsonl"
-LOG_FILE = Path("/opt/openclaw/logs/browser-runner.log")
+LOG_FILE = Path(os.environ.get("BROWSER_LOG_FILE", "/opt/openclaw/logs/browser-runner.log"))
+LAST_FILE = STATE_DIR / "browser-last.json"          # última página abierta: cada comando es un proceso nuevo y la restaura
 
 DEFAULT_TIMEOUT_MS = 15_000
 NAV_TIMEOUT_MS = 30_000
@@ -102,7 +110,7 @@ def main():
         return
 
     if action == "reset_storage":
-        for p in (STATE_FILE, HISTORY_FILE):
+        for p in (STATE_FILE, HISTORY_FILE, LAST_FILE):
             try:
                 p.unlink(missing_ok=True)
             except Exception:
@@ -171,42 +179,158 @@ def main():
         page = ctx.new_page()
         result = {}
 
+        class Bloqueado(Exception):
+            pass
+
+        def texto_pagina(limite: int) -> str:
+            try:
+                t = page.evaluate("document.body ? document.body.innerText : ''")
+            except Exception:
+                return ""
+            return t if len(t) <= limite else t[:limite] + f"\n... (truncado, total {len(t)} chars)"
+
+        def guardar_ultima():
+            try:
+                if page.url and page.url.startswith("http"):
+                    LAST_FILE.write_text(json.dumps({"url": page.url}))
+                    os.chmod(LAST_FILE, 0o600)
+            except Exception:
+                pass
+
+        def restaurar():
+            """Cada comando es un proceso nuevo: vuelve a abrir la última página para poder leerla o hacer clic."""
+            try:
+                u = json.loads(LAST_FILE.read_text()).get("url", "")
+            except Exception:
+                u = ""
+            if u.startswith("http"):
+                try:
+                    page.goto(u, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+                    page.wait_for_timeout(1200)
+                except Exception as e:
+                    log(f"restaurar {u[:80]} falló: {e}")
+
+        def navegar(url, wait_until="networkidle", extra_ms=0):
+            if not str(url).startswith(("http://", "https://")):
+                raise ValueError("URL debe empezar con http(s)://")
+            if wait_until not in ("domcontentloaded", "load", "networkidle", "commit"):
+                wait_until = "networkidle"
+            try:
+                page.goto(url, wait_until=wait_until, timeout=NAV_TIMEOUT_MS)
+            except PWTimeout:
+                log(f"navigate timeout con wait_until={wait_until}, fallback a domcontentloaded")
+                page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+            if int(extra_ms or 0) > 0:
+                page.wait_for_timeout(min(int(extra_ms), 15000))
+            title = page.title()
+            _record_history(page.url, title)
+            guardar_ultima()
+            return {"ok": True, "url": page.url, "title": title, "wait_until": wait_until, "text": texto_pagina(2500)}
+
+        def localizar(sel, by):
+            if by == "text":
+                return page.get_by_text(sel, exact=False).first
+            if by == "role":
+                return page.get_by_role(sel).first
+            return page.locator(sel).first
+
+        def hacer_clic(sel, by="css", timeout=DEFAULT_TIMEOUT_MS):
+            loc = localizar(sel, by)
+            try:
+                info = loc.evaluate("e => [e.innerText||'', e.getAttribute('aria-label')||'', e.value||'', e.getAttribute('title')||'', e.getAttribute('href')||''].join(' | ')", timeout=timeout)
+            except Exception:
+                info = ""
+            if guard.bloquea_clic(sel if by == "text" else "", info):
+                raise Bloqueado(guard.MENSAJE)
+            loc.click(timeout=timeout)
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=4000)
+            except Exception:
+                pass
+            page.wait_for_timeout(800)
+            guardar_ultima()
+            return {"ok": True, "url": page.url, "msg": f"click on {by}={sel}", "text": texto_pagina(1500)}
+
+        def llenar(sel, val, timeout=DEFAULT_TIMEOUT_MS):
+            loc = page.locator(sel).first
+            try:
+                at = loc.evaluate("""e => ({name: e.name||'', id: e.id||'', autocomplete: e.getAttribute('autocomplete')||'', placeholder: e.placeholder||'',
+                    aria_label: e.getAttribute('aria-label')||'', type: e.type||'', label: ((e.labels&&e.labels[0]&&e.labels[0].innerText)||(e.closest('label')&&e.closest('label').innerText)||'')})""", timeout=timeout)
+            except Exception:
+                at = {}
+            if guard.bloquea_campo(selector=sel, **at):
+                raise Bloqueado(guard.MENSAJE)
+            loc.fill(val, timeout=timeout)
+            return {"ok": True, "msg": f"fill {sel} ({len(val)} chars)"}
+
+        def tecla(key):
+            page.keyboard.press(key)
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=3000)
+            except Exception:
+                pass
+            page.wait_for_timeout(600)
+            guardar_ultima()
+            return {"ok": True, "msg": f"pressed {key}", "text": texto_pagina(1500)}
+
         try:
             if action == "navigate":
-                url = cmd.get("url") or ""
-                if not url.startswith(("http://", "https://")):
-                    raise ValueError("URL debe empezar con http(s)://")
-                # SPAs (React/Vue/Angular) necesitan que JS termine antes de ser legibles.
-                # wait_until="networkidle" espera a que no haya tráfico de red por 500ms.
-                # Si el caller pasa wait_until="domcontentloaded", respetamos (más rápido).
-                wait_until = cmd.get("wait_until", "networkidle")
-                if wait_until not in ("domcontentloaded", "load", "networkidle", "commit"):
-                    wait_until = "networkidle"
-                try:
-                    page.goto(url, wait_until=wait_until, timeout=NAV_TIMEOUT_MS)
-                except PWTimeout:
-                    # Fallback: si networkidle nunca llega (sitios con polling constante),
-                    # cae a domcontentloaded para no fallar.
-                    log(f"navigate timeout con wait_until={wait_until}, fallback a domcontentloaded")
-                    page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
-                # Espera extra opcional para SPAs muy lentas
-                extra_ms = int(cmd.get("wait_extra_ms", 0))
-                if extra_ms > 0:
-                    page.wait_for_timeout(min(extra_ms, 15000))
-                title = page.title()
-                _record_history(page.url, title)
-                result = {"ok": True, "url": page.url, "title": title, "wait_until": wait_until}
+                result = navegar(cmd.get("url") or "", cmd.get("wait_until", "networkidle"), cmd.get("wait_extra_ms", 0))
+
+            elif action == "steps":
+                if cmd.get("url"):
+                    navegar(cmd["url"], cmd.get("wait_until", "networkidle"), cmd.get("wait_extra_ms", 0))
+                else:
+                    restaurar()
+                pasos = []
+                for st in (cmd.get("steps") or [])[:25]:
+                    do = str(st.get("do", ""))
+                    try:
+                        if do == "navigate":
+                            navegar(st.get("url", ""), st.get("wait_until", "networkidle"), st.get("wait_extra_ms", 0))
+                        elif do == "click":
+                            hacer_clic(st.get("selector", ""), st.get("by", "css"), int(st.get("timeout_ms", DEFAULT_TIMEOUT_MS)))
+                        elif do == "fill":
+                            llenar(st.get("selector", ""), str(st.get("value", "")), int(st.get("timeout_ms", DEFAULT_TIMEOUT_MS)))
+                        elif do == "press":
+                            tecla(st.get("key", "Enter"))
+                        elif do in ("wait", "wait_for", "esperar"):
+                            if st.get("selector"):
+                                page.locator(st["selector"]).first.wait_for(timeout=int(st.get("timeout_ms", DEFAULT_TIMEOUT_MS)))
+                            else:
+                                page.wait_for_timeout(min(int(st.get("ms", 1000)), 10000))
+                        elif do in ("read", "screenshot"):
+                            pass
+                        else:
+                            raise ValueError(f"paso desconocido: {do}")
+                        pasos.append({"do": do, "ok": True})
+                    except Bloqueado as e:
+                        pasos.append({"do": do, "ok": False, "bloqueado": True, "error": str(e)})
+                        break
+                    except Exception as e:
+                        pasos.append({"do": do, "ok": False, "error": str(e)[:200]})
+                        break
+                guardar_ultima()
+                bloq = any(x.get("bloqueado") for x in pasos)
+                result = {"ok": all(x["ok"] for x in pasos), "pasos": pasos, "url": page.url, "title": page.title(), "text": texto_pagina(6000)}
+                if bloq:
+                    result["code"] = "bloqueado"
+                    result["error"] = guard.MENSAJE
+                if any(st.get("do") == "screenshot" for st in (cmd.get("steps") or [])):
+                    png = page.screenshot(full_page=False, type="png")
+                    from datetime import datetime
+                    fn = CACHE_DIR / f"screenshot-{datetime.now().strftime('%Y%m%d-%H%M%S')}.png"
+                    fn.write_bytes(png)
+                    result["saved_to"] = str(fn)
 
             elif action == "read":
-                # Si Polo no navegó antes, abrimos about:blank y devolvemos vacío
+                restaurar()
                 title = page.title()
-                body_text = page.evaluate("document.body ? document.body.innerText : ''")
-                # Truncar texto enorme
-                if len(body_text) > 8000:
-                    body_text = body_text[:8000] + f"\n... (truncado, total {len(body_text)} chars)"
+                body_text = texto_pagina(8000)
                 result = {"ok": True, "url": page.url, "title": title, "text": body_text}
 
             elif action == "screenshot":
+                restaurar()
                 png = page.screenshot(full_page=False, type="png")
                 b64 = base64.b64encode(png).decode("ascii")
                 # Guarda copia local para debug
@@ -216,37 +340,26 @@ def main():
                 result = {"ok": True, "url": page.url, "image_base64": b64, "saved_to": str(fn), "media_type": "image/png"}
 
             elif action == "click":
-                sel = cmd.get("selector") or ""
-                by = cmd.get("by", "css")
-                timeout = int(cmd.get("timeout_ms", DEFAULT_TIMEOUT_MS))
-                if by == "text":
-                    page.get_by_text(sel, exact=False).first.click(timeout=timeout)
-                elif by == "role":
-                    role_name = sel
-                    page.get_by_role(role_name).first.click(timeout=timeout)
-                else:
-                    page.locator(sel).first.click(timeout=timeout)
-                result = {"ok": True, "url": page.url, "msg": f"click on {by}={sel}"}
+                restaurar()
+                result = hacer_clic(cmd.get("selector") or "", cmd.get("by", "css"), int(cmd.get("timeout_ms", DEFAULT_TIMEOUT_MS)))
 
             elif action == "fill":
-                sel = cmd.get("selector") or ""
-                val = cmd.get("value", "")
-                timeout = int(cmd.get("timeout_ms", DEFAULT_TIMEOUT_MS))
-                page.locator(sel).first.fill(val, timeout=timeout)
-                result = {"ok": True, "msg": f"fill {sel} ({len(val)} chars)"}
+                restaurar()
+                result = llenar(cmd.get("selector") or "", cmd.get("value", ""), int(cmd.get("timeout_ms", DEFAULT_TIMEOUT_MS)))
 
             elif action == "press":
-                key = cmd.get("key", "Enter")
-                page.keyboard.press(key)
-                result = {"ok": True, "msg": f"pressed {key}"}
+                restaurar()
+                result = tecla(cmd.get("key", "Enter"))
 
             elif action == "wait_for":
+                restaurar()
                 sel = cmd.get("selector") or ""
                 timeout = int(cmd.get("timeout_ms", DEFAULT_TIMEOUT_MS))
                 page.locator(sel).first.wait_for(timeout=timeout)
                 result = {"ok": True, "msg": f"wait_for {sel} OK"}
 
             elif action == "eval":
+                restaurar()
                 script = cmd.get("script", "")
                 value = page.evaluate(script)
                 result = {"ok": True, "value": value}
@@ -262,6 +375,8 @@ def main():
             except Exception as e:
                 log(f"persist storage_state falló: {e}")
 
+        except Bloqueado as e:
+            result = {"ok": False, "code": "bloqueado", "error": str(e), "url": page.url}
         except PWTimeout as e:
             result = {"ok": False, "code": "timeout", "error": f"Timeout: {e}", "url": page.url}
         except Exception as e:

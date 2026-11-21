@@ -588,6 +588,10 @@ html.lowfx body::before{display:none}
 @media (min-width:760px){.queue{margin:0 auto 6px;width:calc(100% - 44px);max-width:860px}}
 @media (max-width:759px){body.hay-fila #fabs{bottom:calc(var(--navh,64px) + 152px)}}
 .udot{flex:none;width:9px;height:9px;border-radius:50%;background:var(--at);margin:0 -2px 0 8px;align-self:center}
+.paycard{display:flex;flex-direction:column;gap:8px;align-items:flex-start;margin:8px 0;padding:12px 14px;border:1px solid var(--gline);border-radius:18px;background:var(--glass2)}
+.paycard b{font-size:14.5px}.paycard small{color:var(--mut);font-size:12.5px}
+.msg a.artcard,.artcard.pay{color:#fff;text-decoration:none}.artcard.pay{min-height:48px;display:inline-flex;align-items:center;gap:8px;margin:0}
+.paybad{display:inline-block;color:var(--wn);background:var(--wnb);border-radius:12px;padding:6px 10px;font-size:13px}
 .menurow .ico{flex:none}
 </style>
 </head>
@@ -774,10 +778,14 @@ let busy=false;
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('on');setTimeout(()=>t.classList.remove('on'),1800)}
 
+/* ---------- compras: el botón «Abrir y pagar» solo sale para comercios permitidos (el pago lo hace Polo con Apple Pay) ---------- */
+const PAGO_HOSTS=['cinepolis.com','cinemex.com','cinemark.com.mx','ticketmaster.com.mx','boletia.com','superboletos.com','eticket.mx','cinepolisklic.com'];
+function payOk(u){try{const x=new URL(String(u).replace(/&amp;/g,'&'));return x.protocol==='https:'&&PAGO_HOSTS.some(d=>x.hostname===d||x.hostname.endsWith('.'+d))}catch(e){return false}}
+const payCard=(u,d)=>payOk(u)?'<span class="paycard"><b>'+d+'</b><a class="artcard pay" href="'+u+'" target="_blank" rel="noopener noreferrer">'+svg('link',16)+' Abrir y pagar con Apple Pay</a><small>Se abre en el sitio del comercio. El pago lo haces tú.</small></span>':'<span class="paybad">Enlace no verificado, no lo abras: '+d+'</span>';
 /* ---------- markdown liviano y seguro (todo se escapa primero) ---------- */
 function md(src){
   const blocks=[];let s=esc(src).replace(/```(?:\w+)?\n?([\s\S]*?)```/g,(_,c)=>{blocks.push(c);return '\u0000'+(blocks.length-1)+'\u0000'});
-  const inl=t=>t.replace(/\[\[trabajo:(j[0-9a-f]{10})\]\]/g,'<button class="artcard" data-link="trabajo:$1">'+svg('wrench',16)+' Ver trabajo</button>').replace(/\[\[artefacto:(a[0-9a-f]{10})\]\]/g,'<button class="artcard" data-art="$1">'+svg('grid',16)+' Abrir tablero</button>').replace(/`([^`\n]+)`/g,'<code>$1</code>').replace(/\*\*([^*\n]+)\*\*/g,'<b>$1</b>')
+  const inl=t=>t.replace(/\[\[pagar:(https?:\/\/[^\s|\]]+)\|([^\]]{1,200})\]\]/g,(m,u,d)=>payCard(u,d)).replace(/\[\[trabajo:(j[0-9a-f]{10})\]\]/g,'<button class="artcard" data-link="trabajo:$1">'+svg('wrench',16)+' Ver trabajo</button>').replace(/\[\[artefacto:(a[0-9a-f]{10})\]\]/g,'<button class="artcard" data-art="$1">'+svg('grid',16)+' Abrir tablero</button>').replace(/`([^`\n]+)`/g,'<code>$1</code>').replace(/\*\*([^*\n]+)\*\*/g,'<b>$1</b>')
     .replace(/(^|[\s(>])\*([^*\n]+)\*(?=[\s).,;:!?<]|$)/g,'$1<i>$2</i>').replace(/(^|[\s(>])_([^_\n]+)_(?=[\s).,;:!?<]|$)/g,'$1<i>$2</i>')
     .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>')
     .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g,'$1<a href="$2" target="_blank" rel="noopener">$2</a>');
