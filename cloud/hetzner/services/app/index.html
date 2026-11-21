@@ -630,6 +630,7 @@ html.lowfx body::before{display:none}
     <section class="view" id="v-trab"><div class="scroll" id="trab"></div></section>
     <section class="view" id="v-ent"><div class="scroll" id="ent"></div></section>
     <section class="view" id="v-tabl"><div class="scroll" id="tabl"></div></section>
+    <section class="view" id="v-nav"><div class="scroll" id="nav"></div></section>
     <section class="view" id="v-trad"><div class="scroll" id="trad"></div></section>
     <section class="view" id="v-es"></section>
     <section class="view" id="v-cfg"><div class="scroll" id="cfg"></div></section>
@@ -659,6 +660,7 @@ html.lowfx body::before{display:none}
     <button data-v="trab"><i data-i="wrench"></i>Trabajos<span class="badge" id="sb-trab" hidden></span></button>
     <button data-v="ent"><i data-i="box"></i>Entregables</button>
     <button data-v="tabl"><i data-i="grid"></i>Tableros</button>
+    <button data-v="nav"><i data-i="globe"></i>Navegador</button>
     <button data-v="trad"><i data-i="globe"></i>Traductor</button>
     <button data-v="cfg"><i data-i="sliders"></i>Ajustes</button>
   </div>
@@ -857,17 +859,74 @@ $('#ltok').onclick=async()=>{
 $('#tok').addEventListener('keydown',e=>{if(e.key==='Enter')$('#ltok').click()});
 
 /* ---------- navegación ---------- */
-const titles={chat:'{{AGENT_NAME}}',hoy:'Hoy',trab:'Trabajos',ent:'Entregables',tabl:'Tableros',trad:'Traductor',es:'Escuchar',cfg:'Ajustes'};
+const titles={chat:'{{AGENT_NAME}}',hoy:'Hoy',trab:'Trabajos',ent:'Entregables',tabl:'Tableros',nav:'Navegador',trad:'Traductor',es:'Escuchar',cfg:'Ajustes'};
 function go(v){
   $$('.view').forEach(x=>x.classList.toggle('on',x.id==='v-'+v));
   $$('nav button,#sdnav button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
   $('#title').textContent=titles[v];$('#hsub').hidden=v!=='chat';document.body.classList.toggle('vista-es',v==='es');document.body.classList.toggle('vista-chat',v==='chat');LS.set('tab',v);
-  if(v==='hoy')loadHoy();if(v==='ent')loadEnt();if(v==='cfg')renderCfg();if(v==='trab')loadTrab();if(v==='tabl')loadTabl();if(v==='trad')renderTrad();if(v==='es')esView();
+  if(v==='hoy')loadHoy();if(v==='ent')loadEnt();if(v==='cfg')renderCfg();if(v==='trab')loadTrab();if(v==='tabl')loadTabl();if(v==='trad')renderTrad();if(v==='es')esView();if(v==='nav')navView();else navStop();
   if(innerWidth<760&&v!=='chat')closeDock();
   if(v==='chat')scrollDown();
 }
 $$('nav button,#sdnav button').forEach(b=>b.onclick=()=>{go(b.dataset.v);closeSide()});
 $('#refresh').onclick=()=>{const v=LS.get('tab','chat');if(v==='hoy')loadHoy();else if(v==='ent')loadEnt();else if(v==='trab')loadTrab();else ping();toast('Actualizado')};
+
+/* ---------- navegador (inicias sesión tú; Donna la retoma) ---------- */
+const NAV={on:false,busy:false,w:820,h:1100,timer:0,sitios:[]};
+const navApi=b=>api('/v1/app/navegador',{method:'POST',body:JSON.stringify(b)});
+function navStop(){NAV.on=false;clearTimeout(NAV.timer)}
+async function navView(){
+  NAV.on=true;
+  if(!$('#nav-img')){
+    $('#nav').innerHTML='<p class="sub" style="margin:0 0 8px">Entra tú a tus cuentas (cine, restaurantes…). Donna <b>no ve ni guarda tu contraseña</b>: solo conserva la sesión para retomarla después. Los pagos los haces tú.</p>'+
+      '<div class="trbar"><select id="nav-site" aria-label="Sitio"></select><input id="nav-url" placeholder="o escribe otro sitio https…" hidden><button id="nav-go" class="btn">Abrir</button></div>'+
+      '<div id="nav-st" class="sub" style="min-height:18px;margin:6px 0"></div>'+
+      '<div id="nav-box" style="position:relative;border:1px solid var(--gline,#8884);border-radius:14px;overflow:hidden;background:#0002;touch-action:pan-y"><img id="nav-img" alt="Página del navegador de Donna" style="width:100%;display:block;min-height:120px"></div>'+
+      '<div class="trin" style="margin-top:8px"><input id="nav-txt" placeholder="Escribe aquí y envía a la página…" autocomplete="off" autocapitalize="off" enterkeyhint="send"><button id="nav-send">Enviar</button></div>'+
+      '<label class="trlbl"><input type="checkbox" id="nav-pw"> 🔒 Es contraseña o código (se oculta al escribir)</label>'+
+      '<div class="trtalk" style="flex-wrap:wrap;gap:6px;margin:8px 0"><button id="nav-up" aria-label="Subir">↑ Subir</button><button id="nav-dn" aria-label="Bajar">↓ Bajar</button><button id="nav-bk">← Atrás</button><button id="nav-en">Enter</button><button id="nav-bs">⌫</button><button id="nav-tab">Tab</button></div>'+
+      '<button class="artcard" id="nav-save">💾 Guardar sesión y cerrar</button>'+
+      '<p class="sec" style="margin-top:16px">Sesiones guardadas</p><div id="nav-ses" class="sub">…</div>';
+    const img=$('#nav-img');
+    img.onclick=async e=>{const r=img.getBoundingClientRect();await navDo({op:'click',x:(e.clientX-r.left)/r.width*NAV.w,y:(e.clientY-r.top)/r.height*NAV.h})};
+    $('#nav-site').onchange=()=>{$('#nav-url').hidden=$('#nav-site').value!=='otro'};
+    $('#nav-go').onclick=async()=>{const sel=$('#nav-site').value;const url=sel==='otro'?$('#nav-url').value.trim():sel;if(!url)return toast('Elige un sitio');
+      $('#nav-st').textContent='Abriendo…';NAV.w=Math.max(360,Math.min(1280,Math.round(Math.min(innerWidth-24,900))));NAV.h=Math.round(NAV.w*1.35);
+      await navDo({op:'open',url,w:NAV.w,h:NAV.h});navSesiones()};
+    const sendTxt=async()=>{const v=$('#nav-txt').value;if(!v)return;$('#nav-txt').value='';await navDo({op:'type',text:v})};
+    $('#nav-send').onclick=sendTxt;$('#nav-txt').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();sendTxt().then(()=>navDo({op:'key',key:'Enter'}))}};
+    $('#nav-pw').onchange=()=>{$('#nav-txt').type=$('#nav-pw').checked?'password':'text'};
+    $('#nav-up').onclick=()=>navDo({op:'scroll',dy:-500});$('#nav-dn').onclick=()=>navDo({op:'scroll',dy:500});
+    $('#nav-bk').onclick=()=>navDo({op:'back'});$('#nav-en').onclick=()=>navDo({op:'key',key:'Enter'});
+    $('#nav-bs').onclick=()=>navDo({op:'key',key:'Backspace'});$('#nav-tab').onclick=()=>navDo({op:'key',key:'Tab'});
+    $('#nav-save').onclick=async()=>{await navApi({op:'guardar'});await navApi({op:'close'});$('#nav-img').removeAttribute('src');$('#nav-st').textContent='Sesión guardada. Donna ya puede retomarla.';toast('Sesión guardada');navSesiones()};
+    try{NAV.sitios=(await navApi({op:'sitios'})).sitios}catch(e){}
+    $('#nav-site').innerHTML=NAV.sitios.map(x=>`<option value="${esc(x.url)}">${esc(x.nombre)}</option>`).join('')+'<option value="otro">Otro sitio…</option>';
+  }
+  navSesiones();
+  try{const st=await navApi({op:'status'});if(st.abierto){NAV.w=st.w;NAV.h=st.h;navLoop()}else $('#nav-st').textContent='Elige un sitio y toca Abrir.'}catch(e){$('#nav-st').textContent=e.message}
+}
+async function navDo(b){
+  try{const r=await navApi(b);if(!r.ok){$('#nav-st').textContent=r.error||'Error';return r}
+    if(r.abierto===false){$('#nav-st').textContent='El navegador está cerrado. Toca Abrir.';return r}
+    NAV.w=r.w||NAV.w;NAV.h=r.h||NAV.h;$('#nav-st').textContent=(r.title||'')+(r.url?' · '+r.url.replace(/^https?:\/\//,'').slice(0,60):'');
+    navLoop(true);return r}catch(e){$('#nav-st').textContent=e.message}
+}
+async function navLoop(now){
+  clearTimeout(NAV.timer);if(!NAV.on||document.hidden&&!now)return;
+  if(NAV.busy){NAV.timer=setTimeout(navLoop,300);return}
+  NAV.busy=true;
+  try{const f=await navApi({op:'frame'});
+    if(f.ok&&f.img){$('#nav-img').src='data:image/jpeg;base64,'+f.img;NAV.w=f.w;NAV.h=f.h}
+    else if(f.abierto===false){NAV.busy=false;return}}catch(e){}
+  NAV.busy=false;
+  if(NAV.on)NAV.timer=setTimeout(navLoop,1100);
+}
+async function navSesiones(){
+  try{const r=await navApi({op:'sesiones'});const el=$('#nav-ses');if(!el)return;
+    el.innerHTML=r.sesiones.length?r.sesiones.map(x=>`<div class="menurow" style="margin-bottom:6px"><span><b>${esc(x.sitio)}</b><small>sesión guardada</small></span><button data-f="${esc(x.sitio)}">Olvidar</button></div>`).join(''):'Aún no hay sesiones guardadas.';
+    $$('#nav-ses [data-f]').forEach(b=>b.onclick=async()=>{if(!confirm('¿Olvidar la sesión de '+b.dataset.f+'?'))return;await navApi({op:'olvidar',sitio:b.dataset.f});navSesiones()})}catch(e){}
+}
 
 /* ---------- chat ---------- */
 const CHIPS=['¿Qué tengo hoy?','Resumen de mis pendientes','¿Qué entregables esperan mi Vo.Bo.?','¿Qué vence esta semana?','Prepárame el cierre del día'];

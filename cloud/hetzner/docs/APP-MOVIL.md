@@ -315,3 +315,6 @@ página) y te entrega un botón **«Abrir y pagar con Apple Pay»** (`[[pagar:UR
 - Arreglo de fondo: antes cada comando del navegador abría una página nueva en blanco (leer/clic después de navegar no veían nada); ahora recuerda la última página y `navegar` devuelve el texto.
 - Instalación del navegador en el servidor: `sudo bash ~/donna-deploy/cloud/hetzner/scripts/install-playwright.sh` (el verificador, sección 3l, lo comprueba).
 - Pruebas: `tests/test_browser_guard.py` (candados + navegador real contra una página local; requiere Playwright en Python) y `tests/test_agenda_directa.py` (marcadores de pago).
+
+## Navegador: inicias sesión tú, Donna la retoma (v24)
+Vista **Navegador** (menú lateral): eliges Cinemex, Cinépolis, Cinemark, OpenTable, Ticketmaster, Boletia u otro sitio https y se abre un Chromium del servidor que ves y manejas (toques, texto, teclas, scroll). Escribes tu usuario/contraseña/código **tú**; con «Es contraseña» el campo se oculta. «Guardar sesión y cerrar» deja las cookies en `browser-context.json` (0600), el mismo archivo que usa Donna al buscar y preparar compras, así que retoma la sesión sin ver la contraseña. «Olvidar» borra la sesión de un sitio. Solo https hacia sitios públicos; se cierra solo a los 10 min. Código: `services/browser_live.py`, endpoint `POST /v1/app/navegador`. Pruebas: `tests/test_browser_live.py`.

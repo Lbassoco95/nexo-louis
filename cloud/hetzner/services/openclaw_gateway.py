@@ -2393,6 +2393,10 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
             return
+        if self.path == "/v1/app/navegador":                          # navegador que Polo ve y maneja para iniciar sesión (browser_live.py)
+            import browser_live
+            self._send_json(200, browser_live.operar(body))
+            return
         if self.path == "/v1/app/chat/cancel":                        # «actualizar el mensaje anterior»: la respuesta en curso se descarta
             rid = str(body.get("rid", ""))
             with _RESULTS_LOCK:
