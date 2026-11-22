@@ -1116,6 +1116,26 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception:
                         d["resumenes"] = []
                     self._send_json(200, d)
+                elif _r0 in ("/v1/app/personas", "/v1/app/persona", "/v1/app/aportaciones", "/v1/app/escucha/sesiones"):
+                    import donna_personas
+                    from urllib.parse import urlparse, parse_qs
+                    qs = parse_qs(urlparse(self.path).query)
+                    u, a1 = self._media_user(), (lambda k: (qs.get(k) or [""])[0])
+                    if _r0 == "/v1/app/personas":
+                        self._send_json(200, {"items": donna_personas.listar(u, a1("q"))})
+                    elif _r0 == "/v1/app/aportaciones":
+                        self._send_json(200, {"items": donna_personas.buscar(a1("q"), a1("persona"), 30, u)})
+                    elif _r0 == "/v1/app/escucha/sesiones":
+                        self._send_json(200, {"items": donna_personas.sesiones(u)})
+                    else:
+                        d = donna_personas.detalle(a1("id"))
+                        if not d or d["usuario"] != u and u != "admin":
+                            self._send_json(404, {"error": "persona no encontrada"})
+                        else:
+                            d["cruce"] = {"transcripciones": donna_personas.cruce_transcripciones(d["id"])}
+                            if a1("kc"):
+                                d["cruce"]["kawiil_central"] = donna_personas.cruce_kawiil_central(core, d["nombre"], d["empresa"])
+                            self._send_json(200, d)
                 elif _r0 == "/v1/app/seguimientos":
                     import donna_db
                     self._send_json(200, {"items": donna_db.seg_list(usuario=self._media_user() if self._media_user() != "admin" else None)})
@@ -2150,7 +2170,15 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
         m = _M.register_text(titulo, texto, tipo="conversacion", resumen=resumen, origen="escuchar")
-        return {"ok": True, "nombre": titulo, "archivo": r.split(":", 1)[-1].strip().split(" ")[0], "mid": m.get("id", ""), "resumen": resumen, "lineas": len(L)}
+        out = {"ok": True, "nombre": titulo, "archivo": r.split(":", 1)[-1].strip().split(" ")[0], "mid": m.get("id", ""), "resumen": resumen, "lineas": len(L)}
+        try:                                                    # base de personas: quién dijo qué (si falla, la transcripción ya quedó guardada)
+            import donna_personas
+            ps = donna_personas.guardar_sesion(titulo, dur, [v for v in voces if isinstance(v, dict)], [l for l in lineas if isinstance(l, dict)],
+                                               mid=out["mid"], archivo=out["archivo"], resumen=resumen, usuario=self._media_user())
+            out.update(sesion_id=ps["sesion_id"], personas=ps["personas"], sugeridos=ps["sugeridos"])
+        except Exception:
+            log.exception("personas: no pude indexar la sesión")
+        return out
 
     def _translate_post(self, path: str, body: dict) -> bool:
         try:
@@ -2449,6 +2477,30 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/v1/app/navegador":                          # navegador que Polo ve y maneja para iniciar sesión (browser_live.py)
             import browser_live
             self._send_json(200, browser_live.operar(body))
+            return
+        if self.path in ("/v1/app/persona", "/v1/app/escucha/asignar"):
+            import donna_personas
+            try:
+                u = self._media_user()
+                if self.path.endswith("asignar"):
+                    self._send_json(200, {"ok": True, **donna_personas.asignar(str(body.get("sesion_id", "")), int(body.get("voz") or 0), str(body.get("nombre", "")), u)})
+                else:
+                    op = body.get("op")
+                    if op == "crear":
+                        pid = donna_personas.resolver(str(body.get("nombre", "")), u, True)
+                        if not pid:
+                            raise ValueError("Falta el nombre.")
+                        self._send_json(200, {"ok": True, "item": donna_personas.editar(pid, **{k: body.get(k) for k in ("empresa", "rol", "notas") if body.get(k)}) if any(body.get(k) for k in ("empresa", "rol", "notas")) else donna_personas.detalle(pid, 0)})
+                    elif op == "editar":
+                        self._send_json(200, {"ok": True, "item": donna_personas.editar(str(body.get("id", "")), **{k: body.get(k) for k in ("nombre", "empresa", "rol", "kc_user", "notas", "alias")})})
+                    elif op == "fusionar":
+                        self._send_json(200, {"ok": True, "item": donna_personas.fusionar(str(body.get("id", "")), str(body.get("destino", "")))})
+                    elif op == "eliminar":
+                        self._send_json(200, {"ok": donna_personas.eliminar(str(body.get("id", "")))})
+                    else:
+                        raise ValueError("operación no válida")
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
             return
         if self.path == "/v1/app/seguimiento":
             import donna_seg

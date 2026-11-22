@@ -437,6 +437,7 @@ TOOL_KEYWORDS = [
     # Browser / navegación / vault
     r"\b(navega|abre\s+(?:la\s+)?(?:p[aá]gina|web|sitio|url)|chrome|browser|click|llena|completa\s+(?:el\s+)?formulario|login\s+en|sesi[oó]n\s+en)\b",
     r"\b(screenshot|captura\s+de\s+pantalla|extrae\s+de\s+la\s+p[aá]gina)\b",
+    r"\b(qu[eé]\s+(?:ha|han)\s+(?:dicho|aportado|propuesto)|qu[eé]\s+(?:se\s+)?dijo|qui[eé]n\s+(?:es|habl[oó]|dijo)\b|aportaciones|transcripci[oó]n(?:es)?\s+(?:de|donde|en\s+las))",
     r"\b(seguimiento|dale\s+seguimiento|da(?:r|me)\s+seguimiento|estate\s+pendiente|av[ií]same\s+(?:c[oó]mo|si|cuando)\b)",
     r"\b(boletos?|cartelera|cin[eé]polis|cinemex|cinemark|funci[oó]n(?:es)?\s+de\s+cine|comprar\s+(?:unos?\s+)?(?:boletos?|entradas?)|entradas?\s+(?:para|al)\s+(?:el\s+)?(?:cine|concierto|teatro|partido))\b",
     r"\b(vault|bitwarden|contrase[ñn]a|password|credencial(?:es)?)\b",
@@ -1170,6 +1171,10 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "\n"
         "Flujo típico para login: `browser_login(url='https://app.x.com/login', vault_item='Slack Kawiil')`. "
         "Si los selectores default no funcionan en una página rara, pásale `user_selector`/`pass_selector`/`submit_selector`."
+        "\n\n# PERSONAS — lo que sabes de la gente por lo que escuchas\n"
+        "Cuando Polo guarda una escucha, las voces con nombre se vuelven personas y sus frases quedan en la base. Usa `persona_buscar(nombre, tema?)` y "
+        "`aportaciones_buscar(texto)` para responder qué dijo alguien, quién habló de un tema o prepararlo para una reunión; el cruce con Kawiil Central va incluido. "
+        "Di siempre de qué sesión y fecha viene lo que citas y NO atribuyas frases a una persona si la voz no tenía nombre.\n"
         "\n\n# SEGUIMIENTO — lo que sigues por Polo (se guarda en la base, NO es una notificación)\n"
         "Cuando Polo te pida darle seguimiento a algo, o dejes algo en curso (una compra preparada que falta pagar, una reservación por confirmar, una tarea que depende de otros), "
         "créalo con `seguimiento_crear` (título claro + cuándo revisar). Es independiente de los avisos: tú decides qué seguir y la app lo muestra en «Seguimiento» con botones. "
@@ -3028,6 +3033,23 @@ TOOLS_DEFINITION = [
             },
             "required": ["viejo", "nuevo"],
         },
+    },
+    {
+        "name": "persona_buscar",
+        "description": "Consulta lo que Donna sabe de una PERSONA por las conversaciones que escuchó (Escuchar): perfil, lo que ha aportado, en qué sesiones participó, dónde hablan de ella, y sus tareas abiertas en Kawiil Central. Úsala para «¿qué ha dicho Fernando?», «¿quién es Laura?», «prepárame para hablar con Sebastián». Con `tema` busca solo lo que dijo sobre ese tema.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "nombre": {"type": "string", "description": "Nombre (o parte) de la persona"},
+                "tema": {"type": "string", "description": "Opcional: palabra o tema (p. ej. 'contrato Vizum')"},
+            },
+            "required": ["nombre"],
+        },
+    },
+    {
+        "name": "aportaciones_buscar",
+        "description": "Busca en TODAS las transcripciones guardadas (Escuchar) lo que se dijo sobre un tema, con quién lo dijo, fecha y sesión. Úsala para «¿qué se dijo del contrato de Vizum?», «¿quién habló de presupuesto?».",
+        "input_schema": {"type": "object", "properties": {"texto": {"type": "string"}}, "required": ["texto"]},
     },
     {
         "name": "seguimiento_crear",
@@ -9543,6 +9565,26 @@ def execute_tool(name: str, args: dict) -> str:
             with path.open("a") as f:
                 f.write(entry)
             return f"OK aprendido: {args['topic']}"
+        elif name == "persona_buscar":
+            import donna_personas
+            coinc = donna_personas.listar("admin", str(args.get("nombre", "")))
+            if not coinc:
+                return "No conozco a nadie con ese nombre en lo que he escuchado."
+            if len(coinc) > 1:
+                return "Hay varias coincidencias, dime cuál: " + "; ".join("%s (%s)" % (c["nombre"], c["empresa"] or "sin empresa") for c in coinc[:6])
+            tema = str(args.get("tema", "")).strip()
+            if tema:
+                hits = donna_personas.buscar(tema, coinc[0]["id"], 12)
+                if not hits:
+                    return "%s no ha dicho nada sobre «%s» en lo que he escuchado." % (coinc[0]["nombre"], tema)
+                return "Lo que dijo %s sobre «%s»:\n" % (coinc[0]["nombre"], tema) + "\n".join("• [%s %s] %s" % (h["fecha"], h["hora"], h["texto"][:260]) for h in hits)
+            return donna_personas.resumen_texto(coinc[0]["id"], sys.modules[__name__])
+        elif name == "aportaciones_buscar":
+            import donna_personas
+            hits = donna_personas.buscar(str(args.get("texto", "")), "", 15)
+            if not hits:
+                return "No encontré eso en las transcripciones guardadas."
+            return "\n".join("• [%s %s] %s: %s" % (h["fecha"], h["hora"], h["persona"] or "voz sin nombre", h["texto"][:260]) for h in hits)
         elif name == "seguimiento_crear":
             import donna_seg
             try:

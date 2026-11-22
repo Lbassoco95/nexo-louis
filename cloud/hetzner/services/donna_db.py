@@ -62,11 +62,19 @@ def conn() -> sqlite3.Connection:
             if key not in _INIT_DONE:
                 p.parent.mkdir(parents=True, exist_ok=True)
                 fresh = not p.exists()
-                c = sqlite3.connect(p, timeout=15)
-                c.execute("PRAGMA journal_mode=WAL")
-                c.executescript(SCHEMA)
-                c.commit()
-                c.close()
+                for intento in range(40):                      # varios procesos pueden arrancar a la vez: el cambio a WAL pide el archivo en exclusiva
+                    c = sqlite3.connect(p, timeout=15)
+                    try:
+                        c.execute("PRAGMA journal_mode=WAL")
+                        c.executescript(SCHEMA)
+                        c.commit()
+                        break
+                    except sqlite3.OperationalError:
+                        if intento == 39:
+                            raise
+                        time.sleep(0.15)
+                    finally:
+                        c.close()
                 try:
                     os.chmod(p, 0o600)
                 except OSError:

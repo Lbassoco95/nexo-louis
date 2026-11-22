@@ -632,6 +632,7 @@ html.lowfx body::before{display:none}
     <section class="view" id="v-trab"><div class="scroll" id="trab"></div></section>
     <section class="view" id="v-ent"><div class="scroll" id="ent"></div></section>
     <section class="view" id="v-tabl"><div class="scroll" id="tabl"></div></section>
+    <section class="view" id="v-per"><div class="scroll" id="per"></div></section>
     <section class="view" id="v-seg"><div class="scroll" id="seg"></div></section>
     <section class="view" id="v-nav"><div class="scroll" id="nav"></div></section>
     <section class="view" id="v-trad"><div class="scroll" id="trad"></div></section>
@@ -663,6 +664,7 @@ html.lowfx body::before{display:none}
     <button data-v="trab"><i data-i="wrench"></i>Trabajos<span class="badge" id="sb-trab" hidden></span></button>
     <button data-v="ent"><i data-i="box"></i>Entregables</button>
     <button data-v="tabl"><i data-i="grid"></i>Tableros</button>
+    <button data-v="per"><i data-i="chat"></i>Personas</button>
     <button data-v="seg"><i data-i="check"></i>Seguimiento<span class="badge" id="sb-seg" hidden></span></button>
     <button data-v="nav"><i data-i="globe"></i>Navegador</button>
     <button data-v="trad"><i data-i="globe"></i>Traductor</button>
@@ -863,12 +865,12 @@ $('#ltok').onclick=async()=>{
 $('#tok').addEventListener('keydown',e=>{if(e.key==='Enter')$('#ltok').click()});
 
 /* ---------- navegación ---------- */
-const titles={chat:'{{AGENT_NAME}}',hoy:'Hoy',trab:'Trabajos',ent:'Entregables',tabl:'Tableros',seg:'Seguimiento',nav:'Navegador',trad:'Traductor',es:'Escuchar',cfg:'Ajustes'};
+const titles={chat:'{{AGENT_NAME}}',hoy:'Hoy',trab:'Trabajos',ent:'Entregables',tabl:'Tableros',per:'Personas',seg:'Seguimiento',nav:'Navegador',trad:'Traductor',es:'Escuchar',cfg:'Ajustes'};
 function go(v){
   $$('.view').forEach(x=>x.classList.toggle('on',x.id==='v-'+v));
   $$('nav button,#sdnav button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
   $('#title').textContent=titles[v];$('#hsub').hidden=v!=='chat';document.body.classList.toggle('vista-es',v==='es');document.body.classList.toggle('vista-chat',v==='chat');LS.set('tab',v);
-  if(v==='hoy')loadHoy();if(v==='ent')loadEnt();if(v==='cfg')renderCfg();if(v==='trab')loadTrab();if(v==='tabl')loadTabl();if(v==='trad')renderTrad();if(v==='es')esView();if(v==='nav')navView();else navStop();if(v==='seg')loadSeg();
+  if(v==='hoy')loadHoy();if(v==='ent')loadEnt();if(v==='cfg')renderCfg();if(v==='trab')loadTrab();if(v==='tabl')loadTabl();if(v==='trad')renderTrad();if(v==='es')esView();if(v==='nav')navView();else navStop();if(v==='seg')loadSeg();if(v==='per')loadPer();
   if(innerWidth<760&&v!=='chat')closeDock();
   if(v==='chat')scrollDown();
 }
@@ -1472,7 +1474,7 @@ function esRecordar(i,nombre){                          // un nombre puesto se r
   m.push({f0:Math.round(s.f0),hf:+s.hf.toFixed(3),name:nombre});LS.set('es_voces',m.slice(-12));
 }
 function esRecuerda(i){const s=ES.spk[i];if(!s||s.mem||s.n<4)return;s.mem=true;
-  const m=esMem().map(x=>({x,d:Math.abs(12*Math.log2(s.f0/x.f0))+8*Math.abs(s.hf-x.hf)})).filter(o=>o.d<2.5).sort((a,b)=>a.d-b.d)[0];
+  const m=esMem().concat((ES.pv||[]).filter(p=>p.voz&&p.voz.f0>50).map(p=>({f0:p.voz.f0,hf:p.voz.hf,name:p.nombre}))).map(x=>({x,d:Math.abs(12*Math.log2(s.f0/x.f0))+8*Math.abs(s.hf-x.hf)})).filter(o=>o.d<2.5).sort((a,b)=>a.d-b.d)[0];
   if(m&&!ES.names[i])ES.names[i]=m.x.name}
 function esVoz(t){                                         // asigna «Voz N» al turno con los frames de los últimos ~2.5 s de audio enviado
   if(!ES.frames.length)return;
@@ -1483,6 +1485,28 @@ function esVoz(t){                                         // asigna «Voz N» a
     if(t.spk==null||t.f0s.length<=24)t.spk=esVozDe(ES.spk,f0,hf,6);     // se afina durante los primeros segundos de la frase y luego se fija
     t.f0=Math.round(f0);esRecuerda(t.spk)}
 }
+const ES_NO=new Set('español inglés chino mandarín cantonés francés alemán japonés mexicano mexicana china dios señor señora doctor doctora licenciado licenciada ingeniero ingeniera lunes martes miércoles jueves viernes sábado domingo enero febrero marzo abril mayo junio julio agosto septiembre octubre noviembre diciembre entonces bueno claro además pero sí pues mira oye hola gracias perfecto exacto listo ahora aquí allá todo todos nada algo alguien nadie cada como porque cuando donde quien mucho poco bien mal más menos solo sólo tengo tienes tiene vamos vale fíjate imagínate méxico estados unidos kawiil yoltik donna'.split(' '));
+const ES_COM=new Set('fernando sebastián sebastian virginia viri luis luisa carlos carla juan juana josé jose maría maria miguel ángel angel pedro pablo paola paula ana andrea alejandro alejandra eduardo ricardo roberto rafael raúl raul jorge javier daniel daniela david diego diana gabriel gabriela guillermo gustavo héctor hector hugo ignacio isabel jesús jesus laura lucía lucia manuel marcela marco marcos mariana mario martha marta mauricio mónica monica nancy natalia nicolás nicolas óscar oscar patricia rodrigo rosa samuel sandra santiago sara sofía sofia sergio teresa tomás tomas valeria verónica veronica víctor victor ximena yolanda abelardo armando arturo beatriz claudia cristina elena emilio enrique esteban felipe francisco gerardo gloria irene iván ivan julián julian karla leonardo lorena lupita magdalena maribel mayra mercedes norma olga omar rocío rocio salvador silvia susana tania vanessa yadira zoe'.split(' '));
+function esNombresDe(tx){                                  // → [{nombre,tipo:'presenta'|'dirige'}]
+  const out=[],seen=new Set(),CAP=/^[A-ZÁÉÍÓÚÑ][a-záéíóúñü]{2,}$/,low=w=>w.toLowerCase();
+  const known=new Set((ES.pv||[]).flatMap(p=>[low(p.nombre),low(p.nombre.split(' ')[0])]));
+  const limpia=g=>{const w=g.trim().split(/\s+/);if(!CAP.test(w[0]))return '';let n=[w[0]];if(w.length>1&&CAP.test(w[w.length-1]))n=w.filter(x=>CAP.test(x)||/^(de|del|la)$/.test(x));return n.join(' ')};
+  const add=(n,t)=>{const k=low(n)+t;if(n&&!seen.has(k)){seen.add(k);out.push({nombre:n,tipo:t})}};
+  const T='([A-Za-zÁÉÍÓÚÑáéíóúñü]{3,}(?:\\s+(?:de la |de |del )?[A-Za-zÁÉÍÓÚÑáéíóúñü]{3,})?)';
+  let m;const A=new RegExp('\\b(?:me llamo|mi nombre (?:completo )?es|yo soy|soy|te habla|les habla|habla)\\s+'+T,'gi');
+  while((m=A.exec(tx))){const n=limpia(m[1]);if(n&&!ES_NO.has(low(n.split(' ')[0])))add(n,'presenta')}
+  const B=new RegExp('\\b(?:gracias|perd[oó]n|disculpa|oye|hola|mira|dime)[,]?\\s+'+T,'gi');
+  while((m=B.exec(tx))){const n=limpia(m[1]);const f=n&&low(n.split(' ')[0]);if(n&&!ES_NO.has(f)&&(ES_COM.has(f)||known.has(f)))add(n.split(' ')[0],'dirige')}
+  const C=new RegExp('(?:^|[.!?¿]\\s*)'+T+'\\s*[,?]','g');
+  while((m=C.exec(tx))){const n=limpia(m[1]);const f=n&&low(n.split(' ')[0]);if(n&&!ES_NO.has(f)&&(ES_COM.has(f)||known.has(f)))add(n.split(' ')[0],'dirige')}
+  return out;
+}
+function esDetecta(t){
+  if(!t.traduccion||t.traduccion.length<8)return;
+  ES.det=ES.det||{};ES.sugVoz=ES.sugVoz||{};
+  esNombresDe(t.traduccion).forEach(d=>{const k=d.nombre.toLowerCase();const e=ES.det[k]||(ES.det[k]={nombre:d.nombre,tipo:d.tipo,voz:null,veces:0});
+    if(d.tipo==='presenta'&&t.spk!=null){e.tipo='presenta';e.voz=t.spk;if(!ES.names[t.spk])ES.sugVoz[t.spk]=d.nombre}});
+}
 function esText(kind,d){
   const now=Date.now(),mk=()=>({origen:'en',original:'',traduccion:'',t0:esElapsed(),last:now,lsum:0,ln:0});
   if(kind==='in'){
@@ -1492,7 +1516,7 @@ function esText(kind,d){
   }else{
     if(ES.outI<ES.turns.length&&ES.turns[ES.outI].traduccion&&now-ES.lastOut>2500)ES.outI++;
     while(ES.turns.length<=ES.outI)ES.turns.push(mk());
-    const t=ES.turns[ES.outI];t.traduccion+=d;t.last=now;ES.lastOut=now;
+    const t=ES.turns[ES.outI];t.traduccion+=d;t.last=now;ES.lastOut=now;esDetecta(t);
   }
   esPaint();
 }
@@ -1513,7 +1537,8 @@ function esPaint(){
       const cnt={};ES.turns.forEach(t=>{if(t.spk!=null)cnt[t.spk]=(cnt[t.spk]||0)+1});
       $('#es-vn').textContent=ES.spk.length;
       L.innerHTML=ES.spk.length?ES.spk.map((s,i)=>'<div class="vrow"><span class="av v'+((i%6)+1)+'" aria-hidden="true">'+(i+1)+'</span><div class="vi"><div class="nm">'+esc(esNombre(i))+'</div><div class="ds">'+esc(esDesc(s.f0))+' · '+(cnt[i]||0)+' intervenciones</div></div><button class="vname" data-vn="'+i+'" aria-label="Nombrar la voz '+(i+1)+'">Nombrar</button></div>').join(''):'<div class="ds" style="padding:6px 2px">Aún no distingo voces. Aparecerán cuando alguien hable.</div>';
-      L.querySelectorAll('[data-vn]').forEach(b=>b.onclick=()=>{const i=+b.dataset.vn,n=prompt('¿Cómo se llama esta voz?',ES.names[i]||'');if(n!=null&&n.trim()){ES.names[i]=n.trim().slice(0,30);esRecordar(i,ES.names[i]);esPaint()}});
+      L.querySelectorAll('[data-vn]').forEach(b=>b.onclick=()=>esAsignar(+b.dataset.vn));
+      esDetPaint(L);
     }
     const pt=$('#es-pt');if(pt)pt.textContent='';
   })
@@ -1587,6 +1612,7 @@ async function esStart(fuente){
     },()=>false,cons);
   }catch(e){esSt(e.name==='NotAllowedError'?'Permiso denegado. Actívalo en los ajustes del teléfono o del navegador.':'No pude abrir el micrófono: '+e.message);clog('escuchar mic: '+e.name+' '+e.message);return}
   ES.on=true;ES.paused=false;ES.t0=0;ES.pausedMs=0;ES.retry=0;ES.lastVoice=Date.now();
+  api('/v1/app/personas').then(r=>{ES.pv=r.items||[]}).catch(()=>{});
   esSt('Conectando…');esUI();esConnect();
   ES.ping=setInterval(()=>esWsSend({t:'ping'}),20000);
   ES.tick=setInterval(()=>{const l=$('#es-lvl');if(l)l.style.width=Math.min(100,Math.round(LA.level*500))+'%';esUI();if(ES.turns.length&&$('#v-es').classList.contains('on'))esPaint()},500);
@@ -1615,19 +1641,56 @@ async function esFinish(){
   const ts=ES.turns.filter(t=>t.original.trim()||t.traduccion.trim());
   esHalt(true);
   if(!ts.length){toast('Aún no hay nada que guardar');return}
+  await esQuienEsQuien();
   esSt('Guardando…');
   try{
     const dur=esElapsed()||ts[ts.length-1].t0;
     const r=await api('/v1/app/escucha/guardar',{method:'POST',body:JSON.stringify({duracion:Math.round(dur/1000),
-      voces:ES.spk.map((s,i)=>({n:i+1,nombre:esNombre(i),tono:esTono(s.f0)})),
+      voces:ES.spk.map((s,i)=>({n:i+1,nombre:esNombre(i),tono:esTono(s.f0),f0:Math.round(s.f0||0),hf:+(s.hf||0).toFixed(3)})),
       lineas:ts.map(t=>({t:esClock(t.t0),voz:t.spk!=null?t.spk+1:0,nombre:t.spk!=null?esNombre(t.spk):'',tono:esTono(t.f0),es:t.traduccion,orig:t.original,idioma:t.origen,bajo:esBajo(t)}))})});
-    ES.turns=[];ES.spk=[];ES.names={};ES.frames=[];ES.sentMs=0;ES.inI=ES.outI=0;ES.t0=0;esPaint();esUI();
+    ES.turns=[];ES.spk=[];ES.names={};ES.det={};ES.sugVoz={};ES.frames=[];ES.sentMs=0;ES.inI=ES.outI=0;ES.t0=0;esPaint();esUI();
     esSt('Guardada como entregable.');
-    sheet('Transcripción guardada','<div class="sub">'+esc(r.nombre||'')+'</div>'+(r.resumen?'<div class="card" style="margin:10px 0">'+md(r.resumen)+'</div>':'<div class="empty">Guardada (muy corta para resumir).</div>')+
-      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button class="artcard" id="esg-ent">Verla en Entregables</button><button class="artcard" id="esg-ask">Que Donna proponga pendientes</button></div>');
-    $('#esg-ent').onclick=()=>{closeSheet();go('ent')};
+    sheet('Transcripción guardada','<div class="sub">'+esc(r.nombre||'')+'</div>'+((r.personas||[]).length?'<div class="sub" style="margin-top:6px">👥 Quedaron en su ficha: '+r.personas.map(p=>esc(p.nombre)).join(', ')+'</div>':'')+((r.sugeridos||[]).length?'<div class="sub" style="margin-top:4px">También escuché: '+r.sugeridos.map(p=>esc(p.nombre)).join(', ')+' (puedes asignarlos en Personas).</div>':'')+(r.resumen?'<div class="card" style="margin:10px 0">'+md(r.resumen)+'</div>':'<div class="empty">Guardada (muy corta para resumir).</div>')+
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button class="artcard" id="esg-per">Ver personas</button><button class="artcard" id="esg-ent">Verla en Entregables</button><button class="artcard" id="esg-ask">Que Donna proponga pendientes</button></div>');
+    $('#esg-ent').onclick=()=>{closeSheet();go('ent')};$('#esg-per').onclick=()=>{closeSheet();go('per')};
     $('#esg-ask').onclick=()=>{closeSheet();go('chat');$('#inp').value='De mi transcripción «'+(r.nombre||'')+'»: propón los pendientes y seguimientos (quién, qué, cuándo).';if(r.mid){PEND.push({name:r.nombre,state:'listo',label:'✓',id:r.mid});paintPend()}$('#inp').focus()};
   }catch(e){esSt('No pude guardar: '+e.message+'. Tu transcripción sigue aquí.');toast('No pude guardar: '+e.message)}
+}
+function esPool(){const a=[];const add=n=>{if(n&&!a.some(x=>x.toLowerCase()===n.toLowerCase()))a.push(n)};
+  Object.values(ES.det||{}).forEach(d=>add(d.nombre));(ES.pv||[]).forEach(p=>add(p.nombre));return a}
+function esAsignar(i){                                    // «¿quién es esta voz?»: sugerencia de la propia grabación, nombres detectados y personas conocidas
+  const sug=(ES.sugVoz||{})[i],pool=esPool();
+  sheet('¿Quién es la Voz '+(i+1)+'?','<div class="sub">'+esc(esDesc(ES.spk[i]&&ES.spk[i].f0))+'</div>'+(sug?'<div class="sec">Se presentó como</div><div class="nq"><button data-n="'+esc(sug)+'">✓ '+esc(sug)+'</button></div>':'')+
+    (pool.length?'<div class="sec">Nombres detectados y personas conocidas</div><div class="nq">'+pool.map(n=>'<button data-n="'+esc(n)+'">'+esc(n)+'</button>').join('')+'</div>':'')+
+    '<div class="trin" style="margin-top:12px"><input id="esa-n" placeholder="Escribe el nombre…" value="'+esc(ES.names[i]||'')+'" maxlength="40"><button id="esa-ok">Poner</button></div>');
+  const poner=n=>{n=(n||'').trim().slice(0,40);if(!n)return;ES.names[i]=n;esRecordar(i,n);closeSheet();esPaint();toast('Voz '+(i+1)+' = '+n)};
+  $$('#sh-b [data-n]').forEach(b=>b.onclick=()=>poner(b.dataset.n));$('#esa-ok').onclick=()=>poner($('#esa-n').value);
+  $('#esa-n').onkeydown=e=>{if(e.key==='Enter')poner(e.target.value)};
+}
+function esDetPaint(L){                                   // nombres que se dijeron y aún no son el nombre de ninguna voz
+  const usados=new Set(Object.values(ES.names).map(n=>n.toLowerCase()));
+  const L2=Object.values(ES.det||{}).filter(d=>![...usados].some(u=>u===d.nombre.toLowerCase()||u.split(' ')[0]===d.nombre.toLowerCase().split(' ')[0]));
+  if(!L2.length)return;
+  L.insertAdjacentHTML('beforeend','<p class="sec" style="margin:14px 2px 6px">Nombres que escuché</p><div class="nq">'+L2.map(d=>'<button data-dn="'+esc(d.nombre)+'">'+esc(d.nombre)+(d.tipo==='presenta'&&d.voz!=null?' · se presentó la Voz '+(d.voz+1):' · le hablaron')+'</button>').join('')+'</div>');
+  L.querySelectorAll('[data-dn]').forEach(b=>b.onclick=()=>{const d=ES.det[b.dataset.dn.toLowerCase()];
+    if(d&&d.tipo==='presenta'&&d.voz!=null){ES.names[d.voz]=d.nombre;esRecordar(d.voz,d.nombre);esPaint();toast('Voz '+(d.voz+1)+' = '+d.nombre)}
+    else sheet('¿Cuál voz es '+b.dataset.dn+'?','<div class="nq">'+ES.spk.map((s,i)=>'<button data-v="'+i+'">Voz '+(i+1)+' · '+esc(esDesc(s.f0))+(ES.names[i]?' · '+esc(ES.names[i]):'')+'</button>').join('')+'</div>');
+    $$('#sh-b [data-v]').forEach(x=>x.onclick=()=>{const i=+x.dataset.v;ES.names[i]=b.dataset.dn;esRecordar(i,b.dataset.dn);closeSheet();esPaint()})})
+}
+function esQuienEsQuien(){                                // antes de guardar: ponerle nombre a cada voz (se puede omitir)
+  return new Promise(res=>{
+    const hay=ES.spk.some((s,i)=>!ES.names[i]);const pool=esPool();
+    if(!ES.spk.length||(!hay&&!pool.length)){res();return}
+    const ej=i=>{const t=ES.turns.find(x=>x.spk===i&&x.traduccion);return t?t.traduccion.slice(0,80):''};
+    sheet('¿Quién es quién?','<div class="sub">Pon nombre a cada voz y quedarán sus aportaciones en la ficha de cada persona. Puedes omitirlo.</div>'+
+      '<datalist id="esq-dl">'+pool.map(n=>'<option value="'+esc(n)+'">').join('')+'</datalist>'+
+      ES.spk.map((s,i)=>'<div class="card" style="margin-top:8px"><div class="row"><b>Voz '+(i+1)+'</b><span class="sub">'+esc(esDesc(s.f0))+'</span></div><div class="sub" style="margin:4px 0">“'+esc(ej(i))+'”</div>'+
+        '<input class="f" list="esq-dl" data-q="'+i+'" placeholder="Nombre…" maxlength="40" value="'+esc(ES.names[i]||(ES.sugVoz||{})[i]||'')+'"></div>').join('')+
+      '<div style="display:flex;gap:8px;margin-top:12px"><button class="btn" id="esq-ok">Guardar con nombres</button><button class="btn ghost" id="esq-no" style="margin:0">Guardar sin nombres</button></div>');
+    let hecho=false;const fin=()=>{if(hecho)return;hecho=true;closeSheet();res()};
+    $('#esq-ok').onclick=()=>{$$('#sh-b [data-q]').forEach(x=>{const n=x.value.trim();if(n){ES.names[+x.dataset.q]=n.slice(0,40);esRecordar(+x.dataset.q,n)}});fin()};
+    $('#esq-no').onclick=fin;$('#sh-x').addEventListener('click',fin,{once:true});
+  });
 }
 function esView(){
   const v=$('#v-es');
@@ -2033,6 +2096,46 @@ function renderInbox(items,focusId){
   if(focusId){const el=$('#n-'+focusId);if(el)el.scrollIntoView({block:'start'})}
 }
 $('#bell').onclick=()=>openInbox();
+
+/* ---------- Personas: lo que cada quien ha aportado (de lo que Donna escucha) ---------- */
+async function loadPer(q){
+  const el=$('#per');if(!el.innerHTML)el.innerHTML='<div class="empty">Cargando…</div>';
+  try{
+    const [d,se]=await Promise.all([api('/v1/app/personas'+(q?'?q='+encodeURIComponent(q):'')),q?{items:[]}:api('/v1/app/escucha/sesiones')]);
+    const pend=(se.items||[]).filter(x=>x.sin_nombre.length);
+    el.innerHTML='<p class="sub" style="margin:0 0 10px">Aquí quedan las personas que Donna identifica al escuchar: lo que dicen, en qué sesiones y dónde se habla de ellas, cruzado con Kawiil Central.</p>'+
+      '<div class="trin"><input id="pe-q" placeholder="Buscar persona o «qué se dijo de…»" enterkeyhint="search" value="'+esc(q||'')+'"><button id="pe-go">Buscar</button></div><div id="pe-hits"></div>'+
+      (pend.length?'<div class="sec">Voces sin nombre · '+pend.length+' sesión(es)</div>'+pend.slice(0,4).map(s=>'<div class="card"><b>'+esc(s.titulo)+'</b><div class="sub">'+esc(s.fecha)+'</div>'+s.sin_nombre.map(v=>`<div style="margin-top:8px"><div class="sub">Voz ${v.voz_n} · ${v.frases} frase(s): “${esc((v.ejemplo||'').slice(0,70))}”</div><div class="trin" style="margin:4px 0 0"><input list="pe-dl" data-s="${esc(s.id)}" data-v="${v.voz_n}" placeholder="¿Quién es?" maxlength="40"><button data-as="1">Asignar</button></div></div>`).join('')+'</div>').join('')+'<datalist id="pe-dl">'+d.items.map(p=>'<option value="'+esc(p.nombre)+'">').join('')+'</datalist>':'')+
+      '<div class="sec">Personas · '+d.items.length+'</div>'+(d.items.map(p=>`<button class="menurow" data-p="${esc(p.id)}" style="margin-bottom:8px"><span><b>${esc(p.nombre)}</b><small>${esc([p.rol,p.empresa].filter(Boolean).join(' · ')||'sin empresa')} · ${p.intervenciones} aportación(es) · ${p.sesiones} sesión(es)</small></span></button>`).join('')||'<div class="empty">Aún no hay personas. Graba una escucha, ponle nombre a las voces y aparecerán aquí.</div>');
+    const buscar=async()=>{const t=$('#pe-q').value.trim();if(!t){loadPer();return}
+      const r=await api('/v1/app/aportaciones?q='+encodeURIComponent(t));
+      $('#pe-hits').innerHTML=r.items.length?'<div class="sec">Lo que se dijo · '+r.items.length+'</div>'+r.items.map(h=>`<div class="card"><div class="sub">${esc(h.fecha)} ${esc(h.hora)} · ${esc(h.persona||'voz sin nombre')} · ${esc(h.titulo)}</div><div style="margin-top:4px">${esc(h.texto)}</div></div>`).join(''):'<div class="empty">No encontré eso en las transcripciones.</div>'};
+    $('#pe-go').onclick=buscar;$('#pe-q').onkeydown=e=>{if(e.key==='Enter')buscar()};if(q)buscar();
+    $$('#per [data-p]').forEach(b=>b.onclick=()=>openPersona(b.dataset.p));
+    $$('#per [data-as]').forEach(b=>b.onclick=async()=>{const i=b.previousElementSibling,n=i.value.trim();if(!n)return;
+      try{await api('/v1/app/escucha/asignar',{method:'POST',body:JSON.stringify({sesion_id:i.dataset.s,voz:+i.dataset.v,nombre:n})});toast('Asignado a '+n);loadPer()}catch(e){toast(e.message)}});
+  }catch(e){if(!el.querySelector('.card,.menurow'))el.innerHTML='<div class="empty">No pude cargar. '+esc(e.message)+'</div>'}
+}
+async function openPersona(id,kc){
+  sheet('Persona','<div class="empty">Cargando…</div>');
+  try{const p=await api('/v1/app/persona?id='+encodeURIComponent(id)+(kc?'&kc=1':''));const cr=p.cruce||{},k=cr.kawiil_central;
+    const kcHtml=!kc?'<button class="artcard" id="pp-kc">🔗 Cruzar con Kawiil Central</button>':(k&&!k.error?((k.usuarios||[]).length?'<div class="sub">En Kawiil Central: '+esc(k.usuarios.map(u=>u.nombre).join(', '))+'</div>'+((k.tareas||[]).length?k.tareas.map(t=>`<div class="card" style="margin-top:6px"><b>${esc(t.titulo)}</b><div class="sub">${esc(t.estado)}${t.vence?' · vence '+esc(t.vence):''}</div></div>`).join(''):'<div class="sub">Sin tareas abiertas.</div>'):'<div class="sub">No encontré un usuario con ese nombre en Kawiil Central.</div>')+(k.cliente?'<div class="sub">Cliente: '+esc(k.cliente.nombre)+'</div>':''):'<div class="sub">No pude consultar Kawiil Central: '+esc((k&&k.error)||'')+'</div>');
+    sheet(p.nombre,'<div class="sub">'+esc([p.rol,p.empresa].filter(Boolean).join(' · ')||'sin empresa ni rol')+' · '+p.sesiones.length+' sesión(es) · '+p.menciones+' mención(es)</div>'+
+      '<details class="agg" style="margin-top:8px"><summary class="sec">Editar ficha</summary><div class="trin" style="flex-direction:column"><input id="pp-n" value="'+esc(p.nombre)+'" placeholder="Nombre"><input id="pp-e" value="'+esc(p.empresa)+'" placeholder="Empresa"><input id="pp-r" value="'+esc(p.rol)+'" placeholder="Rol"><input id="pp-a" value="'+esc((p.alias||[]).join(', '))+'" placeholder="Otros nombres (separados por coma)"><input id="pp-no" value="'+esc(p.notas)+'" placeholder="Notas"><button id="pp-save">Guardar ficha</button></div></details>'+
+      '<div class="sec">Sus aportaciones</div>'+(p.aportaciones.length?p.aportaciones.slice(0,12).map(a=>`<div class="card"><div class="sub">${esc(a.fecha)} ${esc(a.hora)} · ${esc(a.titulo)}</div><div style="margin-top:4px">${esc(a.texto)}</div></div>`).join(''):'<div class="empty">Sin aportaciones.</div>')+
+      ((cr.transcripciones||[]).length?'<div class="sec">Dónde hablan de esta persona</div>'+cr.transcripciones.map(a=>`<div class="card"><div class="sub">${esc(a.fecha)} ${esc(a.hora)} · ${esc(a.titulo)}</div><div style="margin-top:4px">${esc(a.texto)}</div></div>`).join(''):'')+
+      '<div class="sec">Kawiil Central</div><div id="pp-kcb">'+kcHtml+'</div>'+
+      '<div class="nq" style="margin-top:14px"><button id="pp-ask">💬 Pregúntale a Donna</button><button id="pp-mrg">🔀 Fusionar con otra</button><button id="pp-del">🗑 Eliminar</button></div>'+
+      '<div class="sub" style="margin-top:8px">Solo se guarda texto y un perfil aproximado de tono para reconocer su voz. Al eliminar, sus frases quedan sin nombre.</div>');
+    const kb=$('#pp-kc');if(kb)kb.onclick=()=>openPersona(id,true);
+    $('#pp-save').onclick=async()=>{try{await api('/v1/app/persona',{method:'POST',body:JSON.stringify({op:'editar',id,nombre:$('#pp-n').value,empresa:$('#pp-e').value,rol:$('#pp-r').value,alias:$('#pp-a').value,notas:$('#pp-no').value})});toast('Ficha guardada');loadPer();openPersona(id,kc)}catch(e){toast(e.message)}};
+    $('#pp-ask').onclick=async()=>{closeSheet();await nuevaConv();$('#inp').value='¿Qué ha aportado '+p.nombre+' en lo que he escuchado y qué tiene abierto en Kawiil Central? Prepárame para hablar con esa persona.';$('#inp').focus()};
+    $('#pp-del').onclick=async()=>{if(!confirm('¿Eliminar a '+p.nombre+'? Sus frases se conservan en las transcripciones pero sin nombre.'))return;try{await api('/v1/app/persona',{method:'POST',body:JSON.stringify({op:'eliminar',id})});closeSheet();toast('Eliminada');loadPer()}catch(e){toast(e.message)}};
+    $('#pp-mrg').onclick=async()=>{const all=(await api('/v1/app/personas')).items.filter(x=>x.id!==id);if(!all.length){toast('No hay otra persona');return}
+      sheet('Fusionar «'+p.nombre+'» con…','<div class="sub">Sus frases pasan a la persona que elijas y este nombre queda como alias.</div><div class="nq" style="margin-top:8px">'+all.map(x=>'<button data-d="'+esc(x.id)+'">'+esc(x.nombre)+'</button>').join('')+'</div>');
+      $$('#sh-b [data-d]').forEach(x=>x.onclick=async()=>{try{await api('/v1/app/persona',{method:'POST',body:JSON.stringify({op:'fusionar',id,destino:x.dataset.d})});toast('Fusionadas');closeSheet();loadPer()}catch(e){toast(e.message)}})};
+  }catch(e){sheet('Persona','<div class="empty">No pude abrirla. '+esc(e.message)+'</div>')}
+}
 
 /* ---------- resúmenes (guardados en la base) y seguimiento ---------- */
 async function openResumen(id){
