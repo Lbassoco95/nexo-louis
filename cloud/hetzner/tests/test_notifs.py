@@ -16,10 +16,16 @@ STEWARD = "🧭 *Seguimiento diario*\n🧹 *Propongo cerrar (2)*\n• 3. algo\n_
 SLACK = "🌅 *Seguimiento de Slack*\n_Responde «agrega altas 1, 3» o «agrega todas las altas». No agrego nada sin tu OK._"
 
 
+def _limpiar_db():
+    import donna_db
+    for suf in ("", "-wal", "-shm"):
+        (TMP / "st" / ("donna.db" + suf)).unlink(missing_ok=True)
+    donna_db._INIT_DONE.discard(str(TMP / "st" / "donna.db"))
+
+
 class Bandeja(unittest.TestCase):
     def setUp(self):
-        for f in (P.INBOX_FILE,):
-            f.unlink(missing_ok=True)
+        _limpiar_db()
 
     def test_orden_leidas_y_conteo(self):
         a = P.inbox_add("uno", "x"); b = P.inbox_add("dos", "y"); c = P.inbox_add("tres", "z")
@@ -30,10 +36,10 @@ class Bandeja(unittest.TestCase):
         self.assertEqual(P.inbox_mark_read(None), 2)
         self.assertEqual(P.unread_count(), 0)
 
-    def test_tope_de_200(self):
+    def test_tope_de_listado_200_y_nada_se_pierde(self):
         for i in range(P.INBOX_MAX + 15):
             P.inbox_add(f"n{i}", "x")
-        self.assertEqual(len(P._inbox_read()), P.INBOX_MAX)
+        self.assertEqual(len(P.inbox_list(10000)), P.INBOX_MAX)          # el listado se acota; la base conserva todo
         self.assertEqual(P.inbox_list(1)[0]["title"], f"n{P.INBOX_MAX + 14}")
 
     def test_reglas_de_botones(self):
@@ -92,12 +98,12 @@ class Bandeja(unittest.TestCase):
                 "[P.inbox_add('p','x') for _ in range(25)]") % (SERVICES, str(TMP / "st"))
         ps = [subprocess.Popen([sys.executable, "-c", code]) for _ in range(3)]
         [p.wait() for p in ps]
-        self.assertEqual(len(P._inbox_read()), 75)
+        self.assertEqual(len(P.inbox_list(200)), 75)
 
 
 class Acciones(unittest.TestCase):
     def setUp(self):
-        P.INBOX_FILE.unlink(missing_ok=True)
+        _limpiar_db()
         self.hoy = g._fecha_cdmx(int(time.time()))
         self.calls = []
         core.aplicar_cierres_steward = lambda sel: self.calls.append(sel) or "Cerré 2 pendientes."

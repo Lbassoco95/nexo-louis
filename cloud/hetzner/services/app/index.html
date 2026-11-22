@@ -63,6 +63,8 @@ header button{position:relative}
 .nitem .more{background:none;border:0;color:var(--acc);font-size:12.5px;padding:6px 0 0}
 .nitem .acts{margin-top:10px;display:flex;flex-direction:column;gap:8px}
 .nitem .acts .btn{padding:10px 14px}
+.nq{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}.nq button{min-height:44px;padding:0 14px;border-radius:999px;border:1px solid var(--line);background:var(--panel);color:var(--tx);font:inherit;font-size:13px}.nq button:disabled{opacity:.5}
+.segc .row{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
 .nitem .okline{font-size:12.5px;color:var(--ok);background:var(--panel2);border-radius:10px;padding:8px 10px}
 .nitem .errline{font-size:12.5px;color:var(--bad);margin-top:6px}
 .typing{display:inline-flex;gap:4px;padding:4px 0}
@@ -125,7 +127,7 @@ input.search{width:100%;background:var(--panel);color:var(--tx);border:1px solid
 .trbar button{background:var(--panel);color:var(--tx);border:1px solid var(--line);border-radius:12px;padding:9px 12px;font-size:16px}
 .trtalk{display:flex;gap:8px;margin-bottom:8px}.trtalk button{flex:1;border:0;border-radius:14px;padding:13px 8px;font-weight:700;color:#fff;background:var(--grad);font-size:14px}
 .trtalk button.rec{background:#dc2626;animation:pl 1s infinite}.trtalk button:disabled{opacity:.5}
-.trin{display:flex;gap:8px;margin-bottom:10px}.trin input{flex:1;background:var(--panel);color:var(--tx);border:1px solid var(--line);border-radius:12px;padding:10px;font:inherit}
+.trin{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap}.trin input{min-width:0}.trin select{min-height:52px;border-radius:14px;padding:0 10px;font:inherit;background:var(--glass2);color:var(--tx);border:1px solid var(--ctl)}.trin input{flex:1;background:var(--panel);color:var(--tx);border:1px solid var(--line);border-radius:12px;padding:10px;font:inherit}
 .trin button{border:0;border-radius:12px;padding:0 14px;background:var(--panel);color:var(--tx);border:1px solid var(--line);font-weight:600}
 .trturn{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:10px 12px;margin:0 0 8px}
 .trturn .o{color:var(--mut);font-size:12.5px}.trturn .t{font-size:17px;font-weight:600;margin:3px 0}.trturn .p{color:var(--mut);font-size:13px}
@@ -630,6 +632,7 @@ html.lowfx body::before{display:none}
     <section class="view" id="v-trab"><div class="scroll" id="trab"></div></section>
     <section class="view" id="v-ent"><div class="scroll" id="ent"></div></section>
     <section class="view" id="v-tabl"><div class="scroll" id="tabl"></div></section>
+    <section class="view" id="v-seg"><div class="scroll" id="seg"></div></section>
     <section class="view" id="v-nav"><div class="scroll" id="nav"></div></section>
     <section class="view" id="v-trad"><div class="scroll" id="trad"></div></section>
     <section class="view" id="v-es"></section>
@@ -660,6 +663,7 @@ html.lowfx body::before{display:none}
     <button data-v="trab"><i data-i="wrench"></i>Trabajos<span class="badge" id="sb-trab" hidden></span></button>
     <button data-v="ent"><i data-i="box"></i>Entregables</button>
     <button data-v="tabl"><i data-i="grid"></i>Tableros</button>
+    <button data-v="seg"><i data-i="check"></i>Seguimiento<span class="badge" id="sb-seg" hidden></span></button>
     <button data-v="nav"><i data-i="globe"></i>Navegador</button>
     <button data-v="trad"><i data-i="globe"></i>Traductor</button>
     <button data-v="cfg"><i data-i="sliders"></i>Ajustes</button>
@@ -859,12 +863,12 @@ $('#ltok').onclick=async()=>{
 $('#tok').addEventListener('keydown',e=>{if(e.key==='Enter')$('#ltok').click()});
 
 /* ---------- navegación ---------- */
-const titles={chat:'{{AGENT_NAME}}',hoy:'Hoy',trab:'Trabajos',ent:'Entregables',tabl:'Tableros',nav:'Navegador',trad:'Traductor',es:'Escuchar',cfg:'Ajustes'};
+const titles={chat:'{{AGENT_NAME}}',hoy:'Hoy',trab:'Trabajos',ent:'Entregables',tabl:'Tableros',seg:'Seguimiento',nav:'Navegador',trad:'Traductor',es:'Escuchar',cfg:'Ajustes'};
 function go(v){
   $$('.view').forEach(x=>x.classList.toggle('on',x.id==='v-'+v));
   $$('nav button,#sdnav button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
   $('#title').textContent=titles[v];$('#hsub').hidden=v!=='chat';document.body.classList.toggle('vista-es',v==='es');document.body.classList.toggle('vista-chat',v==='chat');LS.set('tab',v);
-  if(v==='hoy')loadHoy();if(v==='ent')loadEnt();if(v==='cfg')renderCfg();if(v==='trab')loadTrab();if(v==='tabl')loadTabl();if(v==='trad')renderTrad();if(v==='es')esView();if(v==='nav')navView();else navStop();
+  if(v==='hoy')loadHoy();if(v==='ent')loadEnt();if(v==='cfg')renderCfg();if(v==='trab')loadTrab();if(v==='tabl')loadTabl();if(v==='trad')renderTrad();if(v==='es')esView();if(v==='nav')navView();else navStop();if(v==='seg')loadSeg();
   if(innerWidth<760&&v!=='chat')closeDock();
   if(v==='chat')scrollDown();
 }
@@ -1187,7 +1191,7 @@ document.addEventListener('click',e=>{
   else if(b.id==='m-list')openMediaList();
   else if(b.dataset.media)openMedia(b.dataset.media);
 });
-function openLink(l){const [k,id]=String(l||'').split(':');if(k==='escuchar'){go('es');if(id==='seguir'){esWsSend({t:'seguir'});ES.ask=false;esAsk(false)}else if(id==='detener')esFinish();return}if(k==='media'&&id)openMedia(id);else if(k==='tablero'&&id)openArt(id);else if(k==='trabajo'&&id)openTrabajo(id);else if(k==='escuchar')esOpen()}
+function openLink(l){const [k,id]=String(l||'').split(':');if(k==='escuchar'){go('es');if(id==='seguir'){esWsSend({t:'seguir'});ES.ask=false;esAsk(false)}else if(id==='detener')esFinish();return}if(k==='media'&&id)openMedia(id);else if(k==='tablero'&&id)openArt(id);else if(k==='trabajo'&&id)openTrabajo(id);else if(k==='resumen'&&id)openResumen(id);else if(k==='seg'){closeSheet();go('seg')}else if(k==='escuchar')esOpen()}
 document.addEventListener('click',e=>{const b=e.target.closest&&e.target.closest('[data-link]');if(b){e.preventDefault();openLink(b.dataset.link)}});
 const MIC_ICON={imagen:'🖼️',audio:'🎙️',video:'🎬',documento:'📄',conversacion:'🌐'};
 async function openMediaList(){
@@ -2004,8 +2008,11 @@ function renderInbox(items,focusId){
     const acts=(r.actions||[]).map(a=>{const dn=(r.done||{})[a.id];
       return dn?`<div class="okline">✓ ${esc(a.label)} — ${esc(dn.result||'hecho')}</div>`
                :`<button class="btn" data-n="${esc(r.id)}" data-a="${esc(a.id)}" data-c="${esc(a.confirm||'')}">${esc(a.label)}</button>`}).join('');
+    const hecha=r.estado==='resuelta';
+    const lk=String(r.link||'').split(':')[0],lkTxt={resumen:'📋 Ver resumen',seg:'🔎 Ver seguimiento'}[lk]||'📄 Abrir y consultar';
+    const base=hecha?'<div class="okline">✓ Resuelto</div>':`<div class="nq" data-n="${esc(r.id)}"><button data-q="hecho">✓ Hecho</button><button data-q="posponer_1h">⏰ 1 h</button><button data-q="posponer_manana">🌅 Mañana</button><button data-q="preguntar">💬 Preguntar</button><button data-q="descartar" aria-label="Descartar">✕</button></div>`;
     return `<div class="nitem${r.read?'':' new'}" id="n-${esc(r.id)}"><div class="nh"><b>${esc(r.title)}</b><span>${fmtWhen(r.ts)}</span></div>
-      <div class="nb">${md(r.body||'')}</div><button class="more" hidden>Ver todo</button>${r.link?`<button class="artcard" data-link="${esc(r.link)}" style="margin-top:8px">📄 Abrir y consultar</button>`:''}${acts?`<div class="acts">${acts}</div>`:''}</div>`}).join(''));
+      <div class="nb">${md(r.body||'')}</div><button class="more" hidden>Ver todo</button>${r.link?`<button class="artcard" data-link="${esc(r.link)}" style="margin-top:8px">${lkTxt}</button>`:''}${acts?`<div class="acts">${acts}</div>`:''}${base}</div>`}).join(''));
   $$('#sh-b .nitem').forEach(it=>{const nb=it.querySelector('.nb'),mo=it.querySelector('.more');
     if(nb.scrollHeight>nb.clientHeight+4){nb.classList.add('clip');mo.hidden=false;
       mo.onclick=()=>{const o=nb.classList.toggle('open');mo.textContent=o?'Ver menos':'Ver todo'}}});
@@ -2016,9 +2023,52 @@ function renderInbox(items,focusId){
     try{const r=await api('/v1/app/notifs/action',{method:'POST',body:JSON.stringify({id:b.dataset.n,action:b.dataset.a})});
       b.outerHTML=`<div class="okline">✓ ${esc(lab)} — ${esc(r.result||'hecho')}</div>`;toast('Listo ✓');refreshBell();if(LS.get('tab')==='hoy')loadHoy()}
     catch(e){b.disabled=false;b.textContent=lab;box.insertAdjacentHTML('beforeend',`<div class="errline">${esc(e.message)}</div>`)}});
+  $$('#sh-b .nq button').forEach(b=>b.onclick=async()=>{
+    const box=b.parentElement,id=box.dataset.n,q=b.dataset.q,it=box.closest('.nitem');
+    if(q==='preguntar'){const t=it.querySelector('.nh b').textContent+'\n'+it.querySelector('.nb').innerText.slice(0,600);closeSheet();await nuevaConv();$('#inp').value='Sobre este aviso:\n'+t+'\n\n¿Qué me recomiendas?';$('#inp').focus();return}
+    box.querySelectorAll('button').forEach(x=>x.disabled=true);
+    try{const r=await api('/v1/app/notifs/action',{method:'POST',body:JSON.stringify({id,action:q})});
+      box.outerHTML=`<div class="okline">✓ ${esc(r.result||'listo')}</div>`;if(q!=='hecho')setTimeout(()=>it.remove(),900);toast(r.result||'Listo');refreshBell();if(LS.get('tab')==='seg')loadSeg()}
+    catch(e){box.querySelectorAll('button').forEach(x=>x.disabled=false);toast(e.message)}});
   if(focusId){const el=$('#n-'+focusId);if(el)el.scrollIntoView({block:'start'})}
 }
 $('#bell').onclick=()=>openInbox();
+
+/* ---------- resúmenes (guardados en la base) y seguimiento ---------- */
+async function openResumen(id){
+  sheet('Resumen','<div class="empty">Cargando…</div>');
+  try{const r=await api('/v1/app/resumen?id='+encodeURIComponent(id));
+    const sec=(r.datos.secciones||[]).map(x=>`<div class="sec">${esc(x.titulo)} · ${x.total||x.items.length}</div>`+x.items.map((i,k)=>`<div class="card task${x.id==='hoy'?' hot':''}" data-t="${esc(i.texto)}"><button class="ck" aria-label="Marcar hecho" ${(x.id==='entregables'||x.id==='briefs')?'hidden':''}></button><div class="tt">${i.cuando?`<span class="cuando">${esc(i.cuando)}</span> `:''}${esc(i.texto)}</div></div>`).join('')).join('');
+    sheet(r.titulo||'Resumen',`<div class="sub">${esc(r.fecha)} · guardado ${fmtWhen(r.ts)}</div>`+(r.texto?`<div class="nb open" style="margin-top:8px">${md(r.texto)}</div>`:sec||'<div class="empty">Sin pendientes.</div>')+
+      '<button class="artcard" id="rs-ask" style="margin-top:12px">💬 Platicar este resumen con Donna</button>');
+    $$('#sh-b .task .ck').forEach(b=>b.onclick=async()=>{const c=b.closest('.task');c.classList.add('done');
+      try{const x=await api('/v1/app/agenda/hecho',{method:'POST',body:JSON.stringify({texto:c.dataset.t})});toast(x.result?String(x.result).slice(0,60):'Marcado ✓')}catch(e){c.classList.remove('done');toast(e.message)}});
+    $('#rs-ask').onclick=async()=>{const t=(r.datos.secciones||[]).map(x=>x.titulo+': '+x.items.map(i=>i.texto).join('; ')).join('\n').slice(0,900);closeSheet();await nuevaConv();$('#inp').value='Sobre mi '+r.titulo+':\n'+t+'\n\n¿Por dónde empiezo?';$('#inp').focus()};
+  }catch(e){sheet('Resumen','<div class="empty">No pude abrirlo. '+esc(e.message)+'</div>')}
+}
+const SEGO={manual:'',tarea:'tarea',agenda:'agenda',compra:'compra',reservacion:'reservación',dia:'mi día'};
+function segCuando(ts){if(!ts)return 'sin fecha';const d=new Date(ts*1000),n=new Date();const dd=Math.round((new Date(d.getFullYear(),d.getMonth(),d.getDate())-new Date(n.getFullYear(),n.getMonth(),n.getDate()))/864e5);
+  const hm=d.toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'});return (dd===0?'hoy':dd===1?'mañana':dd===-1?'ayer':d.toLocaleDateString('es-MX',{day:'numeric',month:'short'}))+' '+hm}
+async function loadSeg(){
+  const el=$('#seg');if(!el.innerHTML)el.innerHTML='<div class="empty">Cargando…</div>';
+  try{const d=await api('/v1/app/seguimientos');
+    const act=d.items.filter(x=>x.estado==='activo'),pau=d.items.filter(x=>x.estado==='pausado'),hec=d.items.filter(x=>x.estado==='hecho');
+    const sb=$('#sb-seg');if(sb){sb.hidden=!act.length;sb.textContent=act.length}
+    const card=x=>`<div class="card segc" data-id="${esc(x.id)}"><div class="row"><b>${esc(x.titulo)}</b>${SEGO[x.origen]?`<span class="pill">${esc(SEGO[x.origen])}</span>`:''}</div>
+      ${x.nota?`<div class="sub" style="margin-top:4px">${esc(x.nota)}</div>`:''}<div class="sub" style="margin-top:4px">${x.estado==='hecho'?'✓ Hecho':x.estado==='pausado'?'⏸ En pausa':'Próxima revisión: '+esc(segCuando(x.proxima_revision))}</div>
+      ${x.estado==='hecho'?'':`<div class="nq">${x.estado==='activo'?'<button data-a="hecho">✓ Hecho</button><button data-a="posponer">⏰ +3 h</button><button data-a="pausar">⏸ Pausar</button>':'<button data-a="reanudar">▶ Reanudar</button><button data-a="hecho">✓ Hecho</button>'}<button data-a="nota">📝 Nota</button><button data-a="cancelar" aria-label="Dejar de seguir">✕</button></div>`}</div>`;
+    el.innerHTML='<p class="sub" style="margin:0 0 10px">Lo que Donna sigue por ti. Es aparte de las notificaciones: cuando toca revisar algo, te avisa con botones. Pídeselo en el chat («dale seguimiento a…») o agrégalo aquí.</p>'+
+      '<div class="trin"><input id="sg-t" style="flex:1 1 100%" placeholder="¿Qué quieres que siga?" enterkeyhint="send"><select id="sg-w" aria-label="Revisar"><option value="3">en 3 h</option><option value="6">en 6 h</option><option value="24" selected>mañana</option><option value="72">en 3 días</option><option value="168">en 1 semana</option></select><button id="sg-go">Seguir</button></div>'+
+      '<div class="sec">Activos · '+act.length+'</div>'+(act.map(card).join('')||'<div class="empty">Nada en seguimiento.</div>')+
+      (pau.length?'<div class="sec">En pausa · '+pau.length+'</div>'+pau.map(card).join(''):'')+(hec.length?'<details class="agg"><summary class="sec">Hechos recientes · '+hec.length+'</summary>'+hec.map(card).join('')+'</details>':'');
+    const add=async()=>{const t=$('#sg-t').value.trim();if(t.length<3)return;try{await api('/v1/app/seguimiento',{method:'POST',body:JSON.stringify({op:'crear',titulo:t,en_horas:+$('#sg-w').value})});toast('Listo, le doy seguimiento');loadSeg()}catch(e){toast(e.message)}};
+    $('#sg-go').onclick=add;$('#sg-t').onkeydown=e=>{if(e.key==='Enter')add()};
+    $$('#seg .segc .nq button').forEach(b=>b.onclick=async()=>{const id=b.closest('.segc').dataset.id,a=b.dataset.a;let nota;
+      if(a==='nota'){nota=prompt('Nota para este seguimiento:');if(!nota)return}
+      if(a==='cancelar'&&!confirm('¿Dejar de darle seguimiento?'))return;
+      try{await api('/v1/app/seguimiento',{method:'POST',body:JSON.stringify({op:'accion',id,accion:a,nota,en_horas:a==='posponer'?3:(a==='reanudar'?3:0)})});toast('Listo');loadSeg()}catch(e){toast(e.message)}});
+  }catch(e){if(!el.querySelector('.card'))el.innerHTML='<div class="empty">No pude cargar. '+esc(e.message)+'</div>'}
+}
 /* ---------- tableros (artefactos): iframe sandbox="" = sin scripts, sin red, sin acceso a tu sesión ---------- */
 let dkId='',dkTitle='';
 async function openArt(id,silent){
@@ -2070,6 +2120,7 @@ async function loadHoy(){
     const b=$('#b-hoy');b.hidden=!d.urgentes.length;b.textContent=d.urgentes.length;{const sb=$('#sb-hoy');sb.hidden=b.hidden;sb.textContent=b.textContent}
     paintBell(d.sin_leer||0);ctxPaint();
     let h=d.confirmaciones?`<button class="hoyalert" id="confcard"><span class="tag">⚠️ ${d.confirmaciones} confirmación${d.confirmaciones>1?'es':''} pendiente${d.confirmaciones>1?'s':''}</span><span class="t">Revisa y confirma antes de que {{AGENT_NAME}} cambie algo.</span><b class="go">Revisar</b></button>`:'';
+    if((d.resumenes||[]).length)h+='<div class="sec">Resúmenes guardados</div><div class="nq" style="margin:0 0 8px">'+d.resumenes.map(r=>`<button data-rs="${esc(r.id)}">${esc(r.titulo)} · ${esc(r.fecha.slice(5))}</button>`).join('')+'</div>';
     h+=`<div class="stats"><div class="stat"><b>${d.abiertos}</b><span>Abiertos</span></div><div class="stat"><b>${d.urgentes.length}</b><span>Para hoy</span></div><div class="stat"><b>${d.cerrados}</b><span>Cerrados</span></div></div>`;
     window._ag=[];
     const AG=d.agenda,GR=[['hoy','📅 Hoy',1,1],['manana','Mañana',1,0],['semana','Esta semana',1,0],['proximas','Más adelante',0,0],['sin_fecha','Sin fecha precisa',0,0],['vencidas','⚠️ Vencidas · revisar o archivar',0,0]];
@@ -2089,6 +2140,7 @@ async function loadHoy(){
       const i=c.dataset.i,t=i[0]==='a'?window._ag[+i.slice(1)]:i[0]==='u'?d.urgentes[+i.slice(1)]:d.vencimientos[+i.slice(1)];completar(t.texto,c)});
     $$('#hoy [data-f]').forEach(c=>c.onclick=()=>openEnt(c.dataset.f));
     const cc=$('#confcard');if(cc)cc.onclick=()=>openInbox();
+    $$('#hoy [data-rs]').forEach(c=>c.onclick=()=>openResumen(c.dataset.rs));
   }catch(e){online(false);if(!el.querySelector('.card'))el.innerHTML='<div class="empty">No pude cargar. Toca ⟳</div>'}
 }
 async function completar(texto,card){

@@ -451,10 +451,10 @@ def main():
             _slot = INTRADAY_SLOTS.get(_now.hour)
             _hoy = _now.strftime("%Y-%m-%d")
             if _slot and not _intraday_ya(_slot, _hoy):
-                msg = core.build_intraday_nudge(_slot)
-                if msg:
-                    send_telegram(msg)
-                    log.info(f"intraday nudge enviado ({_slot})")
+                import donna_resumen
+                rid = donna_resumen.publicar(core, _slot)          # se guarda en la base y el aviso es corto (apunta al resumen)
+                if rid:
+                    log.info(f"resumen {_slot} guardado ({rid}) y avisado")
                 _intraday_marca(_slot, _hoy)  # marca aunque no haya nada (no recalcular cada tick)
         except Exception as e:
             log.warning(f"intraday check falló: {e}")
@@ -468,11 +468,23 @@ def main():
                 if not _weekly_ya(_wk):
                     rev = core.build_weekly_review()
                     if rev:
-                        send_telegram(rev)
-                        log.info(f"review semanal enviado ({_wk})")
+                        import donna_resumen
+                        corto = next((l for l in rev.splitlines() if "Cerrados" in l), "Revisión semanal lista").replace("*", "")
+                        donna_resumen.publicar_texto("semanal", "📊 Review semanal", rev, corto)
+                        log.info(f"review semanal guardado y avisado ({_wk})")
                     _weekly_marca(_wk)
         except Exception as e:
             log.warning(f"review semanal falló: {e}")
+
+        # Seguimientos (lo que Donna sigue por Polo) y avisos pospuestos que ya les toca volver. Independiente de los resúmenes.
+        try:
+            import donna_seg, louis_push
+            n_seg = donna_seg.tick()
+            n_pos = louis_push.resurgir_pospuestas()
+            if n_seg or n_pos:
+                log.info(f"seguimientos avisados: {n_seg} · pospuestas que vuelven: {n_pos}")
+        except Exception as e:
+            log.warning(f"seguimientos/pospuestas falló: {e}")
 
         time.sleep(TICK_SECONDS)
 

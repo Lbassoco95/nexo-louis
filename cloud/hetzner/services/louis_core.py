@@ -437,6 +437,7 @@ TOOL_KEYWORDS = [
     # Browser / navegación / vault
     r"\b(navega|abre\s+(?:la\s+)?(?:p[aá]gina|web|sitio|url)|chrome|browser|click|llena|completa\s+(?:el\s+)?formulario|login\s+en|sesi[oó]n\s+en)\b",
     r"\b(screenshot|captura\s+de\s+pantalla|extrae\s+de\s+la\s+p[aá]gina)\b",
+    r"\b(seguimiento|dale\s+seguimiento|da(?:r|me)\s+seguimiento|estate\s+pendiente|av[ií]same\s+(?:c[oó]mo|si|cuando)\b)",
     r"\b(boletos?|cartelera|cin[eé]polis|cinemex|cinemark|funci[oó]n(?:es)?\s+de\s+cine|comprar\s+(?:unos?\s+)?(?:boletos?|entradas?)|entradas?\s+(?:para|al)\s+(?:el\s+)?(?:cine|concierto|teatro|partido))\b",
     r"\b(vault|bitwarden|contrase[ñn]a|password|credencial(?:es)?)\b",
     r"^/sonnet\b", r"^/claude\b", r"^/calidad\b", r"^/fuerte\b", r"^/verify\b", r"^/status\b",
@@ -1169,6 +1170,11 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "\n"
         "Flujo típico para login: `browser_login(url='https://app.x.com/login', vault_item='Slack Kawiil')`. "
         "Si los selectores default no funcionan en una página rara, pásale `user_selector`/`pass_selector`/`submit_selector`."
+        "\n\n# SEGUIMIENTO — lo que sigues por Polo (se guarda en la base, NO es una notificación)\n"
+        "Cuando Polo te pida darle seguimiento a algo, o dejes algo en curso (una compra preparada que falta pagar, una reservación por confirmar, una tarea que depende de otros), "
+        "créalo con `seguimiento_crear` (título claro + cuándo revisar). Es independiente de los avisos: tú decides qué seguir y la app lo muestra en «Seguimiento» con botones. "
+        "Cuando Polo diga que algo ya quedó, ciérralo con `seguimiento_actualizar(id, 'hecho')`. Para ver qué estás siguiendo: `seguimiento_listar`. "
+        "Los resúmenes del día NO llegan como mensajes largos: quedan guardados en la app y el aviso es corto.\n"
         "\n\n# COMPRAS (boletos de cine, entradas, reservaciones) — Donna PREPARA, Polo PAGA\n"
         "Si Polo pide comprar algo, tú NO puedes pagar y NO tienes sus tarjetas: eso lo hace él con Apple Pay en su teléfono. Lo que SÍ haces con el navegador:\n"
         "1. Pregunta lo mínimo que falte (película/evento, ciudad o cine, día y hora, cuántos boletos) y busca opciones REALES con `browser_navegar`/`browser_pasos` "
@@ -3021,6 +3027,42 @@ TOOLS_DEFINITION = [
                 "nuevo": {"type": "string", "description": "El texto COMPLETO que debe quedar en esa línea (sin el '- [ ]', se conserva el estado de la casilla). Ej: 'Casandra — RPC a cargo de Fernando (vence 5-jun)'."},
             },
             "required": ["viejo", "nuevo"],
+        },
+    },
+    {
+        "name": "seguimiento_crear",
+        "description": "Empieza a darle SEGUIMIENTO a algo por Polo (una tarea, un pendiente, su día, una compra o reservación, un trámite): queda guardado en la base de Donna con próxima revisión; cuando toque, le avisa con botones (Hecho / Posponer) y él lo ve en la vista «Seguimiento». Úsala cuando Polo diga «dale seguimiento a…», «avísame cómo va…», «estate pendiente de…», o cuando tú dejes algo en curso (p. ej. una compra lista para pagar). Da `en_horas` o `fecha_hora` ISO (hora de CDMX); si no, se revisa mañana 9:00.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "titulo": {"type": "string", "description": "Qué se sigue, claro y corto (ej. 'Boletos Cinemex viernes 8pm — falta que Polo pague')"},
+                "nota": {"type": "string", "description": "Contexto o qué revisar cuando toque"},
+                "en_horas": {"type": "number", "description": "Revisar dentro de X horas"},
+                "fecha_hora": {"type": "string", "description": "Revisar en esta fecha/hora ISO 8601 (CDMX), ej. 2026-11-23T09:00"},
+                "origen": {"type": "string", "enum": ["manual", "tarea", "agenda", "compra", "reservacion", "dia"], "description": "De dónde viene"},
+                "cadencia_horas": {"type": "integer", "description": "Cada cuántas horas repetir el aviso mientras siga activo (24 por defecto)"},
+            },
+            "required": ["titulo"],
+        },
+    },
+    {
+        "name": "seguimiento_listar",
+        "description": "Lista lo que Donna está siguiendo por Polo (activos y en pausa, y los últimos hechos) con su próxima revisión.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "seguimiento_actualizar",
+        "description": "Actualiza un seguimiento por su id: hecho, pausar, reanudar, posponer (con en_horas/fecha_hora), cancelar, o solo agregar una nota de cómo va.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "accion": {"type": "string", "enum": ["hecho", "pausar", "reanudar", "posponer", "cancelar", "nota"]},
+                "nota": {"type": "string"},
+                "en_horas": {"type": "number"},
+                "fecha_hora": {"type": "string"},
+            },
+            "required": ["id", "accion"],
         },
     },
     {
@@ -9501,6 +9543,24 @@ def execute_tool(name: str, args: dict) -> str:
             with path.open("a") as f:
                 f.write(entry)
             return f"OK aprendido: {args['topic']}"
+        elif name == "seguimiento_crear":
+            import donna_seg
+            try:
+                r = donna_seg.crear(args.get("titulo", ""), args.get("fecha_hora", ""), args.get("en_horas", 0), args.get("nota", ""),
+                                    origen=args.get("origen", "manual"), cadencia_horas=int(args.get("cadencia_horas") or 24))
+            except ValueError as e:
+                return "❌ " + str(e)
+            return "✅ Seguimiento creado [%s]: %s — primera revisión %s." % (r["id"], r["titulo"], donna_seg._cuando_txt(r["proxima_revision"]))
+        elif name == "seguimiento_listar":
+            import donna_seg
+            return donna_seg.listar_texto()
+        elif name == "seguimiento_actualizar":
+            import donna_seg
+            try:
+                r = donna_seg.accion(str(args.get("id", "")), str(args.get("accion", "")), args.get("fecha_hora", ""), args.get("en_horas", 0), args.get("nota"))
+            except ValueError as e:
+                return "❌ " + str(e)
+            return "✅ Seguimiento [%s] «%s»: %s." % (r["id"], r["titulo"], donna_seg.ESTADOS_TXT.get(r["estado"], r["estado"]))
         elif name == "agendar_recordatorio":
             return _agendar_recordatorio(
                 args["mensaje"], args.get("fecha_hora", ""),

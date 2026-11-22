@@ -169,10 +169,7 @@ def count() -> int:
 # en la app aunque la notificación se haya descartado. Algunos avisos traen BOTONES de confirmación
 # (cerrar los pendientes sugeridos, agregar las altas de Slack): se detectan por las frases fijas
 # con que el propio código invita a responder. Las acciones se ejecutan en el gateway, con lista cerrada.
-INBOX_FILE = STATE_DIR / "notifs.json"
-INBOX_LOCK_FILE = STATE_DIR / "notifs.lock"
-INBOX_MAX = 200
-_INBOX_TLOCK = threading.Lock()
+INBOX_MAX = 200          # la bandeja vive en la base de datos (donna_db.py); este es el tope de lo que se lista
 
 ACTION_RULES = [
     (re.compile(r"cierra todos los sugeridos", re.I),
@@ -193,97 +190,51 @@ def tg_md_to_app(text: str) -> str:
     return re.sub(r"(?<![*\w])\*([^*\n]+)\*(?![*\w])", r"**\1**", text or "")
 
 
-class _InboxLock:
-    """Exclusión entre HILOS y entre PROCESOS (gateway y scheduler escriben el mismo archivo)."""
-    def __enter__(self):
-        _INBOX_TLOCK.acquire()
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        self._f = open(INBOX_LOCK_FILE, "a")
-        fcntl.flock(self._f, fcntl.LOCK_EX)
-        return self
-
-    def __exit__(self, *exc):
-        try:
-            fcntl.flock(self._f, fcntl.LOCK_UN)
-            self._f.close()
-        finally:
-            _INBOX_TLOCK.release()
-
-
-def _inbox_read() -> list:
-    try:
-        d = json.loads(INBOX_FILE.read_text())
-        return d if isinstance(d, list) else []
-    except Exception:
-        return []
-
-
-def _inbox_write(items: list) -> None:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = INBOX_FILE.with_suffix(".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(items[-INBOX_MAX:], f, ensure_ascii=False)
-    os.replace(tmp, INBOX_FILE)
-
-
 def inbox_add(title: str, body: str, tab: str = "chat", actions: list = None, kind: str = "", link: str = "") -> dict:
-    rec = {"id": uuid.uuid4().hex[:12], "ts": int(time.time()), "title": (title or AGENT_NAME)[:120],
-           "body": (body or "")[:4000], "tab": tab, "kind": kind, "link": (link or "")[:80], "read": False,
-           "actions": actions or [], "done": {}}
-    with _InboxLock():
-        items = _inbox_read()
-        items.append(rec)
-        _inbox_write(items)
-    return rec
+    import donna_db
+    return donna_db.notif_add(title, body, tab, actions, kind, link)
 
 
 def inbox_list(limit: int = 50) -> list:
-    with _InboxLock():
-        return list(reversed(_inbox_read()))[:max(1, min(limit, INBOX_MAX))]
+    import donna_db
+    return donna_db.notif_list(limit)
 
 
 def unread_count() -> int:
-    return sum(1 for r in _inbox_read() if not r.get("read"))
+    import donna_db
+    return donna_db.notif_sin_leer()
 
 
 def pending_confirmations() -> int:
     """Avisos con un botón de confirmación que aún no se ha usado."""
-    return sum(1 for r in _inbox_read()
-               if any(a["id"] not in (r.get("done") or {}) for a in r.get("actions") or []))
+    import donna_db
+    return donna_db.notif_pendientes_accion()
 
 
 def inbox_mark_read(ids=None) -> int:
     """ids=None → todas. Devuelve cuántas cambió."""
-    n = 0
-    with _InboxLock():
-        items = _inbox_read()
-        for r in items:
-            if not r.get("read") and (ids is None or r.get("id") in ids):
-                r["read"] = True
-                n += 1
-        if n:
-            _inbox_write(items)
-    return n
+    import donna_db
+    return donna_db.notif_marcar_leidas(None if ids is None else list(ids))
 
 
 def inbox_get(nid: str):
-    for r in _inbox_read():
-        if r.get("id") == nid:
-            return r
-    return None
+    import donna_db
+    return donna_db.notif_get(nid)
 
 
 def inbox_set_done(nid: str, action_id: str, result: str) -> bool:
-    with _InboxLock():
-        items = _inbox_read()
-        for r in items:
-            if r.get("id") == nid:
-                r.setdefault("done", {})[action_id] = {"ts": int(time.time()), "result": (result or "")[:1500]}
-                r["read"] = True
-                _inbox_write(items)
-                return True
-    return False
+    import donna_db
+    return donna_db.notif_set_done(nid, action_id, result)
+
+
+def resurgir_pospuestas() -> int:
+    """Las notificaciones pospuestas a las que ya les tocó vuelven a sonar (misma entrada de la bandeja, sin duplicarla)."""
+    import donna_db
+    n = 0
+    for r in donna_db.notif_pospuestas_vencidas():
+        notify("⏰ " + r["title"], (r["body"] or "")[:200], tab="notifs", kind=r["kind"], link=r["link"], existing=r)
+        n += 1
+    return n
 
 
 # ---------------------------------------------------------------- envío
@@ -302,12 +253,13 @@ def _send_one(sub: dict, payload: bytes, ttl: int, urgency: str, topic: str = ""
 
 
 def notify(title: str, body: str = "", tab: str = "chat", tag: str = "", ttl: int = 3600,
-           urgency: str = "normal", actions: list = None, full_body: str = None, kind: str = "", link: str = "", acts: list = None) -> int:
+           urgency: str = "normal", actions: list = None, full_body: str = None, kind: str = "", link: str = "", acts: list = None,
+           existing: dict = None) -> int:
     """Guarda el aviso en la bandeja y lo envía a los teléfonos suscritos. Devuelve cuántos aceptaron.
     Nunca lanza."""
     try:
         try:
-            rec = inbox_add(title, full_body if full_body is not None else body, tab, actions, kind, link)
+            rec = existing if existing else inbox_add(title, full_body if full_body is not None else body, tab, actions, kind, link)
         except Exception:
             log.warning("no pude guardar en la bandeja", exc_info=True)
             rec = {"id": ""}

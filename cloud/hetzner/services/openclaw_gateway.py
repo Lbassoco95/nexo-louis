@@ -482,12 +482,49 @@ _ACTIONS = {
 }
 
 
+_ACCIONES_BASE = ("hecho", "posponer_1h", "posponer_manana", "descartar")
+
+
+def _accion_base(rec: dict, action_id: str):
+    """Botones que tiene CUALQUIER aviso. Si el aviso es de un seguimiento (link «seg:<id>»), la acción también se aplica al seguimiento."""
+    import donna_db, donna_seg
+    nid = rec["id"]
+    seg_id = rec["link"].split(":", 1)[1] if str(rec.get("link", "")).startswith("seg:") else ""
+    if action_id == "descartar":
+        donna_db.notif_descartar(nid)
+        return 200, {"ok": True, "result": "Descartado"}
+    if action_id == "hecho":
+        donna_db.notif_resolver(nid, "hecho")
+        if seg_id:
+            try:
+                donna_seg.accion(seg_id, "hecho")
+            except ValueError:
+                pass
+        return 200, {"ok": True, "result": "Hecho ✓"}
+    # posponer
+    if action_id == "posponer_1h":
+        hasta, txt = donna_seg.cuando_a_ts("", 1), "en 1 hora"
+    else:
+        from datetime import datetime, timedelta
+        n = datetime.now(donna_seg.TZ)
+        hasta, txt = int((n + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0).timestamp()), "mañana 8:00"
+    donna_db.notif_posponer(nid, hasta)
+    if seg_id:
+        try:
+            donna_seg.accion(seg_id, "posponer", en_horas=max(1, (hasta - int(time.time())) / 3600))
+        except ValueError:
+            pass
+    return 200, {"ok": True, "result": "Pospuesto — vuelve " + txt}
+
+
 def _run_notif_action(nid: str, action_id: str):
     """(código HTTP, dict). Valida: la acción existe, el aviso la ofrece, no se usó ya y la propuesta sigue vigente."""
     import louis_push
     rec = louis_push.inbox_get(nid)
     if not rec:
         return 404, {"error": "aviso no encontrado"}
+    if action_id in _ACCIONES_BASE:
+        return _accion_base(rec, action_id)
     if action_id not in _ACTIONS or action_id not in [a.get("id") for a in rec.get("actions") or []]:
         return 400, {"error": "acción no permitida para este aviso"}
     if action_id in (rec.get("done") or {}):
@@ -1073,7 +1110,23 @@ class Handler(BaseHTTPRequestHandler):
                     d = core.build_app_hoy()
                     d["sin_leer"] = louis_push.unread_count()                  # para la campana y el widget
                     d["confirmaciones"] = louis_push.pending_confirmations()   # avisos con botón sin usar
+                    try:
+                        import donna_db
+                        d["resumenes"] = donna_db.resumen_list(4)                   # cierre del día, mediodía, semanal (guardados en la base)
+                    except Exception:
+                        d["resumenes"] = []
                     self._send_json(200, d)
+                elif _r0 == "/v1/app/seguimientos":
+                    import donna_db
+                    self._send_json(200, {"items": donna_db.seg_list(usuario=self._media_user() if self._media_user() != "admin" else None)})
+                elif _r0 == "/v1/app/resumenes":
+                    import donna_db
+                    self._send_json(200, {"items": donna_db.resumen_list(30)})
+                elif _r0 == "/v1/app/resumen":
+                    import donna_db
+                    from urllib.parse import urlparse, parse_qs
+                    r = donna_db.resumen_get((parse_qs(urlparse(self.path).query).get("id") or [""])[0])
+                    self._send_json(200 if r else 404, r or {"error": "resumen no encontrado"})
                 elif _r0 == "/v1/app/notifs":
                     import louis_push
                     from urllib.parse import urlparse, parse_qs
@@ -2396,6 +2449,18 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/v1/app/navegador":                          # navegador que Polo ve y maneja para iniciar sesión (browser_live.py)
             import browser_live
             self._send_json(200, browser_live.operar(body))
+            return
+        if self.path == "/v1/app/seguimiento":
+            import donna_seg
+            try:
+                if body.get("op") == "crear":
+                    r = donna_seg.crear(str(body.get("titulo", "")), str(body.get("fecha_hora", "")), body.get("en_horas", 0), str(body.get("nota", "")),
+                                        origen=str(body.get("origen", "manual")), usuario=self._media_user())
+                else:
+                    r = donna_seg.accion(str(body.get("id", "")), str(body.get("accion", "")), str(body.get("fecha_hora", "")), body.get("en_horas", 0), body.get("nota"))
+                self._send_json(200, {"ok": True, "item": r})
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
             return
         if self.path == "/v1/app/chat/cancel":                        # «actualizar el mensaje anterior»: la respuesta en curso se descarta
             rid = str(body.get("rid", ""))

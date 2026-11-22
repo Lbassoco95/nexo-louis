@@ -123,6 +123,16 @@ else
   bad "falta Playwright → sudo bash ~/donna-deploy/cloud/hetzner/scripts/install-playwright.sh"
 fi
 
+echo "3m) Base de datos de Donna (avisos, resúmenes, seguimientos)"
+for f in donna_db.py donna_seg.py donna_resumen.py browser_live.py; do
+  [[ -f "$OC/scripts/$f" ]] && ok "$f instalado" || bad "falta $f → sudo install -m 0755 -o polo -g polo ~/donna-deploy/cloud/hetzner/services/$f $OC/scripts/"
+done
+DB=$(cd "$OC/scripts" && PUSH_STATE_DIR="$OC/state" python3 -c "
+import donna_db as D
+c=D.conn()
+print(*[c.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ('notificaciones','resumenes','seguimientos')])" 2>/dev/null)
+[[ -n "$DB" ]] && ok "donna.db responde (avisos / resúmenes / seguimientos: $DB)" || bad "donna.db no responde (¿falta donna_db.py o permisos de $OC/state?)"
+
 echo "4) Conversación real (¿Ya estás ahí?)"
 if [[ -n "$TOKEN" ]]; then
   ERR=$(mktemp); OUT=$(DONNA_URL="$URL" DONNA_TOKEN="$TOKEN" python3 "$HERE/donna-chat.py" "¿Ya estás ahí?" 2>"$ERR")
