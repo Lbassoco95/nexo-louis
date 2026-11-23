@@ -71,3 +71,7 @@ Caso real: en una ventana baja la caja «Pregúntale…» quedaba cortada. Ahora
 - **OpenAI:** al guardar la junta, el audio completo se manda a OpenAI (`gpt-4o-transcribe-diarize`) para etiquetar quién habló. Es una **propuesta**: Polo revisa y aplica; nada cambia solo.
 - **Consentimiento:** el aviso previo a escuchar lo dice (texto + audio + OpenAI + rescate del texto).
 - **Pendiente de validar:** el formato de la API de OpenAI no se pudo probar contra la API real desde el repositorio; usar `tools/probar-diarizacion.py` con un audio de verdad. Alternativa abierta a comparar con el MISMO audio: pyannote «community-1» autoalojado.
+
+## Cómo actualizar sin cortar una grabación
+- Usar `bash ~/donna-deploy/cloud/hetzner/tools/actualizar-donna.sh` (no el comando largo de install + restart). Si detecta una grabación en curso (audio, rescate o autoguardado de los últimos 2 min) **no instala ni reinicia nada**; `--esperar` actualiza solo al terminar; `--forzar` solo por urgencia.
+- Si aun así el servidor se reinicia durante una grabación: la app se reconecta sola, el audio sigue guardándose y la copia de rescate/borrador conserva el texto; solo se pierde la transcripción del hueco (se puede reconstruir del audio).
