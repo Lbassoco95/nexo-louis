@@ -1193,7 +1193,7 @@ document.addEventListener('click',e=>{
   else if(b.id==='m-list')openMediaList();
   else if(b.dataset.media)openMedia(b.dataset.media);
 });
-function openLink(l){const [k,id]=String(l||'').split(':');if(k==='escuchar'){go('es');if(id==='seguir'){esWsSend({t:'seguir'});ES.ask=false;esAsk(false)}else if(id==='detener')esFinish();return}if(k==='media'&&id)openMedia(id);else if(k==='tablero'&&id)openArt(id);else if(k==='trabajo'&&id)openTrabajo(id);else if(k==='resumen'&&id)openResumen(id);else if(k==='seg'||k==='cierres'){closeSheet();go('seg')}else if(k==='escuchar')esOpen()}
+function openLink(l){const [k,id]=String(l||'').split(':');if(k==='escuchar'){go('es');if(id==='seguir'){esWsSend({t:'seguir'});ES.ask=false;esAsk(false)}else if(id==='detener')esFinish();return}if(k==='media'&&id)openMedia(id);else if(k==='tablero'&&id)openArt(id);else if(k==='trabajo'&&id)openTrabajo(id);else if(k==='resumen'&&id)openResumen(id);else if(k==='seg'||k==='cierres'){closeSheet();go('seg')}else if(k==='tareas'){openTareas(id)}else if(k==='escuchar')esOpen()}
 document.addEventListener('click',e=>{const b=e.target.closest&&e.target.closest('[data-link]');if(b){e.preventDefault();openLink(b.dataset.link)}});
 const MIC_ICON={imagen:'🖼️',audio:'🎙️',video:'🎬',documento:'📄',conversacion:'🌐'};
 async function openMediaList(){
@@ -1651,8 +1651,8 @@ async function esFinish(){
     ES.turns=[];ES.spk=[];ES.names={};ES.det={};ES.sugVoz={};ES.frames=[];ES.sentMs=0;ES.inI=ES.outI=0;ES.t0=0;esPaint();esUI();
     esSt('Guardada como entregable.');
     sheet('Transcripción guardada','<div class="sub">'+esc(r.nombre||'')+'</div>'+((r.personas||[]).length?'<div class="sub" style="margin-top:6px">👥 Quedaron en su ficha: '+r.personas.map(p=>esc(p.nombre)).join(', ')+'</div>':'')+((r.sugeridos||[]).length?'<div class="sub" style="margin-top:4px">También escuché: '+r.sugeridos.map(p=>esc(p.nombre)).join(', ')+' (puedes asignarlos en Personas).</div>':'')+(r.resumen?'<div class="card" style="margin:10px 0">'+md(r.resumen)+'</div>':'<div class="empty">Guardada (muy corta para resumir).</div>')+
-      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button class="artcard" id="esg-per">Ver personas</button><button class="artcard" id="esg-ent">Verla en Entregables</button><button class="artcard" id="esg-ask">Que Donna proponga pendientes</button></div>');
-    $('#esg-ent').onclick=()=>{closeSheet();go('ent')};$('#esg-per').onclick=()=>{closeSheet();go('per')};
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">'+(r.sesion_id?'<button class="artcard" id="esg-tar">📝 Tareas propuestas de la junta</button>':'')+'<button class="artcard" id="esg-per">Ver personas</button><button class="artcard" id="esg-ent">Verla en Entregables</button><button class="artcard" id="esg-ask">Que Donna proponga pendientes</button></div>');
+    $('#esg-ent').onclick=()=>{closeSheet();go('ent')};$('#esg-per').onclick=()=>{closeSheet();go('per')};const et=$('#esg-tar');if(et)et.onclick=()=>openTareas(r.sesion_id);
     $('#esg-ask').onclick=()=>{closeSheet();go('chat');$('#inp').value='De mi transcripción «'+(r.nombre||'')+'»: propón los pendientes y seguimientos (quién, qué, cuándo).';if(r.mid){PEND.push({name:r.nombre,state:'listo',label:'✓',id:r.mid});paintPend()}$('#inp').focus()};
   }catch(e){esSt('No pude guardar: '+e.message+'. Tu transcripción sigue aquí.');toast('No pude guardar: '+e.message)}
 }
@@ -2097,6 +2097,50 @@ function renderInbox(items,focusId){
 }
 $('#bell').onclick=()=>openInbox();
 
+/* ---------- De la junta a tareas propuestas ---------- */
+let TPR=null;
+async function tareasHtml(items,proys){
+  const D={agenda:'Agenda',kc:'Kawiil Central',seguimiento:'Seguimiento'};
+  return items.map(t=>`<div class="card segc" data-t="${esc(t.id)}"><input class="f" data-f="titulo" value="${esc(t.titulo)}" aria-label="Tarea" maxlength="200">
+    <div class="trin" style="margin:6px 0 0"><input data-f="responsable" value="${esc(t.responsable)}" placeholder="Responsable" maxlength="60" style="flex:1 1 120px"><input data-f="fecha" type="date" value="${esc(t.fecha_limite)}" aria-label="Fecha límite" style="flex:1 1 130px"></div>
+    <div class="sub" style="margin:6px 0">“${esc(t.cita)}” · ${esc(t.sesion_fecha||'')} ${esc(t.hora||'')} · confianza ${Math.round(t.confianza*100)}%</div>
+    <div class="trin" style="margin:0"><select data-f="destino" aria-label="Destino">${Object.keys(D).map(k=>`<option value="${k}"${t.destino===k?' selected':''}>${D[k]}</option>`).join('')}</select>
+      <select data-f="proyecto" aria-label="Proyecto de Kawiil Central" hidden><option value="">Proyecto…</option>${proys.map(p=>`<option value="${esc(p.id)}">${esc(p.nombre)}</option>`).join('')}</select></div>
+    <div class="nq"><button data-a="crear">✓ Crear</button><button data-a="no">✕ No es tarea</button></div></div>`).join('');
+}
+function tareasWire(root,after){
+  $$('#'+root+' [data-t]').forEach(c=>{
+    const dest=c.querySelector('[data-f=destino]'),pr=c.querySelector('[data-f=proyecto]');
+    const sync=()=>{pr.hidden=dest.value!=='kc'};dest.onchange=sync;sync();
+    c.querySelectorAll('[data-a]').forEach(b=>b.onclick=async()=>{
+      const g=k=>c.querySelector('[data-f='+k+']').value;
+      if(b.dataset.a==='crear'&&g('destino')==='kc'&&!g('proyecto')){toast('Elige el proyecto de Kawiil Central');return}
+      c.querySelectorAll('button').forEach(x=>x.disabled=true);
+      try{const r=await api('/v1/app/tareas/accion',{method:'POST',body:JSON.stringify(b.dataset.a==='no'?{id:c.dataset.t,accion:'rechazar'}:{id:c.dataset.t,accion:'aprobar',destino:g('destino'),titulo:g('titulo'),responsable:g('responsable'),fecha:g('fecha'),proyecto_id:g('proyecto')})});
+        if(r.ok===false){toast(r.resultado||'No se pudo crear');c.querySelectorAll('button').forEach(x=>x.disabled=false);return}
+        toast(b.dataset.a==='no'?'Entendido, seré más exigente':'Tarea creada ✓');c.remove();after&&after()}
+      catch(e){toast(e.message);c.querySelectorAll('button').forEach(x=>x.disabled=false)}})})
+}
+async function openTareas(sid){
+  sheet('Tareas de la junta','<div class="empty">Cargando…</div>');clearInterval(TPR);
+  const pinta=async()=>{
+    try{const r=await api('/v1/app/tareas?sesion='+encodeURIComponent(sid));
+      if(r.extraccion.estado==='leyendo'){$('#sh-b').innerHTML='<div class="empty">🧠 Donna está leyendo la junta…</div>';return}
+      clearInterval(TPR);
+      if(r.extraccion.estado==='sin_leer'){$('#sh-b').innerHTML='<div class="empty">Aún no he leído esta junta.</div><button class="btn" id="tp-go">Leerla ahora</button>';$('#tp-go').onclick=async()=>{await api('/v1/app/tareas/extraer',{method:'POST',body:JSON.stringify({sesion_id:sid})});openTareas(sid)};return}
+      if(!r.items.length){$('#sh-b').innerHTML='<div class="empty">'+(r.extraccion.estado==='error'?'No pude leer la junta: '+esc(r.extraccion.error||'error'):'No encontré compromisos claros en esta junta.')+'</div>';return}
+      let proys=[];try{proys=(await api('/v1/app/tareas/proyectos')).items||[]}catch(e){}
+      $('#sh-b').innerHTML='<div class="sub">Nada se crea hasta que lo apruebes. Edita lo que haga falta y elige a dónde va.</div>'+await tareasHtml(r.items,proys);tareasWire('sh-b',()=>{if(!$('#sh-b [data-t]'))closeSheet();if(LS.get('tab')==='seg')loadSeg()});
+    }catch(e){$('#sh-b').innerHTML='<div class="empty">No pude cargar. '+esc(e.message)+'</div>'}};
+  await pinta();TPR=setInterval(()=>{if(!$('#sheet').classList.contains('on')){clearInterval(TPR);return}pinta()},3000);
+}
+async function loadTareasSeg(){
+  const el=$('#tareasseg');if(!el)return;
+  try{const r=await api('/v1/app/tareas');if(!r.items.length){el.innerHTML='';return}
+    let proys=[];try{proys=(await api('/v1/app/tareas/proyectos')).items||[]}catch(e){}
+    el.innerHTML='<div class="sec">📝 Tareas propuestas de tus juntas · '+r.items.length+'</div>'+await tareasHtml(r.items,proys);tareasWire('tareasseg',loadSeg)}catch(e){}
+}
+
 /* ---------- Personas: lo que cada quien ha aportado (de lo que Donna escucha) ---------- */
 async function loadPer(q){
   const el=$('#per');if(!el.innerHTML)el.innerHTML='<div class="empty">Cargando…</div>';
@@ -2184,13 +2228,13 @@ async function loadSeg(){
     const card=x=>`<div class="card segc" data-id="${esc(x.id)}"><div class="row"><b>${esc(x.titulo)}</b>${SEGO[x.origen]?`<span class="pill">${esc(SEGO[x.origen])}</span>`:''}</div>
       ${x.nota?`<div class="sub" style="margin-top:4px">${esc(x.nota)}</div>`:''}<div class="sub" style="margin-top:4px">${x.estado==='hecho'?'✓ Hecho':x.estado==='pausado'?'⏸ En pausa':'Próxima revisión: '+esc(segCuando(x.proxima_revision))}</div>
       ${x.estado==='hecho'?'':`<div class="nq">${x.estado==='activo'?'<button data-a="hecho">✓ Hecho</button><button data-a="posponer">⏰ +3 h</button><button data-a="pausar">⏸ Pausar</button>':'<button data-a="reanudar">▶ Reanudar</button><button data-a="hecho">✓ Hecho</button>'}<button data-a="nota">📝 Nota</button><button data-a="cancelar" aria-label="Dejar de seguir">✕</button></div>`}</div>`;
-    el.innerHTML='<div id="radar"></div><p class="sub" style="margin:0 0 10px">Lo que Donna sigue por ti. Es aparte de las notificaciones: cuando toca revisar algo, te avisa con botones. Pídeselo en el chat («dale seguimiento a…») o agrégalo aquí.</p>'+
+    el.innerHTML='<div id="radar"></div><div id="tareasseg"></div><p class="sub" style="margin:0 0 10px">Lo que Donna sigue por ti. Es aparte de las notificaciones: cuando toca revisar algo, te avisa con botones. Pídeselo en el chat («dale seguimiento a…») o agrégalo aquí.</p>'+
       '<div class="trin"><input id="sg-t" style="flex:1 1 100%" placeholder="¿Qué quieres que siga?" enterkeyhint="send"><select id="sg-w" aria-label="Revisar"><option value="3">en 3 h</option><option value="6">en 6 h</option><option value="24" selected>mañana</option><option value="72">en 3 días</option><option value="168">en 1 semana</option></select><button id="sg-go">Seguir</button></div>'+
       '<div class="sec">Activos · '+act.length+'</div>'+(act.map(card).join('')||'<div class="empty">Nada en seguimiento.</div>')+
       (pau.length?'<div class="sec">En pausa · '+pau.length+'</div>'+pau.map(card).join(''):'')+(hec.length?'<details class="agg"><summary class="sec">Hechos recientes · '+hec.length+'</summary>'+hec.map(card).join('')+'</details>':'');
     const add=async()=>{const t=$('#sg-t').value.trim();if(t.length<3)return;try{await api('/v1/app/seguimiento',{method:'POST',body:JSON.stringify({op:'crear',titulo:t,en_horas:+$('#sg-w').value})});toast('Listo, le doy seguimiento');loadSeg()}catch(e){toast(e.message)}};
     $('#sg-go').onclick=add;$('#sg-t').onkeydown=e=>{if(e.key==='Enter')add()};
-    loadRadar();
+    loadRadar();loadTareasSeg();
     $$('#seg .segc .nq button').forEach(b=>b.onclick=async()=>{const id=b.closest('.segc').dataset.id,a=b.dataset.a;let nota;
       if(a==='nota'){nota=prompt('Nota para este seguimiento:');if(!nota)return}
       if(a==='cancelar'&&!confirm('¿Dejar de darle seguimiento?'))return;

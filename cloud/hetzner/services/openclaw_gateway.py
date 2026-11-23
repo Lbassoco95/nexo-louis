@@ -483,6 +483,14 @@ _ACTIONS = {
 
 
 _RADAR_LOCK = threading.Lock()
+
+
+def _leer_junta(sesion_id: str):
+    try:
+        import donna_tareas
+        donna_tareas.extraer_y_avisar(core, sesion_id)
+    except Exception:
+        log.exception("tareas propuestas de la junta fallaron")
 _ACCIONES_BASE = ("hecho", "posponer_1h", "posponer_manana", "descartar")
 
 
@@ -1137,6 +1145,17 @@ class Handler(BaseHTTPRequestHandler):
                             if a1("kc"):
                                 d["cruce"]["kawiil_central"] = donna_personas.cruce_kawiil_central(core, d["nombre"], d["empresa"])
                             self._send_json(200, d)
+                elif _r0 in ("/v1/app/tareas", "/v1/app/tareas/proyectos"):
+                    import donna_tareas
+                    from urllib.parse import urlparse, parse_qs
+                    sid = (parse_qs(urlparse(self.path).query).get("sesion") or [""])[0]
+                    if _r0.endswith("proyectos"):
+                        try:
+                            self._send_json(200, {"items": donna_tareas.proyectos_kc(core)})
+                        except Exception as e:
+                            self._send_json(200, {"items": [], "error": str(e)[:160]})
+                    else:
+                        self._send_json(200, {"extraccion": donna_tareas.estado_extraccion(sid) if sid else {"estado": "todas"}, "items": donna_tareas.listar(sid)})
                 elif _r0 == "/v1/app/radar":
                     import donna_radar
                     self._send_json(200, {"bitacora": donna_radar.bitacora_list(12), "propuestas": donna_radar.propuestas(), "autonomia": donna_radar.autonomia_todas(),
@@ -2181,7 +2200,9 @@ class Handler(BaseHTTPRequestHandler):
             import donna_personas
             ps = donna_personas.guardar_sesion(titulo, dur, [v for v in voces if isinstance(v, dict)], [l for l in lineas if isinstance(l, dict)],
                                                mid=out["mid"], archivo=out["archivo"], resumen=resumen, usuario=self._media_user())
-            out.update(sesion_id=ps["sesion_id"], personas=ps["personas"], sugeridos=ps["sugeridos"])
+            out.update(sesion_id=ps["sesion_id"], personas=ps["personas"], sugeridos=ps["sugeridos"], extraccion="leyendo")
+            import donna_tareas
+            threading.Thread(target=lambda sid=ps["sesion_id"]: _leer_junta(sid), daemon=True).start()   # tareas propuestas, sin hacer esperar al guardado
         except Exception:
             log.exception("personas: no pude indexar la sesión")
         return out
@@ -2505,6 +2526,22 @@ class Handler(BaseHTTPRequestHandler):
                         self._send_json(200, {"ok": donna_personas.eliminar(str(body.get("id", "")))})
                     else:
                         raise ValueError("operación no válida")
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
+            return
+        if self.path in ("/v1/app/tareas/accion", "/v1/app/tareas/extraer"):
+            import donna_tareas
+            try:
+                if self.path.endswith("extraer"):
+                    sid = str(body.get("sesion_id", ""))
+                    donna_tareas.transcripcion(sid)                      # valida que exista
+                    threading.Thread(target=lambda: _leer_junta(sid), daemon=True).start()
+                    self._send_json(200, {"ok": True})
+                elif body.get("accion") == "rechazar":
+                    self._send_json(200, donna_tareas.rechazar(str(body.get("id", "")), str(body.get("motivo", ""))))
+                else:
+                    self._send_json(200, donna_tareas.aprobar(core, str(body.get("id", "")), str(body.get("destino", "")), body.get("titulo"), body.get("responsable"),
+                                                              body.get("fecha"), str(body.get("proyecto_id", ""))))
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
             return

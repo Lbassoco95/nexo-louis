@@ -124,7 +124,7 @@ else
 fi
 
 echo "3m) Base de datos de Donna (avisos, resúmenes, seguimientos)"
-for f in donna_db.py donna_seg.py donna_resumen.py donna_personas.py donna_radar.py donna_m365.py browser_live.py; do
+for f in donna_db.py donna_seg.py donna_resumen.py donna_personas.py donna_radar.py donna_m365.py donna_tareas.py browser_live.py; do
   [[ -f "$OC/scripts/$f" ]] && ok "$f instalado" || bad "falta $f → sudo install -m 0755 -o polo -g polo ~/donna-deploy/cloud/hetzner/services/$f $OC/scripts/"
 done
 DB=$(cd "$OC/scripts" && PUSH_STATE_DIR="$OC/state" python3 -c "

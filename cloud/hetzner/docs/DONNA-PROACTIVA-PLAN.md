@@ -41,3 +41,6 @@ Criterio de éxito del piloto 1: con ≥200 decisiones etiquetadas, precisión �
 - Donna puede **proponer o cerrar**, siempre con la evidencia de por qué; el nivel de autonomía lo concede Polo conforme avanzan.
 - Fuentes: Slack, correo, juntas, calendario, Kawiil Central, Patio Yoltik y, a futuro, WhatsApp.
 - NVIDIA: es el motivo principal porque hay créditos y acceso para deep learning por beneficio de la empresa.
+
+## De la junta a tareas propuestas (v28) — `donna_tareas.py`
+Al guardar una escucha, Donna lee la transcripción en segundo plano y **propone** tareas (quién · qué · cuándo) con la **frase exacta** que las originó. Solo cuentan compromisos explícitos; cada propuesta debe traer una cita que exista de verdad en la transcripción (si no, se descarta), y se omiten las que ya están en la agenda. Nada se crea solo: en **Seguimiento → Tareas propuestas** (o desde el aviso) Polo edita título, responsable y fecha y elige **Agenda**, **Kawiil Central** (con proyecto; la cita viaja en la descripción) o **Seguimiento**. Lo aprobado/rechazado se guarda, ajusta la exigencia y puede exportarse como conjunto de datos (`donna_tareas.exportar_dataset`). Herramienta de Donna: `reunion_tareas`. Pruebas: `tests/test_tareas_junta.py`.

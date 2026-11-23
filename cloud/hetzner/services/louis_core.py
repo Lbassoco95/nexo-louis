@@ -438,6 +438,7 @@ TOOL_KEYWORDS = [
     r"\b(navega|abre\s+(?:la\s+)?(?:p[aá]gina|web|sitio|url)|chrome|browser|click|llena|completa\s+(?:el\s+)?formulario|login\s+en|sesi[oó]n\s+en)\b",
     r"\b(screenshot|captura\s+de\s+pantalla|extrae\s+de\s+la\s+p[aá]gina)\b",
     r"\b(qu[eé]\s+(?:ha|han)\s+(?:dicho|aportado|propuesto)|qu[eé]\s+(?:se\s+)?dijo|qui[eé]n\s+(?:es|habl[oó]|dijo)\b|aportaciones|transcripci[oó]n(?:es)?\s+(?:de|donde|en\s+las))",
+    r"\b(tareas?\s+(?:de|que\s+salieron\s+de|propuestas?\s+de)\s+(?:la|mi|las)\s+(?:junta|reuni[oó]n|juntas|reuniones)|qu[eé]\s+(?:me\s+)?(?:toc[oó]|qued[oó])\s+(?:de|en)\s+la\s+(?:junta|reuni[oó]n))",
     r"\b(qu[eé]\s+(?:has|est[aá]s)\s+(?:estado\s+)?(?:vigilando|revisando|haciendo)|qu[eé]\s+vigilas|radar|propuestas?\s+de\s+cierre)\b",
     r"\b(seguimiento|dale\s+seguimiento|da(?:r|me)\s+seguimiento|estate\s+pendiente|av[ií]same\s+(?:c[oó]mo|si|cuando)\b)",
     r"\b(boletos?|cartelera|cin[eé]polis|cinemex|cinemark|funci[oó]n(?:es)?\s+de\s+cine|comprar\s+(?:unos?\s+)?(?:boletos?|entradas?)|entradas?\s+(?:para|al)\s+(?:el\s+)?(?:cine|concierto|teatro|partido))\b",
@@ -1176,6 +1177,9 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "Cada día corres un radar de fechas (agenda, Kawiil Central, Patio Yoltik) y dos revisiones de cierres: cruzas lo abierto contra lo que ya pasó en Slack, juntas escuchadas y tareas hechas, "
         "y PROPONES cerrar lo resuelto citando la evidencia. Nunca cierras solo lo regulatorio, legal, de dinero o de clientes; las clases de bajo riesgo se cierran solas solo si Polo lo autorizó. "
         "Si Polo pregunta qué has vigilado o qué propones, usa `radar_estado` y responde con lo REAL; si una fuente aún no está conectada (WhatsApp), dilo.\n"
+        "\n\n# DE LA JUNTA A TAREAS\n"
+        "Al guardar una escucha, lees la junta y PROPONES tareas (quién · qué · cuándo) con la frase exacta; nada se crea sin que Polo apruebe en la app y elija el destino. "
+        "Si pregunta qué salió de la junta, usa `reunion_tareas`. Nunca digas que creaste una tarea si solo la propusiste.\n"
         "\n\n# PERSONAS — lo que sabes de la gente por lo que escuchas\n"
         "Cuando Polo guarda una escucha, las voces con nombre se vuelven personas y sus frases quedan en la base. Usa `persona_buscar(nombre, tema?)` y "
         "`aportaciones_buscar(texto)` para responder qué dijo alguien, quién habló de un tema o prepararlo para una reunión; el cruce con Kawiil Central va incluido. "
@@ -3038,6 +3042,11 @@ TOOLS_DEFINITION = [
             },
             "required": ["viejo", "nuevo"],
         },
+    },
+    {
+        "name": "reunion_tareas",
+        "description": "Tareas PROPUESTAS que salieron de las juntas que Polo grabó con Escuchar (quién · qué · cuándo, con la frase exacta). Sin argumentos lista las pendientes de aprobar; con `sesion_id` lee esa junta y propone. NO crea nada: Polo aprueba en la app (Seguimiento → Tareas propuestas) y elige Agenda, Kawiil Central o Seguimiento.",
+        "input_schema": {"type": "object", "properties": {"sesion_id": {"type": "string", "description": "Opcional: id de la sesión escuchada"}}},
     },
     {
         "name": "radar_estado",
@@ -9575,6 +9584,16 @@ def execute_tool(name: str, args: dict) -> str:
             with path.open("a") as f:
                 f.write(entry)
             return f"OK aprendido: {args['topic']}"
+        elif name == "reunion_tareas":
+            import donna_tareas
+            sid = str(args.get("sesion_id", "")).strip()
+            if sid:
+                try:
+                    r = donna_tareas.extraer_y_avisar(sys.modules[__name__], sid)
+                except ValueError as e:
+                    return "❌ " + str(e)
+                return "Leí la junta: %d tarea(s) propuesta(s). %s" % (r["propuestas"], donna_tareas.resumen_texto(sid))
+            return donna_tareas.resumen_texto()
         elif name == "radar_estado":
             import donna_radar
             return donna_radar.estado_texto()
