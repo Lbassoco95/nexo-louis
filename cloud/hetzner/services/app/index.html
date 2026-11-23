@@ -2433,7 +2433,7 @@ async function loadHoy(){
     if(AG){
       GR.forEach(([k,t,abierto,hot])=>{const L=AG[k]||[];if(!L.length)return;
         const body=L.map(x=>{window._ag.push(x);return taskHtml({...x,urgente:hot||k==='vencidas'},'a'+(window._ag.length-1))}).join('');
-        h+=abierto?`<div class="sec">${t} · ${L.length}</div>${body}`:`<details class="agg"><summary class="sec">${t} · ${L.length}</summary>${body}</details>`});
+        h+=abierto?`<div class="sec">${t} · ${L.length}</div>${body}`:`<details class="agg"><summary class="sec">${t} · ${L.length}</summary>${k==='vencidas'?'<div class="nq" style="margin:0 0 8px"><button id="limp-go">🧹 Limpiar vencidas con Donna</button></div>':''}${body}</details>`});
     }else{
       if(d.urgentes.length)h+='<div class="sec">Para hoy / urgente</div>'+d.urgentes.map((t,i)=>taskHtml({...t,urgente:true},'u'+i)).join('');
       if(d.vencimientos.length)h+='<div class="sec">Con fecha u hora</div>'+d.vencimientos.map((t,i)=>taskHtml(t,'v'+i)).join('');
@@ -2447,7 +2447,30 @@ async function loadHoy(){
     $$('#hoy [data-f]').forEach(c=>c.onclick=()=>openEnt(c.dataset.f));
     const cc=$('#confcard');if(cc)cc.onclick=()=>openInbox();
     $$('#hoy [data-rs]').forEach(c=>c.onclick=()=>openResumen(c.dataset.rs));
+    const lg=$('#limp-go');if(lg)lg.onclick=(e)=>{e.preventDefault();openLimpieza()};
   }catch(e){online(false);if(!el.querySelector('.card'))el.innerHTML='<div class="empty">No pude cargar. Toca ⟳</div>'}
+}
+const LIMP_G=[['duplicados','🧬 Duplicados','El mismo pendiente capturado dos veces: cierro el viejo.'],['caducados','⏳ Caducados','Su fecha pasó hace 2 semanas o más.'],['decisiones','🔀 Decisiones sueltas','Opciones A/B/C que quedaron como tareas.'],['viejos','🕸️ Viejos sin fecha','Más de 30 días sin tocar.']];
+async function openLimpieza(){
+  sheet('🧹 Limpieza de pendientes','<div class="empty">Revisando tu agenda…</div>');
+  try{
+    const d=await api('/v1/app/limpieza');window._limp=d;
+    const it=(x)=>`<label class="menurow" style="align-items:flex-start;gap:8px;margin-bottom:4px"><input type="checkbox" class="limp-ck" data-id="${esc(x.id)}" ${x.sensible?'':'checked'} style="margin-top:4px"><span style="flex:1"><b style="font-weight:600">${esc(x.texto.slice(0,150))}</b><small>${x.sensible?'⚠️ Sensible · revísalo tú. ':''}${esc(x.nota||'')}${x.dias?' · '+x.dias+' d':''}${x.conserva?'<br>Se queda: '+esc(x.conserva):''}</small></span></label>`;
+    let h=`<div class="sub" style="margin-bottom:8px">${esc(d.total?d.total+' por revisar de '+d.abiertos+' abiertos.':'Nada que limpiar 🎉')} Lo marcado ✓ es lo que propongo cerrar; lo sensible (regulatorio, litigios, dinero, clientes) viene <b>sin marcar</b>. Nada se cierra hasta que toques un botón, y puedes deshacerlo.</div>`;
+    LIMP_G.forEach(([k,t,s])=>{const L=d.grupos[k]||[];if(!L.length)return;h+=`<div class="sec" style="margin-top:10px">${t} · ${L.length}</div><div class="sub" style="margin-bottom:4px">${s}</div>`+L.map(it).join('')});
+    if(d.total)h+='<div class="nq" style="position:sticky;bottom:0"><button id="lp-cerrar">✓ Cerrar lo marcado</button><button id="lp-seg">👁️ Darle seguimiento</button><button id="lp-cons">Conservar 30 d</button></div>';
+    $('#sh-b').innerHTML=h;
+    const sel=()=>$$('#sh-b .limp-ck').filter(c=>c.checked).map(c=>c.dataset.id);
+    const undoBtn=()=>{if(!window._limpUndo)return;const u=document.createElement('div');u.className='nq';u.innerHTML='<button id="lp-undo">↩︎ Deshacer lo último que cerré</button>';$('#sh-b').prepend(u);
+      $('#lp-undo').onclick=async()=>{try{const r=await api('/v1/app/limpieza',{method:'POST',body:JSON.stringify({accion:'deshacer',ids:window._limpUndo})});toast('Reabrí '+r.reabiertos);window._limpUndo=null;loadHoy();openLimpieza()}catch(e){toast('⚠️ '+e.message)}}};
+    const run=async(accion,extra,msg)=>{const ids=sel();if(!ids.length){toast('Marca por lo menos uno');return}
+      try{const r=await api('/v1/app/limpieza',{method:'POST',body:JSON.stringify({accion,ids,...extra})});toast(msg(r));
+        window._limpUndo=(accion==='cerrar')?ids:null;loadHoy();await openLimpieza();undoBtn()}
+      catch(e){toast('⚠️ '+e.message)}};
+    const bc=$('#lp-cerrar');if(bc){bc.onclick=()=>{const n=sel().length;if(n&&confirm('¿Cerrar '+n+' pendiente'+(n>1?'s':'')+'?'))run('cerrar',{},r=>'Cerré '+r.cerrados)};
+      $('#lp-seg').onclick=()=>run('seguimiento',{en_horas:24},r=>'Seguimientos creados: '+r.seguimientos+' (te aviso mañana)');
+      $('#lp-cons').onclick=()=>run('conservar',{},r=>'Los dejo 30 días sin mostrar: '+r.conservados)}
+  }catch(e){$('#sh-b').innerHTML='<div class="empty">No pude revisar. '+esc(e.message)+'</div>'}
 }
 async function completar(texto,card){
   card.classList.add('done');

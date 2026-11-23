@@ -1180,6 +1180,9 @@ class Handler(BaseHTTPRequestHandler):
                         self._send_json(200, {"texto": donna_aprender.mejoras_markdown()})
                     else:
                         self._send_json(200, {"reglas": donna_aprender.reglas_list(), "mejoras": donna_aprender.mejoras_list()})
+                elif _r0 == "/v1/app/limpieza":
+                    import donna_limpieza
+                    self._send_json(200, donna_limpieza.escanear(core))
                 elif _r0 == "/v1/app/preferencias":
                     import donna_dia
                     self._send_json(200, {"prefs": donna_dia.prefs_get()})
@@ -2608,6 +2611,27 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json(200, donna_aprender.mejora_estado(str(body.get("id", "")), str(body.get("accion", "")), str(body.get("nota", ""))))
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
+            return
+        if self.path == "/v1/app/limpieza":                          # limpieza guiada de la AGENDA: cerrar · seguimiento · conservar · deshacer
+            import donna_limpieza as _L
+            ids = [str(x) for x in (body.get("ids") or [])][:300]
+            acc = body.get("accion")
+            try:
+                if acc == "cerrar":
+                    r = _L.cerrar(core, ids)
+                elif acc == "conservar":
+                    r = _L.conservar(ids)
+                elif acc == "seguimiento":
+                    r = _L.a_seguimiento(core, ids, str(body.get("cuando") or ""), float(body.get("en_horas") or 0), usuario=self._media_user())
+                elif acc == "deshacer":
+                    r = _L.deshacer(core, ids)
+                else:
+                    self._send_json(400, {"error": "acción no válida"})
+                    return
+                self._send_json(200, {"ok": True, **r})
+            except Exception as e:
+                log.exception("limpieza falló")
+                self._send_json(500, {"error": str(e)[:200]})
             return
         if self.path in ("/v1/app/preferencias", "/v1/app/dia/enviar"):
             import donna_dia
