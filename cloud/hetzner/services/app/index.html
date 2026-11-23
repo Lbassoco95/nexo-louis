@@ -1500,7 +1500,7 @@ function laAgc(f,st){
   return{out,rms:r*st.g,raw:r,speech};
 }
 /*ES-VOZ-END*/
-const ES={on:false,paused:false,ws:null,turns:[],inI:0,outI:0,lastIn:0,lastOut:0,t0:0,pausedMs:0,pauseAt:0,max:7200,tick:0,ping:0,retry:0,stop:false,lastVoice:0,
+const ES={draftId:'',dsave:0,_dp:null,resumeMs:0,on:false,paused:false,ws:null,turns:[],inI:0,outI:0,lastIn:0,lastOut:0,t0:0,pausedMs:0,pauseAt:0,max:7200,tick:0,ping:0,retry:0,stop:false,lastVoice:0,
   orig:LS.get('es_orig',true),aviso:LS.get('es_aviso',true),bg:LS.get('es_bg',true),stick:true,raf:0,fuente:'mic',spk:[],names:{},frames:[],sentMs:0,ask:false,built:false};
 const esLang=t=>/[㐀-鿿]/.test(t)?'zh':'en';
 const esNombre=i=>ES.names[i]||('Voz '+(i+1));
@@ -1629,6 +1629,7 @@ function esReconnect(why){
 }
 function esAsk(on){const b=$('#es-ask');if(b)b.hidden=!on}
 function esHalt(userStop){
+  clearInterval(ES.dsave);esDraftSave(true);
   esAsk(false);ES.on=false;ES.paused=false;ES.stop=!!userStop;clearInterval(ES.tick);clearInterval(ES.ping);
   try{if(ES.ws){ES.ws.onclose=null;esWsSend({t:'close'});ES.ws.close()}}catch(e){}
   ES.ws=null;laStop();try{ES.disp&&ES.disp.getTracks().forEach(t=>t.stop())}catch(e){}ES.disp=null;
@@ -1659,7 +1660,8 @@ async function esStart(fuente){
       }
     },()=>false,cons);
   }catch(e){esSt(e.name==='NotAllowedError'?'Permiso denegado. Actívalo en los ajustes del teléfono o del navegador.':'No pude abrir el micrófono: '+e.message);clog('escuchar mic: '+e.name+' '+e.message);return}
-  ES.on=true;ES.paused=false;ES.t0=0;ES.pausedMs=0;ES.retry=0;ES.lastVoice=Date.now();
+  ES.on=true;ES.paused=false;ES.t0=ES.resumeMs?Date.now()-ES.resumeMs:0;ES.resumeMs=0;ES.pausedMs=0;ES.retry=0;ES.lastVoice=Date.now();
+  clearInterval(ES.dsave);ES.dsave=setInterval(()=>esDraftSave(false),20000);
   api('/v1/app/personas').then(r=>{ES.pv=r.items||[]}).catch(()=>{});
   esSt('Conectando…');esUI();esConnect();
   ES.ping=setInterval(()=>esWsSend({t:'ping'}),20000);
@@ -1686,6 +1688,38 @@ async function esResumen(){
   catch(e){toast('No pude resumir: '+e.message)}
   b.disabled=false;
 }
+let _dbLast='';
+function esDraftSave(force){                                // la junta en curso se guarda sola en el servidor (solo texto) para poder retomarla
+  const ts=ES.turns.filter(t=>t.original.trim()||t.traduccion.trim());if(!ts.length||!TOKEN)return ES._dp;
+  if(!ES.draftId)ES.draftId='b'+Math.random().toString(36).slice(2,10)+Date.now().toString(36).slice(-5);
+  const u=ts[ts.length-1],key=ts.length+':'+(u.original.length+u.traduccion.length)+':'+JSON.stringify(ES.names)+':'+ES.spk.length;
+  if(!force&&key===_dbLast)return ES._dp;_dbLast=key;
+  const turnos=ts.map(t=>({o:t.origen,a:t.original,b:t.traduccion,t:Math.round(t.t0||0),s:t.spk==null?null:t.spk,f:Math.round(t.f0||0),l:t.last||0,m:esBajo(t)?1:0}));
+  ES._dp=api('/v1/app/escucha/borrador',{method:'POST',body:JSON.stringify({id:ES.draftId,duracion:Math.round(esElapsed()/1000),live_id:ES.liveId||'',spk:ES.spk.map(s=>({f0:s.f0||0,hf:s.hf||0,n:s.n||1})),names:ES.names,turnos})}).catch(e=>{_dbLast='';clog('borrador: '+e.message)});
+  return ES._dp;
+}
+window.addEventListener('pagehide',()=>{if(ES.on)esDraftSave(true)});
+document.addEventListener('visibilitychange',()=>{if(document.hidden&&ES.on)esDraftSave(true)});
+function esDraftLoad(d){                                    // vuelve a poner la junta guardada en pantalla, lista para seguir
+  ES.turns=d.turnos.map(x=>({origen:x.o||'en',original:x.a||'',traduccion:x.b||'',t0:x.t||0,last:x.l||Date.now(),lsum:x.m?0:1,ln:1,spk:x.s==null?null:x.s,f0:x.f||0,f0s:[]}));
+  ES.spk=(d.spk||[]).map(s=>({f0:s.f0,hf:s.hf,n:s.n}));ES.names=d.names||{};ES.det={};ES.sugVoz={};ES.frames=[];ES.sentMs=0;
+  ES.inI=ES.outI=ES.turns.length;ES.liveId=d.live_id||'';ES.draftId=d.id;ES.resumeMs=(d.duracion||0)*1000;ES.stick=true;_dbLast='';
+  $('#es-idle')&&($('#es-idle').hidden=true);const bx=$('#es-box');if(bx)bx.hidden=false;esPaint();esUI();
+}
+async function esDraftsPaint(){
+  const el=$('#es-drafts');if(!el)return;
+  if(ES.on||ES.turns.length){el.innerHTML='';return}
+  let L=[];try{L=(await api('/v1/app/escucha/borradores')).items||[]}catch(e){return}
+  const ago=ts=>{const m=Math.round((Date.now()/1000-ts)/60);return m<2?'hace un momento':m<90?'hace '+m+' min':m<2880?'hace '+Math.round(m/60)+' h':'hace '+Math.round(m/1440)+' d'};
+  el.innerHTML=L.map(b=>`<div class="card" data-b="${esc(b.id)}" style="margin:8px 0"><div class="row"><b>🎙️ Junta sin guardar</b><span class="sub">${esc(ago(b.actualizado))}</span></div><div class="sub">${b.n} intervenciones · ${Math.max(1,Math.round(b.duracion/60))} min — «${esc((b.ultimo||'').slice(0,90))}»</div><div class="nq"><button data-a="seguir">▶︎ Retomar y seguir grabando</button><button data-a="guardar">💾 Guardarla así</button><button data-a="borrar">Descartar</button></div></div>`).join('');
+  $$('#es-drafts [data-b]').forEach(c=>c.querySelectorAll('[data-a]').forEach(btn=>btn.onclick=async()=>{
+    const id=c.dataset.b,a=btn.dataset.a;
+    try{
+      if(a==='borrar'){if(!confirm('¿Descartar esta junta? No se podrá recuperar.'))return;await api('/v1/app/escucha/borrador',{method:'POST',body:JSON.stringify({accion:'descartar',id})});esDraftsPaint();return}
+      const d=await api('/v1/app/escucha/borrador?id='+encodeURIComponent(id));esDraftLoad(d);
+      if(a==='seguir')esAskStart('mic');else esFinish();
+    }catch(e){toast('⚠️ '+e.message)}}));
+}
 async function esFinish(){
   const ts=ES.turns.filter(t=>t.original.trim()||t.traduccion.trim());
   esHalt(true);
@@ -1693,11 +1727,12 @@ async function esFinish(){
   await esQuienEsQuien();
   esSt('Guardando…');
   try{
+    try{await ES._dp}catch(e){}
     const dur=esElapsed()||ts[ts.length-1].t0;
-    const r=await api('/v1/app/escucha/guardar',{method:'POST',body:JSON.stringify({duracion:Math.round(dur/1000),
+    const r=await api('/v1/app/escucha/guardar',{method:'POST',body:JSON.stringify({borrador_id:ES.draftId,duracion:Math.round(dur/1000),
       live_id:ES.liveId||'',voces:ES.spk.map((s,i)=>({n:i+1,nombre:esNombre(i),tono:esTono(s.f0),f0:Math.round(s.f0||0),hf:+(s.hf||0).toFixed(3)})),
       lineas:ts.map(t=>({t:esClock(t.t0),voz:t.spk!=null?t.spk+1:0,nombre:t.spk!=null?esNombre(t.spk):'',tono:esTono(t.f0),es:esEs(t),orig:t.original,idioma:esEsp(t.original)?'es':t.origen,bajo:esBajo(t)}))})});
-    ES.liveId='';ES.asNotas=0;{const l=$('#as-log');if(l)l.innerHTML='<div class="asempty">Pregúntame por lo que se está diciendo, pídeme un documento, que anote algo o que cree una tarea. Respondo solo con lo dicho y con tus documentos; si no lo tengo, te lo digo.</div>';const n=$('#as-notas');if(n)n.innerHTML='';const nn=$('#as-nn');if(nn)nn.textContent='';if($('#es-as'))asMinSet(ES.asMin)}ES.turns=[];ES.spk=[];ES.names={};ES.det={};ES.sugVoz={};ES.frames=[];ES.sentMs=0;ES.inI=ES.outI=0;ES.t0=0;esPaint();esUI();
+    ES.draftId='';ES.liveId='';ES.asNotas=0;{const l=$('#as-log');if(l)l.innerHTML='<div class="asempty">Pregúntame por lo que se está diciendo, pídeme un documento, que anote algo o que cree una tarea. Respondo solo con lo dicho y con tus documentos; si no lo tengo, te lo digo.</div>';const n=$('#as-notas');if(n)n.innerHTML='';const nn=$('#as-nn');if(nn)nn.textContent='';if($('#es-as'))asMinSet(ES.asMin)}ES.turns=[];ES.spk=[];ES.names={};ES.det={};ES.sugVoz={};ES.frames=[];ES.sentMs=0;ES.inI=ES.outI=0;ES.t0=0;esPaint();esUI();
     esSt('Guardada como entregable.');
     sheet('Transcripción guardada','<div class="sub">'+esc(r.nombre||'')+'</div>'+((r.personas||[]).length?'<div class="sub" style="margin-top:6px">👥 Quedaron en su ficha: '+r.personas.map(p=>esc(p.nombre)).join(', ')+'</div>':'')+((r.sugeridos||[]).length?'<div class="sub" style="margin-top:4px">También escuché: '+r.sugeridos.map(p=>esc(p.nombre)).join(', ')+' (puedes asignarlos en Personas).</div>':'')+(r.resumen?'<div class="card" style="margin:10px 0">'+md(r.resumen)+'</div>':'<div class="empty">Guardada (muy corta para resumir).</div>')+
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">'+(r.sesion_id?'<button class="artcard" id="esg-tar">📝 Tareas propuestas de la junta</button>':'')+'<button class="artcard" id="esg-per">Ver personas</button><button class="artcard" id="esg-ent">Verla en Entregables</button><button class="artcard" id="esg-ask">Que Donna proponga pendientes</button></div>');
@@ -1785,14 +1820,14 @@ function asInit(){
   $('#as-nb').onclick=nota;$('#as-nota').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();nota()}};
 }
 function esView(){
-  const v=$('#v-es');
+  const v=$('#v-es');setTimeout(esDraftsPaint,0);
   if(!ES.built){ES.built=true;
     v.innerHTML='<div class="esgrid" data-pane="trans"><div class="escol">'+
       '<div class="eshead"><h2>Escuchar y transcribir</h2><div class="sub">中文 · English → español · solo transcripción, sin traducir de vuelta</div></div>'+
       '<div id="es-seg" role="group" aria-label="Qué ver"><button type="button" data-p="trans" aria-pressed="true">📜 Transcripción</button><button type="button" data-p="donna" aria-pressed="false">💬 Donna <span id="as-nn2"></span></button></div>'+
       '<div class="esask" id="es-ask" hidden><span class="tag"><i data-i="alert" data-s="14"></i>Sin voces</span><div class="t"><b>Llevo un minuto sin oír a nadie. ¿Sigo escuchando?</b><div class="sub">También te lo aviso con una notificación si sales de la app.</div></div>'+
         '<button class="gb pill" id="es-keep">Seguir escuchando</button><button class="gl2 pill" id="es-end">Detener y guardar</button></div>'+
-      '<div class="essum" id="es-sumbox" hidden></div>'+
+      '<div id="es-drafts"></div><div class="essum" id="es-sumbox" hidden></div>'+
       '<div class="esidle" id="es-idle"><div class="ico"><i data-i="wave" data-s="30"></i></div><h3>Escucha y te escribo en español</h3>'+
         '<p>Deja el teléfono o la computadora cerca de quien habla. Distingo las voces por su tono y te las numero. Solo transcribo: no traduzco de vuelta.</p>'+
         '<div class="esprivacy"><i data-i="alert" data-s="16"></i><span>Graba a otras personas: avísales antes. Solo se guarda el texto, y solo si tú guardas.</span></div></div>'+

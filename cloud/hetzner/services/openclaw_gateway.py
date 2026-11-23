@@ -1158,6 +1158,15 @@ class Handler(BaseHTTPRequestHandler):
                             if a1("kc"):
                                 d["cruce"]["kawiil_central"] = donna_personas.cruce_kawiil_central(core, d["nombre"], d["empresa"])
                             self._send_json(200, d)
+                elif _r0 in ("/v1/app/escucha/borradores", "/v1/app/escucha/borrador"):          # juntas guardadas solas, para retomarlas
+                    import donna_borrador
+                    from urllib.parse import urlparse as _up, parse_qs as _pq
+                    _q = _pq(_up(self.path).query)
+                    if _r0.endswith("borradores"):
+                        self._send_json(200, {"items": donna_borrador.listar(self._media_user())})
+                    else:
+                        d = donna_borrador.leer((_q.get("id") or [""])[0], self._media_user())
+                        self._send_json(200, d) if d else self._send_json(404, {"error": "borrador no encontrado"})
                 elif _r0 == "/v1/app/escucha/notas":
                     import donna_junta
                     from urllib.parse import urlparse, parse_qs
@@ -2246,6 +2255,11 @@ class Handler(BaseHTTPRequestHandler):
             pass
         m = _M.register_text(titulo, texto, tipo="conversacion", resumen=resumen, origen="escuchar")
         out = {"ok": True, "nombre": titulo, "archivo": r.split(":", 1)[-1].strip().split(" ")[0], "mid": m.get("id", ""), "resumen": resumen, "lineas": len(L)}
+        try:                                                    # ya quedó guardada de verdad: el borrador sobra
+            import donna_borrador
+            donna_borrador.descartar(str(body.get("borrador_id", "")), self._media_user())
+        except Exception:
+            log.exception("borrador: no pude limpiarlo")
         try:                                                    # base de personas: quién dijo qué (si falla, la transcripción ya quedó guardada)
             import donna_personas
             ps = donna_personas.guardar_sesion(titulo, dur, [v for v in voces if isinstance(v, dict)], [l for l in lineas if isinstance(l, dict)],
@@ -2609,6 +2623,16 @@ class Handler(BaseHTTPRequestHandler):
                         self._send_json(200, donna_aprender.regla_accion(str(body.get("id", "")), str(body.get("accion", "")), str(body.get("regla", "")), str(body.get("cuando", ""))))
                 else:
                     self._send_json(200, donna_aprender.mejora_estado(str(body.get("id", "")), str(body.get("accion", "")), str(body.get("nota", ""))))
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
+            return
+        if self.path == "/v1/app/escucha/borrador":                  # autoguardado de la junta en curso / descartar
+            import donna_borrador
+            try:
+                if body.get("accion") == "descartar":
+                    self._send_json(200, {"ok": True, "borrados": donna_borrador.descartar(str(body.get("id", "")), self._media_user())})
+                else:
+                    self._send_json(200, {"ok": True, **donna_borrador.guardar(str(body.get("id", "")), self._media_user(), body)})
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
             return
