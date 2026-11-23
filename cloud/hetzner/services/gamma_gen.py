@@ -107,7 +107,21 @@ def _tg_creds():
     return tok, chat
 
 
+def _silenciado(texto):
+    """Telegram apagado (/opt/openclaw/state/telegram_off): el aviso va a la app en vez de a Telegram."""
+    try:
+        import louis_push
+        if louis_push.telegram_muted():
+            louis_push.notify_text_async(texto)
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def telegram(texto):
+    if _silenciado(texto):
+        return True
     tok, chat = _tg_creds()
     if not tok or not chat:
         return False
@@ -130,6 +144,8 @@ def _descargar(url):
 
 def telegram_doc(url, filename, caption):
     """Descarga el archivo y lo manda como DOCUMENTO a Telegram (no link que caduca)."""
+    if _silenciado(caption + "\n" + url):
+        return True
     tok, chat = _tg_creds()
     if not tok or not chat:
         return False

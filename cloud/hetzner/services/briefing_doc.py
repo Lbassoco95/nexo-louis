@@ -213,6 +213,13 @@ td.t{{font-size:.72em;color:#999;text-transform:capitalize;width:64px}}
 
 
 def send_doc(content, fname, caption):
+    try:
+        import louis_push
+        if louis_push.telegram_muted():                      # Telegram apagado: aviso a la app (el adjunto HTML solo viaja por Telegram)
+            louis_push.notify_text_async(caption)
+            return True
+    except Exception:
+        pass
     token, chat = creds()
     if not token or not chat:
         print("ERROR: faltan credenciales Telegram", file=sys.stderr)

@@ -324,10 +324,10 @@ TELEGRAM_OFF_FLAG = STATE_DIR / "telegram_off"
 
 
 def telegram_muted() -> bool:
-    """True si Telegram está apagado para envíos salientes (archivo-bandera, sin reiniciar nada).
-    Red de seguridad: solo cuenta como apagado si hay al menos un teléfono suscrito al push;
-    si no hay ninguno, Telegram sigue enviando para que no se pierda ningún aviso."""
+    """True si Telegram está apagado para envíos salientes PROACTIVOS (archivo-bandera, sin reiniciar nada).
+    Si la bandera existe, está apagado aunque no haya teléfono suscrito: los avisos quedan en la bandeja de la app.
+    (Las respuestas del bot a lo que Polo le escribe no pasan por aquí.)"""
     try:
-        return TELEGRAM_OFF_FLAG.exists() and count() > 0
+        return TELEGRAM_OFF_FLAG.exists()
     except Exception:
         return False
