@@ -62,6 +62,39 @@ class RescateLive(unittest.TestCase):
         srv.shutdown()
 
 
+class FinPorSilencio(unittest.TestCase):
+    def test_tras_el_tiempo_sin_voces_el_servidor_avisa_y_cierra(self):
+        app_media.openai_key = lambda: "k"
+        class Mudo(Upstream):
+            def __init__(self):
+                super().__init__()
+                while not self.q.empty():
+                    self.q.get()                                  # nadie habla
+        ws_lite.connect_url = lambda url, headers: Mudo()
+        g.LIVE_ESCUCHAR_SILENCIO = 2                              # «1 hora», acelerada para la prueba
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), g.Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        import socket, base64
+        s = socket.create_connection(("127.0.0.1", srv.server_address[1]))
+        s.sendall(("GET /v1/app/live HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n" % base64.b64encode(os.urandom(16)).decode()).encode())
+        resp = b""
+        while b"\r\n\r\n" not in resp:
+            resp += s.recv(1024)
+        c = ws_lite.Conn(s, cliente=True)
+        c.send_text(json.dumps({"t": "auth", "token": "master-x", "modo": "escuchar", "to": "es", "rescate": "mudo123abc"}))
+        vistos, t0 = [], time.time()
+        while time.time() - t0 < 10:
+            m = c.recv_message(timeout=1)
+            if m and m[0] == "text":
+                vistos.append(json.loads(m[1])["t"])
+                if vistos[-1] == "fin_silencio":
+                    break
+        g.LIVE_ESCUCHAR_SILENCIO = 3600
+        srv.shutdown()
+        self.assertIn("fin_silencio", vistos)
+        self.assertNotIn("silencio", vistos)                      # ya no pregunta: detiene y la app guarda
+
+
 class Silencio(unittest.TestCase):
     def test_no_pregunta_ni_cierra_antes_de_una_hora_sin_voces(self):
         self.assertGreaterEqual(g.LIVE_ESCUCHAR_SILENCIO, 3600)                       # «¿sigo escuchando?» solo tras 1 h sin oír a nadie

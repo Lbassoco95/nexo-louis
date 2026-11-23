@@ -1619,6 +1619,7 @@ function esConnect(){
     if(m.t==='listo'){if(!ES.t0)ES.t0=Date.now();ES.max=m.max||7200;ES.retry=0;esWsSend({t:'cfg',aviso:ES.aviso});if(ES.paused)esWsSend({t:'pausa'});esUI()}
     else if(m.t==='in'||m.t==='out'){if(!ES.paused)esText(m.t,m.d)}
     else if(m.t==='ev'){if(/input_transcript\.done/.test(m.type||''))ES.inI=Math.max(ES.inI,ES.turns.length);else if(/output_transcript\.done/.test(m.type||''))ES.outI=Math.max(ES.outI,ES.turns.length)}
+    else if(m.t==='fin_silencio'){esFinSilencio(m.seg)}
     else if(m.t==='silencio'){ES.ask=true;{const tx=$('#es-asktx');if(tx){const mi=Math.max(1,Math.round((m.seg||0)/60));tx.textContent='Llevo '+(mi>=60?Math.floor(mi/60)+' h'+(mi%60?' '+mi%60+' min':''):mi+' min')+' sin oír a nadie. ¿Sigo escuchando?'}}esAsk(true);if(navigator.vibrate)navigator.vibrate([120,80,120])}
     else if(m.t==='voz'){ES.ask=false;esAsk(false)}
     else if(m.t==='error'){esSt('No pude seguir: '+m.m);clog('escuchar: '+m.m)}
@@ -1632,6 +1633,12 @@ function esReconnect(why){
   if(ES.retry>=8){esSt('Se perdió la conexión ('+why+'). Tu transcripción sigue aquí; toca «Continuar» para reintentar.');ES.paused=true;ES.pauseAt=Date.now();ES.retry=0;esUI();return}
   ES.retry++;esSt('Reconectando… ('+ES.retry+')');try{ES.ws&&(ES.ws.onclose=null,ES.ws.close())}catch(e){}
   setTimeout(()=>{if(ES.on&&!ES.stop)esConnect()},Math.min(8000,1200*ES.retry));
+}
+async function esFinSilencio(seg){                         // 1 h sin voces: el servidor detuvo la escucha; aquí se guarda la junta sola (sin preguntar nombres)
+  if(!ES.on||ES.stop)return;ES.stop=true;try{ES.ws&&(ES.ws.onclose=null)}catch(e){}
+  toast('Pasó '+Math.round((seg||3600)/60)+' min sin voces: guardo la junta');
+  if(!ES.turns.some(t=>t.original.trim()||t.traduccion.trim())){esHalt(true);esSt('Se detuvo tras 1 hora sin voces. No había nada que guardar.');return}
+  ES.auto=true;await esFinish();
 }
 function esAsk(on){const b=$('#es-ask');if(b)b.hidden=!on}
 function esHalt(userStop){
@@ -1750,7 +1757,7 @@ async function esFinish(){
   const ts=ES.turns.filter(t=>t.original.trim()||t.traduccion.trim());
   esHalt(true);
   if(!ts.length){toast('Aún no hay nada que guardar');return}
-  await esQuienEsQuien();
+  if(!ES.auto)await esQuienEsQuien();ES.auto=false;
   esSt('Guardando…');
   try{
     try{await ES._dp}catch(e){}
@@ -1910,7 +1917,7 @@ function esView(){
         '<p class="ds" style="margin:10px 2px">Distingo las voces por su timbre y tono. Ponles nombre y se recordarán en la siguiente sesión (es aproximado).</p>'+
         '<p class="sec" style="margin:16px 2px 8px">Mientras escucha</p>'+
         '<label class="swr"><span>Mostrar el texto original</span><span class="sw"><input type="checkbox" id="esw-orig"><i></i></span></label>'+
-        '<label class="swr"><span>Avisarme tras 1 hora sin voces</span><span class="sw"><input type="checkbox" id="esw-aviso"><i></i></span></label>'+
+        '<label class="swr"><span>Detener y guardar solo tras 1 hora sin voces</span><span class="sw"><input type="checkbox" id="esw-aviso"><i></i></span></label>'+
         '<label class="swr"><span>Seguir en segundo plano</span><span class="sw"><input type="checkbox" id="esw-bg"><i></i></span></label>'+
         '<button class="gl2 pill" id="es-tab" style="margin-top:12px;width:100%" hidden>Escuchar el audio de una pestaña</button></details></div></div>';
     iconize(v);asInit();

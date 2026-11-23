@@ -1778,18 +1778,16 @@ class Handler(BaseHTTPRequestHandler):
                     break
                 if escuchar and est["aviso"] and not est["pausa"]:
                     ahora = time.time()
-                    primera = est["pregunto"] is None and ahora - est["voz"] > LIVE_ESCUCHAR_SILENCIO
-                    otra_vez = est["pregunto"] is not None and ahora - est["pregunto"] > LIVE_ESCUCHAR_REPREGUNTA
-                    if primera or otra_vez:                               # nunca corta la escucha: solo pregunta (en la app y con una notificación)
-                        est["pregunto"] = ahora
-                        aviso("silencio", seg=int(ahora - est["voz"]), repite=LIVE_ESCUCHAR_REPREGUNTA)
+                    if ahora - est["voz"] > LIVE_ESCUCHAR_SILENCIO:       # 1 h sin oír a nadie: se detiene y la app guarda la junta sola (el texto ya está en el rescate y el borrador)
+                        aviso("fin_silencio", seg=int(ahora - est["voz"]))
                         try:
                             import louis_push
-                            louis_push.notify_async("¿Seguimos escuchando?", "Llevo %d min sin oír voces. Toca para seguir o detener y guardar." % max(1, int((ahora - est["voz"]) // 60)),
-                                                    tab="chat", tag="escuchar", kind="escuchar", link="escuchar:1",
-                                                    acts=[{"action": "seguir", "title": "Seguir escuchando"}, {"action": "detener", "title": "Detener y guardar"}])
+                            louis_push.notify_async("Escucha detenida", "Pasó %d min sin voces. La junta se guardó sola; si la app estaba cerrada, quedó como borrador en Escuchar." % max(1, int((ahora - est["voz"]) // 60)),
+                                                    tab="chat", tag="escuchar", kind="escuchar", link="escuchar:1")
                         except Exception:
-                            log.warning("no pude avisar del silencio", exc_info=True)
+                            log.warning("no pude avisar del fin por silencio", exc_info=True)
+                        time.sleep(1.5)                                    # que la app alcance a recibir el aviso antes de cerrar
+                        break
                 r = cli.recv_message(timeout=1)
                 if r is None:
                     if time.time() - ultimo > (LIVE_ESCUCHAR_IDLE if escuchar else LIVE_IDLE_SECONDS):
