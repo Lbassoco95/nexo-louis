@@ -2,7 +2,7 @@
 const fs = require('fs'), path = require('path'), assert = require('assert');
 const html = fs.readFileSync(path.join(__dirname, '..', 'services', 'app', 'index.html'), 'utf8');
 const src = html.split('/*ES-VOZ-BEGIN*/')[1].split('/*ES-VOZ-END*/')[0];
-const { esF0, esVozDe, esTono, esMed } = new Function(src + '; return {esF0, esVozDe, esTono, esMed};')();
+const { esF0, esVozDe, esTono, esMed, laAgc } = new Function(src + '; return {esF0, esVozDe, esTono, esMed, laAgc};')();
 const SR = 24000;
 function voz(f0, n = 1024, amp = 0.2, fase = 0, brillo = 1) {      // vocal sintética: fundamental + armónicos que decaen
   const x = new Float32Array(n);
@@ -33,4 +33,18 @@ assert.equal(esVozDe(spk, 0, 0.5, 6), -1);                                   // 
 const s2 = []; [90, 120, 160, 200, 260, 340, 420, 80].forEach(f => esVozDe(s2, f, 0.5, 6)); assert.ok(s2.length <= 6);
 // 6) mediana
 assert.equal(esMed([5, 1, 9]), 5); assert.equal(esMed([]), 0);
+// 7) ganancia automática: una voz lejana (RMS≈0.01) se sube, ya se identifica y no recorta; el ruido de fondo no se amplifica ni cuenta como voz
+{
+  const st = { g: 1, floor: 0.002 }, bloques = [];
+  for (let i = 0; i < 40; i++) bloques.push(laAgc(Float32Array.from({ length: 2048 }, () => (Math.random() * 2 - 1) * 0.0015), st));   // cuarto en silencio
+  assert.ok(bloques.every(b => !b.speech) && st.g === 1, 'el ruido no debe contar como voz ni subir la ganancia');
+  let ult;
+  for (let i = 0; i < 60; i++) ult = laAgc(voz(150, 2048, 0.025, i * 2048), st);                                                       // voz baja (amp 0.025)
+  assert.ok(ult.speech && st.g > 4 && st.g <= 12, 'sube la voz baja: g=' + st.g);
+  assert.ok(ult.rms > 0.05 && ult.rms < 0.2, 'rms objetivo: ' + ult.rms);
+  assert.ok(esF0(ult.out, SR).f0 > 0, 'la voz subida ya se identifica');
+  assert.equal(esF0(voz(150, 2048, 0.025), SR).f0, 0, '(sin ganancia esa misma voz no se identificaba)');
+  const fuerte = laAgc(voz(150, 2048, 0.9, 0), st);                                                                                      // de repente alguien grita
+  assert.ok(Math.max(...fuerte.out.map(Math.abs)) <= 0.96, 'no recorta');
+}
 console.log('voz: ok (tono, silencio/ruido, agrupación en voces)');

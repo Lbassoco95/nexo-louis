@@ -1345,9 +1345,9 @@ const msLine=m=>m?('⏱ '+[m.stt!=null&&'te entendió '+(m.stt/1000).toFixed(1)+
   m.audio1!=null&&'primera voz '+(m.audio1/1000).toFixed(1)+'s'].filter(Boolean).join(' · ')):'';
 
 /* ---------- audio en vivo (PCM16 24 kHz): captura, reproducción sin cortes y compuerta anti-eco; lo usan la traducción en vivo y Donna en tiempo real ---------- */
-const LA={ctx:null,stream:null,proc:null,src:null,nextT:0,srcs:[],wl:null,onFrame:null,gateFn:()=>false,level:0};
+const LA={ctx:null,stream:null,proc:null,src:null,nextT:0,srcs:[],wl:null,onFrame:null,gateFn:()=>false,level:0,raw:0,speech:false,agc:false,st:{g:1,floor:0.002}};
 async function laStart(onFrame,gateFn,cons){
-  LA.onFrame=onFrame;LA.gateFn=gateFn||(()=>false);
+  LA.onFrame=onFrame;LA.gateFn=gateFn||(()=>false);LA.st={g:1,floor:0.002};
   const AC=window.AudioContext||window.webkitAudioContext;
   try{LA.ctx=new AC({sampleRate:24000})}catch(e){LA.ctx=new AC()}
   await LA.ctx.resume();
@@ -1359,8 +1359,9 @@ async function laStart(onFrame,gateFn,cons){
   LA.src.connect(LA.proc);LA.proc.connect(mute);mute.connect(LA.ctx.destination);
   const inRate=LA.ctx.sampleRate;
   LA.proc.onaudioprocess=ev=>{
-    const f=ev.inputBuffer.getChannelData(0);
-    let s=0;for(let i=0;i<f.length;i++)s+=f[i]*f[i];LA.level=Math.sqrt(s/f.length);
+    let f=ev.inputBuffer.getChannelData(0);
+    if(LA.agc){const a=laAgc(f,LA.st);f=a.out;LA.level=a.rms;LA.raw=a.raw;LA.speech=a.speech}
+    else{let s=0;for(let i=0;i<f.length;i++)s+=f[i]*f[i];LA.level=Math.sqrt(s/f.length);LA.raw=LA.level;LA.speech=LA.level>0.006}
     let out=f;
     if(inRate!==24000){const r=inRate/24000,n=Math.floor(f.length/r);out=new Float32Array(n);
       for(let i=0;i<n;i++){const x=i*r,i0=Math.floor(x),i1=Math.min(i0+1,f.length-1),t=x-i0;out[i]=f[i0]*(1-t)+f[i1]*t}}
@@ -1379,7 +1380,7 @@ function laPlay(int16){
 const laSpeaking=()=>!!(LA.ctx&&LA.nextT>LA.ctx.currentTime+0.05);
 function laFlush(){LA.srcs.forEach(s=>{try{s.stop()}catch(e){}});LA.srcs=[];LA.nextT=0}
 function laStop(){
-  laFlush();
+  laFlush();LA.agc=false;
   try{if(LA.proc){LA.proc.onaudioprocess=null;LA.proc.disconnect()}}catch(e){}
   try{LA.src&&LA.src.disconnect()}catch(e){}
   try{LA.stream&&LA.stream.getTracks().forEach(t=>t.stop())}catch(e){}
@@ -1485,6 +1486,19 @@ function esVozDe(spk,f0,hf,max){                        // elige (o crea) el hab
   const s=spk[best],w=Math.min(s.n,40);s.f0=(s.f0*w+f0)/(w+1);s.hf=(s.hf*w+hf)/(w+1);s.n++;return best;
 }
 const esTono=f0=>!f0?'':f0<150?'grave':f0<210?'media':'aguda';
+// Ganancia automática para voces lejanas/bajas (el teléfono en la mesa): sube la señal hacia RMS≈0.1 sin pasar de 12×, nunca recorta,
+// no «bombea» el ruido (solo ajusta mientras hay voz) y estima el piso de ruido para decidir qué es voz.  st={g,floor} se conserva entre bloques.
+function laAgc(f,st){
+  let s=0,pk=0;for(let i=0;i<f.length;i++){const x=f[i];s+=x*x;const a=x<0?-x:x;if(a>pk)pk=a}
+  const r=Math.sqrt(s/f.length);
+  st.floor=r<st.floor?st.floor*0.7+r*0.3:Math.min(0.02,st.floor*1.0008+1e-6);
+  if(st.floor<0.0008)st.floor=0.0008;
+  const speech=r>Math.max(0.003,st.floor*2.5);
+  if(speech){const want=Math.min(12,Math.max(1,0.1/r));st.g=want<st.g?want:st.g+(want-st.g)*0.15}
+  if(pk*st.g>0.95)st.g=0.95/pk;
+  const out=new Float32Array(f.length);for(let i=0;i<f.length;i++)out[i]=f[i]*st.g;
+  return{out,rms:r*st.g,raw:r,speech};
+}
 /*ES-VOZ-END*/
 const ES={on:false,paused:false,ws:null,turns:[],inI:0,outI:0,lastIn:0,lastOut:0,t0:0,pausedMs:0,pauseAt:0,max:7200,tick:0,ping:0,retry:0,stop:false,lastVoice:0,
   orig:LS.get('es_orig',true),aviso:LS.get('es_aviso',true),bg:LS.get('es_bg',true),stick:true,raf:0,fuente:'mic',spk:[],names:{},frames:[],sentMs:0,ask:false,built:false};
@@ -1634,9 +1648,10 @@ async function esStart(fuente){
       if(!st.getAudioTracks().length){st.getTracks().forEach(t=>t.stop());esSt('No compartiste audio. En el selector elige una pestaña y marca «Compartir audio de la pestaña».');return}
       cons={stream:new MediaStream(st.getAudioTracks())};st.getVideoTracks().forEach(v=>{v.onended=()=>{if(ES.on)esHalt(true)}});ES.disp=st;
     }else cons={noiseSuppression:false,echoCancellation:false,autoGainControl:true};
+    LA.agc=true;
     await laStart(buf=>{
       if(ES.paused)return;
-      const now=Date.now();if(LA.level>0.006)ES.lastVoice=now;
+      const now=Date.now();if(LA.speech)ES.lastVoice=now;
       if(now-ES.lastVoice<1800){
         const pcm=new Int16Array(buf);ES.sentMs+=pcm.length/24;const a=esF0(pcm,24000);
         ES.frames.push({ms:ES.sentMs,f0:a.f0,hf:a.hf});if(ES.frames.length>3000)ES.frames.splice(0,500);
@@ -1648,7 +1663,8 @@ async function esStart(fuente){
   api('/v1/app/personas').then(r=>{ES.pv=r.items||[]}).catch(()=>{});
   esSt('Conectando…');esUI();esConnect();
   ES.ping=setInterval(()=>esWsSend({t:'ping'}),20000);
-  ES.tick=setInterval(()=>{const l=$('#es-lvl');if(l)l.style.width=Math.min(100,Math.round(LA.level*500))+'%';esUI();if(ES.turns.length&&$('#v-es').classList.contains('on'))esPaint()},500);
+  ES.tick=setInterval(()=>{if(LA.agc&&LA.st.g>=9&&LA.speech&&Date.now()-(ES.avisoBajo||0)>45000&&!ES.paused){ES.avisoBajo=Date.now();toast('🔈 Se oye muy bajo: acerca el teléfono a quien habla')}
+    const l=$('#es-lvl');if(l)l.style.width=Math.min(100,Math.round(LA.level*500))+'%';esUI();if(ES.turns.length&&$('#v-es').classList.contains('on'))esPaint()},500);
 }
 function esAskStart(fuente){                                 // privacidad: confirmación del consentimiento, una vez por sesión de la app
   let ok=false;try{ok=sessionStorage.getItem('es_consent')==='1'}catch(e){}
