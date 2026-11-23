@@ -40,6 +40,8 @@ def guardar(bid: str, usuario: str, datos: dict) -> dict:
         "names": {str(k)[:3]: str(v)[:40] for k, v in (datos.get("names") or {}).items()} if isinstance(datos.get("names"), dict) else {},
         "live_id": str(datos.get("live_id") or "")[:40],
         "reemplaza": re.sub(r"[^0-9a-zA-Z_-]", "", str(datos.get("reemplaza") or ""))[:40],
+        "titulo": " ".join(str(datos.get("titulo") or "").split())[:100],
+        "nota_origen": " ".join(str(datos.get("nota_origen") or "").split())[:400],
         "duracion": max(0, min(int(datos.get("duracion") or 0), 86400)),
     }
     blob = json.dumps(limpio, ensure_ascii=False)

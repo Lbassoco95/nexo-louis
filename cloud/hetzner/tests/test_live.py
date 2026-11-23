@@ -202,31 +202,25 @@ class Puente(unittest.TestCase):
             out += self.leer(c, 0.8, quiero)
         return out
 
-    def test_escuchar_pregunta_y_NUNCA_se_detiene_sola(self):
-        c = self._silencio(1, 2)
-        ms = self.leer_con_ping(c, 5, lambda o: any(k == "text" and d.get("t") == "silencio" for k, d in o))
-        self.assertTrue(any(k == "text" and d.get("t") == "silencio" and d["repite"] == 2 for k, d in ms))        # pregunta «¿seguimos escuchando?»
-        ms = self.leer_con_ping(c, 6)                                                                               # nadie responde: vuelve a preguntar, pero NO corta
-        self.assertGreaterEqual(sum(1 for k, d in ms if k == "text" and d.get("t") == "silencio"), 1)             # se vuelve a preguntar
-        self.assertFalse(any(k == "text" and d.get("t") == "end" for k, d in ms))                                  # y la escucha sigue viva
+    def test_escuchar_tras_el_tiempo_sin_voces_avisa_y_se_detiene_para_guardar(self):
+        c = self._silencio(1, 2)                                                                                    # «1 hora», acelerada a 1 s
+        ms = self.leer_con_ping(c, 6, lambda o: any(k == "text" and d.get("t") == "fin_silencio" for k, d in o))
+        self.assertTrue(any(k == "text" and d.get("t") == "fin_silencio" for k, d in ms))                           # avisa a la app para que guarde la junta
+        self.assertFalse(any(k == "text" and d.get("t") == "silencio" for k, d in ms))                              # ya no pregunta «¿sigo?»
         c.close()
 
-    def test_escuchar_seguir_voz_pausa_y_apagar_el_aviso(self):
-        c = self._silencio(1, 100)
-        self.leer_con_ping(c, 5, lambda o: any(k == "text" and d.get("t") == "silencio" for k, d in o))
-        c.send_text(json.dumps({"t": "seguir"}))                                                                   # «seguir escuchando» no corta ni pierde nada
-        ms = self.leer_con_ping(c, 1.6)
-        self.assertFalse(any(k == "text" and d.get("t") in ("end", "error") for k, d in ms))
-        for _ in range(6):
-            c.send_binary(b"\x00\x01" * 2400)                                                                      # alguien habla
-        ms = self.leer_con_ping(c, 3, lambda o: any(k == "text" and d.get("t") == "in" for k, d in o))
-        self.assertTrue(any(k == "text" and d.get("t") == "in" for k, d in ms))                                    # el texto sigue llegando tras «seguir»
-        c.send_text(json.dumps({"t": "pausa"}))                                                                    # en pausa no pregunta nada
-        ms = self.leer_con_ping(c, 3)
-        self.assertFalse(any(k == "text" and d.get("t") == "silencio" for k, d in ms))
-        c.send_text(json.dumps({"t": "continuar"})); c.send_text(json.dumps({"t": "cfg", "aviso": False}))        # con el aviso apagado tampoco
-        ms = self.leer_con_ping(c, 3)
-        self.assertFalse(any(k == "text" and d.get("t") == "silencio" for k, d in ms))
+    def test_escuchar_con_voces_no_se_detiene_y_con_el_aviso_apagado_nunca(self):
+        c = self._silencio(3, 100)
+        for _ in range(4):
+            c.send_binary(b"\x00\x01" * 2400)                                                                      # alguien habla: el reloj de silencio se reinicia
+        ms = self.leer_con_ping(c, 2)
+        self.assertFalse(any(k == "text" and d.get("t") in ("fin_silencio", "end", "error") for k, d in ms))
+        c.send_text(json.dumps({"t": "pausa"}))                                                                     # en pausa no cuenta el silencio
+        ms = self.leer_con_ping(c, 4)
+        self.assertFalse(any(k == "text" and d.get("t") == "fin_silencio" for k, d in ms))
+        c.send_text(json.dumps({"t": "continuar"})); c.send_text(json.dumps({"t": "cfg", "aviso": False}))         # con el interruptor apagado jamás se detiene sola
+        ms = self.leer_con_ping(c, 5)
+        self.assertFalse(any(k == "text" and d.get("t") in ("fin_silencio", "end") for k, d in ms))
         c.close()
 
     def test_sin_autorizacion_se_rechaza(self):
