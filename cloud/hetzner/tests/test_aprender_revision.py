@@ -205,5 +205,72 @@ class HerramientasDeDonna(unittest.TestCase):
         self.assertIn("❌", x("revisar_entregable", {"titulo": ""}))
 
 
+class RutasDirectas(unittest.TestCase):
+    """El caso real de Polo: antes el modelo elegía mal las herramientas y le pedía la junta; ahora estas peticiones se resuelven en código."""
+    MSG_REV = 'Revisa el entregable "Contratos marco CPS Transmisor de Dinero VIZUM": ¿ya se mandó la actualización según lo último dicho en las juntas?'
+    MSG_AGT = "Entra al correo de vizum con el agente vizumi para saber si en el drive hay algo?"
+
+    def setUp(self):
+        limpiar()
+        import louis_core
+        self.core = louis_core
+        self.core.SPACE = TMP
+        self.core.AGENTS_DIR = TMP / "agents"
+        self.orig = (RV.revisar_entregable, RV.kc_agentes)
+        self.llamadas = []
+        RV.revisar_entregable = lambda core, titulo, marcar=True, **k: self.llamadas.append(titulo) or {"texto": "VEREDICTO DE ENVÍO: SIN EVIDENCIA\n[02:10] Fernando: «actualizar el contrato»"}
+        RV.kc_agentes = lambda core, nombre="": "Tablas de agentes en Kawiil Central: agents\n• name=Vizumi"
+
+    def tearDown(self):
+        RV.revisar_entregable, RV.kc_agentes = self.orig
+
+    def test_revision_se_dispara_sola_con_el_titulo_correcto(self):
+        r = self.core.try_deterministic_revision(self.MSG_REV)
+        self.assertIn("VEREDICTO DE ENVÍO", r)
+        self.assertIn("no contra resúmenes", r)
+        self.assertEqual(self.llamadas, ["Contratos marco CPS Transmisor de Dinero VIZUM"])
+        for no in ("¿Qué tengo hoy?", 'Dime "hola" por favor', "¿ya se mandó el contrato de Vizum?", 'Anota "comprar café para la oficina"'):
+            self.assertIsNone(self.core.try_deterministic_revision(no), no)
+
+    def test_nombrar_un_agente_de_kc_dice_la_verdad_y_registra_la_mejora(self):
+        r = self.core.try_deterministic_agente(self.MSG_AGT)
+        self.assertIn("No puedo ejecutar al agente vizumi todavía", r)
+        self.assertIn("name=Vizumi", r)
+        m = AP.mejoras_list()
+        self.assertEqual(len(m), 1)
+        self.assertIn("agente vizumi", m[0]["evidencia"])
+        self.core.try_deterministic_agente(self.MSG_AGT)
+        self.assertEqual(AP.mejoras_list()[0]["veces"], 2)                         # la misma petición suma, no duplica
+        for no in ("Qué agente de seguimiento tenemos", "ejecuta el agente de ventas", "hola"):
+            self.assertIsNone(self.core.try_deterministic_agente(no), no)
+
+    def test_un_subagente_local_sigue_el_flujo_normal(self):
+        (TMP / "agents").mkdir(exist_ok=True)
+        (TMP / "agents" / "redactor-correos.md").write_text("---\nnombre: redactor-correos\nespecialidad: correos\n---\nEres un redactor")
+        self.assertIsNone(self.core.try_deterministic_agente("Pídele al agente redactor-correos un borrador"))
+
+    def test_el_enrutador_real_las_atiende_antes_que_el_modelo(self):
+        r, ruta = self.core._call_llm_impl("sin-llave", "sistema", [], self.MSG_REV)
+        self.assertEqual(ruta, "revision-directa")
+        self.assertIn("VEREDICTO DE ENVÍO", r)
+        r2, ruta2 = self.core._call_llm_impl("sin-llave", "sistema", [], self.MSG_AGT)
+        self.assertEqual(ruta2, "agente-kc")
+
+
+class RevisionConMemoriaYDonde(unittest.TestCase):
+    def setUp(self):
+        limpiar()
+
+    def test_sin_transcripcion_usa_notas_como_pista_y_dice_donde_busco(self):
+        (TMP / "COWORK.md").write_text("# Cowork\n- 2026-11-12 Reunión Vizum: hay que actualizar el contrato marco CPS para persona moral y mandarlo a Gonzalo\n- otra cosa\n")
+        FakeCore.MEMORY_FILES = ["JOURNAL.md", "PROJECTS.md"]
+        r = RV.revisar_entregable(FakeCore, "Contratos marco CPS Transmisor de Dinero VIZUM", m365=FakeM365([{"asunto": "Contratos marco CPS Vizum", "para": "Gonzalo", "fecha": "2026-02-16", "adj": []}]), marcar_prioritario=False)
+        self.assertEqual(r["juntas"], [])
+        self.assertEqual(r["notas"][0]["archivo"], "COWORK.md")
+        self.assertIn("NOTAS/MEMORIA (son resúmenes, NO la transcripción", r["texto"])
+        self.assertIn("busqué entre 0 junta(s) guardada(s) con Escuchar", r["texto"])
+        self.assertIn("Correo reciente", r["texto"])
+
+
 if __name__ == "__main__":
     unittest.main()

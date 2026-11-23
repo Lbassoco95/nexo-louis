@@ -10463,6 +10463,8 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
     # Detecta si la query es sobre Slack para forzar tool_choice en el primer turno
     _SLACK_RE = re.compile(r"\b(slack|canal(es)?|dm\s+de|mensaje(s)?\s+(en|de)\s+slack)\b", re.IGNORECASE)
     _force_tool_first = _SLACK_RE.search(user_message or "")
+    # «¿ya se mandó la actualización del contrato X?» sin título entre comillas: el 1er turno DEBE usar revisar_entregable (antes elegía herramientas sueltas y le pedía la junta a Polo).
+    _force_rev = bool(re.search(r"(?i)(ya\s+se\s+(?:mand|envi)|se\s+(?:mand|envi)\w*\s+(?:la\s+)?actualizaci|actualizaci[oó]n\s+del?\s)", user_message or "") and _REV_COSA.search(user_message or ""))
     # Pedido de documento (PDF/PPTX/XLSX): forzar uso de tool en el 1er turno.
     # Solo con Sonnet (con Haiku el tool_choice forzado devolvía contenido vacío).
     # Evita que Sonnet diga 'genero el dictamen ahora' sin llamar la tool.
@@ -10503,6 +10505,8 @@ def call_claude(api_key: str, system_prompt: str, history: list, user_message: s
             body["tool_choice"] = {"type": "tool", "name": "slack_resumen"}
         # Pedido de documento (Sonnet): forzar uso de ALGUNA tool en el 1er turno.
         # El modelo debe llamar invocar_agente (para contenido) o generar_documento.
+        elif _force_rev and _loop_i == 0:
+            body["tool_choice"] = {"type": "tool", "name": "revisar_entregable"}
         elif _force_doc and _loop_i == 0:
             body["tool_choice"] = {"type": "any"}
         try:
@@ -10663,6 +10667,59 @@ def _agenda_item_txt(x: dict, n: int = 150) -> str:
     return ("• %s · %s" % (x["hora"], txt)) if x.get("hora") else "• " + txt
 
 
+_REV_TITULO = re.compile(r'["“«]([^"”»]{8,170})["”»]')
+_REV_VERBO = re.compile(r"(?i)(ya\s+se\s+(?:mand|envi)|se\s+(?:mand|envi)\w*|actualizaci[oó]n|actualizad[oa]|revis\w+|verific\w+|vigente|[uú]ltima\s+versi[oó]n|est[aá]\s+al\s+d[ií]a)")
+_REV_COSA = re.compile(r"(?i)\b(entregable|contratos?|documento|word|versi[oó]n|propuesta|convenio|carta)\b")
+
+
+def try_deterministic_revision(user_message: str):
+    """«Revisa el entregable "X": ¿ya se mandó la actualización según las juntas?» → se REVISA CONTRA LAS FUENTES en código (juntas literales, correo enviado, Dropbox,
+    Cerebro, agenda) en vez de dejar que el modelo decida qué buscar (antes buscaba a medias y le pedía a Polo la junta). Necesita el título entre comillas."""
+    msg = (user_message or "").strip()
+    m = _REV_TITULO.search(msg)
+    if not m or not _REV_VERBO.search(msg) or not (_REV_COSA.search(msg) or _REV_COSA.search(m.group(1))):
+        return None
+    try:
+        import donna_revision
+        r = donna_revision.revisar_entregable(sys.modules[__name__], m.group(1).strip(), True)
+    except ValueError:
+        return None
+    except Exception as e:
+        return "No pude completar la revisión por un error (%s). Lo registro para corregirlo." % str(e)[:120]
+    return ("🔎 Lo revisé contra las fuentes (transcripciones literales, correo, Dropbox, Cerebro y agenda), no contra resúmenes:\n\n" + r["texto"] +
+            "\n\nSi falta una fuente (p. ej. una junta que no se grabó con Escuchar), dime dónde está y la sumo; si algo de esto está mal, toca «Corregir» y lo aprendo.")
+
+
+_AGENTE_RX = re.compile(r"(?i)\bagente\s+(?:de\s+kawiil\s+central\s+)?[«\"']?([A-Za-zÁÉÍÓÚáéíóúñÑ][A-Za-zÁÉÍÓÚáéíóúñÑ0-9_-]{2,29})")
+_AGENTE_NO = {"de", "que", "para", "en", "local", "nuevo", "nueva", "el", "la", "un", "una", "y", "o", "con", "por", "del", "al", "kawiil", "yoltik", "ia", "ai"}
+
+
+def try_deterministic_agente(user_message: str):
+    """«…con el agente Vizumi» → si no es uno de los sub-agentes locales, Donna VE al agente en Kawiil Central y dice la verdad: todavía no puede ejecutarlo. Registra la mejora con la
+    conversación (antes se iba por otro lado sin decirlo)."""
+    msg = (user_message or "").strip()
+    m = _AGENTE_RX.search(msg)
+    if not m or m.group(1).lower() in _AGENTE_NO:
+        return None
+    nombre = m.group(1)
+    try:
+        locales = [_parse_agent_file(f).get("nombre", f.stem).lower() for f in AGENTS_DIR.glob("*.md")] if AGENTS_DIR.exists() else []
+    except Exception:
+        locales = []
+    if any(nombre.lower() == x or x.startswith(nombre.lower()) for x in locales):
+        return None                                                                     # es un sub-agente local: sigue el flujo normal
+    try:
+        import donna_revision, donna_aprender
+        vista = donna_revision.kc_agentes(sys.modules[__name__], nombre)
+        donna_aprender.mejora_agregar("Ejecutar el agente %s de Kawiil Central desde Donna" % nombre,
+                                      "Polo pidió que el agente %s de Kawiil Central haga una actividad y Donna no tiene cómo ejecutarlo (solo puede VER sus datos). Hay que definir cómo se dispara "
+                                      "(endpoint, función o tabla de tareas) y construir la herramienta." % nombre, "Polo: «%s»" % msg[:600], "capacidad")
+    except Exception as e:
+        return "Quieres que use al agente %s de Kawiil Central, pero todavía no puedo ejecutarlo (y no pude consultarlo ahora: %s). Lo dejé registrado como mejora pendiente." % (nombre, str(e)[:100])
+    return ("No puedo ejecutar al agente %s todavía: solo puedo VER lo que tiene en Kawiil Central, no dispararlo. Esto es lo que veo:\n\n%s\n\n"
+            "Ya dejé la mejora registrada (Seguimiento → Mejoras pendientes). Mientras tanto, dime qué documento o tema quieres revisar y lo hago yo con mis herramientas (correo, juntas, Dropbox, Cerebro)." % (nombre, vista))
+
+
 def try_deterministic_agenda_query(user_message: str):
     """«¿Qué tengo hoy?», «¿qué vence esta semana?», «¿qué hay mañana?», «¿qué está vencido?» → se responde DIRECTO con la AGENDA real
     ordenada por fecha (agenda_por_fechas). Antes lo contestaba un modelo sin herramientas, que a veces inventaba «no tienes nada»."""
@@ -10741,6 +10798,16 @@ def _call_llm_impl(
     if det_ag is not None:
         _mark_last_route("agenda-directa")
         return det_ag, "agenda-directa"
+
+    # Revisar un entregable contra las fuentes / pedir un agente de Kawiil Central: se hace en código, no dependen de que el modelo elija bien las herramientas.
+    det_rev = try_deterministic_revision(user_message)
+    if det_rev is not None:
+        _mark_last_route("revision-directa")
+        return det_rev, "revision-directa"
+    det_agt = try_deterministic_agente(user_message)
+    if det_agt is not None:
+        _mark_last_route("agente-kc")
+        return det_agt, "agente-kc"
 
     # Captura activa (Fase 2): tarea en lenguaje natural ("hay que…", "pendiente: …",
     # "recuérdame que …" sin hora) → la registra en AGENDA al instante y confirma.
