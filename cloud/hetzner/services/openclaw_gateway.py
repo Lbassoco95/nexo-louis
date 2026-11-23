@@ -1141,7 +1141,7 @@ class Handler(BaseHTTPRequestHandler):
                     import donna_radar
                     self._send_json(200, {"bitacora": donna_radar.bitacora_list(12), "propuestas": donna_radar.propuestas(), "autonomia": donna_radar.autonomia_todas(),
                                           "estadisticas": donna_radar.estadisticas(), "corriendo": _RADAR_LOCK.locked(),
-                                          "fuentes": {"conectadas": ["Agenda", "Slack", "Juntas escuchadas", "Kawiil Central", "Patio Yoltik"], "pendientes": donna_radar.FUENTES_NO_CONECTADAS}})
+                                          "fuentes": {"conectadas": donna_radar.fuentes_conectadas(), "pendientes": donna_radar.FUENTES_NO_CONECTADAS}})
                 elif _r0 == "/v1/app/seguimientos":
                     import donna_db
                     self._send_json(200, {"items": donna_db.seg_list(usuario=self._media_user() if self._media_user() != "admin" else None)})

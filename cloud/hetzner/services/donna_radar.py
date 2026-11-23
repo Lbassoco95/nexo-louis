@@ -11,7 +11,7 @@ Dos trabajos, ambos con bitácora visible en la app («Lo que Donna vigiló»):
    Lo regulatorio, legal, dinero y clientes NUNCA se cierra solo. Cada decisión se guarda y ajusta la exigencia (aprendizaje); el historial etiquetado
    puede exportarse como conjunto de datos para entrenar un modelo propio (ver docs/DONNA-PROACTIVA-PLAN.md).
 
-Fuentes hoy: agenda, Slack (resumen diario), juntas escuchadas, Kawiil Central, Patio Yoltik. Aún NO conectadas: correo y calendario M365, WhatsApp.
+Fuentes hoy: agenda, Slack (resumen diario), juntas escuchadas, Kawiil Central, Patio Yoltik, correo y calendario de Outlook (donna_m365.py). Aún NO conectada: WhatsApp.
 """
 import hashlib
 import json
@@ -36,7 +36,19 @@ CREATE TABLE IF NOT EXISTS bitacora (n INTEGER PRIMARY KEY AUTOINCREMENT, ts INT
 """
 RIESGO_ALTO = re.compile(r"(?i)\b(cnbv|sat\b|sti\b|uif|condusef|regulator|legal|jur[ií]dic|contrato|firma|pago|pagar|factura|cobr|transferencia|honorarios|multa|n[oó]mina|impuesto|cliente|propuesta comercial|cotizaci[oó]n)")
 BASE_CONF = 0.7
-FUENTES_NO_CONECTADAS = ["Correo y calendario (M365)", "WhatsApp"]
+FUENTES_NO_CONECTADAS = ["WhatsApp"]
+
+
+def fuentes_conectadas() -> list:
+    base = ["Agenda", "Slack", "Juntas escuchadas", "Kawiil Central", "Patio Yoltik"]
+    try:
+        import donna_m365
+        t = donna_m365.tenants_disponibles()
+        if t:
+            base += ["Correo Outlook (%s)" % ", ".join(t), "Calendario Outlook (%s)" % ", ".join(t)]
+    except Exception:
+        pass
+    return base
 
 
 def _c():
@@ -156,11 +168,20 @@ def fuentes_por_defecto(core) -> dict:
             raise RuntimeError(err)
         return [{"fuente": "patio_yoltik", "texto": b or "", "fecha": str(c_)[:10], "ref": a} for a, b, c_ in rows]
 
-    return {"abiertos": {"agenda": agenda_abiertos, "kc": kc_abiertos, "patio": patio_abiertos},
-            "evidencias": {"agenda": agenda_hechos, "slack": slack, "juntas": escucha, "kawiil_central": kc_hechos, "patio_yoltik": patio_hechos}}
+    f = {"abiertos": {"agenda": agenda_abiertos, "kc": kc_abiertos, "patio": patio_abiertos},
+         "evidencias": {"agenda": agenda_hechos, "slack": slack, "juntas": escucha, "kawiil_central": kc_hechos, "patio_yoltik": patio_hechos}}
+    try:                                                      # correo y calendario de Outlook, si hay token (si no, simplemente no se suman)
+        import donna_m365
+        if donna_m365.tenants_disponibles():
+            m = donna_m365.fuentes()
+            f["abiertos"].update(m["abiertos"])
+            f["evidencias"].update({"correo": m["evidencias"]["correo"], "calendario": m["evidencias"]["calendario"]})
+    except Exception:
+        pass
+    return f
 
 
-def _reunir(fuentes: dict, hoy: date, dias: int = 10):
+def _reunir(fuentes: dict, hoy: date, dias: int = 10, con_evidencia: bool = True):
     items, evid, conteo, errores = [], [], {}, {}
     for nombre, fn in fuentes["abiertos"].items():
         try:
@@ -169,7 +190,7 @@ def _reunir(fuentes: dict, hoy: date, dias: int = 10):
             conteo["abiertos:" + nombre] = len(r)
         except Exception as e:
             errores[nombre] = str(e)[:120]
-    for nombre, fn in fuentes["evidencias"].items():
+    for nombre, fn in (fuentes["evidencias"].items() if con_evidencia else []):
         try:
             r = fn(dias)
             evid += r
@@ -201,7 +222,7 @@ def _etapa(dias: int):
 def radar_fechas(fuentes: dict, hoy: date = None, notificar=None) -> dict:
     """Avisa lo que cambió de etapa desde la última vez. Silencioso si no hay nada nuevo."""
     hoy = hoy or datetime.now(TZ).date()
-    items, _e, conteo, errores = _reunir(fuentes, hoy, 1)
+    items, _e, conteo, errores = _reunir(fuentes, hoy, 1, con_evidencia=False)
     c = _c()
     nuevos = {k: [] for k, _ in ETAPAS}
     try:
@@ -215,13 +236,15 @@ def radar_fechas(fuentes: dict, hoy: date = None, notificar=None) -> dict:
             et = _etapa(dias)
             if not et:
                 continue
+            if it["tipo"] == "calendario" and et not in ("hoy", "manana") and not it.get("sin_responder"):
+                continue                                                  # una reunión confirmada solo se avisa hoy y mañana (no 7 días antes)
             clave = it["tipo"] + ":" + hashlib.md5(it["ref"].encode()).hexdigest()[:12]
             etapa_k = et if et != "vencida" else "vencida:%s-W%02d" % hoy.isocalendar()[:2]      # lo vencido se recuerda una vez por semana
             if c.execute("SELECT 1 FROM radar_avisos WHERE clave=? AND etapa=?", (clave, etapa_k)).fetchone():
                 continue
             c.execute("INSERT INTO radar_avisos(clave,etapa,ts) VALUES(?,?,?)", (clave, etapa_k, int(time.time())))
-            nuevos[et].append({"texto": it["titulo"], "cuando": {0: "hoy", 1: "mañana"}.get(dias) or ("hace %d d" % -dias if dias < 0 else "en %d d" % dias),
-                               "tipo": it["tipo"], "fecha": it["fecha"]})
+            cuando = {0: "hoy", 1: "mañana"}.get(dias) or ("hace %d d" % -dias if dias < 0 else "en %d d" % dias)
+            nuevos[et].append({"texto": it["titulo"], "cuando": cuando + ((" " + it["hora"]) if it.get("hora") else ""), "tipo": it["tipo"], "fecha": it["fecha"]})
         c.commit()
     finally:
         c.close()
@@ -359,7 +382,7 @@ def _candidatos(core_tokens, items, evid, max_pares=14):
 def procesar_cierres(core, fuentes: dict, juez, hoy: date = None, notificar=None, aplicar_fn=None) -> dict:
     hoy = hoy or datetime.now(TZ).date()
     items, evid, conteo, errores = _reunir(fuentes, hoy)
-    pares = _candidatos(core._steward_tokens, items, evid)
+    pares = _candidatos(core._steward_tokens, [i for i in items if i.get("cerrable", True)], evid)
     c = _c()
     propuestos, autos, descartados = [], [], 0
     try:
@@ -529,5 +552,5 @@ def estado_texto() -> str:
     if p:
         out.append("Propuestas de cierre por aprobar (%d):" % len(p))
         out += ["• %s — %s" % (x["titulo"][:90], x["evidencia"][:160]) for x in p[:8]]
-    out.append("Fuentes conectadas: agenda, Slack, juntas escuchadas, Kawiil Central, Patio Yoltik. Aún no: " + ", ".join(FUENTES_NO_CONECTADAS) + ".")
+    out.append("Fuentes conectadas: " + ", ".join(fuentes_conectadas()) + ". Aún no: " + ", ".join(FUENTES_NO_CONECTADAS) + ".")
     return "\n".join(out)

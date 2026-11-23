@@ -14,12 +14,15 @@ Objetivo (Polo): que Donna **no sea reactiva**. Que dé seguimiento sola, manten
 Seguridad de escritura: en Kawiil Central solo cierra si reconoce el estado «hecho» de esa base (si no, no toca nada y lo dice); en Patio usa `completada`. Se guarda el estado previo para deshacer. Toda escritura queda en el registro de auditoría de esos módulos.
 
 ## Fuentes
-Conectadas: Agenda · Slack (resumen diario) · Juntas escuchadas (Escuchar) · Kawiil Central · Patio Yoltik.
-Siguientes, en este orden: **correo y calendario M365** (ya hay acceso en `m365.py`; falta el lector de evidencia), **WhatsApp** (requiere decidir el canal: WhatsApp Business API / número dedicado — el acceso a un WhatsApp personal no es estable ni permitido), y reglas de **actividades** de Kawiil Central (sede, invitados sin responder, +1 por aprobar, proveedor sin confirmar; las reglas y 14 pruebas están en el PR #586 de `kawiil-central` y hay que traerlas aquí).
+Conectadas: Agenda · Slack (resumen diario) · Juntas escuchadas (Escuchar) · Kawiil Central · Patio Yoltik · **Correo y calendario de Outlook** (Kawiil y Yoltik, solo lectura, `donna_m365.py`).
+- Correo: lo que Polo **envió** y las respuestas **recibidas** (asunto, destinatarios y ~300 caracteres) sirven de evidencia para cerrar pendientes («ya se mandó la carta»).
+- Calendario: reuniones **ya realizadas** (con quién) son evidencia; las reuniones de **hoy y mañana** y las invitaciones **sin responder** entran al radar de fechas. Una reunión no se «cierra».
+- Privacidad: solo los fragmentos que Donna cita al proponer un cierre se guardan; el texto de correos y eventos es dato, nunca instrucciones.
+Siguientes, en este orden: **WhatsApp** (requiere decidir el canal: WhatsApp Business API / número dedicado — el acceso a un WhatsApp personal no es estable ni permitido), y reglas de **actividades** de Kawiil Central (sede, invitados sin responder, +1 por aprobar, proveedor sin confirmar; las reglas y 14 pruebas están en el PR #586 de `kawiil-central` y hay que traerlas aquí).
 
 ## Fases
 0. ✅ Radar de fechas + cierres con evidencia + autonomía + bitácora (esta entrega).
-1. Correo y calendario como fuente de evidencia y de fechas; reunión → tareas propuestas (de lo escuchado: «quién · qué · cuándo») que Donna **crea** en Kawiil Central/Patio con tu aprobación.
+1. ✅ Correo y calendario como fuente de evidencia y de fechas (entregado). Sigue: reunión → tareas propuestas (de lo escuchado: «quién · qué · cuándo») que Donna **crea** en Kawiil Central/Patio con tu aprobación.
 2. Mantener Kawiil/Patio al día en sentido contrario: lo que se resolvió y no se marcó (ya), y lo nuevo que aparece en mensajes y juntas y no está registrado.
 3. Revisión semanal de avance: qué se cerró, qué se estancó, qué cambió de fecha; tablero de estadísticas (cuántas propuestas acertó).
 4. NVIDIA (abajo).

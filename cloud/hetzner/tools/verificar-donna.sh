@@ -124,7 +124,7 @@ else
 fi
 
 echo "3m) Base de datos de Donna (avisos, resúmenes, seguimientos)"
-for f in donna_db.py donna_seg.py donna_resumen.py donna_personas.py donna_radar.py browser_live.py; do
+for f in donna_db.py donna_seg.py donna_resumen.py donna_personas.py donna_radar.py donna_m365.py browser_live.py; do
   [[ -f "$OC/scripts/$f" ]] && ok "$f instalado" || bad "falta $f → sudo install -m 0755 -o polo -g polo ~/donna-deploy/cloud/hetzner/services/$f $OC/scripts/"
 done
 DB=$(cd "$OC/scripts" && PUSH_STATE_DIR="$OC/state" python3 -c "
@@ -132,6 +132,19 @@ import donna_db as D
 c=D.conn()
 print(*[c.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ('notificaciones','resumenes','seguimientos')])" 2>/dev/null)
 [[ -n "$DB" ]] && ok "donna.db responde (avisos / resúmenes / seguimientos: $DB)" || bad "donna.db no responde (¿falta donna_db.py o permisos de $OC/state?)"
+
+M3=$(cd "$OC/scripts" && PUSH_STATE_DIR="$OC/state" timeout 60 python3 -c "
+import datetime, donna_m365 as M
+t = M.tenants_disponibles()
+if not t:
+    print('SIN_TOKEN'); raise SystemExit
+ev = M.correo_evidencias(3); cal = M.calendario_abiertos(datetime.date.today())
+print('OK', ','.join(t), len(ev), len(cal))" 2>&1 | tail -1)
+case "$M3" in
+  OK*) ok "correo y calendario de Outlook se leen (cuentas, correos de 3 días, reuniones próximas: ${M3#OK })" ;;
+  SIN_TOKEN) bad "no hay token de Outlook en $OC → corre oauth-kawiil.py / oauth-yoltik.py" ;;
+  *) bad "Outlook no respondió: $M3" ;;
+esac
 
 echo "4) Conversación real (¿Ya estás ahí?)"
 if [[ -n "$TOKEN" ]]; then
