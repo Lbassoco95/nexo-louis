@@ -477,27 +477,13 @@ def main():
         except Exception as e:
             log.warning(f"review semanal falló: {e}")
 
-        # Donna PROACTIVA: radar de fechas (08:00) y cierres con evidencia (12:00 y 17:00). Se marca antes de correr (no se repite si falla) y corre en un hilo
-        # para no retrasar los recordatorios. Cada corrida deja constancia en la bitácora que se ve en la app.
+        # Donna PROACTIVA: no hay horarios fijos. Cada minuto solo se comprueba (barato, sin red ni modelo) si al agente le toca despertar según lo que él mismo decidió
+        # (o si hay una junta nueva). Cuando toca, el agente observa, decide qué revisar y cuándo volver, y aprende cómo trabaja Polo (donna_agente.py).
         try:
-            import donna_radar
-            _n = datetime.now(TZ_CDMX)
-            _hoy = _n.strftime("%Y-%m-%d")
-            _slot = {8: "fechas", 12: "cierres12", 17: "cierres17"}.get(_n.hour)
-            if _slot and not donna_radar.ya_corrio(_slot, _hoy):
-                donna_radar.marcar_corrida(_slot, _hoy)
-
-                def _radar(slot=_slot):
-                    try:
-                        if slot == "fechas":
-                            log.info("radar de fechas: %s", donna_radar.radar_fechas(donna_radar.fuentes_por_defecto(core)))
-                        else:
-                            log.info("cierres con evidencia: %s", donna_radar.procesar_cierres(core, donna_radar.fuentes_por_defecto(core), donna_radar.juez_haiku(core)))
-                    except Exception:
-                        log.exception("radar proactivo falló (%s)", slot)
-                threading.Thread(target=_radar, daemon=True).start()
+            import donna_agente
+            donna_agente.tick(core)
         except Exception as e:
-            log.warning(f"radar proactivo: {e}")
+            log.warning(f"agente de vigilancia: {e}")
 
         # Seguimientos (lo que Donna sigue por Polo) y avisos pospuestos que ya les toca volver. Independiente de los resúmenes.
         try:

@@ -666,6 +666,14 @@ def load_system_prompt(channel: str = "telegram") -> str:
         if path.exists():
             parts.append(f"\n## {fname}\n```\n{_budget_memory(fname, path.read_text())}\n```\n")
 
+    try:                                                           # lo que Donna ha aprendido de cómo trabaja Polo (donna_agente.py)
+        import donna_agente
+        _kn = donna_agente.contexto_corto()
+        if _kn:
+            parts.append(_kn)
+    except Exception:
+        pass
+
     parts.append(
         "\n\n# IDENTIDAD Y TONO (Ollama / chat normal)\n"
         f"Eres {AGENT_NAME} (Nexo), asistente ejecutivo DE Polo Bassoco (CEO Kawiil/Yoltik). "

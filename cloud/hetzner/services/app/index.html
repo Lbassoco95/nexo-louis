@@ -2201,8 +2201,8 @@ async function loadRadar(){
   try{const d=await api('/v1/app/radar');
     const cuando=ts=>{const x=new Date(ts*1000);return x.toLocaleDateString('es-MX',{day:'numeric',month:'short'})+' '+x.toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'})};
     el.innerHTML='<div class="card" style="margin-bottom:12px"><div class="row"><b>🛰 Lo que Donna vigiló</b>'+(d.corriendo?'<span class="pill">revisando…</span>':'')+'</div>'+
-      (d.bitacora.length?d.bitacora.slice(0,6).map(x=>`<div class="sub" style="margin-top:6px"><b>${esc(cuando(x.ts))}</b> · ${esc(x.resumen)}</div>`).join(''):'<div class="sub" style="margin-top:6px">Aún no ha corrido. Revisa a las 8:00 (fechas) y a las 12:00 y 17:00 (cierres), o toca «Revisar ahora».</div>')+
-      '<div class="nq"><button id="rd-c">🔎 Buscar cierres ahora</button><button id="rd-f">📅 Radar de fechas ahora</button></div>'+
+      (d.bitacora.length?d.bitacora.slice(0,6).map(x=>`<div class="sub" style="margin-top:6px"><b>${esc(cuando(x.ts))}</b> · ${esc(x.resumen)}</div>`).join(''):'<div class="sub" style="margin-top:6px">Aún no ha corrido. Ella decide cuándo revisar según cómo trabajas; o toca «Revisar ahora».</div>')+
+      '<div class="nq"><button id="rd-a">🧠 Revisar ahora</button><button id="rd-c">🔎 Solo cierres</button><button id="rd-f">📅 Solo fechas</button></div><div id="agente"></div>'+
       '<div class="sub" style="margin-top:8px">Fuentes: '+d.fuentes.conectadas.map(esc).join(', ')+'. Aún no conectadas: '+d.fuentes.pendientes.map(esc).join(', ')+'.</div></div>'+
       (d.propuestas.length?'<div class="sec">Propuestas de cierre · '+d.propuestas.length+'</div>'+d.propuestas.map(x=>`<div class="card segc" data-c="${esc(x.id)}"><b>${esc(x.titulo)}</b><div class="sub" style="margin-top:4px">${esc(x.evidencia)}</div><div class="sub" style="margin-top:4px">${esc(CLN[x.clase]||x.clase)} · confianza ${Math.round(x.confianza*100)}%${x.riesgo==='alto'?' · <b>riesgo alto: siempre te pregunto</b>':''}</div>`+
         `<div class="nq"><button data-d="aprobar">✓ Sí, ciérralo</button>${x.riesgo==='alto'?'':'<button data-d="aprobar" data-au="1">✓ Y cierra solas las de este tipo</button>'}<button data-d="rechazar">✕ No está resuelto</button></div></div>`).join(''):'')+
@@ -2210,11 +2210,25 @@ async function loadRadar(){
       d.autonomia.map(a=>`<div class="menurow" style="margin-bottom:6px"><span><b>${esc(CLN[a.clase]||a.clase)}</b></span><select data-cl="${esc(a.clase)}" aria-label="${esc(CLN[a.clase]||a.clase)}"><option value="proponer"${a.nivel==='proponer'?' selected':''}>Solo propone</option><option value="auto"${a.nivel==='auto'?' selected':''}>Cierra sola</option></select></div>`).join('')+
       (d.estadisticas.length?'<div class="sub">Aprendizaje: '+d.estadisticas.map(e=>esc(CLN[e.clase]||e.clase)+' — '+e.aprobadas+' sí, '+e.rechazadas+' no (exigencia '+Math.round(e.umbral*100)+'%)').join(' · ')+'</div>':'')+'</details>';
     const run=async q=>{try{await radarPost('ejecutar',{que:q});toast('Revisando…');clearInterval(RADT);let n=0;RADT=setInterval(async()=>{n++;if(n>40||!$('#radar')){clearInterval(RADT);return}try{const r=await api('/v1/app/radar');if(!r.corriendo){clearInterval(RADT);loadSeg()}}catch(e){}},3000);setTimeout(loadRadar,800)}catch(e){toast(e.message)}};
-    $('#rd-c').onclick=()=>run('cierres');$('#rd-f').onclick=()=>run('fechas');
+    $('#rd-a').onclick=()=>run('agente');$('#rd-c').onclick=()=>run('cierres');$('#rd-f').onclick=()=>run('fechas');loadAgente();
     $$('#radar [data-c] [data-d]').forEach(b=>b.onclick=async()=>{const id=b.closest('[data-c]').dataset.c;
       if(b.dataset.au&&!confirm('¿Que Donna cierre sola, con evidencia y botón para deshacer, los pendientes de este tipo?'))return;
       try{const r=await radarPost('cierre',{id,decision:b.dataset.d,autorizar:!!b.dataset.au});toast(b.dataset.d==='rechazar'?'Entendido, seré más exigente':(r.ok===false?(r.resultado||'No pude cerrarlo'):'Cerrado ✓'));loadSeg()}catch(e){toast(e.message)}});
     $$('#radar [data-cl]').forEach(sel=>sel.onchange=async()=>{try{await radarPost('autonomia',{clase:sel.dataset.cl,nivel:sel.value});toast('Listo')}catch(e){toast(e.message);loadRadar()}});
+  }catch(e){}
+}
+async function loadAgente(){
+  const el=$('#agente');if(!el)return;
+  try{const d=await api('/v1/app/agente');
+    const cu=ts=>{const x=new Date(ts*1000);return x.toLocaleDateString('es-MX',{day:'numeric',month:'short'})+' '+x.toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'})};
+    const ks=d.conocimiento;
+    el.innerHTML='<div class="sub" style="margin-top:8px">🕒 '+(d.ultima_ts?'Última revisión: '+esc(cu(d.ultima_ts))+' · ':'')+(d.proxima_ts?'ella decidió volver ~'+esc(cu(d.proxima_ts)):'aún no ha decidido')+' · '+d.llamadas_hoy+'/'+d.max_llamadas+' revisiones hoy</div>'+
+      (d.ciclos.length?'<details class="agg"><summary class="sec">Qué decidió y por qué</summary>'+d.ciclos.slice(0,5).map(c=>`<div class="sub" style="margin:6px 0"><b>${esc(cu(c.ts))}</b> · ${esc(c.motivo)}${c.modo==='basico'?' · <i>modo básico</i>':''}<br>${esc((c.decision&&c.decision.bitacora)||'')}${((c.decision&&c.decision.acciones)||[]).map(a=>'<br>→ '+esc(a.herramienta)+': '+esc(a.motivo)).join('')}</div>`).join('')+'</details>':'')+
+      '<div class="sec" style="margin-top:10px">🧠 Lo que ha aprendido de cómo trabajas · '+ks.length+'</div>'+(ks.length?'<div class="sub" style="margin-bottom:6px">Si algo está mal, corrígelo: lo que tú digas manda y ya no lo cambia sola.</div>'+ks.map(k=>`<div class="card segc" data-k="${esc(k.id)}"><div>${esc(k.hecho)}</div><div class="sub" style="margin-top:4px">${esc(k.tema)} · confianza ${Math.round(k.confianza*100)}%${k.fuente==='polo'?' · <b>confirmado por ti</b>':''}${k.evidencia?' · '+esc(k.evidencia):''}</div><div class="nq"><button data-q="confirmar">✓ Así es</button><button data-q="corregir">✎ Corregir</button><button data-q="olvidar">🗑 Olvidar</button></div></div>`).join(''):'<div class="sub">Aún no aprende nada: necesita unos días de observarte. Lo irás viendo aquí.</div>');
+    $$('#agente [data-k] [data-q]').forEach(b=>b.onclick=async()=>{const id=b.closest('[data-k]').dataset.k,q=b.dataset.q;let hecho;
+      if(q==='corregir'){hecho=prompt('¿Cómo es en realidad?');if(!hecho)return}
+      if(q==='olvidar'&&!confirm('¿Que Donna olvide esto?'))return;
+      try{await api('/v1/app/agente/conocimiento',{method:'POST',body:JSON.stringify({id,accion:q,hecho})});toast('Listo');loadAgente()}catch(e){toast(e.message)}})
   }catch(e){}
 }
 const SEGO={manual:'',tarea:'tarea',agenda:'agenda',compra:'compra',reservacion:'reservación',dia:'mi día'};

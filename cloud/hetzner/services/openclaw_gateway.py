@@ -1156,6 +1156,16 @@ class Handler(BaseHTTPRequestHandler):
                             self._send_json(200, {"items": [], "error": str(e)[:160]})
                     else:
                         self._send_json(200, {"extraccion": donna_tareas.estado_extraccion(sid) if sid else {"estado": "todas"}, "items": donna_tareas.listar(sid)})
+                elif _r0 == "/v1/app/agente":
+                    import donna_agente
+                    cs = donna_agente.ciclos(8)
+                    for c_ in cs:
+                        try:
+                            c_["decision"] = json.loads(c_["decision"] or "{}")
+                        except ValueError:
+                            c_["decision"] = {}
+                    self._send_json(200, {"proxima_ts": donna_agente.estado_get("proxima_ts", 0), "ultima_ts": donna_agente.estado_get("ultima_ts", 0), "ciclos": cs,
+                                          "conocimiento": donna_agente.conocimiento_list(), "llamadas_hoy": donna_agente._llamadas_hoy(), "max_llamadas": donna_agente.MAX_CICLOS_DIA})
                 elif _r0 == "/v1/app/radar":
                     import donna_radar
                     self._send_json(200, {"bitacora": donna_radar.bitacora_list(12), "propuestas": donna_radar.propuestas(), "autonomia": donna_radar.autonomia_todas(),
@@ -2529,6 +2539,13 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
             return
+        if self.path == "/v1/app/agente/conocimiento":
+            import donna_agente
+            try:
+                self._send_json(200, donna_agente.corregir(str(body.get("id", "")), str(body.get("accion", "")), str(body.get("hecho", ""))))
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
+            return
         if self.path in ("/v1/app/tareas/accion", "/v1/app/tareas/extraer"):
             import donna_tareas
             try:
@@ -2555,7 +2572,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json(200, {"ok": True, "autonomia": donna_radar.autonomia_todas()})
                 else:                                                   # «Revisar ahora»: corre el radar en segundo plano; la app consulta /v1/app/radar
                     que = str(body.get("que", "cierres"))
-                    if que not in ("cierres", "fechas"):
+                    if que not in ("cierres", "fechas", "agente"):
                         raise ValueError("operación no válida")
                     if not _RADAR_LOCK.acquire(blocking=False):
                         self._send_json(200, {"ok": True, "ya": True})
@@ -2564,7 +2581,10 @@ class Handler(BaseHTTPRequestHandler):
                     def _ya():
                         try:
                             f = donna_radar.fuentes_por_defecto(core)
-                            if que == "fechas":
+                            if que == "agente":                                # «Revisar ahora»: un ciclo completo del agente (observa, decide, actúa, aprende)
+                                import donna_agente
+                                donna_agente.ciclo(core, "Polo pidió que revisara ahora", f)
+                            elif que == "fechas":
                                 donna_radar.radar_fechas(f)
                             else:
                                 donna_radar.procesar_cierres(core, f, donna_radar.juez_haiku(core))

@@ -327,3 +327,6 @@ Vista **Navegador** (menú lateral): eliges Cinemex, Cinépolis, Cinemark, OpenT
 
 ## Donna proactiva (v27)
 Ver `docs/DONNA-PROACTIVA-PLAN.md`. Seguimiento → «🛰 Lo que Donna vigiló» (bitácora), «Propuestas de cierre» (con evidencia; aprobar, rechazar o «cierra solas las de este tipo») y «Cuánta autonomía le doy». Scheduler: radar de fechas 08:00; cierres 12:00 y 17:00. Endpoints: `GET /v1/app/radar`, `POST /v1/app/radar/cierre|autonomia|ejecutar`. Pruebas: `tests/test_radar.py`.
+
+## Agente de vigilancia (v29)
+Sin horarios fijos: el agente decide qué revisar y cuándo volver (`donna_agente.py`; ver `docs/DONNA-PROACTIVA-PLAN.md`). Seguimiento → «🧠 Revisar ahora», «Qué decidió y por qué» y «Lo que ha aprendido de cómo trabajas» (confirmar / corregir / olvidar). Endpoints: `GET /v1/app/agente`, `POST /v1/app/agente/conocimiento`, `POST /v1/app/radar/ejecutar {que:'agente'}`. Pruebas: `tests/test_agente.py`.
