@@ -216,6 +216,7 @@ def revisar_entregable(core, titulo: str, marcar_prioritario: bool = True, m365=
     if marcar_prioritario and cod != "enviado":
         r["prioritario"] = _marcar_prioritario(core, titulo, txt, juntas)
     r["texto"] = _texto(r)
+    r["brief"] = brief_asistente(r)
     return r
 
 
@@ -237,6 +238,82 @@ def _marcar_prioritario(core, titulo: str, motivo: str, juntas: list) -> str:
     except Exception:
         pass
     return "Lo dejé como URGENTE en la agenda y en seguimiento diario."
+
+
+_DBX = re.compile(r"^\s*(.+?)\s+→\s+(\S.*?)\s+\(modificado (\d{4}-\d{2}-\d{2})\)\s*$")
+
+
+def _versiones_dropbox(txt: str, ks: list, must=()) -> list:
+    """Archivos de Dropbox que parecen ser ESTE documento, la fecha más reciente primero: [(nombre, fecha)]."""
+    out = []
+    for l in (txt or "").splitlines():
+        m = _DBX.match(l)
+        n = donna_personas.norm(m.group(1)) if m else ""
+        if m and re.search(r"(?i)\.(docx?|pdf|xlsx?)$", m.group(1)) and len([k for k in ks if k in n]) >= min(2, len(ks)) and (not must or any(x in n for x in must)):
+            out.append((m.group(1), m.group(3)))
+    return sorted(out, key=lambda x: x[1], reverse=True)
+
+
+def _criterio_de_polo(r: dict) -> str:
+    for n in r.get("notas", []):
+        i = n["linea"].lower().find("criterio de polo")
+        if i >= 0:
+            frag = n["linea"][i:i + 330]
+            cut = frag.rfind(". ", 120)
+            return frag[:cut + 1] if cut > 0 else frag.rstrip(" ,;") + "…"
+    return ""
+
+
+def _f(d: str) -> str:
+    """2026-09-10 → 10-sep-2026"""
+    try:
+        y, m, dd = d[:10].split("-")
+        return "%d-%s-%s" % (int(dd), ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"][int(m) - 1], y)
+    except Exception:
+        return d or "sin fecha"
+
+
+def brief_asistente(r: dict) -> str:
+    """La respuesta como la daría una asistente ejecutiva: PRIMERO la conclusión, luego lo esencial en pocas líneas, lo que ya hizo y lo que sigue. La evidencia completa queda aparte
+    (se ve escribiendo «evidencia»); nunca se vuelca cruda al chat."""
+    e, ks = r["entregable"], r["claves"]
+    cod, juntas = r["veredicto"], r["juntas"]
+    if cod == "sin_evidencia":
+        concl = "No encuentro que se haya enviado la actualización" + (", y no tengo la junta para saber qué se pidió." if not juntas else " (la última junta sobre esto fue el %s)." % _f(juntas[0]["fecha"]))
+    elif cod == "antes_de_junta":
+        concl = "Se envió el %s, pero **antes** de la última junta (%s): puede faltar lo que se acordó después." % (_f(r["ultimo_envio"]), _f(r["ultima_junta"]))
+    elif cod == "antes_de_cambio":
+        concl = "Se envió el %s, pero el entregable cambió después: falta mandar la versión nueva." % _f(r["ultimo_envio"])
+    else:
+        c = r["correos"][0] if r["correos"] else {}
+        concl = "Sí: se envió el %s%s." % (_f(r["ultimo_envio"]), (" a " + c["para"]) if c.get("para") else "")
+    L = ["**" + concl + "**", ""]
+    if e:
+        L.append("• En Cerebro está en **%s**%s, actualizado el %s." % (e["estado"], (" con VoBo " + e["vobo"]) if e["vobo"] else "", _f(e["actualizado"])))
+    else:
+        L.append("• No lo encontré por ese nombre en Cerebro.")
+    vs = _versiones_dropbox(r["dropbox"], ks, _must(e))
+    if vs:
+        L.append("• En Dropbox, lo más reciente es **%s** (%s)%s." % (vs[0][0], _f(vs[0][1]), (", y también " + ", ".join("%s (%s)" % (n, _f(f)) for n, f in vs[1:3])) if len(vs) > 1 else ""))
+    L.append("• Correo enviado con este documento: %s." % ("nada" if not r["correos"] else "; ".join("%s a %s" % (_f(c["fecha"]), c["para"] or "?") for c in r["correos"][:2])))
+    if juntas:
+        h = juntas[0]["frases"][0] if juntas[0]["frases"] else None
+        L.append("• Junta del %s: %s" % (_f(juntas[0]["fecha"]), ("«%s» — %s [%s]" % (h["texto"][:200], h["persona"] or "voz sin nombre", h["hora"])) if h else "se habló del tema."))
+    crit = _criterio_de_polo(r)
+    if crit:
+        L += ["", "**Ojo con tu criterio:** " + crit]
+    L += ["", "**Lo que hice:** " + (r["prioritario"] or "no hacía falta marcar nada.")]
+    sig = []
+    if not juntas:
+        sig.append("si la junta fue en Teams, Zoom o Cowork, dime dónde quedó y la sumo; de ahora en adelante, con Escuchar queda como fuente literal")
+    if e and e.get("vobo", "").lower() == "pendiente":
+        sig.append("el VoBo sigue pendiente: ¿lo apruebas, o va a otra revisión antes de mandarse?")
+    if cod != "enviado":
+        sig.append("dime qué cambio pidieron y lo dejo como tarea con fecha")
+    if sig:
+        L += ["", "**Qué sigue:**"] + ["• " + x[0].upper() + x[1:] + ("" if x.endswith("?") else ".") for x in sig[:3]]
+    L += ["", "_Escribe «evidencia» y te muestro todo lo que revisé._"]
+    return "\n".join(L)
 
 
 def _texto(r: dict) -> str:
@@ -267,6 +344,85 @@ def _texto(r: dict) -> str:
     L.append("\nVEREDICTO DE ENVÍO (calculado comparando fechas): " + r["veredicto_txt"])
     if r["prioritario"]:
         L.append("ACCIÓN: " + r["prioritario"])
+    return "\n".join(L)
+
+
+def kc_agente_resumen(core, nombre: str) -> dict:
+    """Lo esencial de un agente de Kawiil Central, sacado de agent_registry y agent_activity_logs: {encontrado, display_name, descripcion, estado, modelo, capacidades, ultimas, ultima_fecha}."""
+    conn, err = core._kawiil_central_pg()
+    if err:
+        return {"encontrado": False, "error": err.replace("❌ ", "")}
+    try:
+        conn.autocommit = True
+        cur = conn.cursor()
+        q = "%" + nombre.strip().lower() + "%"
+        cur.execute("SELECT id::text, name, display_name, description, status, model, capabilities FROM public.agent_registry WHERE lower(name) LIKE %s OR lower(display_name) LIKE %s ORDER BY 1 LIMIT 1", (q, q))
+        a = cur.fetchone()
+        if not a:
+            conn.close()
+            return {"encontrado": False}
+        cur.execute("SELECT message, created_at FROM public.agent_activity_logs WHERE agent_id::text=%s AND action='task_completed' ORDER BY created_at DESC LIMIT 4", (a[0],))
+        ult = []
+        for msg, fecha in cur.fetchall():
+            m = re.search(r"completed:\s*(.+?)(?:\s*\(\d+(?:\.\d+)?s\))?$", msg or "")
+            ult.append({"titulo": (m.group(1) if m else (msg or ""))[:110], "fecha": str(fecha)[:10]})
+        conn.close()
+        caps = a[6] if isinstance(a[6], list) else []
+        return {"encontrado": True, "id": a[0], "name": a[1], "display_name": a[2] or a[1], "descripcion": (a[3] or "")[:300], "estado": a[4] or "?", "modelo": a[5] or "", "capacidades": [str(c) for c in caps][:6],
+                "ultimas": ult, "ultima_fecha": ult[0]["fecha"] if ult else ""}
+    except Exception as e:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return {"encontrado": False, "error": str(e)[:160]}
+
+
+def kc_agente_tareas_esquema(core, agent_id: str) -> str:
+    """Solo lectura: columnas de agent_tasks y las últimas 3 tareas de ese agente (valores recortados). Va como EVIDENCIA de la mejora «ejecutar agentes», para que quien la construya
+    (Claude Code) vea cómo se le asigna una tarea a un agente sin otra vuelta de preguntas."""
+    conn, err = core._kawiil_central_pg()
+    if err:
+        return "(sin esquema: %s)" % err.replace("❌ ", "")
+    try:
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema='public' AND table_name='agent_tasks' ORDER BY ordinal_position")
+        cols = cur.fetchall()
+        if not cols:
+            conn.close()
+            return "(no encontré la tabla agent_tasks)"
+        out = ["agent_tasks — columnas:"] + ["  %s %s%s%s" % (c, t, "" if n == "YES" else " NOT NULL", (" default " + str(d)[:40]) if d else "") for c, t, n, d in cols]
+        cur.execute("SELECT DISTINCT status FROM public.agent_tasks LIMIT 12") if any(c[0] == "status" for c in cols) else None
+        if any(c[0] == "status" for c in cols):
+            out.append("valores de status vistos: " + ", ".join(str(r[0]) for r in cur.fetchall()))
+        if agent_id and any(c[0] == "agent_id" for c in cols):
+            cur.execute("SELECT * FROM public.agent_tasks WHERE agent_id::text=%s ORDER BY 1 DESC LIMIT 3", (agent_id,))
+            nom = [d[0] for d in cur.description]
+            for f in cur.fetchall():
+                out.append("ejemplo: " + "; ".join("%s=%s" % (n, (str(v) if v is not None else "")[:70]) for n, v in zip(nom, f) if v not in (None, ""))[:700])
+        conn.close()
+        return "\n".join(out)[:2300]
+    except Exception as e:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return "(no pude leer agent_tasks: %s)" % str(e)[:120]
+
+
+def brief_agente(nombre: str, a: dict) -> str:
+    """Cómo lo diría una asistente: quién es el agente, qué hizo últimamente y qué sigue (sin tablas ni ids)."""
+    if a.get("error"):
+        return "No pude consultar a %s en Kawiil Central ahora (%s)." % (nombre, a["error"])
+    if not a.get("encontrado"):
+        return "No encuentro a un agente llamado «%s» en Kawiil Central." % nombre
+    L = ["**%s** está en Kawiil Central y ahora está en **%s**." % (a["display_name"], {"idle": "reposo (disponible)", "running": "ejecución", "busy": "ejecución"}.get(a["estado"], a["estado"]))]
+    if a["descripcion"]:
+        L.append("Se dedica a: " + a["descripcion"].rstrip(".") + ".")
+    if a["ultimas"]:
+        L.append("Lo último que terminó (%s): %s." % (a["ultima_fecha"], "; ".join("«%s»" % u["titulo"] for u in a["ultimas"][:3])))
+    L += ["", "Todavía **no sé cómo asignarle una tarea desde aquí** — solo veo lo que ya hizo. Ya dejé registrado que necesito esa capacidad. Mientras tanto, puedo revisar el correo, las juntas y Dropbox yo misma: dime qué necesitas saber."]
     return "\n".join(L)
 
 

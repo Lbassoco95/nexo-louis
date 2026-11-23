@@ -1180,6 +1180,9 @@ class Handler(BaseHTTPRequestHandler):
                         self._send_json(200, {"texto": donna_aprender.mejoras_markdown()})
                     else:
                         self._send_json(200, {"reglas": donna_aprender.reglas_list(), "mejoras": donna_aprender.mejoras_list()})
+                elif _r0 == "/v1/app/oficio":
+                    import donna_oficio, donna_aprender
+                    self._send_json(200, {"competencias": donna_oficio.resumen(7), "propuestas": [r for r in donna_aprender.reglas_list(("propuesta",))], "corriendo": _RADAR_LOCK.locked()})
                 elif _r0 == "/v1/app/agente":
                     import donna_agente
                     cs = donna_agente.ciclos(8)
@@ -2602,6 +2605,22 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json(200, donna_aprender.mejora_estado(str(body.get("id", "")), str(body.get("accion", "")), str(body.get("nota", ""))))
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
+            return
+        if self.path == "/v1/app/oficio/revisar":                    # «Autoevaluarse ahora»
+            import donna_oficio
+            if not _RADAR_LOCK.acquire(blocking=False):
+                self._send_json(200, {"ok": True, "ya": True})
+                return
+
+            def _ofi():
+                try:
+                    donna_oficio.revisar_reciente(core)
+                except Exception:
+                    log.exception("autoevaluación falló")
+                finally:
+                    _RADAR_LOCK.release()
+            threading.Thread(target=_ofi, daemon=True).start()
+            self._send_json(200, {"ok": True})
             return
         if self.path == "/v1/app/agente/plan":
             import donna_agente

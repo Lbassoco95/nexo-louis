@@ -9675,7 +9675,9 @@ def execute_tool(name: str, args: dict) -> str:
         elif name == "revisar_entregable":
             import donna_revision
             try:
-                return donna_revision.revisar_entregable(sys.modules[__name__], str(args.get("titulo", "")), args.get("marcar_prioritario", True) is not False)["texto"]
+                rr = donna_revision.revisar_entregable(sys.modules[__name__], str(args.get("titulo", "")), args.get("marcar_prioritario", True) is not False)
+                return ("RESPUESTA SUGERIDA (úsala tal cual o casi: conclusión primero, breve; NO pegues la evidencia cruda, ofrécela con «escribe evidencia»):\n" + rr["brief"] +
+                        "\n\n--- EVIDENCIA (solo para que verifiques; no la vuelques) ---\n" + rr["texto"])
             except ValueError as e:
                 return "❌ " + str(e)
         elif name == "kawiil_central_agentes":
@@ -10687,8 +10689,29 @@ def try_deterministic_revision(user_message: str):
         return None
     except Exception as e:
         return "No pude completar la revisión por un error (%s). Lo registro para corregirlo." % str(e)[:120]
-    return ("🔎 Lo revisé contra las fuentes (transcripciones literales, correo, Dropbox, Cerebro y agenda), no contra resúmenes:\n\n" + r["texto"] +
-            "\n\nSi falta una fuente (p. ej. una junta que no se grabó con Escuchar), dime dónde está y la sumo; si algo de esto está mal, toca «Corregir» y lo aprendo.")
+    try:
+        import donna_agente
+        donna_agente.estado_set("ultima_evidencia", {"titulo": m.group(1).strip(), "texto": r["texto"], "ts": int(time.time())})
+    except Exception:
+        pass
+    return r["brief"]
+
+
+_EVIDENCIA_RX = re.compile(r"(?i)^\W*(?:mu[eé]strame|dame|ver|quiero\s+ver|ens[eé][ñn]ame|pasa(?:me)?)?\W*(?:toda\s+)?(?:la\s+)?evidencia(?:\s+completa)?\W*$")
+
+
+def try_deterministic_evidencia(user_message: str):
+    """«evidencia» → la evidencia completa de la última revisión (el chat solo muestra la conclusión; lo crudo queda a un mensaje de distancia)."""
+    if not _EVIDENCIA_RX.match((user_message or "").strip()[:60]):
+        return None
+    try:
+        import donna_agente
+        e = donna_agente.estado_get("ultima_evidencia", None)
+    except Exception:
+        e = None
+    if not e:
+        return "No tengo una revisión reciente. Pídeme revisar un entregable y te enseño la evidencia."
+    return "📎 Evidencia completa de la revisión de «%s» (literal, como la leí):\n\n%s" % (e["titulo"], e["texto"])
 
 
 _AGENTE_RX = re.compile(r"(?i)\bagente\s+(?:de\s+kawiil\s+central\s+)?[«\"']?([A-Za-zÁÉÍÓÚáéíóúñÑ][A-Za-zÁÉÍÓÚáéíóúñÑ0-9_-]{2,29})")
@@ -10711,14 +10734,15 @@ def try_deterministic_agente(user_message: str):
         return None                                                                     # es un sub-agente local: sigue el flujo normal
     try:
         import donna_revision, donna_aprender
-        vista = donna_revision.kc_agentes(sys.modules[__name__], nombre)
+        resumen = donna_revision.kc_agente_resumen(sys.modules[__name__], nombre)
+        esquema = donna_revision.kc_agente_tareas_esquema(sys.modules[__name__], resumen.get("id", "")) if resumen.get("encontrado") else ""
         donna_aprender.mejora_agregar("Ejecutar el agente %s de Kawiil Central desde Donna" % nombre,
-                                      "Polo pidió que el agente %s de Kawiil Central haga una actividad y Donna no tiene cómo ejecutarlo (solo puede VER sus datos). Hay que definir cómo se dispara "
-                                      "(endpoint, función o tabla de tareas) y construir la herramienta." % nombre, "Polo: «%s»" % msg[:600], "capacidad")
+                                      "Polo pidió que el agente %s de Kawiil Central haga una actividad y Donna no tiene cómo ejecutarlo (solo puede VER sus datos). Los agentes viven en agent_registry y sus tareas en "
+                                      "agent_tasks (un proceso de Kawiil Central las ejecuta y deja huella en agent_activity_logs). Propuesta: herramienta que cree la tarea con vista previa y confirmación de Polo, "
+                                      "y luego lea su estado y resultado." % nombre, ("Polo: «%s»\n\n%s" % (msg[:500], esquema))[:2500], "capacidad")
     except Exception as e:
         return "Quieres que use al agente %s de Kawiil Central, pero todavía no puedo ejecutarlo (y no pude consultarlo ahora: %s). Lo dejé registrado como mejora pendiente." % (nombre, str(e)[:100])
-    return ("No puedo ejecutar al agente %s todavía: solo puedo VER lo que tiene en Kawiil Central, no dispararlo. Esto es lo que veo:\n\n%s\n\n"
-            "Ya dejé la mejora registrada (Seguimiento → Mejoras pendientes). Mientras tanto, dime qué documento o tema quieres revisar y lo hago yo con mis herramientas (correo, juntas, Dropbox, Cerebro)." % (nombre, vista))
+    return donna_revision.brief_agente(nombre, resumen)
 
 
 def try_deterministic_agenda_query(user_message: str):
@@ -10801,11 +10825,15 @@ def _call_llm_impl(
         return det_ag, "agenda-directa"
 
     # Revisar un entregable contra las fuentes / pedir un agente de Kawiil Central: se hace en código, no dependen de que el modelo elija bien las herramientas.
+    det_evi = try_deterministic_evidencia(user_message)
+    if det_evi is not None:
+        _mark_last_route("evidencia-directa")
+        return det_evi, "evidencia-directa"
     det_rev = try_deterministic_revision(user_message)
     det_agt = try_deterministic_agente(user_message)
     if det_rev is not None and det_agt is not None:                      # una sola petición con las dos cosas (revisar el entregable + ir al agente): se atienden las dos
         _mark_last_route("revision-directa")
-        return det_rev + "\n\n———\n\n🤖 Sobre el agente que pediste:\n" + det_agt, "revision-directa"
+        return det_rev + "\n\n———\n\n🤖 " + det_agt, "revision-directa"
     if det_rev is not None:
         _mark_last_route("revision-directa")
         return det_rev, "revision-directa"

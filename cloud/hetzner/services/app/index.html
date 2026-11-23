@@ -2323,6 +2323,7 @@ async function loadAgente(){
 async function loadAprendizaje(){
   const el=$('#aprendizaje');if(!el)return;
   try{const d=await api('/v1/app/aprendizaje');
+    d.reglas=d.reglas.filter(r=>r.estado!=='propuesta');
     const rg=d.reglas.map(r=>`<div class="card segc" data-r="${esc(r.id)}" style="${r.estado==='pausada'?'opacity:.6':''}"><div><b>Cuando</b> ${esc(r.cuando)}<br><b>Haz:</b> ${esc(r.regla)}</div>${r.error?`<div class="sub" style="margin-top:4px">Lo que hice mal: ${esc(r.error)}</div>`:''}<div class="nq"><button data-a="editar">✎ Editar</button><button data-a="${r.estado==='pausada'?'activar':'pausar'}">${r.estado==='pausada'?'▶ Activar':'⏸ Pausar'}</button><button data-a="borrar" aria-label="Borrar">🗑</button></div></div>`).join('');
     const mj=d.mejoras.map(m=>`<div class="card segc" data-m="${esc(m.id)}"><b>${esc(m.titulo)}</b> <span class="pill">${esc(m.tipo)}${m.veces>1?' · '+m.veces+' veces':''}</span><div class="sub" style="margin-top:4px">${esc(m.detalle)}</div>${m.evidencia?`<details class="agg"><summary class="sub">Evidencia</summary><pre style="white-space:pre-wrap;font-size:12px;margin:4px 0">${esc(m.evidencia)}</pre></details>`:''}<div class="nq"><button data-b="resuelta">✓ Ya está resuelta</button><button data-b="descartada">✕ Descartar</button></div></div>`).join('');
     el.innerHTML='<div class="sec" style="margin-top:10px">🧭 Lo que me has corregido · '+d.reglas.length+'</div><div class="sub" style="margin-bottom:6px">Reglas que sigo en TODAS mis respuestas. Se crean al decirme «así no»/«está mal» en el chat (botón Corregir en mis respuestas), o aquí. Tú las editas, pausas o borras.</div>'+rg+
@@ -2337,6 +2338,18 @@ async function loadAprendizaje(){
     const cp=$('#mj-copy');if(cp)cp.onclick=async()=>{try{const r=await api('/v1/app/mejoras/exportar');await navigator.clipboard.writeText(r.texto);toast('Copiado: pégalo en Claude Code')}catch(e){toast('No pude copiar: '+e.message)}};
   }catch(e){}
 }
+async function loadOficio(){
+  const el=$('#oficio');if(!el)return;
+  try{const d=await api('/v1/app/oficio');
+    const barra=c=>c.promedio==null?'<span class="sub">sin datos aún</span>':`<span style="display:inline-block;width:90px;height:8px;border-radius:99px;background:var(--glass2);vertical-align:middle"><i style="display:block;height:8px;border-radius:99px;width:${Math.round(c.promedio/5*100)}%;background:${c.promedio>=4?'#2fb36b':c.promedio>=3?'#e0a21a':'#d33'}"></i></span> <b>${c.promedio}</b>/5 <span class="sub">(${c.n})</span>`;
+    el.innerHTML='<div class="sec" style="margin-top:12px">🎓 Oficio de asistente (cómo me califico)</div><div class="sub" style="margin-bottom:6px">Reviso mis respuestas contra lo que hace una gran asistente: conclusión primero, breve, no pedirte lo que puedo buscar, cerrar ciclos, tono. Si fallo seguido, propongo una regla y tú decides.</div>'+
+      d.competencias.map(c=>`<div class="menurow" style="margin-bottom:4px"><span><b>${esc(c.nombre)}</b><small>${esc(c.ultima_nota||c.def)}</small></span><span>${barra(c)}</span></div>`).join('')+
+      (d.propuestas.length?'<div class="sec" style="margin-top:8px">Reglas que propongo · '+d.propuestas.length+'</div>'+d.propuestas.map(r=>`<div class="card segc" data-pr="${esc(r.id)}"><div><b>Cuando</b> ${esc(r.cuando)}<br><b>Haz:</b> ${esc(r.regla)}</div><div class="nq"><button data-q="aceptar">✓ Aceptar regla</button><button data-q="rechazar">✕ No</button></div></div>`).join(''):'')+
+      '<div class="nq"><button id="of-go">🎓 Autoevaluarme ahora</button></div>';
+    $$('#oficio [data-pr] [data-q]').forEach(b=>b.onclick=async()=>{try{await api('/v1/app/aprendizaje/regla',{method:'POST',body:JSON.stringify({id:b.closest('[data-pr]').dataset.pr,accion:b.dataset.q})});toast(b.dataset.q==='aceptar'?'Regla aceptada: ya la sigo':'Descartada');loadAprendizaje();loadOficio()}catch(e){toast(e.message)}});
+    $('#of-go').onclick=async()=>{try{await api('/v1/app/oficio/revisar',{method:'POST',body:'{}'});toast('Revisando mis últimas respuestas…');setTimeout(loadOficio,6000)}catch(e){toast(e.message)}};
+  }catch(e){}
+}
 const SEGO={manual:'',tarea:'tarea',agenda:'agenda',compra:'compra',reservacion:'reservación',dia:'mi día'};
 function segCuando(ts){if(!ts)return 'sin fecha';const d=new Date(ts*1000),n=new Date();const dd=Math.round((new Date(d.getFullYear(),d.getMonth(),d.getDate())-new Date(n.getFullYear(),n.getMonth(),n.getDate()))/864e5);
   const hm=d.toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'});return (dd===0?'hoy':dd===1?'mañana':dd===-1?'ayer':d.toLocaleDateString('es-MX',{day:'numeric',month:'short'}))+' '+hm}
@@ -2348,13 +2361,13 @@ async function loadSeg(){
     const card=x=>`<div class="card segc" data-id="${esc(x.id)}"><div class="row"><b>${esc(x.titulo)}</b>${SEGO[x.origen]?`<span class="pill">${esc(SEGO[x.origen])}</span>`:''}</div>
       ${x.nota?`<div class="sub" style="margin-top:4px">${esc(x.nota)}</div>`:''}<div class="sub" style="margin-top:4px">${x.estado==='hecho'?'✓ Hecho':x.estado==='pausado'?'⏸ En pausa':'Próxima revisión: '+esc(segCuando(x.proxima_revision))}</div>
       ${x.estado==='hecho'?'':`<div class="nq">${x.estado==='activo'?'<button data-a="hecho">✓ Hecho</button><button data-a="posponer">⏰ +3 h</button><button data-a="pausar">⏸ Pausar</button>':'<button data-a="reanudar">▶ Reanudar</button><button data-a="hecho">✓ Hecho</button>'}<button data-a="nota">📝 Nota</button><button data-a="cancelar" aria-label="Dejar de seguir">✕</button></div>`}</div>`;
-    el.innerHTML='<div id="radar"></div><div id="aprendizaje"></div><div id="tareasseg"></div><p class="sub" style="margin:0 0 10px">Lo que Donna sigue por ti. Es aparte de las notificaciones: cuando toca revisar algo, te avisa con botones. Pídeselo en el chat («dale seguimiento a…») o agrégalo aquí.</p>'+
+    el.innerHTML='<div id="radar"></div><div id="aprendizaje"></div><div id="oficio"></div><div id="tareasseg"></div><p class="sub" style="margin:0 0 10px">Lo que Donna sigue por ti. Es aparte de las notificaciones: cuando toca revisar algo, te avisa con botones. Pídeselo en el chat («dale seguimiento a…») o agrégalo aquí.</p>'+
       '<div class="trin"><input id="sg-t" style="flex:1 1 100%" placeholder="¿Qué quieres que siga?" enterkeyhint="send"><select id="sg-w" aria-label="Revisar"><option value="3">en 3 h</option><option value="6">en 6 h</option><option value="24" selected>mañana</option><option value="72">en 3 días</option><option value="168">en 1 semana</option></select><button id="sg-go">Seguir</button></div>'+
       '<div class="sec">Activos · '+act.length+'</div>'+(act.map(card).join('')||'<div class="empty">Nada en seguimiento.</div>')+
       (pau.length?'<div class="sec">En pausa · '+pau.length+'</div>'+pau.map(card).join(''):'')+(hec.length?'<details class="agg"><summary class="sec">Hechos recientes · '+hec.length+'</summary>'+hec.map(card).join('')+'</details>':'');
     const add=async()=>{const t=$('#sg-t').value.trim();if(t.length<3)return;try{await api('/v1/app/seguimiento',{method:'POST',body:JSON.stringify({op:'crear',titulo:t,en_horas:+$('#sg-w').value})});toast('Listo, le doy seguimiento');loadSeg()}catch(e){toast(e.message)}};
     $('#sg-go').onclick=add;$('#sg-t').onkeydown=e=>{if(e.key==='Enter')add()};
-    loadRadar();loadAprendizaje();loadTareasSeg();
+    loadRadar();loadAprendizaje();loadOficio();loadTareasSeg();
     $$('#seg .segc .nq button').forEach(b=>b.onclick=async()=>{const id=b.closest('.segc').dataset.id,a=b.dataset.a;let nota;
       if(a==='nota'){nota=prompt('Nota para este seguimiento:');if(!nota)return}
       if(a==='cancelar'&&!confirm('¿Dejar de darle seguimiento?'))return;

@@ -37,7 +37,7 @@ def _parecido(a: str, b: str, umbral: float = 0.6) -> bool:
 
 
 # ------------------------------------------------------------------ reglas
-def regla_agregar(cuando: str, regla: str, error: str = "", origen: str = "") -> dict:
+def regla_agregar(cuando: str, regla: str, error: str = "", origen: str = "", estado: str = "activa") -> dict:
     cuando, regla = " ".join((cuando or "").split())[:200], " ".join((regla or "").split())[:400]
     if len(regla) < 12 or len(cuando) < 4:
         raise ValueError("Una regla necesita «cuándo aplica» y «qué hacer» (con algo de detalle).")
@@ -46,19 +46,21 @@ def regla_agregar(cuando: str, regla: str, error: str = "", origen: str = "") ->
     try:
         for r in c.execute("SELECT * FROM reglas WHERE estado!='borrada'"):
             if _parecido(r["cuando"] + " " + r["regla"], cuando + " " + regla, 0.7):         # misma regla dicha otra vez: se actualiza, no se duplica
+                if estado == "propuesta":                                                      # una propuesta nunca pisa una regla que ya existe (activa, pausada o por aceptar)
+                    return {"id": r["id"], "nueva": False}
                 c.execute("UPDATE reglas SET cuando=?, regla=?, error=CASE WHEN ?!='' THEN ? ELSE error END, origen=CASE WHEN ?!='' THEN ? ELSE origen END, estado='activa', actualizado=? WHERE id=?",
                           (cuando, regla, error[:300], error[:300], origen[:600], origen[:600], now, r["id"]))
                 c.commit()
                 return {"id": r["id"], "nueva": False}
         rid = donna_db._id()
-        c.execute("INSERT INTO reglas(id,creado,actualizado,cuando,regla,error,origen) VALUES(?,?,?,?,?,?,?)", (rid, now, now, cuando, regla, error[:300], origen[:600]))
+        c.execute("INSERT INTO reglas(id,creado,actualizado,cuando,regla,error,origen,estado) VALUES(?,?,?,?,?,?,?,?)", (rid, now, now, cuando, regla, error[:300], origen[:600], "propuesta" if estado == "propuesta" else "activa"))
         c.commit()
         return {"id": rid, "nueva": True}
     finally:
         c.close()
 
 
-def reglas_list(estados=("activa", "pausada")) -> list:
+def reglas_list(estados=("activa", "pausada", "propuesta")) -> list:
     c = _c()
     try:
         return [{k: r[k] for k in r.keys()} for r in c.execute("SELECT * FROM reglas WHERE estado IN (%s) ORDER BY (estado='activa') DESC, actualizado DESC" % ",".join("?" * len(estados)), list(estados))]
@@ -72,7 +74,11 @@ def regla_accion(rid: str, accion: str, regla: str = "", cuando: str = "") -> di
         if not c.execute("SELECT 1 FROM reglas WHERE id=?", (rid,)).fetchone():
             raise ValueError("regla no encontrada")
         now = int(time.time())
-        if accion == "pausar":
+        if accion == "aceptar":
+            c.execute("UPDATE reglas SET estado='activa', actualizado=? WHERE id=? AND estado='propuesta'", (now, rid))
+        elif accion == "rechazar":
+            c.execute("UPDATE reglas SET estado='borrada', actualizado=? WHERE id=? AND estado='propuesta'", (now, rid))
+        elif accion == "pausar":
             c.execute("UPDATE reglas SET estado='pausada', actualizado=? WHERE id=?", (now, rid))
         elif accion == "activar":
             c.execute("UPDATE reglas SET estado='activa', actualizado=? WHERE id=?", (now, rid))
@@ -92,7 +98,12 @@ def regla_accion(rid: str, accion: str, regla: str = "", cuando: str = "") -> di
 
 
 def contexto_reglas(n: int = 25) -> str:
-    """Se agrega al contexto de Donna en TODAS las conversaciones: lo que Polo le ha corregido."""
+    """Se agrega al contexto de Donna en TODAS las conversaciones: lo que Polo le ha corregido (y las reglas de oficio base). Las propuestas por aceptar NO se aplican."""
+    try:
+        import donna_oficio
+        donna_oficio.sembrar()
+    except Exception:
+        pass
     L = [r for r in reglas_list(("activa",))][:n]
     if not L:
         return ""

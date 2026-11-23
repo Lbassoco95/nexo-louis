@@ -24,7 +24,7 @@ import donna_db
 TZ = ZoneInfo("America/Mexico_City")
 MIN_MIN, MAX_MIN = 10, 720
 MAX_CICLOS_DIA = 30
-INTERVALO_HERRAMIENTA = {"radar_fechas": 3 * 3600, "buscar_cierres": 3 * 3600, "leer_junta": 0}      # mínimo entre usos (el agente decide, esto solo evita gasto)
+INTERVALO_HERRAMIENTA = {"radar_fechas": 3 * 3600, "buscar_cierres": 3 * 3600, "leer_junta": 0, "autoevaluar": 12 * 3600}      # mínimo entre usos (el agente decide, esto solo evita gasto)
 TEMAS = {"horario", "ritmo", "avisos", "fuentes", "proyectos", "personas", "decisiones", "preferencias"}
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS conocimiento (
@@ -274,8 +274,17 @@ def observar(core, fuentes: dict, ahora: datetime = None) -> dict:
         "telemetria": telemetria(core, ahora), "carga": carga(fuentes, ahora.date()),
         "ultimas_decisiones_del_agente": [{"cuando": time.strftime("%d %H:%M", time.localtime(c["ts"])), "decision": (c["decision"] or "")[:180]} for c in ciclos(5)],
         "ultimo_uso_de_herramientas": {k: time.strftime("%d %H:%M", time.localtime(v)) for k, v in estado_get("herramientas", {}).items()},
+        "oficio_de_asistente_ultimos_7_dias": [{"competencia": x["nombre"], "promedio": x["promedio"], "respuestas": x["n"], "falla_en": x["ultima_nota"]} for x in _oficio() if x["n"]],
         "lo_que_ya_se_de_polo": [{"clave": k["clave"], "hecho": k["hecho"], "confianza": round(k["confianza"], 2), "de": k["fuente"]} for k in conocimiento_list(limite=25)],
     }
+
+
+def _oficio() -> list:
+    try:
+        import donna_oficio
+        return donna_oficio.resumen(7)
+    except Exception:
+        return []
 
 
 def ciclos(n: int = 12) -> list:
@@ -290,12 +299,12 @@ def ciclos(n: int = 12) -> list:
 SYSTEM = (
     "Eres el agente de vigilancia de Donna, la asistente de Polo (CEO). NO sigues un horario: decides qué revisar y cuándo volver, según cómo trabaja Polo y qué cambió. "
     "Recibes una OBSERVACIÓN en JSON (su actividad, sus decisiones, la carga abierta, lo que cambió, lo que ya sabes de él). Responde SOLO JSON:\n"
-    '{"acciones":[{"herramienta":"radar_fechas|buscar_cierres|leer_junta","args":{},"motivo":"por qué ahora"}],'
+    '{"acciones":[{"herramienta":"radar_fechas|buscar_cierres|leer_junta|autoevaluar","args":{},"motivo":"por qué ahora"}],'
     '"proxima_revision_min":10-720,'
     '"aprendizajes":[{"clave":"tema.subtema","tema":"horario|ritmo|avisos|fuentes|proyectos|personas|decisiones|preferencias","hecho":"una frase concreta sobre cómo trabaja Polo","evidencia":"los números de la observación que lo respaldan","confianza":0.0-1.0}],'
     '"situaciones":[{"clave":"corta.estable","titulo":"qué pasa","gravedad":"urgente|atencion|info","detalle":"los números y por qué importa","plan":{"resumen":"cómo propones abordarlo con Polo, conforme a su ritmo y carga","pasos":[{"paso":"acción concreta y pequeña","cuando":"AAAA-MM-DDTHH:MM en su horario, o \'\'"}]}}],'
     '"bitacora":"una frase para Polo: qué decidiste revisar y por qué (o por qué no)"}\n'
-    "REGLAS: (1) Herramientas: radar_fechas (qué vence por etapas), buscar_cierres (pendientes que parecen resueltos, con evidencia), leer_junta (args:{sesion_id}, solo si hay junta nueva). "
+    "REGLAS: (1) Herramientas: radar_fechas (qué vence por etapas), buscar_cierres (pendientes que parecen resueltos, con evidencia), leer_junta (args:{sesion_id}, solo si hay junta nueva), autoevaluar (revisa las últimas respuestas de Donna contra el OFICIO de una buena asistente —conclusión primero, breve, no pedir lo que puede buscar, cerrar ciclos, tono— y propone reglas si falla seguido; una vez al día basta; úsala cuando haya conversación nueva con Polo y la observación `oficio` muestre puntajes bajos). "
     "Todas solo revisan y proponen; no cambian nada. (2) No repitas una revisión que acaba de hacerse salvo que haya cambios; si no hay nada útil, acciones=[] y elige una espera larga. "
     "(3) Elige la próxima revisión según su ritmo: despierta antes de que suela empezar su día, pronto si hay algo en las próximas 48 h o propuestas sin atender, largo de noche. "
     "(4) Aprende SOLO de la observación: horarios, ritmo, qué decide rápido o rechaza, qué fuentes le sirven, proyectos y personas que dominan su semana. Un hecho nuevo necesita datos; "
@@ -345,7 +354,7 @@ def llm_haiku(core):
 
 # ------------------------------------------------------------------ acción
 def ejecutar(core, acciones: list, fuentes: dict, juez=None, notificar=None) -> list:
-    import donna_radar, donna_tareas
+    import donna_radar, donna_tareas, donna_oficio
     out, ult = [], estado_get("herramientas", {})
     now = int(time.time())
     for a in acciones:
@@ -358,6 +367,8 @@ def ejecutar(core, acciones: list, fuentes: dict, juez=None, notificar=None) -> 
                 r = donna_radar.radar_fechas(fuentes, notificar=notificar)
             elif h == "buscar_cierres":
                 r = donna_radar.procesar_cierres(core, fuentes, juez or donna_radar.juez_haiku(core), notificar=notificar)
+            elif h == "autoevaluar":
+                r = donna_oficio.revisar_reciente(core)
             else:
                 sid = str(a["args"].get("sesion_id", ""))
                 if not sid or estado_get("junta_leida", "") == sid:

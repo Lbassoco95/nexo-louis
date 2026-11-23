@@ -33,12 +33,12 @@ class Reglas(unittest.TestCase):
     def test_polo_pausa_edita_y_borra(self):
         rid = AP.regla_agregar("Polo pide enviar un correo", "Antes de enviar, muestra el borrador y espera su confirmación explícita")["id"]
         AP.regla_accion(rid, "pausar")
-        self.assertEqual(AP.contexto_reglas(), "")                              # una regla pausada ya no se aplica
+        self.assertNotIn("muestra el borrador", AP.contexto_reglas())          # una regla pausada ya no se aplica
         AP.regla_accion(rid, "activar")
         AP.regla_accion(rid, "editar", "Muestra el borrador, espera confirmación y copia a Viri")
         self.assertIn("copia a Viri", AP.contexto_reglas())
         AP.regla_accion(rid, "borrar")
-        self.assertEqual(AP.reglas_list(), [])
+        self.assertNotIn(rid, [r["id"] for r in AP.reglas_list()])
         with self.assertRaises(ValueError):
             AP.regla_agregar("x", "corto")
 
@@ -205,6 +205,11 @@ class HerramientasDeDonna(unittest.TestCase):
         self.assertIn("❌", x("revisar_entregable", {"titulo": ""}))
 
 
+VIZUMI = {"encontrado": True, "id": "87e5", "name": "vizumi_listas_y_kyc_vizum_vizum", "display_name": "Vizumi — Listas y KYC Vizum", "estado": "idle", "modelo": "claude-sonnet-4-6",
+          "descripcion": "Mantiene al día el control de la Lista de Personas Bloqueadas, revisa los KYC de clientes", "capacidades": ["revisar_el_portal_de_la_cnbv"],
+          "ultimas": [{"titulo": "Leer oficio 110_K_6267_2026_VD", "fecha": "2026-11-16"}, {"titulo": "AB 552 físicas — documentos 21 a 28", "fecha": "2026-11-16"}], "ultima_fecha": "2026-11-16"}
+
+
 class RutasDirectas(unittest.TestCase):
     """El caso real de Polo: antes el modelo elegía mal las herramientas y le pedía la junta; ahora estas peticiones se resuelven en código."""
     MSG_REV = 'Revisa el entregable "Contratos marco CPS Transmisor de Dinero VIZUM": ¿ya se mandó la actualización según lo último dicho en las juntas?'
@@ -216,29 +221,32 @@ class RutasDirectas(unittest.TestCase):
         self.core = louis_core
         self.core.SPACE = TMP
         self.core.AGENTS_DIR = TMP / "agents"
-        self.orig = (RV.revisar_entregable, RV.kc_agentes)
+        self.orig = (RV.revisar_entregable, RV.kc_agente_resumen, RV.kc_agente_tareas_esquema)
         self.llamadas = []
-        RV.revisar_entregable = lambda core, titulo, marcar=True, **k: self.llamadas.append(titulo) or {"texto": "VEREDICTO DE ENVÍO: SIN EVIDENCIA\n[02:10] Fernando: «actualizar el contrato»"}
-        RV.kc_agentes = lambda core, nombre="": "Tablas de agentes en Kawiil Central: agents\n• name=Vizumi"
+        RV.revisar_entregable = lambda core, titulo, marcar=True, **k: self.llamadas.append(titulo) or {"texto": "EVIDENCIA CRUDA\n[02:10] Fernando: «actualizar el contrato»", "brief": "**No encuentro que se haya enviado la actualización.**"}
+        RV.kc_agente_resumen = lambda core, nombre: VIZUMI
+        RV.kc_agente_tareas_esquema = lambda core, agent_id: "agent_tasks — columnas:\n  id uuid NOT NULL\n  status text\nvalores de status vistos: pending, completed"
 
     def tearDown(self):
-        RV.revisar_entregable, RV.kc_agentes = self.orig
+        RV.revisar_entregable, RV.kc_agente_resumen, RV.kc_agente_tareas_esquema = self.orig
 
     def test_revision_se_dispara_sola_con_el_titulo_correcto(self):
         r = self.core.try_deterministic_revision(self.MSG_REV)
-        self.assertIn("VEREDICTO DE ENVÍO", r)
-        self.assertIn("no contra resúmenes", r)
+        self.assertIn("No encuentro que se haya enviado", r)
+        self.assertNotIn("EVIDENCIA CRUDA", r)                                                  # la evidencia NO se vuelca al chat
         self.assertEqual(self.llamadas, ["Contratos marco CPS Transmisor de Dinero VIZUM"])
         for no in ("¿Qué tengo hoy?", 'Dime "hola" por favor', "¿ya se mandó el contrato de Vizum?", 'Anota "comprar café para la oficina"'):
             self.assertIsNone(self.core.try_deterministic_revision(no), no)
 
     def test_nombrar_un_agente_de_kc_dice_la_verdad_y_registra_la_mejora(self):
         r = self.core.try_deterministic_agente(self.MSG_AGT)
-        self.assertIn("No puedo ejecutar al agente vizumi todavía", r)
-        self.assertIn("name=Vizumi", r)
+        self.assertIn("**Vizumi — Listas y KYC Vizum** está en Kawiil Central", r)
+        self.assertIn("no sé cómo asignarle una tarea", r)
+        self.assertNotIn("organization_id", r)                                                  # sin ids ni tablas
         m = AP.mejoras_list()
         self.assertEqual(len(m), 1)
         self.assertIn("agente vizumi", m[0]["evidencia"])
+        self.assertIn("agent_tasks — columnas", m[0]["evidencia"])                            # la mejora ya trae el esquema: quien la construya no necesita otra vuelta
         self.core.try_deterministic_agente(self.MSG_AGT)
         self.assertEqual(AP.mejoras_list()[0]["veces"], 2)                         # la misma petición suma, no duplica
         for no in ("Qué agente de seguimiento tenemos", "ejecuta el agente de ventas", "hola"):
@@ -252,7 +260,10 @@ class RutasDirectas(unittest.TestCase):
     def test_el_enrutador_real_las_atiende_antes_que_el_modelo(self):
         r, ruta = self.core._call_llm_impl("sin-llave", "sistema", [], self.MSG_REV)
         self.assertEqual(ruta, "revision-directa")
-        self.assertIn("VEREDICTO DE ENVÍO", r)
+        self.assertIn("No encuentro que se haya enviado", r)
+        ev, ruta_ev = self.core._call_llm_impl("sin-llave", "sistema", [], "evidencia")
+        self.assertEqual(ruta_ev, "evidencia-directa")
+        self.assertIn("EVIDENCIA CRUDA", ev)                                                    # lo crudo queda a un mensaje de distancia
         r2, ruta2 = self.core._call_llm_impl("sin-llave", "sistema", [], self.MSG_AGT)
         self.assertEqual(ruta2, "agente-kc")
 
@@ -305,22 +316,108 @@ class RevisionConLosDatosReales(unittest.TestCase):
         self.assertNotIn("conforme a lo último dicho en la junta del", ag)
 
 
+class RespuestaComoAsistente(unittest.TestCase):
+    """La respuesta real de Polo («está horrible») rehecha como la daría una asistente: conclusión primero, pocas líneas, sin volcar datos."""
+    DBX = ("Resultados Dropbox para 'contratos marco transmisor':\n"
+           "transmisores_de_dinero.pdf → /DESCARGAS/transmisores_de_dinero.pdf (modificado 2026-07-14)\n"
+           "CPS-VIZUM-Transmisor-de-Dinero-LIMPIO.docx → /DESCARGAS/CPS-VIZUM-Transmisor-de-Dinero-LIMPIO.docx (modificado 2026-09-03)\n"
+           "CONTRATO-VIZUM.pdf → /AUDITORIAS/CONTRATO-VIZUM.pdf (modificado 2025-02-17)\n"
+           "CPS-VIZUM-Transmisor-de-Dinero-PF.docx → /DESCARGAS/CPS-VIZUM-Transmisor-de-Dinero-PF.docx (modificado 2026-02-19)\n"
+           "CPS-VIZUM-Transmisor-de-Dinero-LIMPIO (VERSION 29 JUNIO DE 2026).docx → /DESCARGAS/x.docx (modificado 2026-07-01)")
+
+    def setUp(self):
+        limpiar()
+        (TMP / "LEARNINGS.md").write_text("- [2026-09-07] Vizum Technologies — Criterio de Polo (7-sep-2026, oficio CNBV): cuando la autoridad pide \"la última versión\" de un documento y hay una actualización interna sin "
+                                          "aprobar, NO se consolida ni se aprueba una versión nueva antes de contestar. Se contesta con lo vigente y aprobado. La actualización se aprueba y notifica DESPUÉS del envío.\n")
+        FakeCore.MEMORY_FILES = ["LEARNINGS.md"]
+        self._d = FakeCore._dropbox_buscar
+        FakeCore._dropbox_buscar = staticmethod(lambda q, n=10: self.DBX)
+
+    def tearDown(self):
+        FakeCore._dropbox_buscar = self._d
+
+    def test_conclusion_primero_breve_y_sin_volcar_evidencia(self):
+        r = RV.revisar_entregable(FakeCore, "Contratos marco CPS Transmisor de Dinero VIZUM", m365=FakeM365([]))
+        b = r["brief"]
+        self.assertTrue(b.startswith("**No encuentro que se haya enviado la actualización, y no tengo la junta"))
+        self.assertIn("En Cerebro está en **listo** con VoBo pendiente, actualizado el 10-sep-2026", b)
+        self.assertIn("lo más reciente es **CPS-VIZUM-Transmisor-de-Dinero-LIMPIO.docx** (3-sep-2026)", b)
+        self.assertNotIn("transmisores_de_dinero.pdf", b)                                              # otro documento (no es de Vizum)
+        self.assertIn("Ojo con tu criterio:", b)
+        self.assertIn("NO se consolida ni se aprueba una versión nueva", b)
+        self.assertIn("El VoBo sigue pendiente: ¿lo apruebas, o va a otra revisión antes de mandarse?", b)
+        self.assertNotIn("?.", b)
+        self.assertIn("«evidencia»", b)
+        self.assertNotIn("REVISIÓN CONTRA FUENTES", b)
+        self.assertNotIn("→", b)
+        self.assertLess(len(b.splitlines()), 18)
+        self.assertIn("REVISIÓN CONTRA FUENTES", r["texto"])                                            # la evidencia completa sigue existiendo, aparte
+
+    def test_si_ya_se_envio_lo_dice_en_la_primera_frase(self):
+        juntas()
+        m = FakeM365([{"asunto": "Contratos marco CPS Vizum actualizado", "para": "Vizum Legal", "fecha": "2026-11-20", "adj": ["CPS-VIZUM-v2.docx"]}])
+        r = RV.revisar_entregable(FakeCore, "Contratos marco CPS Transmisor de Dinero VIZUM", m365=m, marcar_prioritario=False)
+        self.assertTrue(r["brief"].startswith("**Sí: se envió el 20-nov-2026 a Vizum Legal.**"))
+
+    def test_esquema_de_agent_tasks_para_la_mejora(self):
+        class Cur:
+            def __init__(s): s.q = ""; s.description = [("id",), ("agent_id",), ("status",), ("title",)]
+            def execute(s, q, p=None): s.q = q
+            def fetchall(s):
+                if "information_schema.columns" in s.q: return [("id", "uuid", "NO", "gen_random_uuid()"), ("agent_id", "uuid", "NO", None), ("status", "text", "YES", "'pending'"), ("title", "text", "YES", None)]
+                if "DISTINCT status" in s.q: return [("pending",), ("completed",)]
+                return [("t1", "87e5", "completed", "Leer oficio 110_K_6267_2026_VD")]
+        class Conn:
+            autocommit = False
+            def cursor(s): return Cur()
+            def close(s): pass
+        class K:
+            @staticmethod
+            def _kawiil_central_pg(): return Conn(), None
+        t = RV.kc_agente_tareas_esquema(K, "87e5")
+        self.assertIn("id uuid NOT NULL default gen_random_uuid()", t)
+        self.assertIn("valores de status vistos: pending, completed", t)
+        self.assertIn("ejemplo: id=t1; agent_id=87e5; status=completed; title=Leer oficio", t)
+
+    def test_resumen_del_agente_de_kawiil_central_sin_tablas(self):
+        class Cur:
+            def __init__(s): s.q = ""
+            def execute(s, q, p=None): s.q = q
+            def fetchone(s): return ("87e5", "vizumi_listas_y_kyc_vizum_vizum", "Vizumi — Listas y KYC Vizum", "Mantiene al día la Lista de Personas Bloqueadas y revisa KYC.", "idle", "claude-sonnet-4-6", ["revisar_portal_cnbv"])
+            def fetchall(s): return [("Vizumi — Listas y KYC Vizum completed: Leer oficio 110_K_6267_2026_VD (85.5s)", "2026-11-16 22:30:00+00"), ("Vizumi — Listas y KYC Vizum completed: Seguimiento: ok (12.0s)", "2026-11-16 21:00:00+00")]
+        class Conn:
+            autocommit = False
+            def cursor(s): return Cur()
+            def close(s): pass
+        class K:
+            @staticmethod
+            def _kawiil_central_pg(): return Conn(), None
+        a = RV.kc_agente_resumen(K, "vizumi")
+        self.assertEqual(a["ultimas"][0], {"titulo": "Leer oficio 110_K_6267_2026_VD", "fecha": "2026-11-16"})
+        b = RV.brief_agente("vizumi", a)
+        self.assertIn("**Vizumi — Listas y KYC Vizum** está en Kawiil Central y ahora está en **reposo (disponible)**", b)
+        self.assertIn("«Leer oficio 110_K_6267_2026_VD»", b)
+        self.assertNotIn("organization_id", b)
+        self.assertIn("No encuentro a un agente", RV.brief_agente("zzz", {"encontrado": False}))
+
+
 class UnaPeticionDosCosas(unittest.TestCase):
     def test_revisar_y_agente_en_el_mismo_mensaje_atiende_las_dos(self):
         import louis_core
         louis_core.SPACE = TMP
         louis_core.AGENTS_DIR = TMP / "agents"
-        orig = (RV.revisar_entregable, RV.kc_agentes)
-        RV.revisar_entregable = lambda core, t, marcar=True, **k: {"texto": "VEREDICTO DE ENVÍO: SIN EVIDENCIA"}
-        RV.kc_agentes = lambda core, n="": "Tablas de agentes: agents • name=Vizumi"
+        orig = (RV.revisar_entregable, RV.kc_agente_resumen, RV.kc_agente_tareas_esquema)
+        RV.kc_agente_tareas_esquema = lambda core, a: "esquema"
+        RV.revisar_entregable = lambda core, t, marcar=True, **k: {"texto": "EVIDENCIA", "brief": "**No encuentro que se haya enviado la actualización.**"}
+        RV.kc_agente_resumen = lambda core, n: VIZUMI
         try:
             msg = 'Revisa el entregable "Contratos marco CPS Transmisor de Dinero VIZUM": ¿ya se mandó la actualización según lo último dicho en las juntas?\nEntra al correo de vizum con el agente vizumi para saber si en el drive hay algo?'
             r, ruta = louis_core._call_llm_impl("k", "s", [], msg)
-            self.assertIn("VEREDICTO DE ENVÍO", r)
-            self.assertIn("No puedo ejecutar al agente vizumi", r)
+            self.assertIn("No encuentro que se haya enviado", r)
+            self.assertIn("Vizumi — Listas y KYC Vizum", r)
             self.assertEqual(ruta, "revision-directa")
         finally:
-            RV.revisar_entregable, RV.kc_agentes = orig
+            RV.revisar_entregable, RV.kc_agente_resumen, RV.kc_agente_tareas_esquema = orig
 
 
 if __name__ == "__main__":
