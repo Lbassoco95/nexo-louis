@@ -1174,6 +1174,12 @@ class Handler(BaseHTTPRequestHandler):
                             self._send_json(200, {"items": [], "error": str(e)[:160]})
                     else:
                         self._send_json(200, {"extraccion": donna_tareas.estado_extraccion(sid) if sid else {"estado": "todas"}, "items": donna_tareas.listar(sid)})
+                elif _r0 in ("/v1/app/aprendizaje", "/v1/app/mejoras/exportar"):
+                    import donna_aprender
+                    if _r0.endswith("exportar"):
+                        self._send_json(200, {"texto": donna_aprender.mejoras_markdown()})
+                    else:
+                        self._send_json(200, {"reglas": donna_aprender.reglas_list(), "mejoras": donna_aprender.mejoras_list()})
                 elif _r0 == "/v1/app/agente":
                     import donna_agente
                     cs = donna_agente.ciclos(8)
@@ -2583,6 +2589,19 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 log.exception("asistente de junta falló")
                 self._send_json(502, {"error": "No pude consultar a Donna ahora: " + str(e)[:120]})
+            return
+        if self.path in ("/v1/app/aprendizaje/regla", "/v1/app/aprendizaje/mejora"):
+            import donna_aprender
+            try:
+                if self.path.endswith("regla"):
+                    if body.get("accion") == "crear":
+                        self._send_json(200, donna_aprender.regla_agregar(str(body.get("cuando", "")), str(body.get("regla", "")), "", "Escrita por Polo en la app"))
+                    else:
+                        self._send_json(200, donna_aprender.regla_accion(str(body.get("id", "")), str(body.get("accion", "")), str(body.get("regla", "")), str(body.get("cuando", ""))))
+                else:
+                    self._send_json(200, donna_aprender.mejora_estado(str(body.get("id", "")), str(body.get("accion", "")), str(body.get("nota", ""))))
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
             return
         if self.path == "/v1/app/agente/plan":
             import donna_agente

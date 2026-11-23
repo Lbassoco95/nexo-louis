@@ -146,6 +146,26 @@ def buscar_correo(consulta: str, m=None, limite: int = 5) -> str:
     return "\n".join(out) or "(sin correos con eso)"
 
 
+def correo_enviado_buscar(consulta: str, m=None, limite: int = 8) -> list:
+    """Correos que Polo ENVIÓ y mencionan la consulta (asunto, cuerpo o adjuntos): [{fecha, asunto, para, adjuntos, tenant}]. Solo lectura."""
+    m = m or _m365()
+    q = (consulta or "").replace('"', " ").strip()[:120]
+    out = []
+    if len(q) < 3:
+        return out
+    for t in tenants_disponibles(m):
+        try:
+            tok = m.get_access_token(t)
+            p = urllib.parse.urlencode({"$search": '"%s"' % q, "$top": str(limite), "$select": "subject,toRecipients,sentDateTime,hasAttachments", "$expand": "attachments($select=name)"}, quote_via=urllib.parse.quote)
+            for e in m.graph_get(tok, f"/me/mailFolders/sentitems/messages?{p}").get("value", []):
+                out.append({"fecha": _fecha(e.get("sentDateTime")), "asunto": _limpia(e.get("subject"), 140), "tenant": t,
+                            "para": ", ".join((r.get("emailAddress") or {}).get("name") or (r.get("emailAddress") or {}).get("address", "") for r in (e.get("toRecipients") or [])[:4]),
+                            "adjuntos": [a.get("name", "") for a in (e.get("attachments") or [])][:6]})
+        except Exception as ex:
+            out.append({"fecha": "", "asunto": "(no pude buscar en %s: %s)" % (t, str(ex)[:60]), "tenant": t, "para": "", "adjuntos": [], "error": True})
+    return sorted(out, key=lambda x: x["fecha"], reverse=True)
+
+
 def fuentes(m=None) -> dict:
     """Se mezcla con las demás en donna_radar.fuentes_por_defecto."""
     return {"abiertos": {"calendario": lambda hoy: calendario_abiertos(hoy, m)},

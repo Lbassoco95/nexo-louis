@@ -438,6 +438,7 @@ TOOL_KEYWORDS = [
     r"\b(navega|abre\s+(?:la\s+)?(?:p[aá]gina|web|sitio|url)|chrome|browser|click|llena|completa\s+(?:el\s+)?formulario|login\s+en|sesi[oó]n\s+en)\b",
     r"\b(screenshot|captura\s+de\s+pantalla|extrae\s+de\s+la\s+p[aá]gina)\b",
     r"\b(qu[eé]\s+(?:ha|han)\s+(?:dicho|aportado|propuesto)|qu[eé]\s+(?:se\s+)?dijo|qui[eé]n\s+(?:es|habl[oó]|dijo)\b|aportaciones|transcripci[oó]n(?:es)?\s+(?:de|donde|en\s+las))",
+    r"\b(correcci[oó]n|est[aá]\s+mal|as[ií]\s+no\b|no\s+debiste|aprende\s+(?:esto|que)|para\s+la\s+pr[oó]xima|la\s+pr[oó]xima\s+vez|siempre\s+revisa|ya\s+se\s+(?:mand[oó]|envi[oó])|actualizaci[oó]n\s+del?\s+(?:contrato|documento|entregable)|contra\s+(?:la\s+)?transcripci[oó]n|agente\s+\w+|juntas?\s+(?:de|sobre|con))",
     r"\b(tareas?\s+(?:de|que\s+salieron\s+de|propuestas?\s+de)\s+(?:la|mi|las)\s+(?:junta|reuni[oó]n|juntas|reuniones)|qu[eé]\s+(?:me\s+)?(?:toc[oó]|qued[oó])\s+(?:de|en)\s+la\s+(?:junta|reuni[oó]n))",
     r"\b(qu[eé]\s+(?:has|est[aá]s)\s+(?:estado\s+)?(?:vigilando|revisando|haciendo)|qu[eé]\s+vigilas|radar|propuestas?\s+de\s+cierre)\b",
     r"\b(seguimiento|dale\s+seguimiento|da(?:r|me)\s+seguimiento|estate\s+pendiente|av[ií]same\s+(?:c[oó]mo|si|cuando)\b)",
@@ -666,6 +667,13 @@ def load_system_prompt(channel: str = "telegram") -> str:
         if path.exists():
             parts.append(f"\n## {fname}\n```\n{_budget_memory(fname, path.read_text())}\n```\n")
 
+    try:                                                           # lo que Polo le ha CORREGIDO (donna_aprender.py): manda sobre sus hábitos
+        import donna_aprender
+        _rg = donna_aprender.contexto_reglas()
+        if _rg:
+            parts.append(_rg)
+    except Exception:
+        pass
     try:                                                           # lo que Donna ha aprendido de cómo trabaja Polo (donna_agente.py)
         import donna_agente
         _kn = donna_agente.contexto_corto()
@@ -1185,6 +1193,11 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "Cada día corres un radar de fechas (agenda, Kawiil Central, Patio Yoltik) y dos revisiones de cierres: cruzas lo abierto contra lo que ya pasó en Slack, juntas escuchadas y tareas hechas, "
         "y PROPONES cerrar lo resuelto citando la evidencia. Nunca cierras solo lo regulatorio, legal, de dinero o de clientes; las clases de bajo riesgo se cierran solas solo si Polo lo autorizó. "
         "Si Polo pregunta qué has vigilado o qué propones, usa `radar_estado` y responde con lo REAL; si una fuente aún no está conectada (WhatsApp), dilo.\n"
+        "\n\n# MÉTODO (cómo trabajas; Polo lo exige)\n"
+        "1) FUENTE PRIMERO: para saber qué se dijo o decidió en una junta, lee la TRANSCRIPCIÓN LITERAL (`juntas_listar` → `junta_leer`, o `aportaciones_buscar`), NUNCA un resumen; cita fecha, hora y quién. "
+        "Para saber si algo ya se envió, mira el correo ENVIADO y las fechas (`revisar_entregable` hace todo esto junto). 2) Si Polo nombra un agente, herramienta o ruta («con el agente Vizumi», «entra al correo de…»), ÚSALA; "
+        "si no puedes (p. ej. no tienes cómo EJECUTAR un agente de Kawiil Central), dilo EN LA PRIMERA FRASE, di qué sí puedes hacer y registra `pedir_mejora`: nunca cambies de ruta en silencio ni le pidas a Polo datos que puedes buscar tú. "
+        "3) Si no encuentras la fuente, di exactamente cuál no encontraste (no «no hay», sino «busqué en X, Y y Z y no hay»). 4) Si Polo te corrige o te dice cómo prefiere algo, llama `aprender_correccion` y confirma en una frase.\n"
         "\n\n# DE LA JUNTA A TAREAS\n"
         "Al guardar una escucha, lees la junta y PROPONES tareas (quién · qué · cuándo) con la frase exacta; nada se crea sin que Polo apruebe en la app y elija el destino. "
         "Si pregunta qué salió de la junta, usa `reunion_tareas`. Nunca digas que creaste una tarea si solo la propusiste.\n"
@@ -3050,6 +3063,47 @@ TOOLS_DEFINITION = [
             },
             "required": ["viejo", "nuevo"],
         },
+    },
+    {
+        "name": "aprender_correccion",
+        "description": "Guarda una CORRECCIÓN de Polo como regla permanente (en la base, visible y editable por él en la app). Úsala cada vez que Polo diga que algo estuvo mal o te explique cómo prefiere que lo hagas («así no», «está mal», «la próxima vez…», «siempre revisa contra…»). Redáctala general, no solo para este caso. Después confirma en UNA frase qué aprendiste.",
+        "input_schema": {"type": "object", "properties": {
+            "cuando": {"type": "string", "description": "En qué situación aplica (ej. «cuando Polo pida revisar qué se decidió en una junta»)"},
+            "regla": {"type": "string", "description": "Qué hacer SIEMPRE en esa situación y qué NO hacer (ej. «lee la transcripción literal con juntas_listar/junta_leer; nunca un resumen; cita fecha, hora y quién»)"},
+            "error": {"type": "string", "description": "Qué hiciste mal esta vez (una frase)"}}, "required": ["cuando", "regla"]},
+    },
+    {
+        "name": "reglas_listar",
+        "description": "Lista las reglas que Polo te ha corregido (las que ya sigues).",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "pedir_mejora",
+        "description": "Registra una MEJORA QUE NECESITA CÓDIGO (algo que no puedes hacer con tus herramientas actuales, o un fallo tuyo) con la evidencia. Úsala cuando Polo te pida algo que no tienes cómo hacer (p. ej. ejecutar un agente de Kawiil Central, leer una fuente que no conectas) o cuando falles por falta de herramienta. Antes díselo a Polo con claridad; NO cambies de ruta en silencio.",
+        "input_schema": {"type": "object", "properties": {
+            "titulo": {"type": "string"}, "detalle": {"type": "string", "description": "Qué pidió Polo, qué no pudiste hacer y por qué, y qué habría que construir"},
+            "evidencia": {"type": "string", "description": "Fragmento exacto de la conversación o los datos reales que lo muestran"},
+            "tipo": {"type": "string", "enum": ["capacidad", "bug", "dato"]}}, "required": ["titulo", "detalle"]},
+    },
+    {
+        "name": "juntas_listar",
+        "description": "Lista las JUNTAS guardadas con Escuchar (fecha, título, participantes, id). Con `consulta` solo las que mencionan esas palabras. Úsala para saber qué juntas hay antes de leer una.",
+        "input_schema": {"type": "object", "properties": {"consulta": {"type": "string"}, "limite": {"type": "integer"}}},
+    },
+    {
+        "name": "junta_leer",
+        "description": "Lee una junta guardada como TRANSCRIPCIÓN LITERAL (frase por frase, con hora y quién habló). Es la fuente verdadera de lo que se dijo: NUNCA uses el resumen en su lugar. Pagina con `desde`.",
+        "input_schema": {"type": "object", "properties": {"sesion_id": {"type": "string"}, "desde": {"type": "integer"}, "limite": {"type": "integer"}}, "required": ["sesion_id"]},
+    },
+    {
+        "name": "revisar_entregable",
+        "description": "Revisa un ENTREGABLE contra las fuentes: Cerebro (estado/VoBo/fecha), transcripciones LITERALES de las juntas, correo enviado, Dropbox y la agenda; calcula si ya se envió la versión actualizada comparando fechas y, si no hay evidencia de envío, lo deja como URGENTE en la agenda y en seguimiento. Úsala cuando Polo pregunte si ya se mandó/actualizó un documento o contrato. Redacta SOLO con lo que devuelva.",
+        "input_schema": {"type": "object", "properties": {"titulo": {"type": "string", "description": "Nombre del entregable o contrato"}, "marcar_prioritario": {"type": "boolean", "description": "Por defecto true: si no hay evidencia de envío lo marca urgente"}}, "required": ["titulo"]},
+    },
+    {
+        "name": "kawiil_central_agentes",
+        "description": "Ve los AGENTES de Kawiil Central (p. ej. Vizumi) y lo que han guardado (memorias, actividad). Con `nombre` filtra. Solo lectura: Donna todavía NO puede ejecutarlos; si Polo pide que uno haga algo, díselo claro y usa pedir_mejora.",
+        "input_schema": {"type": "object", "properties": {"nombre": {"type": "string"}}},
     },
     {
         "name": "reunion_tareas",
@@ -9592,6 +9646,40 @@ def execute_tool(name: str, args: dict) -> str:
             with path.open("a") as f:
                 f.write(entry)
             return f"OK aprendido: {args['topic']}"
+        elif name == "aprender_correccion":
+            import donna_aprender
+            try:
+                r = donna_aprender.regla_agregar(args.get("cuando", ""), args.get("regla", ""), args.get("error", ""), args.get("error", ""))
+            except ValueError as e:
+                return "❌ " + str(e)
+            return "✅ Aprendido (%s). Regla guardada: cuando %s → %s. Polo la ve y puede editarla en Seguimiento." % ("nueva" if r["nueva"] else "actualicé una parecida", args.get("cuando", "")[:80], args.get("regla", "")[:160])
+        elif name == "reglas_listar":
+            import donna_aprender
+            L = donna_aprender.reglas_list()
+            return "\n".join("• [%s] Cuando %s: %s" % (r["estado"], r["cuando"], r["regla"]) for r in L) or "Aún no me has corregido nada."
+        elif name == "pedir_mejora":
+            import donna_aprender
+            try:
+                r = donna_aprender.mejora_agregar(args.get("titulo", ""), args.get("detalle", ""), args.get("evidencia", ""), args.get("tipo", "capacidad"))
+            except ValueError as e:
+                return "❌ " + str(e)
+            return "✅ Registré la mejora (%s). Polo la ve en Seguimiento → Mejoras pendientes y puede copiarla para dársela a Claude Code." % ("nueva" if r["nueva"] else "ya estaba; sumé esta vez")
+        elif name == "juntas_listar":
+            import donna_revision
+            L = donna_revision.juntas_listar(str(args.get("consulta", "")), int(args.get("limite") or 15))
+            return "\n".join("• %s — «%s» (id %s, %d frases%s)" % (j["fecha"], j["titulo"], j["id"], j["lineas"], (", con " + ", ".join(j["participantes"])) if j["participantes"] else "") for j in L) or "No hay juntas guardadas%s." % (" que mencionen eso" if args.get("consulta") else "")
+        elif name == "junta_leer":
+            import donna_revision
+            return donna_revision.junta_leer(str(args.get("sesion_id", "")), int(args.get("desde") or 0), int(args.get("limite") or 60))
+        elif name == "revisar_entregable":
+            import donna_revision
+            try:
+                return donna_revision.revisar_entregable(sys.modules[__name__], str(args.get("titulo", "")), args.get("marcar_prioritario", True) is not False)["texto"]
+            except ValueError as e:
+                return "❌ " + str(e)
+        elif name == "kawiil_central_agentes":
+            import donna_revision
+            return donna_revision.kc_agentes(sys.modules[__name__], str(args.get("nombre", "")))
         elif name == "reunion_tareas":
             import donna_tareas
             sid = str(args.get("sesion_id", "")).strip()
