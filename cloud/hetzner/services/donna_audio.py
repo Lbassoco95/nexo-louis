@@ -154,6 +154,16 @@ def relinkear(viejo: str, nuevo: str) -> int:
         c.close()
 
 
+def ultima_con_audio(usuario: str = "") -> str:
+    """El id de la junta GUARDADA más reciente que todavía tiene audio (para las herramientas de prueba)."""
+    c = _c()
+    try:
+        r = c.execute("SELECT sesion_id FROM escucha_audio WHERE sesion_id!='' AND estado!='borrado' ORDER BY actualizado DESC LIMIT 1").fetchone()
+        return r["sesion_id"] if r else ""
+    finally:
+        c.close()
+
+
 def tramos(sesion_id: str) -> list:
     c = _c()
     try:

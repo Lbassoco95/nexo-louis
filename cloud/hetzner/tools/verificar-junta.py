@@ -62,6 +62,10 @@ def main():
         print("  %s · %d frases · %s" % (r["id"], r["n"], r["cuando"]))
     if not rs:
         print("  ninguna (se borra al guardar la junta)")
+    con_audio = q(c, "SELECT sesion_id FROM escucha_audio WHERE sesion_id!='' AND estado!='borrado' ORDER BY actualizado DESC LIMIT 1")
+    if con_audio:
+        print("\nPARA PROBAR LAS VOCES con el audio de la junta más reciente que lo tiene:")
+        print("  cd /opt/openclaw/scripts && python3 ~/donna-deploy/cloud/hetzner/tools/probar-diarizacion.py sesion:%s 120" % con_audio[0]["sesion_id"])
     huerf = q(c, "SELECT aid, bytes, datetime(actualizado,'unixepoch','localtime') AS cuando FROM escucha_audio WHERE sesion_id='' AND estado!='borrado' ORDER BY actualizado DESC LIMIT 5")
     if huerf:
         print("\nAUDIO SIN JUNTA GUARDADA")
