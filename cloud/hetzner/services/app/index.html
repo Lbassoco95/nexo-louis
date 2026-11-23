@@ -1678,7 +1678,7 @@ async function esStart(fuente){
   api('/v1/app/personas').then(r=>{ES.pv=r.items||[]}).catch(()=>{});
   esSt('Conectando…');esUI();esConnect();
   ES.ping=setInterval(()=>esWsSend({t:'ping'}),20000);
-  ES.tick=setInterval(()=>{if(LA.agc&&LA.st.g>=9&&LA.speech&&Date.now()-(ES.avisoBajo||0)>45000&&!ES.paused){ES.avisoBajo=Date.now();toast('🔈 Se oye muy bajo: acerca el teléfono a quien habla')}
+  ES.tick=setInterval(()=>{esVigilaTexto();if(LA.agc&&LA.st.g>=9&&LA.speech&&Date.now()-(ES.avisoBajo||0)>45000&&!ES.paused){ES.avisoBajo=Date.now();toast('🔈 Se oye muy bajo: acerca el teléfono a quien habla')}
     const l=$('#es-lvl');if(l)l.style.width=Math.min(100,Math.round(LA.level*500))+'%';esUI();if(ES.turns.length&&$('#v-es').classList.contains('on'))esPaint()},500);
 }
 function esAskStart(fuente){                                 // privacidad: confirmación del consentimiento, una vez por sesión de la app
@@ -1700,6 +1700,14 @@ async function esResumen(){
   try{const r=await api('/v1/app/translate/resumen',{method:'POST',body:JSON.stringify({texto:tx})});ES.sum=r.resumen;const box=$('#es-sumbox');box.hidden=false;box.innerHTML='<b>De qué hablan (hasta ahora)</b>'+md(r.resumen)}
   catch(e){toast('No pude resumir: '+e.message)}
   b.disabled=false;
+}
+function esVigilaTexto(){                                   // si se OYEN voces pero la transcripción no llega (conexión caída en silencio), se avisa y se reconecta: el reloj no debe correr sin texto
+  if(!ES.on||ES.paused||ES.stop||!LA.speech)return;
+  const ahora=Date.now(),sin=ahora-(ES.lastIn||ES.t0||ahora);
+  if(sin>60000&&ahora-(ES.avisoSinTexto||0)>120000){
+    ES.avisoSinTexto=ahora;esSt('⚠️ Oigo voces pero no llega la transcripción: reconectando… (el audio sigue guardándose)');toast('⚠️ No llega la transcripción; reconecto');
+    try{esReconnect('sin transcripción')}catch(e){}
+  }
 }
 async function esAudioStart(off){                          // grabación general: el audio se sube por partes MIENTRAS se graba (si la pestaña se cae, solo se pierden unos segundos)
   esAudioStop();
