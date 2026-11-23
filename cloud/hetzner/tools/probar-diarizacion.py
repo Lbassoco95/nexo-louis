@@ -6,7 +6,8 @@ probar contra la API real desde el repositorio. Este script la ejerce de verdad 
 
 Uso (en el servidor, como polo):
   cd /opt/openclaw/scripts && python3 ~/donna-deploy/cloud/hetzner/tools/probar-diarizacion.py AUDIO.m4a [SEGUNDOS]
-  · AUDIO: cualquier audio/video que ffmpeg lea (una grabación de una junta, una nota de voz con dos personas…)
+  · AUDIO: cualquier audio/video que ffmpeg lea (una nota de voz con dos personas…) — o «sesion:ID»: el audio guardado de una junta de Escuchar
+    (el ID sale de tools/verificar-junta.py). Ej.:  python3 .../probar-diarizacion.py sesion:398ae52de1a6 120
   · SEGUNDOS: cuánto probar (por defecto 120 s: cuesta centavos). Con 0 procesa todo.
 
 Muestra: voces detectadas, tiempo hablado por voz, primeras líneas con su voz y el tiempo que tardó. Nada se guarda en tu base de datos.
@@ -30,10 +31,17 @@ import donna_diariza as DZ  # noqa: E402
 def main():
     if len(sys.argv) < 2:
         sys.exit(__doc__)
-    audio = Path(sys.argv[1]).expanduser()
     seg = float(sys.argv[2]) if len(sys.argv) > 2 else 120.0
+    if sys.argv[1].startswith("sesion:"):
+        import donna_audio
+        tr = donna_audio.tramos(sys.argv[1].split(":", 1)[1])
+        if not tr:
+            sys.exit("Esa junta no tiene audio guardado (se grabó antes del audio, lo apagaste en Ajustes, o ya se borró). Prueba con otra o con un archivo.")
+        audio = donna_audio.ensamblar(tr[0]["aid"])
+    else:
+        audio = Path(sys.argv[1]).expanduser()
     if not audio.exists():
-        sys.exit("No encuentro %s" % audio)
+        sys.exit("No encuentro %s. Pon la ruta REAL de un audio (o sesion:ID)." % audio)
     key = app_media.openai_key()
     if not key:
         sys.exit("Falta OPENAI_API_KEY en el servidor.")
