@@ -1193,7 +1193,7 @@ document.addEventListener('click',e=>{
   else if(b.id==='m-list')openMediaList();
   else if(b.dataset.media)openMedia(b.dataset.media);
 });
-function openLink(l){const [k,id]=String(l||'').split(':');if(k==='escuchar'){go('es');if(id==='seguir'){esWsSend({t:'seguir'});ES.ask=false;esAsk(false)}else if(id==='detener')esFinish();return}if(k==='media'&&id)openMedia(id);else if(k==='tablero'&&id)openArt(id);else if(k==='trabajo'&&id)openTrabajo(id);else if(k==='resumen'&&id)openResumen(id);else if(k==='seg'){closeSheet();go('seg')}else if(k==='escuchar')esOpen()}
+function openLink(l){const [k,id]=String(l||'').split(':');if(k==='escuchar'){go('es');if(id==='seguir'){esWsSend({t:'seguir'});ES.ask=false;esAsk(false)}else if(id==='detener')esFinish();return}if(k==='media'&&id)openMedia(id);else if(k==='tablero'&&id)openArt(id);else if(k==='trabajo'&&id)openTrabajo(id);else if(k==='resumen'&&id)openResumen(id);else if(k==='seg'||k==='cierres'){closeSheet();go('seg')}else if(k==='escuchar')esOpen()}
 document.addEventListener('click',e=>{const b=e.target.closest&&e.target.closest('[data-link]');if(b){e.preventDefault();openLink(b.dataset.link)}});
 const MIC_ICON={imagen:'🖼️',audio:'🎙️',video:'🎬',documento:'📄',conversacion:'🌐'};
 async function openMediaList(){
@@ -2141,13 +2141,37 @@ async function openPersona(id,kc){
 async function openResumen(id){
   sheet('Resumen','<div class="empty">Cargando…</div>');
   try{const r=await api('/v1/app/resumen?id='+encodeURIComponent(id));
-    const sec=(r.datos.secciones||[]).map(x=>`<div class="sec">${esc(x.titulo)} · ${x.total||x.items.length}</div>`+x.items.map((i,k)=>`<div class="card task${x.id==='hoy'?' hot':''}" data-t="${esc(i.texto)}"><button class="ck" aria-label="Marcar hecho" ${(x.id==='entregables'||x.id==='briefs')?'hidden':''}></button><div class="tt">${i.cuando?`<span class="cuando">${esc(i.cuando)}</span> `:''}${esc(i.texto)}</div></div>`).join('')).join('');
+    const sec=(r.datos.secciones||[]).map(x=>`<div class="sec">${esc(x.titulo)} · ${x.total||x.items.length}</div>`+x.items.map((i,k)=>`<div class="card task${x.id==='hoy'?' hot':''}" data-t="${esc(i.texto)}"><button class="ck" aria-label="Marcar hecho" ${(x.id==='entregables'||x.id==='briefs'||(i.tipo&&i.tipo!=='agenda'))?'hidden':''}></button><div class="tt">${i.cuando?`<span class="cuando">${esc(i.cuando)}</span> `:''}${esc(i.texto)}</div></div>`).join('')).join('');
     sheet(r.titulo||'Resumen',`<div class="sub">${esc(r.fecha)} · guardado ${fmtWhen(r.ts)}</div>`+(r.texto?`<div class="nb open" style="margin-top:8px">${md(r.texto)}</div>`:sec||'<div class="empty">Sin pendientes.</div>')+
       '<button class="artcard" id="rs-ask" style="margin-top:12px">💬 Platicar este resumen con Donna</button>');
     $$('#sh-b .task .ck').forEach(b=>b.onclick=async()=>{const c=b.closest('.task');c.classList.add('done');
       try{const x=await api('/v1/app/agenda/hecho',{method:'POST',body:JSON.stringify({texto:c.dataset.t})});toast(x.result?String(x.result).slice(0,60):'Marcado ✓')}catch(e){c.classList.remove('done');toast(e.message)}});
     $('#rs-ask').onclick=async()=>{const t=(r.datos.secciones||[]).map(x=>x.titulo+': '+x.items.map(i=>i.texto).join('; ')).join('\n').slice(0,900);closeSheet();await nuevaConv();$('#inp').value='Sobre mi '+r.titulo+':\n'+t+'\n\n¿Por dónde empiezo?';$('#inp').focus()};
   }catch(e){sheet('Resumen','<div class="empty">No pude abrirlo. '+esc(e.message)+'</div>')}
+}
+let RADT=0;
+const CLN={'agenda:bajo':'Pendientes de la agenda','kc:bajo':'Tareas de Kawiil Central','patio:bajo':'Tareas de Patio Yoltik'};
+async function radarPost(path,b){return api('/v1/app/radar/'+path,{method:'POST',body:JSON.stringify(b)})}
+async function loadRadar(){
+  const el=$('#radar');if(!el)return;
+  try{const d=await api('/v1/app/radar');
+    const cuando=ts=>{const x=new Date(ts*1000);return x.toLocaleDateString('es-MX',{day:'numeric',month:'short'})+' '+x.toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'})};
+    el.innerHTML='<div class="card" style="margin-bottom:12px"><div class="row"><b>🛰 Lo que Donna vigiló</b>'+(d.corriendo?'<span class="pill">revisando…</span>':'')+'</div>'+
+      (d.bitacora.length?d.bitacora.slice(0,6).map(x=>`<div class="sub" style="margin-top:6px"><b>${esc(cuando(x.ts))}</b> · ${esc(x.resumen)}</div>`).join(''):'<div class="sub" style="margin-top:6px">Aún no ha corrido. Revisa a las 8:00 (fechas) y a las 12:00 y 17:00 (cierres), o toca «Revisar ahora».</div>')+
+      '<div class="nq"><button id="rd-c">🔎 Buscar cierres ahora</button><button id="rd-f">📅 Radar de fechas ahora</button></div>'+
+      '<div class="sub" style="margin-top:8px">Fuentes: '+d.fuentes.conectadas.map(esc).join(', ')+'. Aún no conectadas: '+d.fuentes.pendientes.map(esc).join(', ')+'.</div></div>'+
+      (d.propuestas.length?'<div class="sec">Propuestas de cierre · '+d.propuestas.length+'</div>'+d.propuestas.map(x=>`<div class="card segc" data-c="${esc(x.id)}"><b>${esc(x.titulo)}</b><div class="sub" style="margin-top:4px">${esc(x.evidencia)}</div><div class="sub" style="margin-top:4px">${esc(CLN[x.clase]||x.clase)} · confianza ${Math.round(x.confianza*100)}%${x.riesgo==='alto'?' · <b>riesgo alto: siempre te pregunto</b>':''}</div>`+
+        `<div class="nq"><button data-d="aprobar">✓ Sí, ciérralo</button>${x.riesgo==='alto'?'':'<button data-d="aprobar" data-au="1">✓ Y cierra solas las de este tipo</button>'}<button data-d="rechazar">✕ No está resuelto</button></div></div>`).join(''):'')+
+      '<details class="agg"><summary class="sec">Cuánta autonomía le doy</summary><div class="sub" style="margin:6px 0">Regulatorio, legal, dinero y clientes: siempre te pregunto. Lo demás puedes dejarlo en «Solo propone» o «Cierra sola» (con evidencia y botón para deshacer).</div>'+
+      d.autonomia.map(a=>`<div class="menurow" style="margin-bottom:6px"><span><b>${esc(CLN[a.clase]||a.clase)}</b></span><select data-cl="${esc(a.clase)}" aria-label="${esc(CLN[a.clase]||a.clase)}"><option value="proponer"${a.nivel==='proponer'?' selected':''}>Solo propone</option><option value="auto"${a.nivel==='auto'?' selected':''}>Cierra sola</option></select></div>`).join('')+
+      (d.estadisticas.length?'<div class="sub">Aprendizaje: '+d.estadisticas.map(e=>esc(CLN[e.clase]||e.clase)+' — '+e.aprobadas+' sí, '+e.rechazadas+' no (exigencia '+Math.round(e.umbral*100)+'%)').join(' · ')+'</div>':'')+'</details>';
+    const run=async q=>{try{await radarPost('ejecutar',{que:q});toast('Revisando…');clearInterval(RADT);let n=0;RADT=setInterval(async()=>{n++;if(n>40||!$('#radar')){clearInterval(RADT);return}try{const r=await api('/v1/app/radar');if(!r.corriendo){clearInterval(RADT);loadSeg()}}catch(e){}},3000);setTimeout(loadRadar,800)}catch(e){toast(e.message)}};
+    $('#rd-c').onclick=()=>run('cierres');$('#rd-f').onclick=()=>run('fechas');
+    $$('#radar [data-c] [data-d]').forEach(b=>b.onclick=async()=>{const id=b.closest('[data-c]').dataset.c;
+      if(b.dataset.au&&!confirm('¿Que Donna cierre sola, con evidencia y botón para deshacer, los pendientes de este tipo?'))return;
+      try{const r=await radarPost('cierre',{id,decision:b.dataset.d,autorizar:!!b.dataset.au});toast(b.dataset.d==='rechazar'?'Entendido, seré más exigente':(r.ok===false?(r.resultado||'No pude cerrarlo'):'Cerrado ✓'));loadSeg()}catch(e){toast(e.message)}});
+    $$('#radar [data-cl]').forEach(sel=>sel.onchange=async()=>{try{await radarPost('autonomia',{clase:sel.dataset.cl,nivel:sel.value});toast('Listo')}catch(e){toast(e.message);loadRadar()}});
+  }catch(e){}
 }
 const SEGO={manual:'',tarea:'tarea',agenda:'agenda',compra:'compra',reservacion:'reservación',dia:'mi día'};
 function segCuando(ts){if(!ts)return 'sin fecha';const d=new Date(ts*1000),n=new Date();const dd=Math.round((new Date(d.getFullYear(),d.getMonth(),d.getDate())-new Date(n.getFullYear(),n.getMonth(),n.getDate()))/864e5);
@@ -2160,12 +2184,13 @@ async function loadSeg(){
     const card=x=>`<div class="card segc" data-id="${esc(x.id)}"><div class="row"><b>${esc(x.titulo)}</b>${SEGO[x.origen]?`<span class="pill">${esc(SEGO[x.origen])}</span>`:''}</div>
       ${x.nota?`<div class="sub" style="margin-top:4px">${esc(x.nota)}</div>`:''}<div class="sub" style="margin-top:4px">${x.estado==='hecho'?'✓ Hecho':x.estado==='pausado'?'⏸ En pausa':'Próxima revisión: '+esc(segCuando(x.proxima_revision))}</div>
       ${x.estado==='hecho'?'':`<div class="nq">${x.estado==='activo'?'<button data-a="hecho">✓ Hecho</button><button data-a="posponer">⏰ +3 h</button><button data-a="pausar">⏸ Pausar</button>':'<button data-a="reanudar">▶ Reanudar</button><button data-a="hecho">✓ Hecho</button>'}<button data-a="nota">📝 Nota</button><button data-a="cancelar" aria-label="Dejar de seguir">✕</button></div>`}</div>`;
-    el.innerHTML='<p class="sub" style="margin:0 0 10px">Lo que Donna sigue por ti. Es aparte de las notificaciones: cuando toca revisar algo, te avisa con botones. Pídeselo en el chat («dale seguimiento a…») o agrégalo aquí.</p>'+
+    el.innerHTML='<div id="radar"></div><p class="sub" style="margin:0 0 10px">Lo que Donna sigue por ti. Es aparte de las notificaciones: cuando toca revisar algo, te avisa con botones. Pídeselo en el chat («dale seguimiento a…») o agrégalo aquí.</p>'+
       '<div class="trin"><input id="sg-t" style="flex:1 1 100%" placeholder="¿Qué quieres que siga?" enterkeyhint="send"><select id="sg-w" aria-label="Revisar"><option value="3">en 3 h</option><option value="6">en 6 h</option><option value="24" selected>mañana</option><option value="72">en 3 días</option><option value="168">en 1 semana</option></select><button id="sg-go">Seguir</button></div>'+
       '<div class="sec">Activos · '+act.length+'</div>'+(act.map(card).join('')||'<div class="empty">Nada en seguimiento.</div>')+
       (pau.length?'<div class="sec">En pausa · '+pau.length+'</div>'+pau.map(card).join(''):'')+(hec.length?'<details class="agg"><summary class="sec">Hechos recientes · '+hec.length+'</summary>'+hec.map(card).join('')+'</details>':'');
     const add=async()=>{const t=$('#sg-t').value.trim();if(t.length<3)return;try{await api('/v1/app/seguimiento',{method:'POST',body:JSON.stringify({op:'crear',titulo:t,en_horas:+$('#sg-w').value})});toast('Listo, le doy seguimiento');loadSeg()}catch(e){toast(e.message)}};
     $('#sg-go').onclick=add;$('#sg-t').onkeydown=e=>{if(e.key==='Enter')add()};
+    loadRadar();
     $$('#seg .segc .nq button').forEach(b=>b.onclick=async()=>{const id=b.closest('.segc').dataset.id,a=b.dataset.a;let nota;
       if(a==='nota'){nota=prompt('Nota para este seguimiento:');if(!nota)return}
       if(a==='cancelar'&&!confirm('¿Dejar de darle seguimiento?'))return;

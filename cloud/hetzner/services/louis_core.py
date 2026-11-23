@@ -438,6 +438,7 @@ TOOL_KEYWORDS = [
     r"\b(navega|abre\s+(?:la\s+)?(?:p[aá]gina|web|sitio|url)|chrome|browser|click|llena|completa\s+(?:el\s+)?formulario|login\s+en|sesi[oó]n\s+en)\b",
     r"\b(screenshot|captura\s+de\s+pantalla|extrae\s+de\s+la\s+p[aá]gina)\b",
     r"\b(qu[eé]\s+(?:ha|han)\s+(?:dicho|aportado|propuesto)|qu[eé]\s+(?:se\s+)?dijo|qui[eé]n\s+(?:es|habl[oó]|dijo)\b|aportaciones|transcripci[oó]n(?:es)?\s+(?:de|donde|en\s+las))",
+    r"\b(qu[eé]\s+(?:has|est[aá]s)\s+(?:estado\s+)?(?:vigilando|revisando|haciendo)|qu[eé]\s+vigilas|radar|propuestas?\s+de\s+cierre)\b",
     r"\b(seguimiento|dale\s+seguimiento|da(?:r|me)\s+seguimiento|estate\s+pendiente|av[ií]same\s+(?:c[oó]mo|si|cuando)\b)",
     r"\b(boletos?|cartelera|cin[eé]polis|cinemex|cinemark|funci[oó]n(?:es)?\s+de\s+cine|comprar\s+(?:unos?\s+)?(?:boletos?|entradas?)|entradas?\s+(?:para|al)\s+(?:el\s+)?(?:cine|concierto|teatro|partido))\b",
     r"\b(vault|bitwarden|contrase[ñn]a|password|credencial(?:es)?)\b",
@@ -1171,6 +1172,10 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "\n"
         "Flujo típico para login: `browser_login(url='https://app.x.com/login', vault_item='Slack Kawiil')`. "
         "Si los selectores default no funcionan en una página rara, pásale `user_selector`/`pass_selector`/`submit_selector`."
+        "\n\n# PROACTIVIDAD — vigilas sin que te lo pidan\n"
+        "Cada día corres un radar de fechas (agenda, Kawiil Central, Patio Yoltik) y dos revisiones de cierres: cruzas lo abierto contra lo que ya pasó en Slack, juntas escuchadas y tareas hechas, "
+        "y PROPONES cerrar lo resuelto citando la evidencia. Nunca cierras solo lo regulatorio, legal, de dinero o de clientes; las clases de bajo riesgo se cierran solas solo si Polo lo autorizó. "
+        "Si Polo pregunta qué has vigilado o qué propones, usa `radar_estado` y responde con lo REAL; si una fuente aún no está conectada (correo/calendario M365, WhatsApp), dilo.\n"
         "\n\n# PERSONAS — lo que sabes de la gente por lo que escuchas\n"
         "Cuando Polo guarda una escucha, las voces con nombre se vuelven personas y sus frases quedan en la base. Usa `persona_buscar(nombre, tema?)` y "
         "`aportaciones_buscar(texto)` para responder qué dijo alguien, quién habló de un tema o prepararlo para una reunión; el cruce con Kawiil Central va incluido. "
@@ -3033,6 +3038,11 @@ TOOLS_DEFINITION = [
             },
             "required": ["viejo", "nuevo"],
         },
+    },
+    {
+        "name": "radar_estado",
+        "description": "Cuenta qué ha estado vigilando Donna por su cuenta (radar de fechas, cierres con evidencia), qué propone cerrar y con qué evidencia, y qué fuentes tiene conectadas. Úsala cuando Polo pregunte «¿qué has estado haciendo?», «¿qué vigilas?», «¿qué se resolvió?».",
+        "input_schema": {"type": "object", "properties": {}},
     },
     {
         "name": "persona_buscar",
@@ -9565,6 +9575,9 @@ def execute_tool(name: str, args: dict) -> str:
             with path.open("a") as f:
                 f.write(entry)
             return f"OK aprendido: {args['topic']}"
+        elif name == "radar_estado":
+            import donna_radar
+            return donna_radar.estado_texto()
         elif name == "persona_buscar":
             import donna_personas
             coinc = donna_personas.listar("admin", str(args.get("nombre", "")))

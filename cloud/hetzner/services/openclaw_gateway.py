@@ -482,6 +482,7 @@ _ACTIONS = {
 }
 
 
+_RADAR_LOCK = threading.Lock()
 _ACCIONES_BASE = ("hecho", "posponer_1h", "posponer_manana", "descartar")
 
 
@@ -1136,6 +1137,11 @@ class Handler(BaseHTTPRequestHandler):
                             if a1("kc"):
                                 d["cruce"]["kawiil_central"] = donna_personas.cruce_kawiil_central(core, d["nombre"], d["empresa"])
                             self._send_json(200, d)
+                elif _r0 == "/v1/app/radar":
+                    import donna_radar
+                    self._send_json(200, {"bitacora": donna_radar.bitacora_list(12), "propuestas": donna_radar.propuestas(), "autonomia": donna_radar.autonomia_todas(),
+                                          "estadisticas": donna_radar.estadisticas(), "corriendo": _RADAR_LOCK.locked(),
+                                          "fuentes": {"conectadas": ["Agenda", "Slack", "Juntas escuchadas", "Kawiil Central", "Patio Yoltik"], "pendientes": donna_radar.FUENTES_NO_CONECTADAS}})
                 elif _r0 == "/v1/app/seguimientos":
                     import donna_db
                     self._send_json(200, {"items": donna_db.seg_list(usuario=self._media_user() if self._media_user() != "admin" else None)})
@@ -2499,6 +2505,38 @@ class Handler(BaseHTTPRequestHandler):
                         self._send_json(200, {"ok": donna_personas.eliminar(str(body.get("id", "")))})
                     else:
                         raise ValueError("operación no válida")
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
+            return
+        if self.path in ("/v1/app/radar/cierre", "/v1/app/radar/autonomia", "/v1/app/radar/ejecutar"):
+            import donna_radar
+            try:
+                if self.path.endswith("cierre"):
+                    self._send_json(200, donna_radar.resolver(core, str(body.get("id", "")), str(body.get("decision", "")), bool(body.get("autorizar"))))
+                elif self.path.endswith("autonomia"):
+                    donna_radar.autonomia_set(str(body.get("clase", "")), str(body.get("nivel", "")))
+                    self._send_json(200, {"ok": True, "autonomia": donna_radar.autonomia_todas()})
+                else:                                                   # «Revisar ahora»: corre el radar en segundo plano; la app consulta /v1/app/radar
+                    que = str(body.get("que", "cierres"))
+                    if que not in ("cierres", "fechas"):
+                        raise ValueError("operación no válida")
+                    if not _RADAR_LOCK.acquire(blocking=False):
+                        self._send_json(200, {"ok": True, "ya": True})
+                        return
+
+                    def _ya():
+                        try:
+                            f = donna_radar.fuentes_por_defecto(core)
+                            if que == "fechas":
+                                donna_radar.radar_fechas(f)
+                            else:
+                                donna_radar.procesar_cierres(core, f, donna_radar.juez_haiku(core))
+                        except Exception:
+                            log.exception("radar manual falló")
+                        finally:
+                            _RADAR_LOCK.release()
+                    threading.Thread(target=_ya, daemon=True).start()
+                    self._send_json(200, {"ok": True})
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
             return

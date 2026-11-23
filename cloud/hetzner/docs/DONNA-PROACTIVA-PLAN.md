@@ -1,0 +1,40 @@
+# Donna proactiva — plan de trabajo
+
+Objetivo (Polo): que Donna **no sea reactiva**. Que dé seguimiento sola, mantenga la información al día (Kawiil Central y Patio Yoltik), aprenda de lo que se cierra y avanza, y que no se le pase ninguna fecha.
+
+## Qué ya funciona (v27) — `donna_radar.py`
+| Pieza | Cuándo | Qué hace |
+|---|---|---|
+| **Radar de fechas** | 08:00 diario | Junta lo que vence en Agenda, Kawiil Central y Patio Yoltik y avisa por etapa (7 d · 3 d · mañana · hoy · vencida), **una vez por etapa**. Lo vencido se recuerda una vez por semana. Guarda el radar como resumen y el aviso es una línea. Silencioso si nada cambió. |
+| **Cierres con evidencia** | 12:00 y 17:00 | Cruza lo abierto contra lo que ya pasó (Slack, juntas escuchadas, tareas hechas en Kawiil Central / Patio, agenda cerrada). Un juez (Haiku) decide si la evidencia dice **explícitamente** que se resolvió; si sí, **propone** cerrar citando la fuente. |
+| **Autonomía que Polo concede** | siempre | Por defecto solo propone. Con «✓ Y cierra solas las de este tipo» las de **bajo riesgo** de esa clase (agenda / Kawiil Central / Patio) se cierran solas, avisando con la evidencia y con botón de deshacer. **Regulatorio, legal, dinero y clientes nunca se cierran solos.** Polo puede volver a «Solo propone» cuando quiera. |
+| **Aprendizaje** | cada decisión | Cada sí/no/deshacer se guarda etiquetado. Más rechazos de una clase → Donna exige más confianza en esa clase (0.70 base, hasta 0.95). Lo rechazado no se vuelve a proponer con la misma evidencia. |
+| **Bitácora visible** | siempre | Seguimiento → «🛰 Lo que Donna vigiló»: cada corrida deja una línea (qué revisó, contra qué, qué encontró) y se puede lanzar «Buscar cierres ahora». Donna también lo cuenta con la herramienta `radar_estado`. |
+
+Seguridad de escritura: en Kawiil Central solo cierra si reconoce el estado «hecho» de esa base (si no, no toca nada y lo dice); en Patio usa `completada`. Se guarda el estado previo para deshacer. Toda escritura queda en el registro de auditoría de esos módulos.
+
+## Fuentes
+Conectadas: Agenda · Slack (resumen diario) · Juntas escuchadas (Escuchar) · Kawiil Central · Patio Yoltik.
+Siguientes, en este orden: **correo y calendario M365** (ya hay acceso en `m365.py`; falta el lector de evidencia), **WhatsApp** (requiere decidir el canal: WhatsApp Business API / número dedicado — el acceso a un WhatsApp personal no es estable ni permitido), y reglas de **actividades** de Kawiil Central (sede, invitados sin responder, +1 por aprobar, proveedor sin confirmar; las reglas y 14 pruebas están en el PR #586 de `kawiil-central` y hay que traerlas aquí).
+
+## Fases
+0. ✅ Radar de fechas + cierres con evidencia + autonomía + bitácora (esta entrega).
+1. Correo y calendario como fuente de evidencia y de fechas; reunión → tareas propuestas (de lo escuchado: «quién · qué · cuándo») que Donna **crea** en Kawiil Central/Patio con tu aprobación.
+2. Mantener Kawiil/Patio al día en sentido contrario: lo que se resolvió y no se marcó (ya), y lo nuevo que aparece en mensajes y juntas y no está registrado.
+3. Revisión semanal de avance: qué se cerró, qué se estancó, qué cambió de fecha; tablero de estadísticas (cuántas propuestas acertó).
+4. NVIDIA (abajo).
+
+## NVIDIA — créditos y acceso para deep learning (beneficio de la empresa)
+Hoy el juez usa un modelo alojado (Haiku) y todo funciona sin GPU. Los créditos NVIDIA se aprovechan donde sí aportan, en pilotos medibles:
+1. **Juez de evidencia propio**: afinar un clasificador con el conjunto de datos que Donna ya va etiquetando (`donna_radar.exportar_dataset()` → JSONL: pendiente, evidencia, fuente, etiqueta sí/no). Meta: igualar o superar a Haiku con menor costo y sin mandar datos a terceros.
+2. **Embeddings y búsqueda semántica** de transcripciones, mensajes y tareas (en vez de coincidencia de palabras): menos falsos negativos al detectar «ya se resolvió».
+3. **Predicción de fechas en riesgo** (qué tareas probablemente se atrasarán según historial) para avisar antes.
+4. **Voz**: separación de hablantes más robusta que la actual (tono) para Escuchar/Personas.
+Por confirmar con Polo: qué incluye exactamente el beneficio (créditos de API del catálogo de NVIDIA —endpoints compatibles con OpenAI—, horas de GPU en la nube, o servidor propio), y quién administra la cuenta. La llave se pide con la ventana segura del entorno, nunca por el chat.
+Criterio de éxito del piloto 1: con ≥200 decisiones etiquetadas, precisión ≥ la de Haiku en el mismo conjunto de prueba, y cero cierres de alto riesgo sin aprobación.
+
+## Decisiones tomadas por Polo
+- Empezar por el radar de actividades/fechas (Fase 0).
+- Donna puede **proponer o cerrar**, siempre con la evidencia de por qué; el nivel de autonomía lo concede Polo conforme avanzan.
+- Fuentes: Slack, correo, juntas, calendario, Kawiil Central, Patio Yoltik y, a futuro, WhatsApp.
+- NVIDIA: es el motivo principal porque hay créditos y acceso para deep learning por beneficio de la empresa.
