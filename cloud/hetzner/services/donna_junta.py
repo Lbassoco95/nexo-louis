@@ -201,7 +201,10 @@ SYSTEM = (
     "Si te lo pide, usa la herramienta y confírmalo en una frase.")
 
 
-PIDE_NOTA = re.compile(r"(?i)\b(anota|anote|anotar|anótalo|apunta|apunte|apuntar|toma\s+nota|guarda\s+(?:esto|eso|una\s+nota|la\s+nota)|nota\s+que)\b")
+PIDE_NOTA = re.compile(r"(?i)\b(anota(?:r|s|lo|me)?|anote(?:s|mos)?|an[oó]talo|apunta(?:r|lo|me)?|apunte(?:s|mos)?|ap[uú]ntalo|toma(?:r)?\s+nota|t[oó]malo\s+como\s+nota|nota\s+que|"
+                       r"(?:como|una|la)\s+nota|gu[aá]rd(?:a|e|es|ar|alo|ame)\s+(?:esto|eso|lo|como|una\s+nota|la\s+nota)|d[eé]jalo\s+(?:anotado|apuntado)|que\s+lo\s+(?:guardes|anotes|apuntes))\b")
+# Una pregunta/orden de búsqueda vs. Polo DICTANDO algo que dijo la gente o que quiere que quede (en ese caso se ofrece anotarlo, no se contesta «no lo encontré»)
+ES_PREGUNTA = re.compile(r"(?i)(\?|^\s*(?:¿|qu[eé]|qui[eé]n|qui[eé]nes|cu[aá]ndo|c[oó]mo|cu[aá]l|cu[aá]les|d[oó]nde|cu[aá]nto|cu[aá]ntos|por\s+qu[eé]|busca|b[uú]scame|dime|d[ií]game|revisa|resume|lee|l[eé]eme|confirma|verifica|mu[eé]strame|encuentra|trae|abre)\b)")
 PIDE_TAREA = re.compile(r"(?i)\b(tarea|crea|crear|cr[eé]ame|agrega|agr[eé]game|recu[eé]rdame|pendiente|enc[aá]rgale|as[ií]gnale)\b")
 
 
@@ -409,7 +412,11 @@ def preguntar(core, live_id: str, pregunta: str, lineas: list, usuario: str = "a
         raise ValueError("Escribe tu pregunta.")
     v = _responder(core, live_id, pregunta, lineas, usuario, llm or llm_anthropic(core, "junta"))
     v["modelo"], v["escalada"] = donna_modelos.modelo("junta") if llm is None else "inyectado", False
-    if not v["verificada"] and (v["avisos"] or v["respuesta"] == NO_TENGO) and (llm_escalado or (llm is None and donna_modelos.escalar_activo())):
+    dictado = not ES_PREGUNTA.search(pregunta) and len(pregunta.split()) >= 8
+    if dictado and v["respuesta"] == NO_TENGO:                              # Polo dictó algo: no es una búsqueda fallida, es algo que probablemente quiere conservar
+        v["respuesta"], v["ofrece_nota"] = "Lo tengo presente. ¿Lo guardo como nota de la junta?", pregunta[:600]
+        v["fuentes"], v["avisos"], v["verificada"] = [], [], True
+    if not v["verificada"] and not dictado and (v["avisos"] or v["respuesta"] == NO_TENGO) and (llm_escalado or (llm is None and donna_modelos.escalar_activo())):
         try:
             v2 = _responder(core, live_id, pregunta, lineas, usuario, llm_escalado or llm_anthropic(core, "junta_escalada"))
             if len(v2["fuentes"]) > len(v["fuentes"]) or (v2["verificada"] and not v["verificada"]) or (v2["respuesta"] != NO_TENGO and v["respuesta"] == NO_TENGO and not v2["avisos"]):

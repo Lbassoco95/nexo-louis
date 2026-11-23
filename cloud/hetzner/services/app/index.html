@@ -1801,7 +1801,9 @@ async function asAsk(q){
   q=(q||$('#as-in').value).trim();if(!q)return;$('#as-in').value='';if(ES.asMin)asMinSet(false);asTab(1);if(innerWidth<1100&&ES.pane!=='donna')esPane('donna');
   asBurbuja('u',q);const w=asBurbuja('a','Revisando…');w.classList.add('pend');$('#as-go').disabled=true;
   try{const r=await api('/v1/app/escucha/asistente',{method:'POST',body:JSON.stringify({live_id:esLive(),pregunta:q,lineas:esLineas()})});
-    w.remove();asBurbuja('a',r.respuesta,r.fuentes,r.avisos);if((r.eventos||[]).length)asNotas();if(r.escalada){const l=$('#as-log').lastChild;if(l){const m=document.createElement('div');m.className='asw';m.style.color='var(--mut)';m.textContent='Lo reviso con un modelo más fuerte porque el primero no pudo respaldarlo.';l.appendChild(m)}}}
+    w.remove();const bb=asBurbuja('a',r.respuesta,r.fuentes,r.avisos);if((r.eventos||[]).length)asNotas();
+    if(r.ofrece_nota&&bb){const nb=document.createElement('button');nb.type='button';nb.className='asw';nb.textContent='📝 Sí, guardar como nota';nb.style.cssText='margin-top:6px;cursor:pointer';
+      nb.onclick=async()=>{nb.disabled=true;try{await api('/v1/app/escucha/nota',{method:'POST',body:JSON.stringify({live_id:esLive(),texto:r.ofrece_nota,hora:esClock(esElapsed())})});nb.textContent='✓ Guardada en las notas';asNotas()}catch(e){nb.disabled=false;toast(e.message)}};bb.appendChild(nb)}if(r.escalada){const l=$('#as-log').lastChild;if(l){const m=document.createElement('div');m.className='asw';m.style.color='var(--mut)';m.textContent='Lo reviso con un modelo más fuerte porque el primero no pudo respaldarlo.';l.appendChild(m)}}}
   catch(e){w.remove();asBurbuja('a','No pude consultar ahora: '+e.message)}
   $('#as-go').disabled=false;
 }
