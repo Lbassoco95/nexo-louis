@@ -1158,6 +1158,21 @@ class Handler(BaseHTTPRequestHandler):
                             if a1("kc"):
                                 d["cruce"]["kawiil_central"] = donna_personas.cruce_kawiil_central(core, d["nombre"], d["empresa"])
                             self._send_json(200, d)
+                elif _r0 in ("/v1/app/escucha/rescates", "/v1/app/escucha/rescate"):          # copia de rescate del servidor
+                    import donna_rescate, donna_borrador
+                    from urllib.parse import urlparse as _up3, parse_qs as _pq3
+                    _u = self._media_user()
+                    if _r0.endswith("rescates"):
+                        con_borrador = {b["id"] for b in donna_borrador.listar(_u)}
+                        self._send_json(200, {"items": [x for x in donna_rescate.listar(_u) if x["id"] not in con_borrador]})
+                    else:
+                        d = donna_rescate.a_borrador((_pq3(_up3(self.path).query).get("id") or [""])[0], _u)
+                        self._send_json(200, d) if d else self._send_json(404, {"error": "rescate no encontrado"})
+                elif _r0 == "/v1/app/escucha/revision":
+                    import donna_junta
+                    from urllib.parse import urlparse as _up4, parse_qs as _pq4
+                    d = donna_junta.revision((_pq4(_up4(self.path).query).get("sesion") or [""])[0])
+                    self._send_json(200, d) if d else self._send_json(200, {"estado": "sin_revision"})
                 elif _r0 == "/v1/app/escucha/sesion":                                          # una junta guardada, lista para retomarla
                     import donna_personas
                     from urllib.parse import urlparse as _up2, parse_qs as _pq2
@@ -1632,6 +1647,7 @@ class Handler(BaseHTTPRequestHandler):
             tok = str(hello.get("token", ""))
             s = None if _same(tok, TOKEN or "\0") else app_auth.check_session(tok)
             ok = bool(TOKEN and _same(tok, TOKEN)) or (s and not str(s.get("user", "")).startswith("atajo-"))
+            hello["_user"] = "admin" if (TOKEN and _same(tok, TOKEN)) else str((s or {}).get("user") or "admin")
             if hello.get("t") != "auth" or not ok:
                 return fallo("No autorizado")
             if not _LIVE_SLOTS.acquire(blocking=False):
@@ -1677,6 +1693,16 @@ class Handler(BaseHTTPRequestHandler):
                 "input": {"transcription": {"model": "gpt-realtime-whisper"}}, "output": {"language": to}}}}))
             stop = threading.Event()
             est = {"voz": time.time(), "pregunto": None, "pausa": False, "aviso": True}           # escuchar: última vez que se oyó a alguien / cuándo se preguntó «¿sigo?»
+            import donna_rescate
+            rid = str(hello.get("rescate", "")) if escuchar and donna_rescate.valido(hello.get("rescate")) else ""
+            ruser = str(hello.get("_user") or "admin")
+            rbuf = {"in": ["", 0, 0.0], "out": ["", 0, 0.0]}                                      # copia de rescate: [texto, ms, desde cuándo]
+
+            def rescatar(k):                                                                       # una frase terminada → al disco (solo texto)
+                b = rbuf[k]
+                if rid and b[0].strip():
+                    donna_rescate.agregar(rid, ruser, k, b[1], b[0])
+                rbuf[k] = ["", 0, 0.0]
 
             def arriba():                                         # OpenAI → app
                 try:
@@ -1699,6 +1725,11 @@ class Handler(BaseHTTPRequestHandler):
                                 continue
                             cli.send_binary(b"\x01" + _b64.b64decode(ev.get("delta", "")))
                         elif tp == "session.output_transcript.delta":
+                            if rid:
+                                b = rbuf["out"]
+                                b[0] += ev.get("delta", "")
+                                b[1] = int(ev.get("elapsed_ms") or b[1] or 0)
+                                b[2] = b[2] or time.time()
                             aviso("out", d=ev.get("delta", ""), ms=ev.get("elapsed_ms"))
                         elif tp == "session.input_transcript.delta":
                             if ev.get("delta", "").strip():
@@ -1706,16 +1737,33 @@ class Handler(BaseHTTPRequestHandler):
                                 if est["pregunto"]:
                                     est["pregunto"] = None
                                     aviso("voz")
+                            if rid:
+                                b = rbuf["in"]
+                                b[0] += ev.get("delta", "")
+                                b[1] = int(ev.get("elapsed_ms") or b[1] or 0)
+                                b[2] = b[2] or time.time()
                             aviso("in", d=ev.get("delta", ""), ms=ev.get("elapsed_ms"))
                         elif tp == "error":
                             msg = (ev.get("error") or {}).get("message", "error del traductor")
                             log.warning("live upstream error: %s", msg[:200])
                             aviso("error", m=msg[:240])
                         elif tp.endswith(".done") or tp in ("session.created", "session.updated"):
+                            if rid and tp.endswith("input_transcript.done"):
+                                rescatar("in")
+                            elif rid and tp.endswith("output_transcript.done"):
+                                rescatar("out")
                             aviso("ev", type=tp)
+                        for _k in ("in", "out"):                                                   # si una frase larga no cierra en 15 s, igual se guarda
+                            if rid and rbuf[_k][2] and time.time() - rbuf[_k][2] > 15:
+                                rescatar(_k)
                 except Exception:
                     log.exception("live: OpenAI→app falló")
                 finally:
+                    try:
+                        rescatar("in")
+                        rescatar("out")
+                    except Exception:
+                        pass
                     stop.set()
 
             th = threading.Thread(target=arriba, daemon=True)
@@ -2240,8 +2288,14 @@ class Handler(BaseHTTPRequestHandler):
         quienes = ["- Voz %s — %s%s" % (v.get("n"), str(v.get("nombre", ""))[:40], " (voz %s)" % str(v.get("tono", ""))[:10] if v.get("tono") else "")
                    for v in voces if isinstance(v, dict)]
         titulo = "Transcripción Escuchar " + ahora.strftime("%Y-%m-%d %H:%M")
+        t_propio = " ".join(str(body.get("titulo", "")).split())[:100]
+        if t_propio:
+            titulo = t_propio                                       # p. ej. una junta rescatada del chat con Donna
         contenido = ("Transcripción en español de una escucha en vivo (solo texto; no se guardó audio).\n\n- Fecha: %s\n- Duración: %d min %02d s\n\n## Voces\n%s\n\n## Transcripción\n\n%s\n"
                      % (ahora.strftime("%Y-%m-%d %H:%M"), dur // 60, dur % 60, "\n".join(quienes) or "- (sin identificar)", "\n\n".join(md_lines)))
+        origen_nota = " ".join(str(body.get("origen_nota", "")).split())[:400]
+        if origen_nota:
+            contenido = "> **Nota de origen:** " + origen_nota + "\n\n" + contenido
         live_id = str(body.get("live_id", ""))[:40]
         if live_id:
             try:
@@ -2267,9 +2321,10 @@ class Handler(BaseHTTPRequestHandler):
             pass
         m = _M.register_text(titulo, texto, tipo="conversacion", resumen=resumen, origen="escuchar")
         out = {"ok": True, "nombre": titulo, "archivo": r.split(":", 1)[-1].strip().split(" ")[0], "mid": m.get("id", ""), "resumen": resumen, "lineas": len(L)}
-        try:                                                    # ya quedó guardada de verdad: el borrador sobra
-            import donna_borrador
+        try:                                                    # ya quedó guardada de verdad: el borrador y la copia de rescate sobran
+            import donna_borrador, donna_rescate
             donna_borrador.descartar(str(body.get("borrador_id", "")), self._media_user())
+            donna_rescate.descartar(str(body.get("borrador_id", "")), self._media_user())
         except Exception:
             log.exception("borrador: no pude limpiarlo")
         try:                                                    # base de personas: quién dijo qué (si falla, la transcripción ya quedó guardada)
@@ -2285,6 +2340,15 @@ class Handler(BaseHTTPRequestHandler):
             out.update(sesion_id=ps["sesion_id"], personas=ps["personas"], sugeridos=ps["sugeridos"], extraccion="leyendo")
             import donna_tareas
             threading.Thread(target=lambda sid=ps["sesion_id"]: _leer_junta(sid), daemon=True).start()   # tareas propuestas, sin hacer esperar al guardado
+
+            def _revisar(sid=ps["sesion_id"], u=self._media_user()):                                    # revisión final: se verifica de nuevo todo lo de la junta (después de leer las tareas)
+                try:
+                    time.sleep(25)
+                    import donna_junta
+                    donna_junta.revision_final(core, sid, u)
+                except Exception:
+                    log.exception("revisión final falló")
+            threading.Thread(target=_revisar, daemon=True).start()
         except Exception:
             log.exception("personas: no pude indexar la sesión")
         return out
@@ -2652,7 +2716,9 @@ class Handler(BaseHTTPRequestHandler):
             import donna_borrador
             try:
                 if body.get("accion") == "descartar":
-                    self._send_json(200, {"ok": True, "borrados": donna_borrador.descartar(str(body.get("id", "")), self._media_user())})
+                    import donna_rescate
+                    rid_d = str(body.get("id", ""))
+                    self._send_json(200, {"ok": True, "borrados": donna_borrador.descartar(rid_d, self._media_user()) + donna_rescate.descartar(rid_d, self._media_user())})
                 else:
                     self._send_json(200, {"ok": True, **donna_borrador.guardar(str(body.get("id", "")), self._media_user(), body)})
             except ValueError as e:

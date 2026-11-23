@@ -1608,7 +1608,8 @@ function esUI(){                                            // indicador de grab
 function esWsSend(o){if(ES.ws&&ES.ws.readyState===1)ES.ws.send((typeof o==='string'||o instanceof ArrayBuffer)?o:JSON.stringify(o))}
 function esConnect(){
   const ws=ES.ws=new WebSocket(wsUrl('/v1/app/live'));ws.binaryType='arraybuffer';
-  ws.onopen=()=>ws.send(JSON.stringify({t:'auth',token:TOKEN,modo:'escuchar',to:'es'}));
+  if(!ES.draftId)ES.draftId='b'+Math.random().toString(36).slice(2,10)+Date.now().toString(36).slice(-5);
+  ws.onopen=()=>ws.send(JSON.stringify({t:'auth',token:TOKEN,modo:'escuchar',to:'es',rescate:ES.draftId}));
   ws.onmessage=e=>{
     if(typeof e.data!=='string')return;
     let m;try{m=JSON.parse(e.data)}catch(x){return}
@@ -1674,7 +1675,7 @@ function esAskStart(fuente){                                 // privacidad: conf
   let ok=false;try{ok=sessionStorage.getItem('es_consent')==='1'}catch(e){}
   if(ok){esStart(fuente);return}
   sheet('Antes de empezar','<p style="margin:0 0 10px">Esta función <b>graba a otras personas</b>. Avísales o asegúrate de tener su consentimiento.</p>'+
-    '<p class="sub" style="margin:0 0 12px">Solo se guarda el <b>texto</b> de lo que digan, y únicamente si tú terminas y guardas. El audio no se almacena. Mientras escucha verás siempre el indicador rojo de grabación.</p>'+
+    '<p class="sub" style="margin:0 0 12px">Solo se guarda el <b>texto</b> de lo que digan; el audio no se almacena. Mientras grabas, el servidor conserva una <b>copia de rescate del texto</b> para que no se pierda si se cae la app; se borra cuando guardas la junta (o a los 30 días). Mientras escucha verás siempre el indicador rojo de grabación.</p>'+
     '<label class="chk"><input type="checkbox" id="esc-ok"><span>Ya avisé a las personas presentes o tengo su consentimiento.</span></label>'+
     '<div style="display:flex;gap:8px;margin-top:14px"><button class="btn" id="esc-go" disabled>Empezar a escuchar</button><button class="btn ghost" id="esc-no" style="margin:0;width:auto;padding:0 18px">Cancelar</button></div>');
   $('#esc-ok').onchange=e=>{$('#esc-go').disabled=!e.target.checked};
@@ -1711,19 +1712,32 @@ function esDraftLoad(d){                                    // vuelve a poner la
 async function esDraftsPaint(){
   const el=$('#es-drafts');if(!el)return;
   if(ES.on||ES.turns.length){el.innerHTML='';return}
-  let L=[],G=[];try{L=(await api('/v1/app/escucha/borradores')).items||[]}catch(e){return}
+  let L=[],G=[],R=[];try{L=(await api('/v1/app/escucha/borradores')).items||[]}catch(e){return}
+  try{R=(await api('/v1/app/escucha/rescates')).items||[]}catch(e){}
   try{G=((await api('/v1/app/escucha/sesiones')).items||[]).slice(0,4)}catch(e){}
   const ago=ts=>{const m=Math.round((Date.now()/1000-ts)/60);return m<2?'hace un momento':m<90?'hace '+m+' min':m<2880?'hace '+Math.round(m/60)+' h':'hace '+Math.round(m/1440)+' d'};
-  el.innerHTML=L.map(b=>`<div class="card" data-b="${esc(b.id)}" style="margin:8px 0"><div class="row"><b>🎙️ Junta sin guardar</b><span class="sub">${esc(ago(b.actualizado))}</span></div><div class="sub">${b.n} intervenciones · ${Math.max(1,Math.round(b.duracion/60))} min — «${esc((b.ultimo||'').slice(0,90))}»</div><div class="nq"><button data-a="seguir">▶︎ Retomar y seguir grabando</button><button data-a="guardar">💾 Guardarla así</button><button data-a="borrar">Descartar</button></div></div>`).join('');
+  el.innerHTML=R.map(b=>`<div class="card" data-b="${esc(b.id)}" style="margin:8px 0;border:1px solid var(--ctl)"><div class="row"><b>🛟 Rescate del servidor</b><span class="sub">${esc(ago(b.actualizado))}</span></div><div class="sub">${b.n} frases · ${Math.max(1,Math.round(b.duracion/60))} min · sin voces identificadas — «${esc((b.ultimo||'').slice(0,90))}»</div><div class="nq"><button data-a="seguir" data-r="1">▶︎ Retomar y seguir grabando</button><button data-a="guardar" data-r="1">💾 Guardarla así</button><button data-a="borrar">Descartar</button></div></div>`).join('')+L.map(b=>`<div class="card" data-b="${esc(b.id)}" style="margin:8px 0"><div class="row"><b>🎙️ Junta sin guardar</b><span class="sub">${esc(ago(b.actualizado))}</span></div><div class="sub">${b.n} intervenciones · ${Math.max(1,Math.round(b.duracion/60))} min — «${esc((b.ultimo||'').slice(0,90))}»</div><div class="nq"><button data-a="seguir">▶︎ Retomar y seguir grabando</button><button data-a="guardar">💾 Guardarla así</button><button data-a="borrar">Descartar</button></div></div>`).join('');
   if(G.length)el.insertAdjacentHTML('beforeend','<details class="agg" open style="margin:8px 0"><summary class="sec">Juntas guardadas · retomar y complementar</summary>'+G.map(s=>`<div class="card" data-gs="${esc(s.id)}" style="margin:6px 0"><div class="row"><b>${esc((s.titulo||'').replace('Transcripción Escuchar ','Junta '))}</b><span class="sub">${esc(s.fecha)}</span></div><div class="sub">${s.lineas} intervenciones · ${Math.max(1,Math.round(s.duracion/60))} min</div><div class="nq"><button data-g="seguir">▶︎ Retomar y complementar</button></div></div>`).join('')+'</details>');
   $$('#es-drafts [data-gs] [data-g]').forEach(btn=>btn.onclick=()=>esRetomarGuardada(btn.closest('[data-gs]').dataset.gs));
   $$('#es-drafts [data-b]').forEach(c=>c.querySelectorAll('[data-a]').forEach(btn=>btn.onclick=async()=>{
     const id=c.dataset.b,a=btn.dataset.a;
     try{
       if(a==='borrar'){if(!confirm('¿Descartar esta junta? No se podrá recuperar.'))return;await api('/v1/app/escucha/borrador',{method:'POST',body:JSON.stringify({accion:'descartar',id})});esDraftsPaint();return}
-      const d=await api('/v1/app/escucha/borrador?id='+encodeURIComponent(id));esDraftLoad(d);
+      const d=await api(btn.dataset.r?'/v1/app/escucha/rescate?id='+encodeURIComponent(id):'/v1/app/escucha/borrador?id='+encodeURIComponent(id));esDraftLoad(d);
       if(a==='seguir')esAskStart('mic');else esFinish();
     }catch(e){toast('⚠️ '+e.message)}}));
+}
+async function esRevision(sid){                              // segunda pasada al terminar: lo que quedó sin confirmar y lo que conviene verificar, con cita
+  sheet('🔎 Revisión final','<div class="empty">Revisando la junta contra sus notas, tareas y materiales…</div>');
+  const IC={sin_confirmar:'❓',nota_pedida:'📝',tarea_incompleta:'✅',voz_sin_nombre:'👤',cifra:'🔢',fecha:'📅',nombre:'🏷️',compromiso:'🤝',contradiccion:'⚠️'};
+  for(let n=0;n<40;n++){
+    try{const d=await api('/v1/app/escucha/revision?sesion='+encodeURIComponent(sid));
+      if(d.estado==='lista'){const H=d.hallazgos||[];
+        $('#sh-b').innerHTML='<div class="sub">'+esc(d.titulo||'')+'</div>'+(H.length?H.map(h=>`<div class="card" style="margin:8px 0"><div>${IC[h.tipo]||'🔹'} ${esc(h.texto)}</div>${h.cita?`<div class="sub" style="margin-top:4px">«${esc(h.cita)}»</div>`:''}</div>`).join(''):'<div class="empty">Nada pendiente por verificar 🎉</div>')+'<div class="sub" style="margin-top:8px">Cada dato con comillas está citado de la transcripción; lo demás sale de lo que quedó sin confirmar o incompleto.</div>';return}
+    }catch(e){}
+    await sleep(3000);
+  }
+  $('#sh-b').innerHTML='<div class="empty">Todavía se está revisando. Vuelve a abrirla en un minuto.</div>';
 }
 async function esRetomarGuardada(sid){                      // una junta ya guardada vuelve a pantalla; al guardar de nuevo sustituye a la anterior
   try{const d=await api('/v1/app/escucha/sesion?id='+encodeURIComponent(sid));closeSheet();go('es');esDraftLoad(d);esAskStart('mic')}
@@ -1745,8 +1759,8 @@ duracion:Math.round(dur/1000),
     ES.draftId='';ES.replaceSid='';ES.liveId='';ES.asNotas=0;{const l=$('#as-log');if(l)l.innerHTML='<div class="asempty">Pregúntame por lo que se está diciendo, pídeme un documento, que anote algo o que cree una tarea. Respondo solo con lo dicho y con tus documentos; si no lo tengo, te lo digo.</div>';const n=$('#as-notas');if(n)n.innerHTML='';const nn=$('#as-nn');if(nn)nn.textContent='';if($('#es-as'))asMinSet(ES.asMin)}ES.turns=[];ES.spk=[];ES.names={};ES.det={};ES.sugVoz={};ES.frames=[];ES.sentMs=0;ES.inI=ES.outI=0;ES.t0=0;esPaint();esUI();
     esSt('Guardada como entregable.');
     sheet('Transcripción guardada','<div class="sub">'+esc(r.nombre||'')+'</div>'+((r.personas||[]).length?'<div class="sub" style="margin-top:6px">👥 Quedaron en su ficha: '+r.personas.map(p=>esc(p.nombre)).join(', ')+'</div>':'')+((r.sugeridos||[]).length?'<div class="sub" style="margin-top:4px">También escuché: '+r.sugeridos.map(p=>esc(p.nombre)).join(', ')+' (puedes asignarlos en Personas).</div>':'')+(r.resumen?'<div class="card" style="margin:10px 0">'+md(r.resumen)+'</div>':'<div class="empty">Guardada (muy corta para resumir).</div>')+
-      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">'+(r.sesion_id?'<button class="artcard" id="esg-tar">📝 Tareas propuestas de la junta</button><button class="artcard" id="esg-seguir">▶︎ Seguir grabando esta junta</button>':'')+'<button class="artcard" id="esg-per">Ver personas</button><button class="artcard" id="esg-ent">Verla en Entregables</button><button class="artcard" id="esg-ask">Que Donna proponga pendientes</button></div>');
-    $('#esg-ent').onclick=()=>{closeSheet();go('ent')};$('#esg-per').onclick=()=>{closeSheet();go('per')};const et=$('#esg-tar');if(et)et.onclick=()=>openTareas(r.sesion_id);const sg=$('#esg-seguir');if(sg)sg.onclick=()=>esRetomarGuardada(r.sesion_id);
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">'+(r.sesion_id?'<button class="artcard" id="esg-tar">📝 Tareas propuestas de la junta</button><button class="artcard" id="esg-seguir">▶︎ Seguir grabando esta junta</button><button class="artcard" id="esg-rev">🔎 Revisión final de la junta</button>':'')+'<button class="artcard" id="esg-per">Ver personas</button><button class="artcard" id="esg-ent">Verla en Entregables</button><button class="artcard" id="esg-ask">Que Donna proponga pendientes</button></div>');
+    $('#esg-ent').onclick=()=>{closeSheet();go('ent')};$('#esg-per').onclick=()=>{closeSheet();go('per')};const et=$('#esg-tar');if(et)et.onclick=()=>openTareas(r.sesion_id);const sg=$('#esg-seguir');if(sg)sg.onclick=()=>esRetomarGuardada(r.sesion_id);const rv=$('#esg-rev');if(rv)rv.onclick=()=>esRevision(r.sesion_id);
     $('#esg-ask').onclick=()=>{closeSheet();go('chat');$('#inp').value='De mi transcripción «'+(r.nombre||'')+'»: propón los pendientes y seguimientos (quién, qué, cuándo).';if(r.mid){PEND.push({name:r.nombre,state:'listo',label:'✓',id:r.mid});paintPend()}$('#inp').focus()};
   }catch(e){esSt('No pude guardar: '+e.message+'. Tu transcripción sigue aquí.');toast('No pude guardar: '+e.message)}
 }
@@ -1855,7 +1869,7 @@ function esView(){
       '<div id="es-drafts"></div><div class="essum" id="es-sumbox" hidden></div>'+
       '<div class="esidle" id="es-idle"><div class="ico"><i data-i="wave" data-s="30"></i></div><h3>Escucha y te escribo en español</h3>'+
         '<p>Deja el teléfono o la computadora cerca de quien habla. Distingo las voces por su tono y te las numero.</p>'+
-        '<div class="esprivacy"><i data-i="alert" data-s="16"></i><span>Graba a otras personas: avísales antes. Solo se guarda el texto, y solo si tú guardas.</span></div></div>'+
+        '<div class="esprivacy"><i data-i="alert" data-s="16"></i><span>Graba a otras personas: avísales antes. Solo se guarda el texto (no el audio); hay una copia de rescate que se borra al guardar la junta.</span></div></div>'+
       '<div class="esbox" id="es-box" hidden aria-live="polite"></div>'+
       '<div class="esctl gl" id="es-ctl"><div class="meter" id="es-meter" aria-hidden="true">'+[10,22,32,18,28,14,26,34,20,12,24,16].map(h=>'<i style="height:'+h+'px"></i>').join('')+'</div>'+
         '<div class="lvl" style="display:none"><i id="es-lvl"></i></div><span class="ctxt" id="es-st">Listo para escuchar.</span>'+
