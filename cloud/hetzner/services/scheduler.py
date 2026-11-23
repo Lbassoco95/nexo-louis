@@ -485,6 +485,15 @@ def main():
         except Exception as e:
             log.warning(f"agente de vigilancia: {e}")
 
+        # «Tu día»: resumen de la mañana / cierre / recordatorios de lo que tiene hora, con la hora, los canales y el «no molestar» que Polo configuró en Ajustes.
+        try:
+            import donna_dia
+            enviados = donna_dia.tick(core)
+            if enviados:
+                log.info(f"tu día: se envió {enviados}")
+        except Exception as e:
+            log.warning(f"tu día falló: {e}")
+
         # Seguimientos (lo que Donna sigue por Polo) y avisos pospuestos que ya les toca volver. Independiente de los resúmenes.
         try:
             import donna_seg, louis_push

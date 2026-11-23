@@ -2417,16 +2417,17 @@ $('#arts').onclick=openArtList;
 document.addEventListener('click',e=>{const b=e.target.closest&&e.target.closest('[data-art]');if(b){e.preventDefault();openArt(b.dataset.art)}});
 
 /* ---------- Hoy ---------- */
-function taskHtml(t,i){return `<div class="card task${t.urgente?' hot':''}" data-i="${i}"><button class="ck" aria-label="Marcar hecho"></button><div class="tt">${t.cuando?`<span class="cuando">${esc(t.cuando)}</span> `:''}${esc(t.texto.replace(/\s*·?\s*\[(?:auto|visto|capturado)[^\]]*\]/g,'').trim())}</div></div>`}
+function taskHtml(t,i){return `<div class="card task${t.urgente?' hot':''}" data-i="${i}"><button class="ck" aria-label="Marcar hecho"></button><div class="tt">${t.cuando?`<span class="cuando">${esc(t.cuando)}</span> `:''}${esc(t.texto.replace(/\s*·?\s*\[(?:auto|visto|capturado|junta)[^\]]*\]/g,'').replace(/\s*\(de la junta[^)]*\)/g,'').trim())}</div></div>`}
 async function loadHoy(){
   const el=$('#hoy');if(!el.innerHTML)el.innerHTML='<div class="empty">Cargando…</div>';
   try{
     const d=await api('/v1/app/hoy');online(true);window._hoy=d;
-    const b=$('#b-hoy');b.hidden=!d.urgentes.length;b.textContent=d.urgentes.length;{const sb=$('#sb-hoy');sb.hidden=b.hidden;sb.textContent=b.textContent}
+    const nHoy=(d.agenda&&d.agenda.hoy)?d.agenda.hoy.length:d.urgentes.length;      // el contador cuenta lo MISMO que la lista «Hoy»
+    const b=$('#b-hoy');b.hidden=!nHoy;b.textContent=nHoy;{const sb=$('#sb-hoy');sb.hidden=b.hidden;sb.textContent=b.textContent}
     paintBell(d.sin_leer||0);ctxPaint();
     let h=d.confirmaciones?`<button class="hoyalert" id="confcard"><span class="tag">⚠️ ${d.confirmaciones} confirmación${d.confirmaciones>1?'es':''} pendiente${d.confirmaciones>1?'s':''}</span><span class="t">Revisa y confirma antes de que {{AGENT_NAME}} cambie algo.</span><b class="go">Revisar</b></button>`:'';
     if((d.resumenes||[]).length)h+='<div class="sec">Resúmenes guardados</div><div class="nq" style="margin:0 0 8px">'+d.resumenes.map(r=>`<button data-rs="${esc(r.id)}">${esc(r.titulo)} · ${esc(r.fecha.slice(5))}</button>`).join('')+'</div>';
-    h+=`<div class="stats"><div class="stat"><b>${d.abiertos}</b><span>Abiertos</span></div><div class="stat"><b>${d.urgentes.length}</b><span>Para hoy</span></div><div class="stat"><b>${d.cerrados}</b><span>Cerrados</span></div></div>`;
+    h+=`<div class="stats"><div class="stat"><b>${d.abiertos}</b><span>Abiertos</span></div><div class="stat"><b>${nHoy}</b><span>Para hoy</span></div><div class="stat"><b>${d.cerrados}</b><span>Cerrados</span></div></div>`;
     window._ag=[];
     const AG=d.agenda,GR=[['hoy','📅 Hoy',1,1],['manana','Mañana',1,0],['semana','Esta semana',1,0],['proximas','Más adelante',0,0],['sin_fecha','Sin fecha precisa',0,0],['vencidas','⚠️ Vencidas · revisar o archivar',0,0]];
     if(AG){
@@ -2490,15 +2491,39 @@ function closeSheet(){$('#sheet').classList.remove('on');clearInterval(TBT);if(L
 $('#sh-x').onclick=closeSheet;$('#sheet').onclick=e=>{if(e.target.id==='sheet')closeSheet()};
 
 /* ---------- Ajustes ---------- */
+async function loadDiaPrefs(){
+  const el=$('#diacard');if(!el)return;
+  try{const P=(await api('/v1/app/preferencias')).prefs;
+    const can=(sec,v)=>['push:🔔 Notificación','chat:💬 Chat de Donna','telegram:✈️ Telegram'].map(x=>{const [k,l]=x.split(':');return `<label class="swr" style="padding:6px 0"><span>${l}</span><span class="sw"><input type="checkbox" data-s="${sec}" data-k="canales" data-c="${k}" ${v.includes(k)?'checked':''}><i></i></span></label>`}).join('');
+    const sw=(sec,k,lab,v)=>`<label class="swr"><span>${lab}</span><span class="sw"><input type="checkbox" data-s="${sec}" data-k="${k}" ${v?'checked':''}><i></i></span></label>`;
+    const hr=(sec,k,v)=>`<input type="time" data-s="${sec}" data-k="${k}" value="${v}" style="min-height:44px;border-radius:12px;padding:0 10px;font:inherit;background:var(--glass2);color:var(--tx);border:1px solid var(--ctl)">`;
+    el.innerHTML=`<div class="sub" style="margin-bottom:8px">Tú decides cuándo y por dónde te llega tu día. Los cambios se guardan solos.</div>
+      <b>☀️ Resumen de la mañana</b>${sw('manana','activo','Enviármelo cada día',P.manana.activo)}<div class="row"><span>Hora</span>${hr('manana','hora',P.manana.hora)}</div>${can('manana',P.manana.canales)}
+      <hr style="border:0;border-top:1px solid var(--line);margin:12px 0"><b>🌙 Cierre del día</b>${sw('cierre','activo','Enviármelo cada día',P.cierre.activo)}<div class="row"><span>Hora</span>${hr('cierre','hora',P.cierre.hora)}</div>${can('cierre',P.cierre.canales)}
+      <hr style="border:0;border-top:1px solid var(--line);margin:12px 0"><b>⏰ Recordar lo que tiene hora</b>${sw('recordar','activo','Avisarme antes de mis reuniones y tareas con hora',P.recordar.activo)}
+      <div class="row"><span>Cuánto antes</span><select data-s="recordar" data-k="minutos" aria-label="Minutos antes" style="min-height:44px;border-radius:12px;padding:0 10px;font:inherit;background:var(--glass2);color:var(--tx);border:1px solid var(--ctl)">${[10,15,30,45,60,90].map(m=>`<option value="${m}" ${P.recordar.minutos==m?'selected':''}>${m} min</option>`).join('')}</select></div>${can('recordar',P.recordar.canales)}
+      <hr style="border:0;border-top:1px solid var(--line);margin:12px 0"><b>🌙 No molestar</b>${sw('no_molestar','activo','Silencio en este horario',P.no_molestar.activo)}<div class="row"><span>Desde</span>${hr('no_molestar','desde',P.no_molestar.desde)}</div><div class="row"><span>Hasta</span>${hr('no_molestar','hasta',P.no_molestar.hasta)}</div>
+      <hr style="border:0;border-top:1px solid var(--line);margin:12px 0"><b>Qué incluye mi día</b>${[['reuniones','Reuniones del calendario'],['tareas','Tareas de hoy'],['vencidas','Cuántas vencidas tengo'],['seguimientos','Seguimientos que toca revisar'],['urgente','Lo urgente (planes de Donna)'],['propuestas','Propuestas por decidir']].map(([k,l])=>sw('incluye',k,l,P.incluye[k])).join('')}
+      <div class="nq"><button id="dia-now">☀️ Enviarme mi día ahora</button></div>`;
+    $$('#diacard [data-s]').forEach(i=>i.onchange=async()=>{
+      const sec=i.dataset.s,k=i.dataset.k;let val;
+      if(k==='canales'){val=$$('#diacard [data-s="'+sec+'"][data-k="canales"]').filter(x=>x.checked).map(x=>x.dataset.c)}
+      else if(i.type==='checkbox')val=i.checked;else val=i.value;
+      try{await api('/v1/app/preferencias',{method:'POST',body:JSON.stringify({prefs:{[sec]:{[k]:val}}})});toast('Guardado')}catch(e){toast(e.message);loadDiaPrefs()}});
+    $('#dia-now').onclick=async()=>{try{const r=await api('/v1/app/dia/enviar',{method:'POST',body:JSON.stringify({tipo:'manana'})});toast('Enviado por: '+r.canales.join(', '));refreshBell()}catch(e){toast(e.message)}};
+  }catch(e){el.innerHTML='<div class="sub">No pude cargar tus preferencias. '+esc(e.message)+'</div>'}
+}
 function renderCfg(){
   $('#cfg').innerHTML=`<div class="sec">Conexión</div><div class="card"><div class="row"><span>Servidor</span><span class="sub">${esc(location.host)}</span></div><div class="row" style="margin-top:6px"><span>Estado</span><span class="sub" id="st">…</span></div></div>
   <div class="sec">Notificaciones</div><div class="card" id="pushcard"><div class="sub" id="pushst">…</div></div>
+  <div class="sec">Tu día y tus avisos</div><div class="card" id="diacard"><div class="sub">Cargando…</div></div>
   <div class="sec">Pantalla</div><div class="card"><label class="swr"><span>Reducir efectos de vidrio<br><small>Más fluido en equipos modestos. Claro u oscuro sigue a tu sistema.</small></span><span class="sw"><input type="checkbox" id="lowfx"><i></i></span></label></div>
   <div class="sec">Chat</div><div class="card"><button class="btn ghost" id="clr" style="margin:0">Empezar una conversación nueva</button></div>
   <div class="sec">Widget de pendientes (iPhone)</div><div class="card"><div class="sub" style="margin-bottom:10px">Una app web no puede crear un widget nativo; esta alternativa usa la app gratuita <b>Scriptable</b>:<br>1) Instálala desde la App Store.<br>2) Toca «Copiar script» y en Scriptable crea un script nuevo (+) y pégalo.<br>3) Ejecútalo una vez (▶): te pide el token y lo guarda en tu iPhone.<br>4) Mantén presionada la pantalla de inicio → + → Scriptable → elige el script.</div><button class="btn ghost" id="wcopy" style="margin:0">Copiar script del widget</button></div>
   <div class="sec">Instalar</div><div class="card sub">iPhone: Safari → Compartir → <b>Agregar a pantalla de inicio</b>.<br>Android: Chrome → ⋮ → <b>Instalar app</b>.</div>
   <div class="sec">Sesión</div><div class="card"><div class="sub" id="who" style="margin-bottom:10px">…</div><button class="btn ghost" id="out" style="margin:0;color:var(--bad)">Cerrar sesión</button><button class="btn ghost" id="outall" style="color:var(--bad)">Cerrar sesión en todos los dispositivos</button></div>`;
   {const lf=$('#lowfx');lf.checked=document.documentElement.classList.contains('lowfx');lf.onchange=()=>{LS.set('lowfx',lf.checked);document.documentElement.classList.toggle('lowfx',lf.checked)}}
+  loadDiaPrefs();
   $('#clr').onclick=()=>{if(confirm('¿Empezar una conversación nueva? La actual queda guardada en el menú ☰.')){nuevaConv();toast('Conversación nueva')}};
   $('#out').onclick=()=>{if(confirm('¿Cerrar sesión?'))logout(false)};
   $('#outall').onclick=async()=>{if(!confirm('¿Cerrar la sesión en TODOS tus dispositivos (este incluido)? Tendrás que volver a entrar.'))return;

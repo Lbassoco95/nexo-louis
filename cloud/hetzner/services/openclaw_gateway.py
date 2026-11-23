@@ -1180,6 +1180,9 @@ class Handler(BaseHTTPRequestHandler):
                         self._send_json(200, {"texto": donna_aprender.mejoras_markdown()})
                     else:
                         self._send_json(200, {"reglas": donna_aprender.reglas_list(), "mejoras": donna_aprender.mejoras_list()})
+                elif _r0 == "/v1/app/preferencias":
+                    import donna_dia
+                    self._send_json(200, {"prefs": donna_dia.prefs_get()})
                 elif _r0 == "/v1/app/oficio":
                     import donna_oficio, donna_aprender
                     self._send_json(200, {"competencias": donna_oficio.resumen(7), "propuestas": [r for r in donna_aprender.reglas_list(("propuesta",))], "corriendo": _RADAR_LOCK.locked()})
@@ -2603,6 +2606,18 @@ class Handler(BaseHTTPRequestHandler):
                         self._send_json(200, donna_aprender.regla_accion(str(body.get("id", "")), str(body.get("accion", "")), str(body.get("regla", "")), str(body.get("cuando", ""))))
                 else:
                     self._send_json(200, donna_aprender.mejora_estado(str(body.get("id", "")), str(body.get("accion", "")), str(body.get("nota", ""))))
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
+            return
+        if self.path in ("/v1/app/preferencias", "/v1/app/dia/enviar"):
+            import donna_dia
+            try:
+                if self.path.endswith("enviar"):                          # «Enviarme el resumen ahora» (usa los canales configurados)
+                    tipo = "cierre" if body.get("tipo") == "cierre" else "manana"
+                    r = donna_dia.entregar(core, tipo, donna_dia.prefs_get()[tipo]["canales"], usuarios=[self._media_user()] if self._media_user() != "admin" else None)
+                    self._send_json(200, {"ok": True, "canales": r["canales"]})
+                else:
+                    self._send_json(200, {"ok": True, "prefs": donna_dia.prefs_set(body.get("prefs") or {})})
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
             return

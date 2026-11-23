@@ -227,7 +227,7 @@ def proyectos_kc(core) -> list:
 def _crear_agenda(core, t: dict) -> tuple:
     p = core.SPACE / "AGENDA.md"
     hoy = datetime.now(core.TZ_CDMX).strftime("%Y-%m-%d")
-    linea = "- [ ] %s%s%s · [capturado %s] (de la junta «%s», %s)" % (
+    linea = "- [ ] %s%s%s · [capturado %s] [junta «%s» %s]" % (
         t["titulo"], (" — resp: " + t["responsable"]) if t["responsable"] else "", (" · vence %s" % t["fecha_limite"]) if t["fecha_limite"] else "", hoy,
         (t.get("sesion_titulo") or "")[:50], t["hora"] or "")
     txt = p.read_text() if p.exists() else "# AGENDA\n"

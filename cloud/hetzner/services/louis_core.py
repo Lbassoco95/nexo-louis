@@ -1363,6 +1363,7 @@ def parse_agenda_fecha(texto: str, hoy):
     Palabras sueltas: «hoy», «mañana» y días de la semana (la siguiente ocurrencia)."""
     from datetime import date
     t = re.sub(r"\[[^\]]*\]", " ", texto or "")
+    t = re.sub(r"\(de la junta[^)]*\)", " ", t)                       # «(de la junta «Escuchar 2026-11-22 21:14», 00:02)»: es de dónde salió, no cuándo vence
     cand = []
     for m in _ISO_RE.finditer(t):
         try:
