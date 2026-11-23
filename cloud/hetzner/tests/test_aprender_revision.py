@@ -272,5 +272,56 @@ class RevisionConMemoriaYDonde(unittest.TestCase):
         self.assertIn("Correo reciente", r["texto"])
 
 
+class RevisionConLosDatosReales(unittest.TestCase):
+    """Líneas reales de la memoria de Polo (corrida en su servidor): el criterio sobre «la última versión» debe salir PRIMERO y completo; lo ajeno al cliente no entra."""
+    def setUp(self):
+        limpiar()
+
+    def test_el_criterio_de_polo_sobre_versiones_va_primero_y_completo(self):
+        criterio = ("- [2026-09-07] Vizum Technologies — Criterio de Polo (7-sep-2026, oficio CNBV 14558785 sobre la metodología EBR): cuando la autoridad pide \"la última versión\" de un documento y hay "
+                    "una actualización interna sin aprobar, NO se consolida ni se aprueba una versión nueva sin VoBo: se entrega la vigente y se avisa de la pendiente.")
+        (TMP / "LEARNINGS.md").write_text("- [2026-03-13] Disposición 4ª: marco regulatorio Vizum para personas morales y propietario real\n" + criterio +
+                                          "\n- [2026-08-24] REFORMA LFDA: aplica a TODO contrato publicitario, de influencer o de agencia que revise Kawiil\n")
+        (TMP / "JOURNAL.md").write_text("- Propuesta Kawiil Mx para transmisor de dinero expandiendo a cripto: Módulos 01 / 02 / 03\n")
+        (TMP / "IMPORTANT.md").write_text("- [2026-08-25] Kawiil (interno) — el saldo de Banregio NO es liquidez: $493,888 son impuestos de Vizum pendientes\n")
+        FakeCore.MEMORY_FILES = ["JOURNAL.md", "LEARNINGS.md", "IMPORTANT.md"]
+        n = RV._notas_memoria(FakeCore, RV.claves("Contratos marco CPS Transmisor de Dinero VIZUM"), ["vizum"])
+        self.assertIn("Criterio de Polo", n[0]["linea"])
+        self.assertIn("se entrega la vigente y se avisa de la pendiente", n[0]["linea"])             # completo, no recortado a 260
+        archivos = [x["archivo"] for x in n]
+        self.assertNotIn("JOURNAL.md", archivos)                                                       # sin «vizum» no es de este asunto
+        self.assertFalse(any("LFDA" in x["linea"] for x in n))
+
+    def test_informe_sin_numeracion_que_el_chat_convierta_en_lista_y_con_aviso_de_limites(self):
+        r = RV.revisar_entregable(FakeCore, "Contratos marco CPS Transmisor de Dinero VIZUM", m365=FakeM365([]), marcar_prioritario=False)
+        self.assertNotRegex(r["texto"], r"(?m)^\d\) ")
+        self.assertIn("📋 ENTREGABLE EN CEREBRO", r["texto"])
+        self.assertIn("no veo WhatsApp, Teams ni enlaces de Dropbox", r["texto"])
+
+    def test_prioritario_sin_junta_no_finge_que_hubo_una(self):
+        RV.revisar_entregable(FakeCore, "Contratos marco CPS Transmisor de Dinero VIZUM", m365=FakeM365([]))
+        ag = (TMP / "AGENDA.md").read_text()
+        self.assertIn("Confirmar si ya se envió", ag)
+        self.assertNotIn("conforme a lo último dicho en la junta del", ag)
+
+
+class UnaPeticionDosCosas(unittest.TestCase):
+    def test_revisar_y_agente_en_el_mismo_mensaje_atiende_las_dos(self):
+        import louis_core
+        louis_core.SPACE = TMP
+        louis_core.AGENTS_DIR = TMP / "agents"
+        orig = (RV.revisar_entregable, RV.kc_agentes)
+        RV.revisar_entregable = lambda core, t, marcar=True, **k: {"texto": "VEREDICTO DE ENVÍO: SIN EVIDENCIA"}
+        RV.kc_agentes = lambda core, n="": "Tablas de agentes: agents • name=Vizumi"
+        try:
+            msg = 'Revisa el entregable "Contratos marco CPS Transmisor de Dinero VIZUM": ¿ya se mandó la actualización según lo último dicho en las juntas?\nEntra al correo de vizum con el agente vizumi para saber si en el drive hay algo?'
+            r, ruta = louis_core._call_llm_impl("k", "s", [], msg)
+            self.assertIn("VEREDICTO DE ENVÍO", r)
+            self.assertIn("No puedo ejecutar al agente vizumi", r)
+            self.assertEqual(ruta, "revision-directa")
+        finally:
+            RV.revisar_entregable, RV.kc_agentes = orig
+
+
 if __name__ == "__main__":
     unittest.main()

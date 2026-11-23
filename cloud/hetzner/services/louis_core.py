@@ -6596,7 +6596,8 @@ def _dropbox_buscar(query: str, limite: int = 10) -> str:
         md = m.get("metadata", {}).get("metadata", {})
         name = md.get("name", "?")
         path = md.get("path_display") or md.get("path_lower", "")
-        lines.append(f"  {name}  →  {path}")
+        mod = (md.get("server_modified") or "")[:10]                        # fecha de modificación: sirve para saber cuál versión es la más reciente
+        lines.append(f"  {name}  →  {path}" + (f"  (modificado {mod})" if mod else ""))
     return "\n".join(lines)
 
 
@@ -10801,10 +10802,13 @@ def _call_llm_impl(
 
     # Revisar un entregable contra las fuentes / pedir un agente de Kawiil Central: se hace en código, no dependen de que el modelo elija bien las herramientas.
     det_rev = try_deterministic_revision(user_message)
+    det_agt = try_deterministic_agente(user_message)
+    if det_rev is not None and det_agt is not None:                      # una sola petición con las dos cosas (revisar el entregable + ir al agente): se atienden las dos
+        _mark_last_route("revision-directa")
+        return det_rev + "\n\n———\n\n🤖 Sobre el agente que pediste:\n" + det_agt, "revision-directa"
     if det_rev is not None:
         _mark_last_route("revision-directa")
         return det_rev, "revision-directa"
-    det_agt = try_deterministic_agente(user_message)
     if det_agt is not None:
         _mark_last_route("agente-kc")
         return det_agt, "agente-kc"

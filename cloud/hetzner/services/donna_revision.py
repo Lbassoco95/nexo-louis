@@ -87,7 +87,12 @@ def _entregable(core, titulo: str):
     return {"archivo": it["archivo"], "titulo": it["titulo"], "estado": it["estado"], "cliente": it.get("cliente", ""), "actualizado": (it.get("fecha") or "")[:10], "vobo": vobo}
 
 
-def _juntas_sobre(ks: list, usuario="admin") -> list:
+def _must(ent) -> list:
+    """Palabras que DEBEN aparecer para que algo sea sobre ESTE asunto: el cliente del entregable (p. ej. «vizum»). Evita que «contratos»/«transmisor» traigan cualquier cosa."""
+    return claves((ent or {}).get("cliente", ""))[:2]
+
+
+def _juntas_sobre(ks: list, usuario="admin", must=()) -> list:
     """Sesiones que hablan del tema (≥2 palabras clave distintas, o la más rara si el título tiene pocas) con las frases LITERALES que las mencionan."""
     por_ses = {}
     for k in ks:
@@ -98,6 +103,8 @@ def _juntas_sobre(ks: list, usuario="admin") -> list:
     minimo = 1 if len(ks) <= 2 else 2
     out = []
     for e in por_ses.values():
+        if must and not (set(must) & e["claves"]):
+            continue
         if len(e["claves"]) >= minimo:
             fr = sorted(e["frases"].values(), key=lambda h: (not ACCION.search(h["texto"]), h["hora"]))
             e["frases"] = fr[:8]
@@ -114,10 +121,15 @@ def _agenda_coincide(core, ks: list) -> list:
     return [l for l in L if len([k for k in ks if k in donna_personas.norm(l)]) >= min(2, len(ks))][:6]
 
 
-def _notas_memoria(core, ks: list) -> list:
+_CRITERIO = re.compile(r"(?i)criterio|regla|nunca|siempre|\bno\s+se\s+(?:consolida|aprueba|env|mand)")
+_VERSION = re.compile(r"(?i)versi[oó]n|actualizaci|aprob|vobo|enviar|mandar|firma")
+
+
+def _notas_memoria(core, ks: list, must=()) -> list:
     """Líneas de la memoria viva (Cowork, JOURNAL, PROJECTS…) que hablan del tema. Son NOTAS/RESÚMENES: sirven de pista cuando no hay transcripción, y se rotulan así."""
     out = []
     archivos = list(getattr(core, "MEMORY_FILES", [])) + ["COWORK.md"]
+    prioridad = {"LEARNINGS.md": 0, "IMPORTANT.md": 0, "COWORK.md": 1}                # criterios y decisiones de Polo primero, y completos
     for f in dict.fromkeys(archivos):
         if f in ("AGENDA.md", "USER.md"):
             continue
@@ -127,17 +139,20 @@ def _notas_memoria(core, ks: list) -> list:
             continue
         for l in txt.splitlines():
             n = donna_personas.norm(l)
-            if len([k for k in ks if k in n]) >= min(2, len(ks)) and len(l.strip()) > 20:
-                out.append({"archivo": f, "linea": l.strip()[:260]})
-                if len(out) >= 8:
-                    return out
-    return out
+            hit = len([k for k in ks if k in n])
+            criterio = 1 if (_CRITERIO.search(l) and _VERSION.search(l)) else 0            # «criterio/regla de Polo» sobre versiones, envíos o aprobaciones: lo primero
+            del_cliente = (not must) or any(m in n for m in must)
+            if len(l.strip()) > 20 and del_cliente and (hit >= min(2, len(ks)) or (criterio and must)):
+                out.append((-criterio, prioridad.get(f, 2), -hit, f, l.strip()[:700 if (criterio or prioridad.get(f) == 0) else 300]))
+    out.sort()
+    return [{"archivo": f, "linea": l} for _c, _p, _h, f, l in out[:6]]
 
 
-def _correo_reciente(ks: list, m=None) -> str:
+def _correo_reciente(ks: list, m=None, must=()) -> str:
     import donna_m365
     try:
-        return donna_m365.buscar_correo(" ".join(ks[:3]), m, 5)
+        q = list(must) + [k for k in ks if k not in must]
+        return donna_m365.buscar_correo(" ".join(q[:3]), m, 5)
     except Exception as e:
         return "(no pude buscar en el correo: %s)" % str(e)[:80]
 
@@ -152,10 +167,11 @@ def _donde_busque() -> str:
     return "%d junta(s) guardada(s) con Escuchar (%d frases en total)" % (n, f)
 
 
-def _correos_enviados(ks: list, m=None) -> list:
+def _correos_enviados(ks: list, m=None, must=()) -> list:
     import donna_m365
     vistos, out = set(), []
-    for q in (" ".join(ks[:3]), ks[0] if ks else ""):
+    q3 = list(must) + [k for k in ks if k not in must]
+    for q in (" ".join(q3[:3]), q3[0] if q3 else ""):
         for e in donna_m365.correo_enviado_buscar(q, m):
             clave = (e["fecha"], e["asunto"])
             if clave not in vistos:
@@ -167,7 +183,7 @@ def _correos_enviados(ks: list, m=None) -> list:
 def veredicto_envio(ultima_junta: str, ultimo_envio: str, ultimo_cambio: str) -> tuple:
     """(código, texto). Compara FECHAS: ¿se envió después de lo último que se habló y de la última actualización?"""
     if not ultimo_envio:
-        return "sin_evidencia", "SIN EVIDENCIA DE ENVÍO: no encontré en tu correo enviado nada con este documento."
+        return "sin_evidencia", "SIN EVIDENCIA DE ENVÍO: no encontré en tu correo enviado (Outlook de Kawiil y Yoltik) nada con este documento. Ojo: no veo WhatsApp, Teams ni enlaces de Dropbox; si se mandó por ahí, no lo sé."
     if ultima_junta and ultimo_envio < ultima_junta:
         return "antes_de_junta", "ENVIADO, PERO ANTES DE LA ÚLTIMA JUNTA (envío %s · junta %s): puede faltar lo que se acordó después." % (ultimo_envio, ultima_junta)
     if ultimo_cambio and ultimo_envio < ultimo_cambio:
@@ -180,8 +196,9 @@ def revisar_entregable(core, titulo: str, marcar_prioritario: bool = True, m365=
     if not ks:
         raise ValueError("Dime el nombre del entregable.")
     ent = _entregable(core, titulo)
-    juntas = _juntas_sobre(ks, usuario)
-    correos = _correos_enviados(ks, m365)
+    must = _must(ent)
+    juntas = _juntas_sobre(ks, usuario, must)
+    correos = _correos_enviados(ks, m365, must)
     rel = [e for e in correos if not e.get("error") and (len([k for k in ks if k in donna_personas.norm(e["asunto"] + " " + " ".join(e["adjuntos"]))]) >= min(2, len(ks)))]
     ultima_junta = juntas[0]["fecha"] if juntas else ""
     ultimo_envio = rel[0]["fecha"] if rel else ""
@@ -192,8 +209,8 @@ def revisar_entregable(core, titulo: str, marcar_prioritario: bool = True, m365=
     except Exception as e:
         dbx = "(no pude buscar en Dropbox: %s)" % str(e)[:80]
     ag = _agenda_coincide(core, ks)
-    notas = _notas_memoria(core, ks)
-    reciente = _correo_reciente(ks, m365)
+    notas = _notas_memoria(core, ks, must)
+    reciente = _correo_reciente(ks, m365, must)
     r = {"notas": notas, "correo_reciente": reciente, "donde": _donde_busque(), "claves": ks, "entregable": ent, "juntas": juntas, "correos": rel, "correos_sin_filtrar": correos, "dropbox": str(dbx)[:1500], "agenda": ag, "veredicto": cod, "veredicto_txt": txt,
          "ultima_junta": ultima_junta, "ultimo_envio": ultimo_envio, "prioritario": None}
     if marcar_prioritario and cod != "enviado":
@@ -211,7 +228,8 @@ def _marcar_prioritario(core, titulo: str, motivo: str, juntas: list) -> str:
     hoy = datetime.now(core.TZ_CDMX).strftime("%Y-%m-%d")
     p = core.SPACE / "AGENDA.md"
     txt = p.read_text() if p.exists() else "# AGENDA\n"
-    base = "- [ ] **URGENTE** Revisar «%s» conforme a lo último dicho en las juntas%s · [capturado %s]" % (titulo[:90], (" (junta del %s)" % juntas[0]["fecha"]) if juntas else "", hoy)
+    base = ("- [ ] **URGENTE** Revisar «%s» conforme a lo último dicho en la junta del %s · [capturado %s]" % (titulo[:90], juntas[0]["fecha"], hoy)) if juntas else \
+        ("- [ ] **URGENTE** Confirmar si ya se envió «%s» y qué actualización se pidió (sin junta guardada ni envío en correo) · [capturado %s]" % (titulo[:90], hoy))
     p.write_text(txt.rstrip("\n") + "\n" + base + "\n")
     try:
         import donna_seg
@@ -224,9 +242,9 @@ def _marcar_prioritario(core, titulo: str, motivo: str, juntas: list) -> str:
 def _texto(r: dict) -> str:
     L = ["REVISIÓN CONTRA FUENTES (los datos de abajo son la evidencia; no afirmes nada que no esté aquí)"]
     e = r["entregable"]
-    L.append("\n1) ENTREGABLE EN CEREBRO: " + ("«%s» · estado: %s · VoBo: %s · última actualización: %s%s" % (e["titulo"], e["estado"], e["vobo"] or "(sin dato)", e["actualizado"] or "(sin fecha)", (" · cliente: " + e["cliente"]) if e["cliente"] else "")
+    L.append("\n📋 ENTREGABLE EN CEREBRO: " + ("«%s» · estado: %s · VoBo: %s · última actualización: %s%s" % (e["titulo"], e["estado"], e["vobo"] or "(sin dato)", e["actualizado"] or "(sin fecha)", (" · cliente: " + e["cliente"]) if e["cliente"] else "")
                                                 if e else "no lo encontré por ese nombre en Cerebro."))
-    L.append("\n2) JUNTAS GUARDADAS QUE HABLAN DE ESTO (transcripción literal, no resumen): %d  [busqué entre %s]" % (len(r["juntas"]), r["donde"]))
+    L.append("\n🎙 JUNTAS GUARDADAS QUE HABLAN DE ESTO (transcripción literal, no resumen): %d  [busqué entre %s]" % (len(r["juntas"]), r["donde"]))
     if not r["juntas"]:
         L.append("   ⚠️ NO HAY TRANSCRIPCIONES GUARDADAS sobre este tema. Si la junta se grabó fuera de Escuchar (Teams, Zoom, Cowork), Donna todavía no puede leerla: dile a Polo dónde está y regístralo con pedir_mejora.")
     if r["notas"]:
@@ -236,16 +254,16 @@ def _texto(r: dict) -> str:
         L.append("   • %s — «%s» (id %s)" % (j["fecha"], j["titulo"], j["sesion_id"]))
         for h in j["frases"][:6]:
             L.append("       [%s] %s: «%s»" % (h["hora"], h["persona"] or "voz sin nombre", h["texto"][:260]))
-    L.append("\n3) CORREO ENVIADO RELACIONADO: %d" % len(r["correos"]))
+    L.append("\n✉️ CORREO ENVIADO RELACIONADO: %d" % len(r["correos"]))
     for c in r["correos"][:5]:
         L.append("   • %s → %s · «%s»%s" % (c["fecha"], c["para"] or "?", c["asunto"], (" · adjuntos: " + ", ".join(c["adjuntos"])) if c["adjuntos"] else ""))
     errores = [c for c in r["correos_sin_filtrar"] if c.get("error")]
     if errores:
         L.append("   ⚠️ " + errores[0]["asunto"])
     L.append("   Correo reciente (recibido o enviado) que menciona el tema:\n" + "\n".join("   " + x for x in (r["correo_reciente"] or "(nada)").splitlines()[:6]))
-    L.append("\n4) DROPBOX (versiones/archivos encontrados):\n" + (r["dropbox"] or "(nada)"))
+    L.append("\n📁 DROPBOX (versiones/archivos encontrados):\n" + (r["dropbox"] or "(nada)"))
     if r["agenda"]:
-        L.append("\n5) YA EN TU AGENDA:\n" + "\n".join("   • " + a for a in r["agenda"]))
+        L.append("\n🗓 YA EN TU AGENDA:\n" + "\n".join("   • " + a for a in r["agenda"]))
     L.append("\nVEREDICTO DE ENVÍO (calculado comparando fechas): " + r["veredicto_txt"])
     if r["prioritario"]:
         L.append("ACCIÓN: " + r["prioritario"])
