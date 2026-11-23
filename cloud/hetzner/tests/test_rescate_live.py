@@ -62,5 +62,12 @@ class RescateLive(unittest.TestCase):
         srv.shutdown()
 
 
+class Silencio(unittest.TestCase):
+    def test_no_pregunta_ni_cierra_antes_de_una_hora_sin_voces(self):
+        self.assertGreaterEqual(g.LIVE_ESCUCHAR_SILENCIO, 3600)                       # «¿sigo escuchando?» solo tras 1 h sin oír a nadie
+        self.assertGreater(g.LIVE_ESCUCHAR_IDLE, g.LIVE_ESCUCHAR_SILENCIO)            # y la conexión no se cierra por «inactividad» antes de ese aviso
+        self.assertGreaterEqual(g.LIVE_ESCUCHAR_MAX_SECONDS, 6 * 3600)                # hasta que Polo la detenga
+
+
 if __name__ == "__main__":
     unittest.main()

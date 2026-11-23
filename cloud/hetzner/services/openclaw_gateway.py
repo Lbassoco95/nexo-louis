@@ -591,9 +591,11 @@ _MAX_BODY = 1_000_000  # 1 MB
 _LIVE_SLOTS = threading.BoundedSemaphore(2)          # máximo 2 traducciones en vivo a la vez (cada minuto cuesta)
 LIVE_MAX_SECONDS = int(os.environ.get("LIVE_MAX_SECONDS", "1800"))
 LIVE_IDLE_SECONDS = int(os.environ.get("LIVE_IDLE_SECONDS", "90"))
-LIVE_ESCUCHAR_SILENCIO = int(os.environ.get("LIVE_ESCUCHAR_SILENCIO", "60"))      # sin oír a nadie este tiempo → pregunta «¿sigo escuchando?» (aviso + notificación)
-LIVE_ESCUCHAR_REPREGUNTA = int(os.environ.get("LIVE_ESCUCHAR_REPREGUNTA", "300")) # si nadie responde, la escucha NO se detiene sola: solo se vuelve a preguntar cada tanto
-LIVE_ESCUCHAR_MAX_SECONDS = int(os.environ.get("LIVE_ESCUCHAR_MAX_SECONDS", "7200"))   # modo «escuchar y subtitular»: hasta 2 h por sesión
+LIVE_ESCUCHAR_SILENCIO = int(os.environ.get("LIVE_ESCUCHAR_SILENCIO", "3600"))      # sin oír a nadie este tiempo → pregunta «¿sigo escuchando?» (aviso + notificación)
+LIVE_ESCUCHAR_REPREGUNTA = int(os.environ.get("LIVE_ESCUCHAR_REPREGUNTA", "900")) # si nadie responde, la escucha NO se detiene sola: solo se vuelve a preguntar cada tanto
+LIVE_ESCUCHAR_MAX_SECONDS = int(os.environ.get("LIVE_ESCUCHAR_MAX_SECONDS", "28800"))  # modo «escuchar»: hasta 8 h por sesión (solo cuesta mientras llega audio)
+# En «escuchar» el teléfono no manda audio en los silencios; con la pantalla bloqueada tampoco manda ping. La conexión NO se cierra por inactividad antes de que venza el aviso de silencio.
+LIVE_ESCUCHAR_IDLE = LIVE_ESCUCHAR_SILENCIO + 900
 _LIVE_LANGS = {"es": "es", "en": "en", "zh": os.environ.get("LIVE_ZH_CODE", "zh")}
 _DONNA_TOOLS = [
     {"type": "function", "name": "consultar_donna",
@@ -1790,7 +1792,7 @@ class Handler(BaseHTTPRequestHandler):
                             log.warning("no pude avisar del silencio", exc_info=True)
                 r = cli.recv_message(timeout=1)
                 if r is None:
-                    if time.time() - ultimo > LIVE_IDLE_SECONDS:
+                    if time.time() - ultimo > (LIVE_ESCUCHAR_IDLE if escuchar else LIVE_IDLE_SECONDS):
                         aviso("end", m="Sesión cerrada por inactividad")
                         break
                     continue
