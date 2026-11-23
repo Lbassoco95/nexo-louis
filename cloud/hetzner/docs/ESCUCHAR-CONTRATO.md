@@ -75,3 +75,8 @@ Caso real: en una ventana baja la caja «Pregúntale…» quedaba cortada. Ahora
 ## Cómo actualizar sin cortar una grabación
 - Usar `bash ~/donna-deploy/cloud/hetzner/tools/actualizar-donna.sh` (no el comando largo de install + restart). Si detecta una grabación en curso (audio, rescate o autoguardado de los últimos 2 min) **no instala ni reinicia nada**; `--esperar` actualiza solo al terminar; `--forzar` solo por urgencia.
 - Si aun así el servidor se reinicia durante una grabación: la app se reconecta sola, el audio sigue guardándose y la copia de rescate/borrador conserva el texto; solo se pierde la transcripción del hueco (se puede reconstruir del audio).
+
+## Detener una escucha desde cualquier dispositivo
+- En Escuchar, si hay una escucha activa en otra pantalla (conexión en vivo o autoguardado/rescate de los últimos 2 min) aparece «Hay una escucha activa» con **⏹ Detener y guardar en todos los dispositivos**.
+- La orden llega a esa pantalla por la conexión en vivo (`detener_remoto`, al instante) y en la respuesta de su autoguardado (cada ~20 s, aunque la conexión esté caída). La pantalla se detiene y guarda la junta sola (sin pedir nombres). La orden caduca a los 10 min.
+- Una junta no se guarda dos veces: si dos pantallas intentan guardar la misma, la segunda recibe «ya se guardó desde otra pantalla». Un borrador cuya escucha sigue activa no ofrece «Guardarla así» (se pisaría con la otra pantalla).

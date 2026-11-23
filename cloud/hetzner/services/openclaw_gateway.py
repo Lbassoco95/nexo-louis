@@ -1188,6 +1188,9 @@ class Handler(BaseHTTPRequestHandler):
                             if a1("kc"):
                                 d["cruce"]["kawiil_central"] = donna_personas.cruce_kawiil_central(core, d["nombre"], d["empresa"])
                             self._send_json(200, d)
+                elif _r0 == "/v1/app/escucha/activas":                                         # escuchas activas (para detenerlas desde cualquier dispositivo)
+                    import donna_remoto
+                    self._send_json(200, {"items": donna_remoto.activas(self._media_user())})
                 elif _r0 == "/v1/app/escucha/voces":                                           # propuesta de voces (audio + OpenAI) de una junta guardada
                     import donna_diariza
                     from urllib.parse import urlparse as _up5, parse_qs as _pq5
@@ -1734,6 +1737,8 @@ class Handler(BaseHTTPRequestHandler):
             import donna_rescate
             rid = str(hello.get("rescate", "")) if escuchar and donna_rescate.valido(hello.get("rescate")) else ""
             ruser = str(hello.get("_user") or "admin")
+            import donna_remoto
+            rev = donna_remoto.registrar(rid, ruser) if rid else None                           # para poder detenerla desde otro dispositivo
             rbuf = {"in": ["", 0, 0.0], "out": ["", 0, 0.0]}                                      # copia de rescate: [texto, ms, desde cuándo]
 
             def rescatar(k):                                                                       # una frase terminada → al disco (solo texto)
@@ -1809,6 +1814,10 @@ class Handler(BaseHTTPRequestHandler):
             aviso("listo", to=to, max=limite, modo="escuchar" if escuchar else "")
             ultimo = time.time()
             while not stop.is_set():
+                if rev is not None and rev.is_set():                                           # orden de detener desde otro dispositivo: avisa a la pantalla (que guarda) y cierra
+                    aviso("detener_remoto")
+                    time.sleep(1.5)
+                    break
                 if time.time() - t0 > limite:
                     aviso("end", m="Se alcanzó el límite de la sesión (%d min)" % (limite // 60))
                     break
@@ -1867,6 +1876,11 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
             cli.close()
+            try:
+                import donna_remoto as _dr
+                _dr.quitar(locals().get("rid") or "")
+            except Exception:
+                pass
             log.info("live: sesión de %.0f s", time.time() - t0)
 
     # ---- DONNA EN TIEMPO REAL (voz de OpenAI gpt-realtime-2.1 + el cerebro completo de Donna como herramienta) ----
@@ -2315,6 +2329,9 @@ class Handler(BaseHTTPRequestHandler):
         documento buscable por Donna. Solo texto: el audio nunca se guarda."""
         import app_media as _M
         from datetime import datetime
+        import donna_remoto
+        if donna_remoto.ya_guardada(str(body.get("borrador_id", ""))):
+            raise ValueError("Esta junta ya se guardó desde otra pantalla. Ábrela en Escuchar → Juntas guardadas; no la guardo dos veces.")
         lineas = body.get("lineas")
         if not isinstance(lineas, list) or not lineas or len(lineas) > 4000:
             raise ValueError("no hay transcripción que guardar")
@@ -2376,6 +2393,8 @@ class Handler(BaseHTTPRequestHandler):
             import donna_borrador, donna_rescate
             donna_borrador.descartar(str(body.get("borrador_id", "")), self._media_user())
             donna_rescate.descartar(str(body.get("borrador_id", "")), self._media_user())
+            donna_remoto.marcar_guardada(str(body.get("borrador_id", "")), out.get("mid", ""))
+            donna_remoto.limpiar(str(body.get("borrador_id", "")))
         except Exception:
             log.exception("borrador: no pude limpiarlo")
         try:                                                    # base de personas: quién dijo qué (si falla, la transcripción ya quedó guardada)
@@ -2820,6 +2839,12 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
             return
+        if self.path == "/v1/app/escucha/detener":                   # detener y guardar la(s) escucha(s) activa(s) desde cualquier dispositivo
+            import donna_remoto
+            ids = donna_remoto.ordenar(self._media_user(), str(body.get("excepto", ""))[:30])
+            log.info("escucha: orden de detener a %d escucha(s)", len(ids))
+            self._send_json(200, {"ok": True, "ordenes": len(ids), "ids": ids})
+            return
         if self.path == "/v1/app/escucha/borrador":                  # autoguardado de la junta en curso / descartar
             import donna_borrador
             try:
@@ -2828,7 +2853,8 @@ class Handler(BaseHTTPRequestHandler):
                     rid_d = str(body.get("id", ""))
                     self._send_json(200, {"ok": True, "borrados": donna_borrador.descartar(rid_d, self._media_user()) + donna_rescate.descartar(rid_d, self._media_user())})
                 else:
-                    self._send_json(200, {"ok": True, **donna_borrador.guardar(str(body.get("id", "")), self._media_user(), body)})
+                    import donna_remoto
+                    self._send_json(200, {"ok": True, **donna_borrador.guardar(str(body.get("id", "")), self._media_user(), body), "orden": donna_remoto.orden_de(str(body.get("id", "")))})
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
             return

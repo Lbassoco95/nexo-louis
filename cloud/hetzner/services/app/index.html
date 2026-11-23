@@ -1619,6 +1619,7 @@ function esConnect(){
     if(m.t==='listo'){if(!ES.t0)ES.t0=Date.now();ES.max=m.max||7200;ES.retry=0;esWsSend({t:'cfg',aviso:ES.aviso});if(ES.paused)esWsSend({t:'pausa'});esUI()}
     else if(m.t==='in'||m.t==='out'){if(!ES.paused)esText(m.t,m.d)}
     else if(m.t==='ev'){if(/input_transcript\.done/.test(m.type||''))ES.inI=Math.max(ES.inI,ES.turns.length);else if(/output_transcript\.done/.test(m.type||''))ES.outI=Math.max(ES.outI,ES.turns.length)}
+    else if(m.t==='detener_remoto'){esDetenerRemoto()}
     else if(m.t==='fin_silencio'){esFinSilencio(m.seg)}
     else if(m.t==='silencio'){ES.ask=true;{const tx=$('#es-asktx');if(tx){const mi=Math.max(1,Math.round((m.seg||0)/60));tx.textContent='Llevo '+(mi>=60?Math.floor(mi/60)+' h'+(mi%60?' '+mi%60+' min':''):mi+' min')+' sin oír a nadie. ¿Sigo escuchando?'}}esAsk(true);if(navigator.vibrate)navigator.vibrate([120,80,120])}
     else if(m.t==='voz'){ES.ask=false;esAsk(false)}
@@ -1633,6 +1634,23 @@ function esReconnect(why){
   if(ES.retry>=8){esSt('Se perdió la conexión ('+why+'). Tu transcripción sigue aquí; toca «Continuar» para reintentar.');ES.paused=true;ES.pauseAt=Date.now();ES.retry=0;esUI();return}
   ES.retry++;esSt('Reconectando… ('+ES.retry+')');try{ES.ws&&(ES.ws.onclose=null,ES.ws.close())}catch(e){}
   setTimeout(()=>{if(ES.on&&!ES.stop)esConnect()},Math.min(8000,1200*ES.retry));
+}
+async function esDetenerRemoto(){                           // otra pantalla pidió detener: esta se detiene y GUARDA la junta (sin preguntar nombres)
+  if(!ES.on||ES.stop)return;ES.stop=true;try{ES.ws&&(ES.ws.onclose=null)}catch(e){}
+  toast('Se pidió detener la escucha desde otro dispositivo: guardo la junta');
+  if(!ES.turns.some(t=>t.original.trim()||t.traduccion.trim())){esHalt(true);esSt('Escucha detenida desde otro dispositivo. No había nada que guardar.');return}
+  ES.auto=true;await esFinish();
+}
+async function esRemotoPaint(){                             // «hay una escucha activa»: detenerla y guardarla desde ESTE dispositivo
+  const el=$('#es-remoto');if(!el)return;
+  if(!ES.remotoT)ES.remotoT=setInterval(()=>{if($('#v-es')&&$('#v-es').classList.contains('on'))esRemotoPaint()},15000);
+  let L=[];try{L=(await api('/v1/app/escucha/activas')).items||[]}catch(e){return}
+  L=L.filter(x=>x.id!==ES.draftId);
+  if(!L.length){el.innerHTML='';return}
+  const cuando=x=>x.hace_s<10?'ahora mismo':'hace '+x.hace_s+' s';
+  el.innerHTML=`<div class="card" style="margin:8px 0;border:1px solid var(--ctl)"><div class="row"><b>🎙️ ${L.length>1?L.length+' escuchas activas':'Hay una escucha activa'} en ${ES.on?'otro dispositivo':'este u otro dispositivo'}</b><span class="sub">${esc(cuando(L[0]))}</span></div><div class="sub">${L.map(x=>(x.n||0)+' intervenciones'+(x.en_vivo?' · conectada':' · solo autoguardado')).join(' · ')}</div><div class="nq"><button id="rm-stop">⏹ Detener y guardar en todos los dispositivos</button></div></div>`;
+  $('#rm-stop').onclick=async()=>{if(!confirm('¿Detener y guardar la escucha que sigue activa? Esa pantalla se detiene sola y la junta queda guardada.'))return;
+    try{const r=await api('/v1/app/escucha/detener',{method:'POST',body:JSON.stringify({excepto:ES.on?ES.draftId:''})});toast(r.ordenes?'Orden enviada: se detiene y guarda en unos segundos':'No había nada activo');setTimeout(()=>{esRemotoPaint();esDraftsPaint()},7000)}catch(e){toast('⚠️ '+e.message)}};
 }
 async function esFinSilencio(seg){                         // 1 h sin voces: el servidor detuvo la escucha; aquí se guarda la junta sola (sin preguntar nombres)
   if(!ES.on||ES.stop)return;ES.stop=true;try{ES.ws&&(ES.ws.onclose=null)}catch(e){}
@@ -1737,7 +1755,7 @@ function esDraftSave(force){                                // la junta en curso
   const u=ts[ts.length-1],key=ts.length+':'+(u.original.length+u.traduccion.length)+':'+JSON.stringify(ES.names)+':'+ES.spk.length;
   if(!force&&key===_dbLast)return ES._dp;_dbLast=key;
   const turnos=ts.map(t=>({o:t.origen,a:t.original,b:t.traduccion,t:Math.round(t.t0||0),s:t.spk==null?null:t.spk,f:Math.round(t.f0||0),l:t.last||0,m:esBajo(t)?1:0}));
-  ES._dp=api('/v1/app/escucha/borrador',{method:'POST',body:JSON.stringify({id:ES.draftId,duracion:Math.round(esElapsed()/1000),live_id:ES.liveId||'',spk:ES.spk.map(s=>({f0:s.f0||0,hf:s.hf||0,n:s.n||1,fus:s.fus==null?null:s.fus})),names:ES.names,reemplaza:ES.replaceSid||'',titulo:ES.parteTitulo||'',nota_origen:ES.parteNota||'',turnos})}).catch(e=>{_dbLast='';clog('borrador: '+e.message)});
+  ES._dp=api('/v1/app/escucha/borrador',{method:'POST',body:JSON.stringify({id:ES.draftId,duracion:Math.round(esElapsed()/1000),live_id:ES.liveId||'',spk:ES.spk.map(s=>({f0:s.f0||0,hf:s.hf||0,n:s.n||1,fus:s.fus==null?null:s.fus})),names:ES.names,reemplaza:ES.replaceSid||'',titulo:ES.parteTitulo||'',nota_origen:ES.parteNota||'',turnos})}).then(r=>{if(r&&r.orden==='detener')esDetenerRemoto();return r}).catch(e=>{_dbLast='';clog('borrador: '+e.message)});
   return ES._dp;
 }
 window.addEventListener('pagehide',()=>{if(ES.on)esDraftSave(true)});
@@ -1753,9 +1771,10 @@ async function esDraftsPaint(){
   if(ES.on||ES.turns.length){el.innerHTML='';return}
   let L=[],G=[],R=[];try{L=(await api('/v1/app/escucha/borradores')).items||[]}catch(e){return}
   try{R=(await api('/v1/app/escucha/rescates')).items||[]}catch(e){}
+  let ACT=new Set();try{ACT=new Set(((await api('/v1/app/escucha/activas')).items||[]).map(x=>x.id))}catch(e){}
   try{G=((await api('/v1/app/escucha/sesiones')).items||[]).slice(0,4)}catch(e){}
   const ago=ts=>{const m=Math.round((Date.now()/1000-ts)/60);return m<2?'hace un momento':m<90?'hace '+m+' min':m<2880?'hace '+Math.round(m/60)+' h':'hace '+Math.round(m/1440)+' d'};
-  el.innerHTML=R.map(b=>`<div class="card" data-b="${esc(b.id)}" style="margin:8px 0;border:1px solid var(--ctl)"><div class="row"><b>🛟 Rescate del servidor</b><span class="sub">${esc(ago(b.actualizado))}</span></div><div class="sub">${b.n} frases · ${Math.max(1,Math.round(b.duracion/60))} min · sin voces identificadas — «${esc((b.ultimo||'').slice(0,90))}»</div><div class="nq"><button data-a="seguir" data-r="1">▶︎ Retomar y seguir grabando</button><button data-a="guardar" data-r="1">💾 Guardarla así</button><button data-a="borrar">Descartar</button></div></div>`).join('')+L.map(b=>`<div class="card" data-b="${esc(b.id)}" style="margin:8px 0"><div class="row"><b>🎙️ Junta sin guardar</b><span class="sub">${esc(ago(b.actualizado))}</span></div><div class="sub">${b.n} intervenciones · ${Math.max(1,Math.round(b.duracion/60))} min — «${esc((b.ultimo||'').slice(0,90))}»</div><div class="nq"><button data-a="seguir">▶︎ Retomar y seguir grabando</button><button data-a="guardar">💾 Guardarla así</button><button data-a="borrar">Descartar</button></div></div>`).join('');
+  el.innerHTML=R.map(b=>`<div class="card" data-b="${esc(b.id)}" style="margin:8px 0;border:1px solid var(--ctl)"><div class="row"><b>🛟 Rescate del servidor</b><span class="sub">${esc(ago(b.actualizado))}</span></div><div class="sub">${b.n} frases · ${Math.max(1,Math.round(b.duracion/60))} min · sin voces identificadas — «${esc((b.ultimo||'').slice(0,90))}»</div><div class="nq"><button data-a="seguir" data-r="1">▶︎ Retomar y seguir grabando</button><button data-a="guardar" data-r="1">💾 Guardarla así</button><button data-a="borrar">Descartar</button></div></div>`).join('')+L.map(b=>ACT.has(b.id)?`<div class="card" style="margin:8px 0;border:1px solid var(--ctl)"><div class="row"><b>🎙️ Junta en curso</b><span class="sub">${esc(ago(b.actualizado))}</span></div><div class="sub">${b.n} intervenciones · sigue grabando en otro dispositivo. Para guardarla, detenla con el botón de arriba.</div></div>`:`<div class="card" data-b="${esc(b.id)}" style="margin:8px 0"><div class="row"><b>🎙️ Junta sin guardar</b><span class="sub">${esc(ago(b.actualizado))}</span></div><div class="sub">${b.n} intervenciones · ${Math.max(1,Math.round(b.duracion/60))} min — «${esc((b.ultimo||'').slice(0,90))}»</div><div class="nq"><button data-a="seguir">▶︎ Retomar y seguir grabando</button><button data-a="guardar">💾 Guardarla así</button><button data-a="borrar">Descartar</button></div></div>`).join('');
   if(G.length)el.insertAdjacentHTML('beforeend','<details class="agg" open style="margin:8px 0"><summary class="sec">Juntas guardadas · retomar y complementar</summary>'+G.map(s=>`<div class="card" data-gs="${esc(s.id)}" style="margin:6px 0"><div class="row"><b>${esc((s.titulo||'').replace('Transcripción Escuchar ','Junta '))}</b><span class="sub">${esc(s.fecha)}</span></div><div class="sub">${s.lineas} intervenciones · ${Math.max(1,Math.round(s.duracion/60))} min</div><div class="nq"><button data-g="seguir">▶︎ Retomar y complementar</button><button data-g="p2" data-t="${esc(s.titulo||'')}">➕ Parte 2</button></div></div>`).join('')+'</details>');
   $$('#es-drafts [data-gs] [data-g]').forEach(btn=>btn.onclick=()=>btn.dataset.g==='p2'?esParte2(btn.dataset.t):esRetomarGuardada(btn.closest('[data-gs]').dataset.gs));
   $$('#es-drafts [data-b]').forEach(c=>c.querySelectorAll('[data-a]').forEach(btn=>btn.onclick=async()=>{
@@ -1948,14 +1967,14 @@ function asInit(){
   $('#as-nb').onclick=nota;$('#as-nota').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();nota()}};
 }
 function esView(){
-  const v=$('#v-es');setTimeout(esDraftsPaint,0);
+  const v=$('#v-es');setTimeout(()=>{esDraftsPaint();esRemotoPaint()},0);
   if(!ES.built){ES.built=true;
     v.innerHTML='<div class="esgrid" data-pane="trans"><div class="escol">'+
       '<div class="eshead"><h2>Escuchar y transcribir</h2><div class="sub">Transcribe la junta, distingue las voces y toma notas contigo</div></div>'+
       '<div id="es-seg" role="group" aria-label="Qué ver"><button type="button" data-p="trans" aria-pressed="true">📜 Transcripción</button><button type="button" data-p="donna" aria-pressed="false">💬 Donna <span id="as-nn2"></span></button></div>'+
       '<div class="esask" id="es-ask" hidden><span class="tag"><i data-i="alert" data-s="14"></i>Sin voces</span><div class="t"><b id="es-asktx">Llevo un rato sin oír a nadie. ¿Sigo escuchando?</b><div class="sub">También te lo aviso con una notificación si sales de la app.</div></div>'+
         '<button class="gb pill" id="es-keep">Seguir escuchando</button><button class="gl2 pill" id="es-end">Detener y guardar</button></div>'+
-      '<div id="es-drafts"></div><div class="essum" id="es-sumbox" hidden></div>'+
+      '<div id="es-remoto"></div><div id="es-drafts"></div><div class="essum" id="es-sumbox" hidden></div>'+
       '<div class="esidle" id="es-idle"><div class="ico"><i data-i="wave" data-s="30"></i></div><h3>Escucha y te escribo en español</h3>'+
         '<p>Deja el teléfono o la computadora cerca de quien habla. Distingo las voces por su tono y te las numero.</p>'+
         '<div class="esprivacy"><i data-i="alert" data-s="16"></i><span>Graba a otras personas: avísales antes. Se guarda el texto y el audio (en tu servidor, con plazo); el audio se manda a OpenAI para verificar las voces.</span></div></div>'+
