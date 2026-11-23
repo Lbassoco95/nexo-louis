@@ -1176,7 +1176,7 @@ class Handler(BaseHTTPRequestHandler):
                     import donna_junta
                     from urllib.parse import urlparse, parse_qs
                     lid = (parse_qs(urlparse(self.path).query).get("live_id") or [""])[0][:40]
-                    self._send_json(200, {"notas": donna_junta.notas(lid), "chat": donna_junta.chat(lid)})
+                    self._send_json(200, {"notas": donna_junta.notas(lid), "chat": donna_junta.chat(lid), "materiales": donna_junta.materiales(lid)})
                 elif _r0 in ("/v1/app/tareas", "/v1/app/tareas/proyectos"):
                     import donna_tareas
                     from urllib.parse import urlparse, parse_qs
@@ -2255,7 +2255,14 @@ class Handler(BaseHTTPRequestHandler):
         texto = "\n".join(L)
         resumen = ""
         try:
-            resumen = _M.summarize("Conversación escuchada en vivo (voces y horas):\n" + texto) if len(texto) > 200 else ""
+            extra = ""
+            if live_id:                                         # lo que se llevó a la junta (documentos, imágenes) también cuenta para el resumen
+                try:
+                    import donna_junta
+                    extra = donna_junta.texto_para_entregable(live_id)[:12000]
+                except Exception:
+                    pass
+            resumen = _M.summarize("Conversación escuchada en vivo (voces y horas):\n" + texto + (("\n\nMateriales y notas de la junta:" + extra) if extra else "")) if len(texto) > 200 else ""
         except Exception:
             pass
         m = _M.register_text(titulo, texto, tipo="conversacion", resumen=resumen, origen="escuchar")
@@ -2601,6 +2608,13 @@ class Handler(BaseHTTPRequestHandler):
                         self._send_json(200, {"ok": donna_personas.eliminar(str(body.get("id", "")))})
                     else:
                         raise ValueError("operación no válida")
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
+            return
+        if self.path == "/v1/app/escucha/material":                  # un adjunto subido durante la junta queda ligado a ella
+            import donna_junta
+            try:
+                self._send_json(200, donna_junta.material_add(str(body.get("live_id", ""))[:40], str(body.get("mid", "")), str(body.get("hora", "")), str(body.get("comentario", ""))))
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
             return

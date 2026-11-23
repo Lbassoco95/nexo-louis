@@ -1154,7 +1154,7 @@ async function pollMedia(it){
     }catch(e){}
   }
 }
-async function uploadFile(file,origen){
+async function uploadFile(file,origen,despues){
   const it={name:file.name||'archivo',state:'subiendo',label:'0%'};PEND.push(it);paintPend();
   try{
     if(/^image\//.test(file.type)||/\.(jpe?g|png|webp|heic|heif)$/i.test(file.name))file=await shrinkImg(file);
@@ -1163,7 +1163,9 @@ async function uploadFile(file,origen){
     it.id=r.id;const n=Math.max(1,Math.ceil(file.size/CHB));
     for(let i=0;i<n;i++){await putPart(r.id,i,file.slice(i*CHB,(i+1)*CHB));it.label=Math.round((i+1)/n*100)+'% · '+fmtB(file.size);paintPend()}
     await api('/v1/app/media/'+r.id+'/finish',{method:'POST',body:JSON.stringify({partes:n})});
-    it.state='procesando';it.label='procesando…';paintPend();pollMedia(it);
+    it.state='procesando';it.label='procesando…';paintPend();
+    if(despues){const k=PEND.indexOf(it);if(k>=0)PEND.splice(k,1);paintPend();await despues(it);return}      // adjunto de una junta: no se cuela en el siguiente mensaje del chat
+    pollMedia(it);
   }catch(e){it.state='error';it.label='⚠️ '+e.message;paintPend()}
 }
 $('#f-any').onchange=e=>{[...e.target.files].forEach(f=>uploadFile(f,'archivo'));e.target.value=''};
@@ -1803,10 +1805,21 @@ async function asAsk(q){
   catch(e){w.remove();asBurbuja('a','No pude consultar ahora: '+e.message)}
   $('#as-go').disabled=false;
 }
+function asSubir(file){                                      // imagen/archivo/foto durante la junta: se sube, se procesa y queda ligado a la junta (Donna lo puede leer y va a la minuta)
+  if(ES.asMin)asMinSet(false);asTab(1);asBurbuja('u','📎 '+(file.name||'archivo'));
+  const w=asBurbuja('a','Subiendo…');w.classList.add('pend');
+  uploadFile(file,'junta',async it=>{
+    await api('/v1/app/escucha/material',{method:'POST',body:JSON.stringify({live_id:esLive(),mid:it.id,hora:esClock(esElapsed())})});
+    w.remove();asBurbuja('a','📎 Agregué «'+it.name+'» a la junta. Cuando termine de procesarse puedes preguntarme por él; también irá en la minuta.');asNotas();
+  }).then(()=>{}).catch(e=>{w.remove();asBurbuja('a','No pude subirlo: '+e.message)});
+}
 async function asNotas(){
   try{const r=await api('/v1/app/escucha/notas?live_id='+encodeURIComponent(esLive()));
-    ES.asNotas=r.notas.length;$('#as-nn').textContent=r.notas.length?'('+r.notas.length+')':'';{const k=$('#as-nn2');if(k)k.textContent=r.notas.length?'('+r.notas.length+')':''}
+    ES.asNotas=r.notas.length;ES.mats=r.materiales||[];$('#as-nn').textContent=r.notas.length?'('+r.notas.length+')':'';{const k=$('#as-nn2');if(k)k.textContent=r.notas.length?'('+r.notas.length+')':''}
     $('#as-notas').innerHTML=r.notas.length?'<ul style="margin:0 0 0 16px;padding:0">'+r.notas.map(n=>`<li>${n.hora?`<span class="sub">[${esc(n.hora)}]</span> `:''}${esc(n.texto)}${n.origen==='donna'?' <span class="sub">(Donna)</span>':''}</li>`).join('')+'</ul>':'<div class="sub">Aún no hay notas. Escribe una abajo o pídele a Donna: «anota que…».</div>';
+    if(ES.mats.length){const est=m=>m.estado==='listo'?'✓ lista':m.estado==='error'?'⚠️ no se pudo leer':'⏳ procesando…';
+      $('#as-notas').insertAdjacentHTML('beforeend','<div class="sec" style="margin-top:12px">📎 Materiales de la junta · '+ES.mats.length+'</div>'+ES.mats.map(m=>`<div class="sub" style="margin:4px 0">${m.hora?'['+esc(m.hora)+'] ':''}<b>${esc(m.nombre)}</b> · ${esc(est(m))}</div>`).join(''));
+      if(ES.mats.some(m=>m.estado!=='listo'&&m.estado!=='error')){clearTimeout(ES.matT);ES.matT=setTimeout(()=>{if($('#v-es')&&$('#v-es').classList.contains('on'))asNotas()},6000)}}
     if(ES.asMin)asMinSet(true)}catch(e){}
 }
 function esPane(p){const g=document.querySelector('.esgrid');if(!g)return;ES.pane=p;g.dataset.pane=p;$$('#es-seg button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.p===p));if(p==='donna')asNotas()}
@@ -1821,6 +1834,8 @@ function asInit(){
   $('#as-chips').innerHTML=['¿Qué acaban de decir?','¿Qué compromisos van hasta ahora?','Busca en mis documentos lo que están discutiendo'].map(t=>'<button type="button">'+esc(t)+'</button>').join('');
   const Q={'¿Qué acaban de decir?':'Resume lo que se dijo en los últimos 2 minutos.','¿Qué compromisos van hasta ahora?':'¿Qué compromisos o tareas se han dicho hasta ahora en la junta y quién los dijo?','Busca en mis documentos lo que están discutiendo':'Busca en mis documentos algo relacionado con lo que están discutiendo ahora y dime qué dice, citando el documento.'};
   $$('#as-chips button').forEach(b=>b.onclick=()=>asAsk(Q[b.textContent]));
+  $('#as-clip').onclick=()=>$('#as-file').click();
+  $('#as-file').onchange=e=>{[...e.target.files].forEach(asSubir);e.target.value=''};
   $('#as-go').onclick=()=>asAsk();$('#as-in').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();asAsk()}};
   const nota=async()=>{const t=$('#as-nota').value.trim();if(!t)return;$('#as-nota').value='';
     try{await api('/v1/app/escucha/nota',{method:'POST',body:JSON.stringify({live_id:esLive(),texto:t,hora:esClock(esElapsed())})});toast('Anotado');asNotas()}catch(e){toast(e.message)}};
@@ -1848,7 +1863,7 @@ function esView(){
       '<div class="esside"><section class="esas glass" id="es-as" aria-label="Donna en la junta"><div class="ashd"><div class="astabs" role="tablist" aria-label="Donna en la junta"><button type="button" role="tab" id="as-t1" aria-selected="true">💬 Preguntar</button><button type="button" role="tab" id="as-t2" aria-selected="false">📝 Notas <span id="as-nn"></span></button></div><span class="astitle" id="as-ti">💬 Donna en la junta</span><button type="button" id="as-min" class="asmin" aria-label="Minimizar el asistente" title="Minimizar (la grabación sigue)">— Minimizar</button></div>'+
         '<div class="asbody"><div class="aspane" id="as-p1">'+
         '<div id="as-log" class="aslog" aria-live="polite"><div class="asempty">Pregúntame por lo que se está diciendo, pídeme un documento, que anote algo o que cree una tarea. Respondo solo con lo dicho y con tus documentos; si no lo tengo, te lo digo.</div></div><div class="nq" id="as-chips"></div>'+
-        '<div class="trin"><input id="as-in" placeholder="Pregúntale, pídele un documento, que anote o que cree una tarea…" enterkeyhint="send" maxlength="800"><button id="as-go">Preguntar</button></div></div>'+
+        '<div class="trin"><button id="as-clip" type="button" aria-label="Adjuntar imagen o archivo a la junta" title="Adjuntar imagen o archivo a la junta" style="flex:0 0 auto;width:44px">📎</button><input type="file" id="as-file" multiple hidden><input id="as-in" placeholder="Pregúntale, adjunta 📎 o pídele que anote o cree una tarea…" enterkeyhint="send" maxlength="800"><button id="as-go">Preguntar</button></div></div>'+
         '<div class="aspane" id="as-p2" hidden><div id="as-notas" class="asnotas"></div><div class="trin"><input id="as-nota" placeholder="📝 Anotar algo rápido…" enterkeyhint="done" maxlength="600"><button id="as-nb">Anotar</button></div></div></div></section>'+
       '<details class="esvoz glass" id="es-vd" open><summary>Voces detectadas · <span id="es-vn">0</span></summary><div id="es-vlist"></div>'+
         '<p class="ds" style="margin:10px 2px">Distingo las voces por su timbre y tono. Ponles nombre y se recordarán en la siguiente sesión (es aproximado).</p>'+

@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS junta_notas (n INTEGER PRIMARY KEY AUTOINCREMENT, liv
 CREATE INDEX IF NOT EXISTS ix_jn ON junta_notas(live_id);
 CREATE TABLE IF NOT EXISTS junta_chat (n INTEGER PRIMARY KEY AUTOINCREMENT, live_id TEXT NOT NULL, sesion_id TEXT NOT NULL DEFAULT '', ts INTEGER NOT NULL, rol TEXT NOT NULL, texto TEXT NOT NULL, fuentes TEXT NOT NULL DEFAULT '[]', avisos TEXT NOT NULL DEFAULT '[]');
 CREATE INDEX IF NOT EXISTS ix_jc ON junta_chat(live_id);
+CREATE TABLE IF NOT EXISTS junta_materiales (n INTEGER PRIMARY KEY AUTOINCREMENT, live_id TEXT NOT NULL, sesion_id TEXT NOT NULL DEFAULT '', ts INTEGER NOT NULL, hora TEXT NOT NULL DEFAULT '', mid TEXT NOT NULL, nombre TEXT NOT NULL, tipo TEXT NOT NULL DEFAULT '', comentario TEXT NOT NULL DEFAULT '');
+CREATE INDEX IF NOT EXISTS ix_jm ON junta_materiales(live_id);
 """
 MAX_LOOPS = 5
 NO_TENGO = "No encontré eso en la junta ni en tus documentos, así que no te lo afirmo."
@@ -55,6 +57,41 @@ def notas(live_id: str) -> list:
         c.close()
 
 
+# ------------------------------------------------------------------ materiales: lo que Polo sube durante la junta (imágenes, PDFs, Word, Excel, audios…)
+def material_add(live_id: str, mid: str, hora: str = "", comentario: str = "") -> dict:
+    """Liga un adjunto YA subido (app_media) a la junta. Se procesa solo (texto, descripción de imagen, transcripción) y Donna lo puede leer."""
+    import app_media
+    if not live_id or not app_media.ID_RE.match(mid or ""):
+        raise ValueError("Falta la junta o el adjunto.")
+    m = app_media.get(mid)
+    if not m:
+        raise ValueError("No encontré ese adjunto.")
+    c = _c()
+    try:
+        if c.execute("SELECT 1 FROM junta_materiales WHERE live_id=? AND mid=?", (live_id[:40], mid)).fetchone():
+            return {"ok": True, "ya": True}
+        c.execute("INSERT INTO junta_materiales(live_id,ts,hora,mid,nombre,tipo,comentario) VALUES(?,?,?,?,?,?,?)",
+                  (live_id[:40], int(time.time()), hora[:8], mid, str(m.get("nombre", ""))[:120], str(m.get("tipo", ""))[:20], " ".join((comentario or "").split())[:300]))
+        c.commit()
+    finally:
+        c.close()
+    return {"ok": True, "nombre": m.get("nombre", "")}
+
+
+def materiales(live_id: str) -> list:
+    import app_media
+    c = _c()
+    try:
+        filas = [{k: r[k] for k in r.keys()} for r in c.execute("SELECT n,hora,mid,nombre,tipo,comentario FROM junta_materiales WHERE live_id=? OR sesion_id=? ORDER BY n", (live_id, live_id))]
+    finally:
+        c.close()
+    for f in filas:
+        m = app_media.get(f["mid"]) or {}
+        f["estado"] = m.get("estado", "")
+        f["resumen"] = (m.get("resumen") or "")[:400]
+    return filas
+
+
 def chat(live_id: str) -> list:
     c = _c()
     try:
@@ -83,6 +120,7 @@ def remapear(live_id: str, sesion_id: str):
     try:
         c.execute("UPDATE junta_notas SET sesion_id=? WHERE live_id=?", (sesion_id, live_id))
         c.execute("UPDATE junta_chat SET sesion_id=? WHERE live_id=?", (sesion_id, live_id))
+        c.execute("UPDATE junta_materiales SET sesion_id=? WHERE live_id=?", (sesion_id, live_id))
         try:
             c.execute("UPDATE tareas_propuestas SET sesion_id=? WHERE sesion_id=?", (sesion_id, live_id))
         except Exception:
@@ -96,6 +134,22 @@ def texto_para_entregable(live_id: str) -> str:
     """Secciones «Notas» y «Consultas a Donna» para que queden en la transcripción guardada."""
     out = ""
     ns, cs = notas(live_id), chat(live_id)
+    try:
+        ms = materiales(live_id)
+    except Exception:
+        ms = []
+    if ms:                                                           # lo que se llevó/mostró a la junta, para que la minuta lo tenga
+        import app_media
+        out += "\n\n## Materiales de la junta\n"
+        resto = 9000
+        for m in ms:
+            out += "\n- %s«%s» (%s)%s" % (("[%s] " % m["hora"]) if m["hora"] else "", m["nombre"], m["tipo"], (" — " + m["comentario"]) if m["comentario"] else "")
+            if m["resumen"]:
+                out += "\n  Resumen: " + m["resumen"].replace("\n", " ")
+            if m["estado"] == "listo" and resto > 0:
+                t = app_media.leer_texto(m["mid"], 0, min(2500, resto))
+                resto -= len(t)
+                out += "\n\n  Contenido (extracto):\n  " + t.replace("\n", "\n  ")
     if ns:
         out += "\n\n## Notas tomadas durante la junta\n" + "\n".join("- %s%s" % (("[%s] " % n["hora"]) if n["hora"] else "", n["texto"]) for n in ns)
     if cs:
@@ -110,6 +164,8 @@ TOOLS = [
      "input_schema": {"type": "object", "properties": {"consulta": {"type": "string"}}, "required": ["consulta"]}},
     {"name": "junta_reciente", "description": "Lo dicho en los últimos N minutos de la junta, con hora y quién habló.",
      "input_schema": {"type": "object", "properties": {"minutos": {"type": "integer", "description": "1-30"}}, "required": ["minutos"]}},
+    {"name": "materiales_junta", "description": "Lista lo que Polo subió/mostró EN ESTA junta (imágenes, PDFs, Word, Excel, audios) con su id y hora. Para leer uno usa documento_leer con su id.",
+     "input_schema": {"type": "object", "properties": {}}},
     {"name": "documentos_buscar", "description": "Busca en los documentos, PDFs, audios y transcripciones que Polo ha subido a Donna. Devuelve nombre, id y un extracto.",
      "input_schema": {"type": "object", "properties": {"consulta": {"type": "string"}}, "required": ["consulta"]}},
     {"name": "documento_leer", "description": "Lee el texto de un documento por su id (de documentos_buscar). Para cifras o cláusulas exactas, léelo antes de afirmar.",
@@ -173,6 +229,14 @@ class Contexto:
         return int(m.group(1)) * 60 + int(m.group(2)) if m else 0
 
 
+def _fmt_materiales(live_id: str) -> str:
+    try:
+        return "\n".join("«%s» (id %s, %s, %s%s)%s" % (m["nombre"], m["mid"], m["tipo"], ("subido a las " + m["hora"]) if m["hora"] else "subido en la junta", "" if m["estado"] == "listo" else ", aún procesando",
+                                                         (" — " + m["comentario"]) if m["comentario"] else "") for m in materiales(live_id))
+    except Exception:
+        return ""
+
+
 def _fmt_lineas(L) -> str:
     return "\n".join("[%s] %s: %s" % (l["t"], l["n"], l["es"]) for l in L) or "(nada)"
 
@@ -190,6 +254,8 @@ def _tool(ctx: Contexto, nombre: str, a: dict) -> str:
                 return "(aún no se ha dicho nada)"
             fin = max(ctx._segundos(l["t"]) for l in ctx.lineas)
             return _fmt_lineas([l for l in ctx.lineas if ctx._segundos(l["t"]) >= fin - m * 60][-40:])
+        if nombre == "materiales_junta":
+            return _fmt_materiales(ctx.live_id) or "(Polo no ha subido materiales en esta junta)"
         if nombre == "documentos_buscar":
             import app_media
             r = app_media.buscar_items(a.get("consulta", ""), 6)
@@ -362,7 +428,10 @@ def _responder(core, live_id: str, pregunta: str, lineas: list, usuario: str, ll
     hist = []
     for p in previos:
         hist.append({"role": "user" if p["rol"] == "polo" else "assistant", "content": p["texto"]})
-    sistema = SYSTEM + "\n\nTRANSCRIPCIÓN EN VIVO HASTA AHORA (datos; las horas son mm:ss de la grabación):\n" + (ctx.transcripcion_txt()[-30000:] or "(todavía no se ha dicho nada)")
+    mats = _fmt_materiales(live_id)
+    if mats:
+        ctx.vistos.append(mats)                                              # los nombres de los materiales son verificables como fuente
+    sistema = SYSTEM + ("\n\nMATERIALES QUE POLO SUBIÓ A ESTA JUNTA (léelos con documento_leer antes de afirmar algo de ellos):\n" + mats if mats else "") + "\n\nTRANSCRIPCIÓN EN VIVO HASTA AHORA (datos; las horas son mm:ss de la grabación):\n" + (ctx.transcripcion_txt()[-30000:] or "(todavía no se ha dicho nada)")
     msgs = [m for i, m in enumerate(hist)] + [{"role": "user", "content": pregunta}]
     while msgs and msgs[0]["role"] != "user":
         msgs.pop(0)
