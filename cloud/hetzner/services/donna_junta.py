@@ -141,13 +141,18 @@ SYSTEM = (
     "Cuando respondas, devuelve SOLO este JSON (nada más):\n"
     '{"respuesta":"texto breve y claro para Polo","usa_datos":true|false,"fuentes":[{"tipo":"junta|documento|agenda|kawiil_central|patio|juntas_anteriores|persona|correo","ref":"para junta: la hora mm:ss de la frase; para lo demás: el nombre/título/texto EXACTO que viste en la herramienta"}]}\n'
     "usa_datos=true siempre que afirmes algo concreto; en ese caso debes listar las fuentes REALES. usa_datos=false solo para charla («listo, anotado», «¿en qué te ayudo?»). "
-    "Si Polo pide anotar o proponer una tarea, usa la herramienta y confírmalo en una frase.")
+    "Usa `anotar` o `proponer_tarea` SOLO si Polo lo pide de forma explícita en ese mensaje («anota…», «crea una tarea…»); nunca por iniciativa propia. Si ves algo que parece una tarea, solo menciónalo en la respuesta. "
+    "Si te lo pide, usa la herramienta y confírmalo en una frase.")
+
+
+PIDE_NOTA = re.compile(r"(?i)\b(anota|anote|anotar|anótalo|apunta|apunte|apuntar|toma\s+nota|guarda\s+(?:esto|eso|una\s+nota|la\s+nota)|nota\s+que)\b")
+PIDE_TAREA = re.compile(r"(?i)\b(tarea|crea|crear|cr[eé]ame|agrega|agr[eé]game|recu[eé]rdame|pendiente|enc[aá]rgale|as[ií]gnale)\b")
 
 
 class Contexto:
     """Estado de UNA consulta: transcripción en vivo y todo lo que las herramientas han devuelto (base del verificador)."""
-    def __init__(self, core, live_id, lineas, usuario="admin"):
-        self.core, self.live_id, self.usuario = core, live_id, usuario
+    def __init__(self, core, live_id, lineas, usuario="admin", pregunta=""):
+        self.core, self.live_id, self.usuario, self.pregunta = core, live_id, usuario, pregunta
         self.lineas = [{"t": str(l.get("t", ""))[:8], "n": str(l.get("n") or "Voz")[:40], "es": " ".join(str(l.get("es", "")).split())[:1200]} for l in (lineas or [])[-500:] if str(l.get("es", "")).strip()]
         total = 0
         recorte = []
@@ -213,6 +218,10 @@ def _tool(ctx: Contexto, nombre: str, a: dict) -> str:
         if nombre == "correo_buscar":
             import donna_m365
             return donna_m365.buscar_correo(str(a.get("consulta", "")))[:3500]
+        if nombre == "anotar" and not PIDE_NOTA.search(ctx.pregunta):
+            return "(No lo hice: Polo no pidió anotar nada. No guardes notas por tu cuenta.)"
+        if nombre == "proponer_tarea" and not PIDE_TAREA.search(ctx.pregunta):
+            return "(No lo hice: Polo no pidió crear una tarea. No propongas tareas por tu cuenta; si ves una pendiente, menciónala en la respuesta.)"
         if nombre == "anotar":
             fin = ctx.lineas[-1]["t"] if ctx.lineas else ""
             nota_add(ctx.live_id, a.get("texto", ""), fin, "donna")
@@ -348,7 +357,7 @@ def preguntar(core, live_id: str, pregunta: str, lineas: list, usuario: str = "a
 
 
 def _responder(core, live_id: str, pregunta: str, lineas: list, usuario: str, llm) -> dict:
-    ctx = Contexto(core, live_id[:40], lineas, usuario)
+    ctx = Contexto(core, live_id[:40], lineas, usuario, pregunta)
     previos = chat(live_id)[-6:]
     hist = []
     for p in previos:

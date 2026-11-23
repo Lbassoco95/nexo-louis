@@ -141,6 +141,21 @@ class Junta(unittest.TestCase):
         r4 = J.preguntar(FakeCore, "LE4", "¿Firma?", LINEAS, llm=guion([final(respuesta="Firma Sebastián.", usa_datos=True, fuentes=[])]), llm_escalado=roto)
         self.assertEqual(r4["respuesta"], J.NO_TENGO)
 
+    def test_no_anota_ni_propone_tareas_por_su_cuenta(self):
+        # hallazgo de probar-modelos.py: modelos nuevos guardaban notas y tareas sin que se las pidieran → candado en código
+        r = J.preguntar(FakeCore, "LN1", "¿Cuándo es la fecha de firma?", LINEAS,
+                        llm=guion([uso("anotar", texto="No hay fecha de firma"), uso("proponer_tarea", que="Confirmar la fecha de firma del contrato")],
+                                  [final(respuesta="No lo encontré en la junta.", usa_datos=False, fuentes=[])]))
+        self.assertEqual(r["eventos"], [])
+        self.assertEqual(J.notas("LN1"), [])
+        self.assertEqual(T.listar("LN1"), [])
+        ok = J.preguntar(FakeCore, "LN2", "Apunta que mañana revisamos el contrato", LINEAS,
+                         llm=guion([uso("anotar", texto="Mañana revisamos el contrato")], [final(respuesta="Anotado.", usa_datos=False, fuentes=[])]))
+        self.assertEqual([e["tipo"] for e in ok["eventos"]], ["nota"])
+        sin_tarea = J.preguntar(FakeCore, "LN3", "Anota que Fernando manda el contrato", LINEAS,
+                                llm=guion([uso("proponer_tarea", que="Enviar el contrato de Vizum")], [final(respuesta="Hecho.", usa_datos=False, fuentes=[])]))
+        self.assertEqual(sin_tarea["eventos"], [])                                              # pidió ANOTAR, no una tarea
+
     def test_validaciones(self):
         with self.assertRaises(ValueError):
             J.preguntar(FakeCore, "L", "", LINEAS, llm=guion())

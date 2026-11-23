@@ -36,6 +36,10 @@ BASE_CONF = 0.6
 
 
 def _c():
+    try:
+        donna_personas._c().close()        # las consultas unen con sesiones_escucha: que exista aunque aún no se haya guardado ninguna junta (instalación nueva)
+    except Exception:
+        pass
     c = donna_db.conn()
     c.executescript(SCHEMA)
     return c
