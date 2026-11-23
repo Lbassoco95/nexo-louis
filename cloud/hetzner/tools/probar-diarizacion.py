@@ -44,7 +44,10 @@ def main():
         tr = donna_audio.tramos(ref)
         if not tr:
             sys.exit("Esa junta no tiene audio guardado (se grabó antes del audio, lo apagaste en Ajustes, o ya se borró). Prueba con otra o con un archivo.")
-        audio = donna_audio.ensamblar(tr[0]["aid"])
+        try:
+            audio = donna_audio.ensamblar(tr[0]["aid"])
+        except Exception as e:
+            sys.exit("No pude juntar el audio de esa junta: %s" % e)
     else:
         audio = Path(sys.argv[1]).expanduser()
     if not audio.exists():
