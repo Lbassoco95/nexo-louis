@@ -127,6 +127,25 @@ def calendario_abiertos(hoy, m=None, dias: int = 7) -> list:
     return out
 
 
+def buscar_correo(consulta: str, m=None, limite: int = 5) -> str:
+    """Búsqueda de texto en el correo (solo lectura) para el asistente de la junta: «De X (fecha): «asunto» — fragmento»."""
+    m = m or _m365()
+    q = (consulta or "").replace('"', " ").strip()[:120]
+    if len(q) < 3:
+        return "(escribe qué buscar en el correo)"
+    out = []
+    for t in tenants_disponibles(m):
+        try:
+            tok = m.get_access_token(t)
+            p = urllib.parse.urlencode({"$search": '"%s"' % q, "$top": str(limite), "$select": "subject,from,receivedDateTime,bodyPreview"}, quote_via=urllib.parse.quote)
+            for e in m.graph_get(tok, f"/me/messages?{p}").get("value", []):
+                de = (e.get("from") or {}).get("emailAddress") or {}
+                out.append("De %s (%s, %s): «%s» — %s" % (de.get("name") or de.get("address", "?"), _fecha(e.get("receivedDateTime")), t, _limpia(e.get("subject"), 120), _limpia(e.get("bodyPreview"))))
+        except Exception as ex:
+            out.append("(no pude buscar en %s: %s)" % (t, str(ex)[:60]))
+    return "\n".join(out) or "(sin correos con eso)"
+
+
 def fuentes(m=None) -> dict:
     """Se mezcla con las demás en donna_radar.fuentes_por_defecto."""
     return {"abiertos": {"calendario": lambda hoy: calendario_abiertos(hoy, m)},

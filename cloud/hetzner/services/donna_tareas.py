@@ -129,6 +129,8 @@ def extraer(core, sesion_id: str, juez, agenda_texto: str = None, usuario: str =
     ag = [l for l in (agenda_texto if agenda_texto is not None else _agenda(core)).splitlines() if re.match(r"^\s*-\s*\[\s*\]", l)]
     ag_tok = [_tokens(l) for l in ag]
     c = _c()
+    ya = [_tokens(r["titulo"]) for r in c.execute("SELECT titulo FROM tareas_propuestas WHERE sesion_id=?", (sesion_id,))]       # también las que Polo pidió durante la junta
+    ag_tok += ya
     n, dup, sin_cita = 0, 0, 0
     try:
         for t in crudas[:24]:

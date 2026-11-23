@@ -63,6 +63,9 @@ header button{position:relative}
 .nitem .more{background:none;border:0;color:var(--acc);font-size:12.5px;padding:6px 0 0}
 .nitem .acts{margin-top:10px;display:flex;flex-direction:column;gap:8px}
 .nitem .acts .btn{padding:10px 14px}
+.esas{padding:14px 16px;border-radius:20px;margin:0 0 12px}.aslog{max-height:38dvh;overflow-y:auto;display:flex;flex-direction:column;gap:8px;margin-bottom:8px}
+.asm{padding:9px 12px;border-radius:14px;font-size:14px;line-height:1.4;max-width:92%;white-space:pre-wrap}.asm.u{align-self:flex-end;background:var(--grad);color:#fff}.asm.a{align-self:flex-start;background:var(--glass2);border:1px solid var(--gline)}.asm.pend{opacity:.7;font-style:italic}
+.asf{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}.asf button{min-height:32px;padding:0 10px;border-radius:999px;border:1px solid var(--gline);background:var(--glass);color:var(--tx);font-size:12px}.asw{margin-top:6px;font-size:12px;color:var(--wn,#b45309)}
 .nq{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}.nq button{min-height:44px;padding:0 14px;border-radius:999px;border:1px solid var(--line);background:var(--panel);color:var(--tx);font:inherit;font-size:13px}.nq button:disabled{opacity:.5}
 .segc .row{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
 .nitem .okline{font-size:12.5px;color:var(--ok);background:var(--panel2);border-radius:10px;padding:8px 10px}
@@ -1646,9 +1649,9 @@ async function esFinish(){
   try{
     const dur=esElapsed()||ts[ts.length-1].t0;
     const r=await api('/v1/app/escucha/guardar',{method:'POST',body:JSON.stringify({duracion:Math.round(dur/1000),
-      voces:ES.spk.map((s,i)=>({n:i+1,nombre:esNombre(i),tono:esTono(s.f0),f0:Math.round(s.f0||0),hf:+(s.hf||0).toFixed(3)})),
+      live_id:ES.liveId||'',voces:ES.spk.map((s,i)=>({n:i+1,nombre:esNombre(i),tono:esTono(s.f0),f0:Math.round(s.f0||0),hf:+(s.hf||0).toFixed(3)})),
       lineas:ts.map(t=>({t:esClock(t.t0),voz:t.spk!=null?t.spk+1:0,nombre:t.spk!=null?esNombre(t.spk):'',tono:esTono(t.f0),es:t.traduccion,orig:t.original,idioma:t.origen,bajo:esBajo(t)}))})});
-    ES.turns=[];ES.spk=[];ES.names={};ES.det={};ES.sugVoz={};ES.frames=[];ES.sentMs=0;ES.inI=ES.outI=0;ES.t0=0;esPaint();esUI();
+    ES.liveId='';{const l=$('#as-log');if(l)l.innerHTML='';const n=$('#as-notas');if(n)n.innerHTML=''}ES.turns=[];ES.spk=[];ES.names={};ES.det={};ES.sugVoz={};ES.frames=[];ES.sentMs=0;ES.inI=ES.outI=0;ES.t0=0;esPaint();esUI();
     esSt('Guardada como entregable.');
     sheet('Transcripción guardada','<div class="sub">'+esc(r.nombre||'')+'</div>'+((r.personas||[]).length?'<div class="sub" style="margin-top:6px">👥 Quedaron en su ficha: '+r.personas.map(p=>esc(p.nombre)).join(', ')+'</div>':'')+((r.sugeridos||[]).length?'<div class="sub" style="margin-top:4px">También escuché: '+r.sugeridos.map(p=>esc(p.nombre)).join(', ')+' (puedes asignarlos en Personas).</div>':'')+(r.resumen?'<div class="card" style="margin:10px 0">'+md(r.resumen)+'</div>':'<div class="empty">Guardada (muy corta para resumir).</div>')+
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">'+(r.sesion_id?'<button class="artcard" id="esg-tar">📝 Tareas propuestas de la junta</button>':'')+'<button class="artcard" id="esg-per">Ver personas</button><button class="artcard" id="esg-ent">Verla en Entregables</button><button class="artcard" id="esg-ask">Que Donna proponga pendientes</button></div>');
@@ -1692,6 +1695,37 @@ function esQuienEsQuien(){                                // antes de guardar: p
     $('#esq-no').onclick=fin;$('#sh-x').addEventListener('click',fin,{once:true});
   });
 }
+/* ---------- Donna en la junta: preguntar, buscar documentos, anotar (verificado; sin inventar) ---------- */
+function esLive(){return ES.liveId||(ES.liveId='j'+Date.now().toString(36)+Math.random().toString(36).slice(2,6))}
+function esLineas(){return ES.turns.filter(t=>t.traduccion.trim()).map(t=>({t:esClock(t.t0),n:t.spk!=null?esNombre(t.spk):'Voz por identificar',es:t.traduccion})).slice(-500)}
+function esGoto(clock){const L=ES.turns.filter(t=>t.original||t.traduccion),i=L.findIndex(t=>esClock(t.t0)===clock),el=$('#es-box')&&$('#es-box').children[i+1];if(el){el.scrollIntoView({block:'center',behavior:'smooth'});el.style.outline='2px solid var(--at,#6a5cff)';setTimeout(()=>el.style.outline='',1800)}}
+function asBurbuja(rol,txt,fuentes,avisos){
+  const d=document.createElement('div');d.className='asm '+rol;d.textContent=txt;
+  if(fuentes&&fuentes.length){const f=document.createElement('div');f.className='asf';fuentes.forEach(x=>{const b=document.createElement('button');b.type='button';
+    b.textContent=(x.tipo==='junta'?'🕒 ':x.tipo==='documento'?'📄 ':x.tipo==='correo'?'✉️ ':'🔗 ')+x.ref;if(x.tipo==='junta')b.onclick=()=>esGoto(x.ref);f.appendChild(b)});d.appendChild(f)}
+  (avisos||[]).forEach(a=>{const w=document.createElement('div');w.className='asw';w.textContent=a;d.appendChild(w)});
+  const log=$('#as-log');log.appendChild(d);log.scrollTop=log.scrollHeight;return d}
+async function asAsk(q){
+  q=(q||$('#as-in').value).trim();if(!q)return;$('#as-in').value='';
+  asBurbuja('u',q);const w=asBurbuja('a','Revisando…');w.classList.add('pend');$('#as-go').disabled=true;
+  try{const r=await api('/v1/app/escucha/asistente',{method:'POST',body:JSON.stringify({live_id:esLive(),pregunta:q,lineas:esLineas()})});
+    w.remove();asBurbuja('a',r.respuesta,r.fuentes,r.avisos);if((r.eventos||[]).length)asNotas()}
+  catch(e){w.remove();asBurbuja('a','No pude consultar ahora: '+e.message)}
+  $('#as-go').disabled=false;
+}
+async function asNotas(){
+  try{const r=await api('/v1/app/escucha/notas?live_id='+encodeURIComponent(esLive()));
+    $('#as-notas').innerHTML=r.notas.length?'<b>Notas de esta junta</b><ul style="margin:4px 0 0 16px;padding:0">'+r.notas.map(n=>`<li>${n.hora?`<span class="sub">[${esc(n.hora)}]</span> `:''}${esc(n.texto)}${n.origen==='donna'?' <span class="sub">(Donna)</span>':''}</li>`).join('')+'</ul>':''}catch(e){}
+}
+function asInit(){
+  $('#as-chips').innerHTML=['¿Qué acaban de decir?','¿Qué compromisos van hasta ahora?','Busca en mis documentos lo que están discutiendo'].map(t=>'<button type="button">'+esc(t)+'</button>').join('');
+  const Q={'¿Qué acaban de decir?':'Resume lo que se dijo en los últimos 2 minutos.','¿Qué compromisos van hasta ahora?':'¿Qué compromisos o tareas se han dicho hasta ahora en la junta y quién los dijo?','Busca en mis documentos lo que están discutiendo':'Busca en mis documentos algo relacionado con lo que están discutiendo ahora y dime qué dice, citando el documento.'};
+  $$('#as-chips button').forEach(b=>b.onclick=()=>asAsk(Q[b.textContent]));
+  $('#as-go').onclick=()=>asAsk();$('#as-in').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();asAsk()}};
+  const nota=async()=>{const t=$('#as-nota').value.trim();if(!t)return;$('#as-nota').value='';
+    try{await api('/v1/app/escucha/nota',{method:'POST',body:JSON.stringify({live_id:esLive(),texto:t,hora:esClock(esElapsed())})});toast('Anotado');asNotas()}catch(e){toast(e.message)}};
+  $('#as-nb').onclick=nota;$('#as-nota').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();nota()}};
+}
 function esView(){
   const v=$('#v-es');
   if(!ES.built){ES.built=true;
@@ -1709,6 +1743,10 @@ function esView(){
         '<button class="gb big" id="es-go"><i data-i="mic" data-s="20"></i>Empezar a escuchar</button>'+
         '<span id="es-live" class="ctls" hidden><button class="gl2 ib2" id="es-pause"></button><button class="gl2 ib2" id="es-sum" aria-label="¿De qué hablan? Resumen hasta ahora" title="¿De qué hablan?"><i data-i="spark" data-s="18"></i><span class="t">¿De qué hablan?</span></button><button class="stopb" id="es-save">Detener y guardar</button></span></div>'+
       '</div>'+
+      '<section class="esas glass" id="es-as" aria-label="Donna en la junta"><b>💬 Donna en la junta</b><div class="sub" style="margin:2px 0 8px">Responde solo con lo que se ha dicho y con tus documentos. Si no lo tiene, te lo dice. Ve la transcripción de esta junta para contestarte.</div>'+
+        '<div id="as-log" class="aslog" aria-live="polite"></div><div class="nq" id="as-chips"></div>'+
+        '<div class="trin"><input id="as-in" placeholder="Pregúntale, pídele un documento, que anote o que cree una tarea…" enterkeyhint="send" maxlength="800"><button id="as-go">Preguntar</button></div>'+
+        '<div class="trin"><input id="as-nota" placeholder="📝 Anotar algo rápido…" enterkeyhint="done" maxlength="600"><button id="as-nb">Anotar</button></div><div id="as-notas" class="sub"></div></section>'+
       '<details class="esvoz glass" id="es-vd" open><summary>Voces detectadas · <span id="es-vn">0</span></summary><div id="es-vlist"></div>'+
         '<p class="ds" style="margin:10px 2px">Distingo las voces por su timbre y tono. Ponles nombre y se recordarán en la siguiente sesión (es aproximado).</p>'+
         '<p class="sec" style="margin:16px 2px 8px">Mientras escucha</p>'+
@@ -1716,7 +1754,7 @@ function esView(){
         '<label class="swr"><span>Avisarme tras un minuto sin voces</span><span class="sw"><input type="checkbox" id="esw-aviso"><i></i></span></label>'+
         '<label class="swr"><span>Seguir en segundo plano</span><span class="sw"><input type="checkbox" id="esw-bg"><i></i></span></label>'+
         '<button class="gl2 pill" id="es-tab" style="margin-top:12px;width:100%" hidden>Escuchar el audio de una pestaña</button></details></div>';
-    iconize(v);
+    iconize(v);asInit();
     $('#es-go').onclick=()=>esAskStart('mic');$('#es-pause').onclick=()=>ES.paused?esResume():esPause();$('#es-sum').onclick=esResumen;$('#es-save').onclick=esFinish;
     $('#es-keep').onclick=()=>{esWsSend({t:'seguir'});ES.ask=false;esAsk(false)};$('#es-end').onclick=esFinish;
     $('#es-box').addEventListener('scroll',()=>{const b=$('#es-box');ES.stick=b.scrollHeight-b.scrollTop-b.clientHeight<60});

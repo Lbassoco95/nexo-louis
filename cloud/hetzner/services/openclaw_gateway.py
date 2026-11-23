@@ -483,6 +483,19 @@ _ACTIONS = {
 
 
 _RADAR_LOCK = threading.Lock()
+_JUNTA_HITS: dict = {}
+
+
+def _junta_rate_ok(user: str) -> bool:
+    """20 consultas por minuto por usuario (cada una cuesta una llamada al modelo)."""
+    now = time.time()
+    q = _JUNTA_HITS.setdefault(user, deque())
+    while q and now - q[0] > 60:
+        q.popleft()
+    if len(q) >= 20:
+        return False
+    q.append(now)
+    return True
 
 
 def _leer_junta(sesion_id: str):
@@ -1145,6 +1158,11 @@ class Handler(BaseHTTPRequestHandler):
                             if a1("kc"):
                                 d["cruce"]["kawiil_central"] = donna_personas.cruce_kawiil_central(core, d["nombre"], d["empresa"])
                             self._send_json(200, d)
+                elif _r0 == "/v1/app/escucha/notas":
+                    import donna_junta
+                    from urllib.parse import urlparse, parse_qs
+                    lid = (parse_qs(urlparse(self.path).query).get("live_id") or [""])[0][:40]
+                    self._send_json(200, {"notas": donna_junta.notas(lid), "chat": donna_junta.chat(lid)})
                 elif _r0 in ("/v1/app/tareas", "/v1/app/tareas/proyectos"):
                     import donna_tareas
                     from urllib.parse import urlparse, parse_qs
@@ -2195,6 +2213,13 @@ class Handler(BaseHTTPRequestHandler):
         titulo = "Transcripción Escuchar " + ahora.strftime("%Y-%m-%d %H:%M")
         contenido = ("Transcripción en español de una escucha en vivo (solo texto; no se guardó audio).\n\n- Fecha: %s\n- Duración: %d min %02d s\n\n## Voces\n%s\n\n## Transcripción\n\n%s\n"
                      % (ahora.strftime("%Y-%m-%d %H:%M"), dur // 60, dur % 60, "\n".join(quienes) or "- (sin identificar)", "\n\n".join(md_lines)))
+        live_id = str(body.get("live_id", ""))[:40]
+        if live_id:
+            try:
+                import donna_junta
+                contenido += donna_junta.texto_para_entregable(live_id)          # notas y consultas a Donna hechas durante la junta
+            except Exception:
+                log.exception("junta: no pude agregar notas al entregable")
         r = core._entregable_registrar(titulo, "", contenido, tipo="transcripcion", estado="aprobado", preparado_por="Donna · Escuchar")
         if r.startswith("ERROR"):
             raise ValueError(r)
@@ -2210,6 +2235,9 @@ class Handler(BaseHTTPRequestHandler):
             import donna_personas
             ps = donna_personas.guardar_sesion(titulo, dur, [v for v in voces if isinstance(v, dict)], [l for l in lineas if isinstance(l, dict)],
                                                mid=out["mid"], archivo=out["archivo"], resumen=resumen, usuario=self._media_user())
+            if live_id:
+                import donna_junta
+                donna_junta.remapear(live_id, ps["sesion_id"])
             out.update(sesion_id=ps["sesion_id"], personas=ps["personas"], sugeridos=ps["sugeridos"], extraccion="leyendo")
             import donna_tareas
             threading.Thread(target=lambda sid=ps["sesion_id"]: _leer_junta(sid), daemon=True).start()   # tareas propuestas, sin hacer esperar al guardado
@@ -2538,6 +2566,23 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError("operación no válida")
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
+            return
+        if self.path in ("/v1/app/escucha/asistente", "/v1/app/escucha/nota"):
+            import donna_junta
+            try:
+                lid = str(body.get("live_id", ""))[:40]
+                if self.path.endswith("nota"):
+                    self._send_json(200, donna_junta.nota_add(lid, str(body.get("texto", "")), str(body.get("hora", "")), "polo"))
+                else:
+                    if not _junta_rate_ok(self._media_user()):
+                        self._send_json(429, {"error": "Muchas preguntas seguidas; espera un momento."})
+                        return
+                    self._send_json(200, donna_junta.preguntar(core, lid, str(body.get("pregunta", "")), body.get("lineas") if isinstance(body.get("lineas"), list) else [], self._media_user()))
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
+            except Exception as e:
+                log.exception("asistente de junta falló")
+                self._send_json(502, {"error": "No pude consultar a Donna ahora: " + str(e)[:120]})
             return
         if self.path == "/v1/app/agente/plan":
             import donna_agente
