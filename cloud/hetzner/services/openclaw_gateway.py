@@ -1165,7 +1165,7 @@ class Handler(BaseHTTPRequestHandler):
                         except ValueError:
                             c_["decision"] = {}
                     self._send_json(200, {"proxima_ts": donna_agente.estado_get("proxima_ts", 0), "ultima_ts": donna_agente.estado_get("ultima_ts", 0), "ciclos": cs,
-                                          "conocimiento": donna_agente.conocimiento_list(), "llamadas_hoy": donna_agente._llamadas_hoy(), "max_llamadas": donna_agente.MAX_CICLOS_DIA})
+                                          "conocimiento": donna_agente.conocimiento_list(), "planes": donna_agente.planes(), "llamadas_hoy": donna_agente._llamadas_hoy(), "max_llamadas": donna_agente.MAX_CICLOS_DIA})
                 elif _r0 == "/v1/app/radar":
                     import donna_radar
                     self._send_json(200, {"bitacora": donna_radar.bitacora_list(12), "propuestas": donna_radar.propuestas(), "autonomia": donna_radar.autonomia_todas(),
@@ -2536,6 +2536,13 @@ class Handler(BaseHTTPRequestHandler):
                         self._send_json(200, {"ok": donna_personas.eliminar(str(body.get("id", "")))})
                     else:
                         raise ValueError("operación no válida")
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
+            return
+        if self.path == "/v1/app/agente/plan":
+            import donna_agente
+            try:
+                self._send_json(200, donna_agente.plan_accion(str(body.get("id", "")), str(body.get("accion", ""))))
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
             return

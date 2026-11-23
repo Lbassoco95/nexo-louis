@@ -54,3 +54,10 @@ Polo pidió que los radares **no sean programados ni un prompt fijo**, sino una 
 - **Visible**: «Última revisión», «ella decidió volver ~…», «Qué decidió y por qué» y las revisiones del día (tope 30/día).
 - **Red de seguridad**: si el modelo falla, hace una revisión básica y reintenta en 3 h; nunca está callada más de 12 h; las herramientas caras tienen un mínimo entre usos (3 h).
 - Límite honesto: «aprender» aquí es **memoria de observaciones + decisiones que se ajustan**, no entrenar un modelo. El conjunto de datos etiquetado (`exportar_dataset` de cierres y tareas de juntas) es lo que alimentará el piloto de deep learning con los créditos NVIDIA.
+
+### Ajuste v30 — situación y plan (no solo «aprendizajes»)
+Feedback de Polo: el agente guardó como «aprendizaje» una foto de la carga («93 abiertos, 69 vencidos») sin decir qué haría ni cuándo avisaría. Ahora:
+- **Aprendizaje ≠ situación.** Un aprendizaje es un patrón duradero de cómo trabaja Polo; los conteos y el estado de hoy ya no se guardan como aprendizaje (se rechazan y lo viejo se limpia solo). La **confianza se gana repitiéndose** en varias revisiones (una sola observación nunca pasa de 55%), no por lo seguro que suene el modelo; al chat solo llega lo que supera 60%.
+- **Situación y plan.** Lo que requiere atención se guarda con sus números y un **plan para abordarlo con Polo** (máx. 5 pasos pequeños, con fecha/hora dentro de sus horas activas y a un ritmo que su carga permita; lo vencido se agrupa por antigüedad y se decide por bloques). El agente ahora recibe también la antigüedad de lo vencido y de qué ha hablado Polo últimamente.
+- **Urgente se avisa en cuanto se detecta** (notificación con el plan; máx. 2 avisos al día; no repite una situación abierta de menos de 24 h). «Atención» solo se muestra en la app.
+- **Seguimiento → Situación y plan:** ✓ Acepto (cada paso se vuelve un seguimiento con su fecha y Donna lo sigue), ✎ Ajustar con Donna (abre un chat con el plan), ⏰ Después, ✕ Descartar. Un plan nunca cambia nada solo.

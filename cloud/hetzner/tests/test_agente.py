@@ -107,7 +107,8 @@ class Agente(unittest.TestCase):
         self.assertEqual([k["clave"] for k in A.conocimiento_list()], ["ritmo.cierres"])
 
     def test_lo_aprendido_vuelve_al_siguiente_ciclo_y_al_contexto_de_donna(self):
-        A.aprender([{"clave": "avisos.horas", "tema": "avisos", "hecho": "Atiende los avisos entre las 9 y las 10 h", "confianza": 0.8}])
+        for _ in range(2):                                                                   # la confianza se gana repitiéndose: una sola observación no entra al contexto del chat
+            A.aprender([{"clave": "avisos.horas", "tema": "avisos", "hecho": "Atiende los avisos entre las 9 y las 10 h", "confianza": 0.8}])
         A.aprender([{"clave": "baja.conf", "tema": "ritmo", "hecho": "Algo poco seguro sobre su ritmo de trabajo", "confianza": 0.3}])
         f, box = llm({"acciones": [], "proxima_revision_min": 60, "bitacora": "x"})
         A.ciclo(FakeCore, "m", fuentes(), f)
@@ -146,6 +147,83 @@ class Agente(unittest.TestCase):
             self.assertEqual(corridas, ["primera vez"])
         finally:
             AG.ciclo, R.fuentes_por_defecto = orig, orig_f
+
+
+class SituacionYPlan(unittest.TestCase):
+    def setUp(self):
+        limpiar()
+
+    SIT = {"clave": "acumulacion.vencidos", "titulo": "Acumulación grave de vencidos", "gravedad": "urgente",
+           "detalle": "Patio: 69 de 93 abiertos ya vencieron (74%). Agenda: 27 de 60 (45%).",
+           "plan": {"resumen": "Triage en bloques de 30 min en tu hora más activa, empezando por lo más viejo.",
+                    "pasos": [{"paso": "Archivar lo vencido de más de 90 días (con respaldo)", "cuando": "2026-11-24T10:00"},
+                              {"paso": "Replantear fechas de lo vencido de 8 a 90 días", "cuando": "2026-11-25T10:00"},
+                              {"paso": "corto", "cuando": ""}]}}
+
+    def test_una_foto_de_la_carga_no_se_guarda_como_aprendizaje_y_la_confianza_se_gana(self):
+        n = A.aprender([{"clave": "proyectos.carga", "tema": "proyectos", "hecho": "93 abiertos en patio, 69 vencidos (74% de los abiertos ya pasaron fecha)", "confianza": 0.95},
+                        {"clave": "ritmo.decide", "tema": "ritmo", "hecho": "Suele decidir las propuestas en menos de una hora", "confianza": 0.95}])
+        self.assertEqual(n, 1)
+        k = A.conocimiento_list()[0]
+        self.assertEqual(k["clave"], "ritmo.decide")
+        self.assertLessEqual(k["confianza"], 0.55)                                          # aunque el modelo diga 95%, una sola observación no da certeza
+        # lo que ya estaba guardado como foto (versión anterior) se limpia solo
+        c = A._c()
+        c.execute("INSERT INTO conocimiento(id,clave,tema,hecho,confianza,creado,actualizado) VALUES('x','p.v','proyectos','Patio abiertos: 93, vencidos: 69 (74%)',0.95,1,1)")
+        c.commit(); c.close()
+        self.assertEqual(A.purgar_situaciones(), 1)
+        self.assertNotIn("p.v", [k["clave"] for k in A.conocimiento_list()])
+
+    def test_urgente_avisa_con_el_plan_una_sola_vez_y_con_tope_diario(self):
+        n = []
+        sits = A.decidir({}, lambda s_, u_: {"acciones": [], "situaciones": [self.SIT]})["situaciones"]
+        self.assertEqual(len(sits[0]["pasos"]), 2)                                          # el paso demasiado corto se descarta
+        r = A.procesar_situaciones(sits, lambda t, b="", **k: n.append((t, b, k)))
+        self.assertTrue(r[0]["avisado"])
+        self.assertEqual(n[0][2]["link"], "plan:" + r[0]["plan"])
+        self.assertIn("Cómo propongo abordarlo", n[0][2]["full_body"])
+        self.assertIn("Archivar lo vencido", n[0][2]["full_body"])
+        self.assertEqual(A.procesar_situaciones(sits, lambda *a, **k: self.fail("no repite")), [])    # misma situación abierta: no insiste
+        for i in range(3):
+            otra = dict(sits[0], clave="otra.%d" % i)
+            A.procesar_situaciones([otra], lambda t, b="", **k: n.append(t))
+        self.assertEqual(len(n), A.MAX_AVISOS_DIA)                                          # máximo 2 avisos al día
+
+    def test_atencion_se_muestra_en_la_app_pero_no_avisa(self):
+        sit = A.decidir({}, lambda s_, u_: {"situaciones": [dict(self.SIT, gravedad="atencion", clave="calma")]})["situaciones"]
+        r = A.procesar_situaciones(sit, lambda *a, **k: self.fail("solo urgente avisa"))
+        self.assertFalse(r[0]["avisado"])
+        self.assertEqual(A.planes()[0]["gravedad"], "atencion")
+
+    def test_aceptar_el_plan_vuelve_cada_paso_un_seguimiento_con_fecha(self):
+        sits = A.decidir({}, lambda s_, u_: {"situaciones": [self.SIT]})["situaciones"]
+        pid = A.procesar_situaciones(sits, lambda *a, **k: None)[0]["plan"]
+        r = A.plan_accion(pid, "aceptar")
+        self.assertEqual(r["seguimientos"], 2)
+        segs = D.seg_list()
+        self.assertEqual(sorted(x["origen"] for x in segs), ["plan", "plan"])
+        self.assertTrue(all(x["proxima_revision"] > 0 for x in segs))
+        with self.assertRaises(ValueError):
+            A.plan_accion(pid, "aceptar")                                                   # no se acepta dos veces
+        self.assertEqual(A.planes()[0]["estado"], "aceptado")
+
+    def test_despues_y_descartar(self):
+        sits = A.decidir({}, lambda s_, u_: {"situaciones": [self.SIT]})["situaciones"]
+        pid = A.procesar_situaciones(sits, lambda *a, **k: None)[0]["plan"]
+        A.plan_accion(pid, "despues")
+        A.plan_accion(pid, "descartar")
+        self.assertEqual(A.planes(), [])
+
+    def test_el_ciclo_completo_trae_el_contexto_para_proponer_un_plan_real(self):
+        items = [{"tipo": "patio", "ref": "p%d" % i, "titulo": "Tarea %d" % i, "fecha": "2026-06-01"} for i in range(5)] + [{"tipo": "agenda", "ref": "a1", "titulo": "Reciente", "fecha": "2026-11-20"}]
+        f, box = llm({"acciones": [], "proxima_revision_min": 60, "bitacora": "x", "situaciones": [self.SIT]})
+        n = []
+        r = A.ciclo(FakeCore, "m", fuentes(items), f, notificar=lambda t, b="", **k: n.append(t))
+        self.assertEqual(box["obs"]["carga"]["vencidas_por_antiguedad"]["patio"], {"más de 90 días": 5})   # agrupa por antigüedad, no lista todo
+        self.assertEqual(box["obs"]["carga"]["vencidas"], {"patio": 5, "agenda": 1})
+        self.assertIn("temas_recientes_de_conversacion", box["obs"])
+        self.assertEqual(r["situaciones"][0]["avisado"], True)
+        self.assertTrue(any("Acumulación" in t for t in n))
 
 
 if __name__ == "__main__":
