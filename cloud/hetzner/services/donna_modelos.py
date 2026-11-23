@@ -28,10 +28,24 @@ def escalar_activo() -> bool:
     return os.environ.get("DONNA_JUNTA_ESCALAR", "1") != "0" and modelo("junta_escalada") != modelo("junta")
 
 
+def _precios_extra() -> dict:
+    """Precios que pone Polo desde su consola: DONNA_PRECIOS="claude-haiku-5-5=1:5,claude-sonnet-5-5=3:15" (USD por millón de tokens, entrada:salida)."""
+    out = {}
+    for par in (os.environ.get("DONNA_PRECIOS", "") or "").split(","):
+        try:
+            k, v = par.strip().split("=", 1)
+            a, b = v.split(":", 1)
+            out[k.strip()] = (float(a), float(b))
+        except ValueError:
+            continue
+    return out
+
+
 def precio(m: str):
-    for k, v in PRECIOS.items():
+    todos = {**PRECIOS, **_precios_extra()}
+    for k in sorted(todos, key=len, reverse=True):                 # el prefijo más específico gana
         if (m or "").startswith(k):
-            return v
+            return todos[k]
     return None
 
 

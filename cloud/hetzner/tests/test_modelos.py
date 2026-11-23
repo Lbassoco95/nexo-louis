@@ -27,6 +27,15 @@ class Modelos(unittest.TestCase):
         self.assertAlmostEqual(M.costo("claude-haiku-4-5-20251001", 1_000_000, 100_000), 1.5)
         self.assertIsNone(M.costo("modelo-nuevo-sin-precio", 1000, 1000))     # no se inventa un costo
 
+    def test_precios_que_pone_polo_desde_su_consola(self):
+        os.environ["DONNA_PRECIOS"] = "claude-haiku-5-5=1:5, claude-sonnet-5-5=3:15, basura, x=no:num"
+        try:
+            self.assertAlmostEqual(M.costo("claude-haiku-5-5", 1_000_000, 0), 1.0)
+            self.assertAlmostEqual(M.costo("claude-sonnet-5-5", 0, 1_000_000), 15.0)
+            self.assertIsNone(M.costo("claude-opus-5-5", 1000, 1000))     # sin precio: no se inventa
+        finally:
+            os.environ.pop("DONNA_PRECIOS", None)
+
     def test_uso_se_registra_y_resume(self):
         M.uso_registrar("junta", M.HAIKU, 2000, 300)
         M.uso_registrar("junta", M.HAIKU, 1000, 100)

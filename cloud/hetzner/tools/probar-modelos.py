@@ -3,6 +3,8 @@
 
 Uso (en el servidor, como polo):
   cd /opt/openclaw/scripts && python3 ~/donna-deploy/cloud/hetzner/tools/probar-modelos.py MODELO [MODELO ...]
+Para ver el costo de un modelo sin precio conocido, ponlo desde tu consola (USD por millón de tokens, entrada:salida):
+  DONNA_PRECIOS="claude-haiku-5-5=1:5,claude-sonnet-5-5=3:15" python3 ...probar-modelos.py ...
 Ejemplo:
   python3 ~/donna-deploy/cloud/hetzner/tools/probar-modelos.py claude-haiku-4-5-20251001 claude-sonnet-4-6
 
