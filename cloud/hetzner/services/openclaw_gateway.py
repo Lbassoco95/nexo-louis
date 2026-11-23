@@ -1183,7 +1183,7 @@ class Handler(BaseHTTPRequestHandler):
                         except ValueError:
                             c_["decision"] = {}
                     self._send_json(200, {"proxima_ts": donna_agente.estado_get("proxima_ts", 0), "ultima_ts": donna_agente.estado_get("ultima_ts", 0), "ciclos": cs,
-                                          "conocimiento": donna_agente.conocimiento_list(), "planes": donna_agente.planes(), "llamadas_hoy": donna_agente._llamadas_hoy(), "max_llamadas": donna_agente.MAX_CICLOS_DIA})
+                                          "conocimiento": donna_agente.conocimiento_list(), "planes": donna_agente.planes(), "uso": __import__("donna_modelos").uso_resumen(7), "llamadas_hoy": donna_agente._llamadas_hoy(), "max_llamadas": donna_agente.MAX_CICLOS_DIA})
                 elif _r0 == "/v1/app/radar":
                     import donna_radar
                     self._send_json(200, {"bitacora": donna_radar.bitacora_list(12), "propuestas": donna_radar.propuestas(), "autonomia": donna_radar.autonomia_todas(),

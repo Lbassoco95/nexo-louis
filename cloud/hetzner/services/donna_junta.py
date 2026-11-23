@@ -309,19 +309,46 @@ def _parse(txt: str) -> dict:
     return {"respuesta": (txt or "").strip()[:800], "usa_datos": True, "fuentes": []}                # sin formato: se trata como dato sin fuentes → el verificador lo frena
 
 
-def llm_anthropic(core):
+def llm_anthropic(core, rol: str = "junta"):
+    """Llamada al modelo del rol (configurable con DONNA_MODELO_JUNTA / DONNA_MODELO_JUNTA_ESCALADA). Registra los tokens para ver el costo real."""
+    import donna_modelos
+
     def _l(system, messages):
-        return core.http_post_json(core.ANTHROPIC_API_BASE, {"x-api-key": core.load_anthropic_key(), "anthropic-version": core.ANTHROPIC_VERSION},
-                                   {"model": core.CLAUDE_HAIKU, "max_tokens": 900, "system": system, "tools": TOOLS, "messages": messages}, timeout=60)
+        m = donna_modelos.modelo(rol)
+        fijo, sep, vivo = system.partition("\n\nTRANSCRIPCIÓN EN VIVO")             # reglas fijas (se cachean) + transcripción que cambia en cada consulta
+        bloques = [{"type": "text", "text": fijo, "cache_control": {"type": "ephemeral"}}] + ([{"type": "text", "text": sep + vivo}] if sep else [])
+        r = core.http_post_json(core.ANTHROPIC_API_BASE, {"x-api-key": core.load_anthropic_key(), "anthropic-version": core.ANTHROPIC_VERSION},
+                                {"model": m, "max_tokens": 900, "system": bloques, "tools": TOOLS, "messages": messages}, timeout=60)
+        u = r.get("usage") or {}
+        donna_modelos.uso_registrar(rol, m, u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0) + u.get("cache_creation_input_tokens", 0), u.get("output_tokens", 0))
+        return r
     return _l
 
 
-def preguntar(core, live_id: str, pregunta: str, lineas: list, usuario: str = "admin", llm=None) -> dict:
+def preguntar(core, live_id: str, pregunta: str, lineas: list, usuario: str = "admin", llm=None, llm_escalado=None) -> dict:
+    """Primero con el modelo barato. Si el verificador NO pudo respaldar la respuesta (fuente falsa, cifra sin fuente, o «no lo tengo» con datos de por medio),
+    se vuelve a intentar UNA vez con el modelo más fuerte y se queda la mejor respuesta. Así solo se paga más cuando hace falta."""
+    import donna_modelos
     pregunta = " ".join((pregunta or "").split())[:800]
     if len(pregunta) < 2 or not live_id:
         raise ValueError("Escribe tu pregunta.")
+    v = _responder(core, live_id, pregunta, lineas, usuario, llm or llm_anthropic(core, "junta"))
+    v["modelo"], v["escalada"] = donna_modelos.modelo("junta") if llm is None else "inyectado", False
+    if not v["verificada"] and (v["avisos"] or v["respuesta"] == NO_TENGO) and (llm_escalado or (llm is None and donna_modelos.escalar_activo())):
+        try:
+            v2 = _responder(core, live_id, pregunta, lineas, usuario, llm_escalado or llm_anthropic(core, "junta_escalada"))
+            if len(v2["fuentes"]) > len(v["fuentes"]) or (v2["verificada"] and not v["verificada"]) or (v2["respuesta"] != NO_TENGO and v["respuesta"] == NO_TENGO and not v2["avisos"]):
+                v2["modelo"], v2["escalada"] = donna_modelos.modelo("junta_escalada") if llm_escalado is None else "inyectado-escalado", True
+                v = v2
+        except Exception:
+            pass
+    _chat_add(live_id, "polo", pregunta)
+    _chat_add(live_id, "donna", v["respuesta"], v["fuentes"], v["avisos"])
+    return v
+
+
+def _responder(core, live_id: str, pregunta: str, lineas: list, usuario: str, llm) -> dict:
     ctx = Contexto(core, live_id[:40], lineas, usuario)
-    llm = llm or llm_anthropic(core)
     previos = chat(live_id)[-6:]
     hist = []
     for p in previos:
@@ -355,6 +382,4 @@ def preguntar(core, live_id: str, pregunta: str, lineas: list, usuario: str = "a
         texto_final = json.dumps({"respuesta": "No alcancé a verificarlo a tiempo; pregúntamelo más específico.", "usa_datos": False, "fuentes": []})
     v = verificar(_parse(texto_final), ctx)
     v["eventos"] = ctx.eventos
-    _chat_add(live_id, "polo", pregunta)
-    _chat_add(live_id, "donna", v["respuesta"], v["fuentes"], v["avisos"])
     return v

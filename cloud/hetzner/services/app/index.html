@@ -63,7 +63,27 @@ header button{position:relative}
 .nitem .more{background:none;border:0;color:var(--acc);font-size:12.5px;padding:6px 0 0}
 .nitem .acts{margin-top:10px;display:flex;flex-direction:column;gap:8px}
 .nitem .acts .btn{padding:10px 14px}
-.esas{padding:14px 16px;border-radius:20px;margin:0 0 12px}.aslog{max-height:38dvh;overflow-y:auto;display:flex;flex-direction:column;gap:8px;margin-bottom:8px}
+.esside{flex:0 0 400px;display:flex;flex-direction:column;gap:12px;min-height:0;min-width:0}
+.esas{padding:10px 14px 12px;border-radius:24px;display:flex;flex-direction:column;min-height:0;flex:1 1 auto;overflow:hidden}
+.esas .ashd{display:flex;align-items:center;gap:8px;min-height:44px}.astabs{display:flex;gap:4px;flex:1;min-width:0}
+.astabs button{min-height:40px;padding:0 12px;border-radius:999px;border:1px solid transparent;background:transparent;color:var(--mut);font:inherit;font-size:13px;font-weight:600}
+.astabs button[aria-selected=true]{background:var(--glass2);border-color:var(--gline);color:var(--tx)}
+.astitle{display:none;flex:1;font-weight:600;font-size:14px}.asmin{min-width:44px;min-height:44px;border-radius:14px;border:1px solid var(--gline);background:var(--glass2);color:var(--tx);font-size:18px;line-height:1}
+#es-seg{display:none}
+@media (min-width:1100px){.esside{padding-top:50px}.esas.min{flex:0 0 auto}.esas.min .asbody,.esas.min .astabs{display:none}.esas.min .astitle{display:block}}
+.asbody{flex:1;min-height:0;display:flex;flex-direction:column}.aspane{flex:1;min-height:0;display:flex;flex-direction:column}.aspane[hidden]{display:none}
+.aslog{flex:1 1 auto;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:8px;margin-bottom:8px;-webkit-overflow-scrolling:touch}
+.asnotas{flex:1;min-height:60px;overflow-y:auto;margin-bottom:8px;font-size:14px}.asnotas li{margin:0 0 8px}.esas .trin{margin-bottom:0;flex:none}.esas .nq{flex:none;margin-top:0;margin-bottom:8px}
+.esside .esvoz{flex:0 1 auto;max-height:46%;overflow:auto;align-self:stretch}
+@media (max-width:560px){body.esrec #title{display:none}}
+@media (max-width:1099px){
+  #es-seg{display:flex;gap:6px}#es-seg button{flex:1;min-height:44px;border-radius:14px;border:1px solid var(--gline);background:var(--glass2);color:var(--tx);font:inherit;font-size:14px;font-weight:600}
+  #es-seg button[aria-pressed=true]{background:var(--grad);color:#fff;border-color:transparent}
+  .esside{flex:none}.esside .esvoz{max-height:none}.asmin{display:none}.assub{display:none}.esas .nq{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}.esas .nq button{white-space:nowrap;flex:none}
+  .esgrid[data-pane=trans] .esas{display:none}
+  .esgrid[data-pane=donna] .escol{flex:0 0 auto}.esgrid[data-pane=donna] #es-box,.esgrid[data-pane=donna] .esidle,.esgrid[data-pane=donna] .essum,.esgrid[data-pane=donna] .esvoz{display:none}
+  .esgrid[data-pane=donna] .esside{flex:1;min-height:0}.esgrid[data-pane=donna] .esas{flex:1;border-radius:20px}.esgrid[data-pane=donna] .aslog{max-height:none}
+}
 .asm{padding:9px 12px;border-radius:14px;font-size:14px;line-height:1.4;max-width:92%;white-space:pre-wrap}.asm.u{align-self:flex-end;background:var(--grad);color:#fff}.asm.a{align-self:flex-start;background:var(--glass2);border:1px solid var(--gline)}.asm.pend{opacity:.7;font-style:italic}
 .asf{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}.asf button{min-height:32px;padding:0 10px;border-radius:999px;border:1px solid var(--gline);background:var(--glass);color:var(--tx);font-size:12px}.asw{margin-top:6px;font-size:12px;color:var(--wn,#b45309)}
 .nq{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}.nq button{min-height:44px;padding:0 14px;border-radius:999px;border:1px solid var(--line);background:var(--panel);color:var(--tx);font:inherit;font-size:13px}.nq button:disabled{opacity:.5}
@@ -1505,17 +1525,24 @@ function esNombresDe(tx){                                  // → [{nombre,tipo:
   return out;
 }
 function esDetecta(t){
-  if(!t.traduccion||t.traduccion.length<8)return;
+  const tx=esEs(t);if(!tx||tx.length<8)return;
   ES.det=ES.det||{};ES.sugVoz=ES.sugVoz||{};
-  esNombresDe(t.traduccion).forEach(d=>{const k=d.nombre.toLowerCase();const e=ES.det[k]||(ES.det[k]={nombre:d.nombre,tipo:d.tipo,voz:null,veces:0});
+  esNombresDe(tx).forEach(d=>{const k=d.nombre.toLowerCase();const e=ES.det[k]||(ES.det[k]={nombre:d.nombre,tipo:d.tipo,voz:null,veces:0});
     if(d.tipo==='presenta'&&t.spk!=null){e.tipo='presenta';e.voz=t.spk;if(!ES.names[t.spk])ES.sugVoz[t.spk]=d.nombre}});
 }
+const ES_STOP=new Set('de que el la los las en y se del un una por con no para es su al lo como más pero sus le ya o este sí porque esta entre cuando muy sin sobre también me hasta hay donde quien desde todo nos durante todos uno les ni contra otros ese eso ante ellos e esto antes algunos qué unos yo otro otras otra él tanto esa estos mucho nada muchos cual poco ella estar estas algunas algo nosotros mi tu te si fue son ser está están tengo tiene vamos entonces bueno ahora aquí así eso va'.split(' '));
+function esEsp(o){                                         // ¿el audio original ya está en español?
+  if(!o||/[㐀-鿿]/.test(o))return false;const w=o.toLowerCase().match(/[a-záéíóúñü]+/g)||[];
+  if(w.length<4)return /[áéíóúñ¿¡]/.test(o);return w.filter(x=>ES_STOP.has(x)).length/w.length>0.25}
+function esEs(t){                                          // el mejor texto en español del turno: si hablan español, lo que se OYÓ (el traductor puede entregar menos)
+  const o=(t.original||'').trim(),tr=(t.traduccion||'').trim();
+  if(o&&esEsp(o)&&tr.length<o.length*0.85)return o;return tr||o}
 function esText(kind,d){
   const now=Date.now(),mk=()=>({origen:'en',original:'',traduccion:'',t0:esElapsed(),last:now,lsum:0,ln:0});
   if(kind==='in'){
     if(ES.inI<ES.turns.length&&ES.turns[ES.inI].original&&now-ES.lastIn>2500)ES.inI++;
     while(ES.turns.length<=ES.inI)ES.turns.push(mk());
-    const t=ES.turns[ES.inI];t.original+=d;t.origen=esLang(t.original);t.last=now;ES.lastIn=now;t.lsum+=LA.level||0;t.ln++;esVoz(t);
+    const t=ES.turns[ES.inI];t.original+=d;t.origen=esLang(t.original);t.last=now;ES.lastIn=now;t.lsum+=LA.level||0;t.ln++;esVoz(t);esDetecta(t);
   }else{
     if(ES.outI<ES.turns.length&&ES.turns[ES.outI].traduccion&&now-ES.lastOut>2500)ES.outI++;
     while(ES.turns.length<=ES.outI)ES.turns.push(mk());
@@ -1533,8 +1560,8 @@ function esPaint(){
       const live=ES.on&&!ES.paused&&i===last&&now-t.last<2200,k=t.spk!=null?(t.spk%6)+1:0;
       return '<div class="esl"><span class="av v'+k+'" aria-hidden="true">'+(t.spk!=null?t.spk+1:'?')+'</span><div class="eb"><div class="eh"><span class="nm">'+esc(t.spk!=null?esNombre(t.spk):'Voz por identificar')+'</span>'+
         (live?'<span class="tag">Hablando ahora</span>':'<span class="ds">'+esc(esDesc(t.f0))+' · '+esClock(t.t0)+'</span>')+'</div>'+
-        '<p class="tx'+(live?' caret':'')+'"><span class="'+(esBajo(t)&&!live?'low':'')+'">'+esc(t.traduccion||'…')+'</span></p>'+
-        (ES.orig&&t.original?'<p class="zh" lang="'+(t.origen==='zh'?'zh-CN':'en')+'">'+esc(t.original)+'</p>':'')+'</div></div>'}).join('');
+        '<p class="tx'+(live?' caret':'')+'"><span class="'+(esBajo(t)&&!live?'low':'')+'">'+esc(esEs(t)||'…')+'</span></p>'+
+        (ES.orig&&t.original&&esEs(t)!==t.original?'<p class="zh" lang="'+(t.origen==='zh'?'zh-CN':'en')+'">'+esc(t.original)+'</p>':'')+'</div></div>'}).join('');
     if(ES.stick)box.scrollTop=box.scrollHeight;
     const L=$('#es-vlist');if(L){
       const cnt={};ES.turns.forEach(t=>{if(t.spk!=null)cnt[t.spk]=(cnt[t.spk]||0)+1});
@@ -1632,7 +1659,7 @@ function esAskStart(fuente){                                 // privacidad: conf
   $('#esc-go').onclick=()=>{try{sessionStorage.setItem('es_consent','1')}catch(e){}closeSheet();esStart(fuente)};
 }
 const esQuien=t=>t.spk!=null?esNombre(t.spk)+' ('+esDesc(t.f0).replace('voz ','voz ')+')':'Voz por identificar';
-function esTexto(){return ES.turns.filter(t=>t.original.trim()||t.traduccion.trim()).map(t=>'['+esClock(t.t0)+'] '+esQuien(t)+': '+t.traduccion+(t.original?'\n   ('+(t.origen==='zh'?'中文':'EN')+') '+t.original:'')).join('\n')}
+function esTexto(){return ES.turns.filter(t=>t.original.trim()||t.traduccion.trim()).map(t=>'['+esClock(t.t0)+'] '+esQuien(t)+': '+esEs(t)+(t.original&&esEs(t)!==t.original?'\n   ('+(t.origen==='zh'?'中文':'EN')+') '+t.original:'')).join('\n')}
 async function esResumen(){
   const tx=esTexto();if(tx.length<20){toast('Aún no hay suficiente para resumir');return}
   const b=$('#es-sum');b.disabled=true;
@@ -1650,8 +1677,8 @@ async function esFinish(){
     const dur=esElapsed()||ts[ts.length-1].t0;
     const r=await api('/v1/app/escucha/guardar',{method:'POST',body:JSON.stringify({duracion:Math.round(dur/1000),
       live_id:ES.liveId||'',voces:ES.spk.map((s,i)=>({n:i+1,nombre:esNombre(i),tono:esTono(s.f0),f0:Math.round(s.f0||0),hf:+(s.hf||0).toFixed(3)})),
-      lineas:ts.map(t=>({t:esClock(t.t0),voz:t.spk!=null?t.spk+1:0,nombre:t.spk!=null?esNombre(t.spk):'',tono:esTono(t.f0),es:t.traduccion,orig:t.original,idioma:t.origen,bajo:esBajo(t)}))})});
-    ES.liveId='';{const l=$('#as-log');if(l)l.innerHTML='';const n=$('#as-notas');if(n)n.innerHTML=''}ES.turns=[];ES.spk=[];ES.names={};ES.det={};ES.sugVoz={};ES.frames=[];ES.sentMs=0;ES.inI=ES.outI=0;ES.t0=0;esPaint();esUI();
+      lineas:ts.map(t=>({t:esClock(t.t0),voz:t.spk!=null?t.spk+1:0,nombre:t.spk!=null?esNombre(t.spk):'',tono:esTono(t.f0),es:esEs(t),orig:t.original,idioma:esEsp(t.original)?'es':t.origen,bajo:esBajo(t)}))})});
+    ES.liveId='';ES.asNotas=0;{const l=$('#as-log');if(l)l.innerHTML='';const n=$('#as-notas');if(n)n.innerHTML='';const nn=$('#as-nn');if(nn)nn.textContent='';if($('#es-as'))asMinSet(ES.asMin)}ES.turns=[];ES.spk=[];ES.names={};ES.det={};ES.sugVoz={};ES.frames=[];ES.sentMs=0;ES.inI=ES.outI=0;ES.t0=0;esPaint();esUI();
     esSt('Guardada como entregable.');
     sheet('Transcripción guardada','<div class="sub">'+esc(r.nombre||'')+'</div>'+((r.personas||[]).length?'<div class="sub" style="margin-top:6px">👥 Quedaron en su ficha: '+r.personas.map(p=>esc(p.nombre)).join(', ')+'</div>':'')+((r.sugeridos||[]).length?'<div class="sub" style="margin-top:4px">También escuché: '+r.sugeridos.map(p=>esc(p.nombre)).join(', ')+' (puedes asignarlos en Personas).</div>':'')+(r.resumen?'<div class="card" style="margin:10px 0">'+md(r.resumen)+'</div>':'<div class="empty">Guardada (muy corta para resumir).</div>')+
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">'+(r.sesion_id?'<button class="artcard" id="esg-tar">📝 Tareas propuestas de la junta</button>':'')+'<button class="artcard" id="esg-per">Ver personas</button><button class="artcard" id="esg-ent">Verla en Entregables</button><button class="artcard" id="esg-ask">Que Donna proponga pendientes</button></div>');
@@ -1697,8 +1724,8 @@ function esQuienEsQuien(){                                // antes de guardar: p
 }
 /* ---------- Donna en la junta: preguntar, buscar documentos, anotar (verificado; sin inventar) ---------- */
 function esLive(){return ES.liveId||(ES.liveId='j'+Date.now().toString(36)+Math.random().toString(36).slice(2,6))}
-function esLineas(){return ES.turns.filter(t=>t.traduccion.trim()).map(t=>({t:esClock(t.t0),n:t.spk!=null?esNombre(t.spk):'Voz por identificar',es:t.traduccion})).slice(-500)}
-function esGoto(clock){const L=ES.turns.filter(t=>t.original||t.traduccion),i=L.findIndex(t=>esClock(t.t0)===clock),el=$('#es-box')&&$('#es-box').children[i+1];if(el){el.scrollIntoView({block:'center',behavior:'smooth'});el.style.outline='2px solid var(--at,#6a5cff)';setTimeout(()=>el.style.outline='',1800)}}
+function esLineas(){return ES.turns.filter(t=>esEs(t).trim()).map(t=>({t:esClock(t.t0),n:t.spk!=null?esNombre(t.spk):'Voz por identificar',es:esEs(t)})).slice(-500)}
+function esGoto(clock){if(innerWidth<1100&&ES.pane==='donna'){esPane('trans');setTimeout(()=>esGoto(clock),120);return}const L=ES.turns.filter(t=>t.original||t.traduccion),i=L.findIndex(t=>esClock(t.t0)===clock),el=$('#es-box')&&$('#es-box').children[i+1];if(el){el.scrollIntoView({block:'center',behavior:'smooth'});el.style.outline='2px solid var(--at,#6a5cff)';setTimeout(()=>el.style.outline='',1800)}}
 function asBurbuja(rol,txt,fuentes,avisos){
   const d=document.createElement('div');d.className='asm '+rol;d.textContent=txt;
   if(fuentes&&fuentes.length){const f=document.createElement('div');f.className='asf';fuentes.forEach(x=>{const b=document.createElement('button');b.type='button';
@@ -1706,31 +1733,43 @@ function asBurbuja(rol,txt,fuentes,avisos){
   (avisos||[]).forEach(a=>{const w=document.createElement('div');w.className='asw';w.textContent=a;d.appendChild(w)});
   const log=$('#as-log');log.appendChild(d);log.scrollTop=log.scrollHeight;return d}
 async function asAsk(q){
-  q=(q||$('#as-in').value).trim();if(!q)return;$('#as-in').value='';
+  q=(q||$('#as-in').value).trim();if(!q)return;$('#as-in').value='';if(ES.asMin)asMinSet(false);asTab(1);if(innerWidth<1100&&ES.pane!=='donna')esPane('donna');
   asBurbuja('u',q);const w=asBurbuja('a','Revisando…');w.classList.add('pend');$('#as-go').disabled=true;
   try{const r=await api('/v1/app/escucha/asistente',{method:'POST',body:JSON.stringify({live_id:esLive(),pregunta:q,lineas:esLineas()})});
-    w.remove();asBurbuja('a',r.respuesta,r.fuentes,r.avisos);if((r.eventos||[]).length)asNotas()}
+    w.remove();asBurbuja('a',r.respuesta,r.fuentes,r.avisos);if((r.eventos||[]).length)asNotas();if(r.escalada){const l=$('#as-log').lastChild;if(l){const m=document.createElement('div');m.className='asw';m.style.color='var(--mut)';m.textContent='Lo reviso con un modelo más fuerte porque el primero no pudo respaldarlo.';l.appendChild(m)}}}
   catch(e){w.remove();asBurbuja('a','No pude consultar ahora: '+e.message)}
   $('#as-go').disabled=false;
 }
 async function asNotas(){
   try{const r=await api('/v1/app/escucha/notas?live_id='+encodeURIComponent(esLive()));
-    $('#as-notas').innerHTML=r.notas.length?'<b>Notas de esta junta</b><ul style="margin:4px 0 0 16px;padding:0">'+r.notas.map(n=>`<li>${n.hora?`<span class="sub">[${esc(n.hora)}]</span> `:''}${esc(n.texto)}${n.origen==='donna'?' <span class="sub">(Donna)</span>':''}</li>`).join('')+'</ul>':''}catch(e){}
+    ES.asNotas=r.notas.length;$('#as-nn').textContent=r.notas.length?'('+r.notas.length+')':'';{const k=$('#as-nn2');if(k)k.textContent=r.notas.length?'('+r.notas.length+')':''}
+    $('#as-notas').innerHTML=r.notas.length?'<ul style="margin:0 0 0 16px;padding:0">'+r.notas.map(n=>`<li>${n.hora?`<span class="sub">[${esc(n.hora)}]</span> `:''}${esc(n.texto)}${n.origen==='donna'?' <span class="sub">(Donna)</span>':''}</li>`).join('')+'</ul>':'<div class="sub">Aún no hay notas. Escribe una abajo o pídele a Donna: «anota que…».</div>';
+    if(ES.asMin)asMinSet(true)}catch(e){}
 }
+function esPane(p){const g=document.querySelector('.esgrid');if(!g)return;ES.pane=p;g.dataset.pane=p;$$('#es-seg button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.p===p));if(p==='donna')asNotas()}
+function asMinSet(v){const el=$('#es-as');if(!el)return;ES.asMin=!!v;LS.set('as_min',ES.asMin);el.classList.toggle('min',ES.asMin);
+  const b=$('#as-min');b.textContent=ES.asMin?'▢':'—';b.title=ES.asMin?'Abrir el asistente':'Minimizar';b.setAttribute('aria-label',ES.asMin?'Abrir el asistente':'Minimizar el asistente');
+  const n=ES.asNotas||0;{const k=$('#as-nn2');if(k)k.textContent=n?'('+n+')':''}$('#as-ti').textContent='💬 Donna en la junta'+(n?' · '+n+' nota'+(n>1?'s':''):'')}
+function asTab(n){$('#as-t1').setAttribute('aria-selected',n===1);$('#as-t2').setAttribute('aria-selected',n===2);$('#as-p1').hidden=n!==1;$('#as-p2').hidden=n!==2;LS.set('as_tab',n);if(n===2)asNotas()}
 function asInit(){
+  ES.asMin=innerWidth>=1100?LS.get('as_min',false):false;asMinSet(ES.asMin);asTab(LS.get('as_tab',1));
+  $$('#es-seg button').forEach(b=>b.onclick=()=>esPane(b.dataset.p));
+  $('#as-min').onclick=()=>asMinSet(!ES.asMin);$('#as-ti').onclick=()=>asMinSet(false);$('#as-t1').onclick=()=>asTab(1);$('#as-t2').onclick=()=>asTab(2);
   $('#as-chips').innerHTML=['¿Qué acaban de decir?','¿Qué compromisos van hasta ahora?','Busca en mis documentos lo que están discutiendo'].map(t=>'<button type="button">'+esc(t)+'</button>').join('');
   const Q={'¿Qué acaban de decir?':'Resume lo que se dijo en los últimos 2 minutos.','¿Qué compromisos van hasta ahora?':'¿Qué compromisos o tareas se han dicho hasta ahora en la junta y quién los dijo?','Busca en mis documentos lo que están discutiendo':'Busca en mis documentos algo relacionado con lo que están discutiendo ahora y dime qué dice, citando el documento.'};
   $$('#as-chips button').forEach(b=>b.onclick=()=>asAsk(Q[b.textContent]));
   $('#as-go').onclick=()=>asAsk();$('#as-in').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();asAsk()}};
   const nota=async()=>{const t=$('#as-nota').value.trim();if(!t)return;$('#as-nota').value='';
     try{await api('/v1/app/escucha/nota',{method:'POST',body:JSON.stringify({live_id:esLive(),texto:t,hora:esClock(esElapsed())})});toast('Anotado');asNotas()}catch(e){toast(e.message)}};
+  asNotas();
   $('#as-nb').onclick=nota;$('#as-nota').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();nota()}};
 }
 function esView(){
   const v=$('#v-es');
   if(!ES.built){ES.built=true;
-    v.innerHTML='<div class="esgrid"><div class="escol">'+
+    v.innerHTML='<div class="esgrid" data-pane="trans"><div class="escol">'+
       '<div class="eshead"><h2>Escuchar y transcribir</h2><div class="sub">中文 · English → español · solo transcripción, sin traducir de vuelta</div></div>'+
+      '<div id="es-seg" role="group" aria-label="Qué ver"><button type="button" data-p="trans" aria-pressed="true">📜 Transcripción</button><button type="button" data-p="donna" aria-pressed="false">💬 Donna <span id="as-nn2"></span></button></div>'+
       '<div class="esask" id="es-ask" hidden><span class="tag"><i data-i="alert" data-s="14"></i>Sin voces</span><div class="t"><b>Llevo un minuto sin oír a nadie. ¿Sigo escuchando?</b><div class="sub">También te lo aviso con una notificación si sales de la app.</div></div>'+
         '<button class="gb pill" id="es-keep">Seguir escuchando</button><button class="gl2 pill" id="es-end">Detener y guardar</button></div>'+
       '<div class="essum" id="es-sumbox" hidden></div>'+
@@ -1743,17 +1782,18 @@ function esView(){
         '<button class="gb big" id="es-go"><i data-i="mic" data-s="20"></i>Empezar a escuchar</button>'+
         '<span id="es-live" class="ctls" hidden><button class="gl2 ib2" id="es-pause"></button><button class="gl2 ib2" id="es-sum" aria-label="¿De qué hablan? Resumen hasta ahora" title="¿De qué hablan?"><i data-i="spark" data-s="18"></i><span class="t">¿De qué hablan?</span></button><button class="stopb" id="es-save">Detener y guardar</button></span></div>'+
       '</div>'+
-      '<section class="esas glass" id="es-as" aria-label="Donna en la junta"><b>💬 Donna en la junta</b><div class="sub" style="margin:2px 0 8px">Responde solo con lo que se ha dicho y con tus documentos. Si no lo tiene, te lo dice. Ve la transcripción de esta junta para contestarte.</div>'+
+      '<div class="esside"><section class="esas glass" id="es-as" aria-label="Donna en la junta"><div class="ashd"><div class="astabs" role="tablist" aria-label="Donna en la junta"><button type="button" role="tab" id="as-t1" aria-selected="true">💬 Preguntar</button><button type="button" role="tab" id="as-t2" aria-selected="false">📝 Notas <span id="as-nn"></span></button></div><span class="astitle" id="as-ti">💬 Donna en la junta</span><button type="button" id="as-min" class="asmin" aria-label="Minimizar el asistente" title="Minimizar">—</button></div>'+
+        '<div class="asbody"><div class="aspane" id="as-p1"><div class="sub assub" style="margin:0 0 8px">Responde solo con lo que se ha dicho y con tus documentos. Si no lo tiene, te lo dice. Ve la transcripción de esta junta para contestarte.</div>'+
         '<div id="as-log" class="aslog" aria-live="polite"></div><div class="nq" id="as-chips"></div>'+
-        '<div class="trin"><input id="as-in" placeholder="Pregúntale, pídele un documento, que anote o que cree una tarea…" enterkeyhint="send" maxlength="800"><button id="as-go">Preguntar</button></div>'+
-        '<div class="trin"><input id="as-nota" placeholder="📝 Anotar algo rápido…" enterkeyhint="done" maxlength="600"><button id="as-nb">Anotar</button></div><div id="as-notas" class="sub"></div></section>'+
+        '<div class="trin"><input id="as-in" placeholder="Pregúntale, pídele un documento, que anote o que cree una tarea…" enterkeyhint="send" maxlength="800"><button id="as-go">Preguntar</button></div></div>'+
+        '<div class="aspane" id="as-p2" hidden><div id="as-notas" class="asnotas"></div><div class="trin"><input id="as-nota" placeholder="📝 Anotar algo rápido…" enterkeyhint="done" maxlength="600"><button id="as-nb">Anotar</button></div></div></div></section>'+
       '<details class="esvoz glass" id="es-vd" open><summary>Voces detectadas · <span id="es-vn">0</span></summary><div id="es-vlist"></div>'+
         '<p class="ds" style="margin:10px 2px">Distingo las voces por su timbre y tono. Ponles nombre y se recordarán en la siguiente sesión (es aproximado).</p>'+
         '<p class="sec" style="margin:16px 2px 8px">Mientras escucha</p>'+
         '<label class="swr"><span>Mostrar el texto original</span><span class="sw"><input type="checkbox" id="esw-orig"><i></i></span></label>'+
         '<label class="swr"><span>Avisarme tras un minuto sin voces</span><span class="sw"><input type="checkbox" id="esw-aviso"><i></i></span></label>'+
         '<label class="swr"><span>Seguir en segundo plano</span><span class="sw"><input type="checkbox" id="esw-bg"><i></i></span></label>'+
-        '<button class="gl2 pill" id="es-tab" style="margin-top:12px;width:100%" hidden>Escuchar el audio de una pestaña</button></details></div>';
+        '<button class="gl2 pill" id="es-tab" style="margin-top:12px;width:100%" hidden>Escuchar el audio de una pestaña</button></details></div></div>';
     iconize(v);asInit();
     $('#es-go').onclick=()=>esAskStart('mic');$('#es-pause').onclick=()=>ES.paused?esResume():esPause();$('#es-sum').onclick=esResumen;$('#es-save').onclick=esFinish;
     $('#es-keep').onclick=()=>{esWsSend({t:'seguir'});ES.ask=false;esAsk(false)};$('#es-end').onclick=esFinish;
@@ -2262,7 +2302,9 @@ async function loadAgente(){
     const ks=d.conocimiento;
     const GV={urgente:'🚨 Urgente',atencion:'⚠️ Atención',info:'ℹ️'};
     const pl=(d.planes||[]).map(p=>`<div class="card segc" data-pl="${esc(p.id)}" style="border-left:4px solid ${p.gravedad==='urgente'?'#d33':'var(--acc)'}"><b>${GV[p.gravedad]||''} ${esc(p.titulo)}</b><div class="sub" style="margin-top:4px">${esc(p.detalle)}</div>${p.resumen?`<div style="margin-top:8px"><b>Cómo propongo abordarlo:</b> ${esc(p.resumen)}</div>`:''}${(p.pasos||[]).length?'<ol style="margin:6px 0 0 18px;padding:0">'+p.pasos.map(x=>`<li>${esc(x.paso)}${x.cuando?` <span class="sub">— ${esc(x.cuando.replace('T',' '))}</span>`:''}</li>`).join('')+'</ol>':''}${p.estado==='aceptado'?'<div class="sub" style="margin-top:6px">✓ Aceptado: cada paso quedó como seguimiento.</div>':`<div class="nq"><button data-pa="aceptar">✓ Acepto el plan</button><button data-pa="ajustar">✎ Ajustar con Donna</button><button data-pa="despues">⏰ Después</button><button data-pa="descartar" aria-label="Descartar">✕</button></div>`}</div>`).join('');
-    el.innerHTML=(pl?'<div class="sec" style="margin-top:10px">🚨 Situación y plan</div>'+pl:'')+'<div class="sub" style="margin-top:8px">🕒 '+(d.ultima_ts?'Última revisión: '+esc(cu(d.ultima_ts))+' · ':'')+(d.proxima_ts?'ella decidió volver ~'+esc(cu(d.proxima_ts)):'aún no ha decidido')+' · '+d.llamadas_hoy+'/'+d.max_llamadas+' revisiones hoy</div>'+
+    const uso=(d.uso||[]);const usd=uso.reduce((a,u)=>a+(u.costo_usd||0),0),tk=uso.reduce((a,u)=>a+u.tokens_in+u.tokens_out,0),sinPrecio=uso.some(u=>u.costo_usd==null);
+    const usoTxt=uso.length?'<div class="sub" style="margin-top:4px">💲 Asistente de juntas, últimos 7 días: '+uso.reduce((a,u)=>a+u.llamadas,0)+' consultas · '+Math.round(tk/1000)+' mil tokens · '+(usd?'≈ US$'+usd.toFixed(2):'')+(sinPrecio?(usd?' + ':'')+'modelos sin precio conocido':'')+'</div>':'';
+    el.innerHTML=(pl?'<div class="sec" style="margin-top:10px">🚨 Situación y plan</div>'+pl:'')+usoTxt+'<div class="sub" style="margin-top:8px">🕒 '+(d.ultima_ts?'Última revisión: '+esc(cu(d.ultima_ts))+' · ':'')+(d.proxima_ts?'ella decidió volver ~'+esc(cu(d.proxima_ts)):'aún no ha decidido')+' · '+d.llamadas_hoy+'/'+d.max_llamadas+' revisiones hoy</div>'+
       (d.ciclos.length?'<details class="agg"><summary class="sec">Qué decidió y por qué</summary>'+d.ciclos.slice(0,5).map(c=>`<div class="sub" style="margin:6px 0"><b>${esc(cu(c.ts))}</b> · ${esc(c.motivo)}${c.modo==='basico'?' · <i>modo básico</i>':''}<br>${esc((c.decision&&c.decision.bitacora)||'')}${((c.decision&&c.decision.acciones)||[]).map(a=>'<br>→ '+esc(a.herramienta)+': '+esc(a.motivo)).join('')}</div>`).join('')+'</details>':'')+
       '<div class="sec" style="margin-top:10px">🧠 Lo que ha aprendido de cómo trabajas · '+ks.length+'</div>'+(ks.length?'<div class="sub" style="margin-bottom:6px">Si algo está mal, corrígelo: lo que tú digas manda y ya no lo cambia sola.</div>'+ks.map(k=>`<div class="card segc" data-k="${esc(k.id)}"><div>${esc(k.hecho)}</div><div class="sub" style="margin-top:4px">${esc(k.tema)} · confianza ${Math.round(k.confianza*100)}%${k.fuente==='polo'?' · <b>confirmado por ti</b>':''}${k.evidencia?' · '+esc(k.evidencia):''}</div><div class="nq"><button data-q="confirmar">✓ Así es</button><button data-q="corregir">✎ Corregir</button><button data-q="olvidar">🗑 Olvidar</button></div></div>`).join(''):'<div class="sub">Aún no aprende nada: necesita unos días de observarte. Lo irás viendo aquí.</div>');
     $$('#agente [data-pl] [data-pa]').forEach(b=>b.onclick=async()=>{const c=b.closest('[data-pl]'),id=c.dataset.pl,a=b.dataset.pa;

@@ -120,6 +120,27 @@ class Junta(unittest.TestCase):
         self.assertLess(time.time() - t0, 3)
         self.assertEqual(J.notas("LZ")[0]["texto"], "una nota")
 
+    def test_escala_al_modelo_fuerte_solo_cuando_el_verificador_no_pudo_respaldar(self):
+        malo = guion([final(respuesta="Firma Sebastián el lunes.", usa_datos=True, fuentes=[{"tipo": "junta", "ref": "09:59"}])])
+        bueno = guion([uso("junta_buscar", consulta="presupuesto")], [final(respuesta="Son 300,000 pesos.", usa_datos=True, fuentes=[{"tipo": "junta", "ref": "00:10"}])])
+        r = J.preguntar(FakeCore, "LE1", "¿Presupuesto?", LINEAS, llm=malo, llm_escalado=bueno)
+        self.assertTrue(r["escalada"] and r["verificada"])
+        self.assertEqual(r["fuentes"][0]["ref"], "00:10")
+        # si el primero ya está verificado NO se llama al caro
+        llamado = []
+        ok1 = guion([uso("junta_buscar", consulta="presupuesto")], [final(respuesta="Son 300,000 pesos.", usa_datos=True, fuentes=[{"tipo": "junta", "ref": "00:10"}])])
+        r2 = J.preguntar(FakeCore, "LE2", "¿Presupuesto?", LINEAS, llm=ok1, llm_escalado=lambda s_, m_: llamado.append(1) or {})
+        self.assertEqual((r2["escalada"], llamado), (False, []))
+        # si el fuerte tampoco puede, se queda con «no lo tengo» (no inventa)
+        r3 = J.preguntar(FakeCore, "LE3", "¿Firma?", LINEAS, llm=malo if False else guion([final(respuesta="Firma Sebastián.", usa_datos=True, fuentes=[])]),
+                         llm_escalado=guion([final(respuesta="Firma Laura.", usa_datos=True, fuentes=[])]))
+        self.assertEqual(r3["respuesta"], J.NO_TENGO)
+        # si el fuerte falla (sin crédito, red) no rompe la respuesta
+        def roto(s_, m_):
+            raise RuntimeError("sin crédito")
+        r4 = J.preguntar(FakeCore, "LE4", "¿Firma?", LINEAS, llm=guion([final(respuesta="Firma Sebastián.", usa_datos=True, fuentes=[])]), llm_escalado=roto)
+        self.assertEqual(r4["respuesta"], J.NO_TENGO)
+
     def test_validaciones(self):
         with self.assertRaises(ValueError):
             J.preguntar(FakeCore, "L", "", LINEAS, llm=guion())
