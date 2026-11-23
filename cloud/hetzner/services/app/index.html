@@ -1484,7 +1484,8 @@ function esVozDe(spk,f0,hf,max){                        // elige (o crea) el hab
   if(!f0)return -1;
   let best=-1,bd=1e9;
   spk.forEach((s,i)=>{const dd=Math.abs(12*Math.log2(f0/s.f0))+8*Math.abs(hf-s.hf);if(dd<bd){bd=dd;best=i}});
-  if(best<0||(bd>3.5&&spk.length<(max||6))){spk.push({f0,hf,n:1});return spk.length-1}
+  if(best<0||(bd>4.5&&spk.length<(max||6))){spk.push({f0,hf,n:1});return spk.length-1}
+  while(spk[best].fus!=null&&spk[spk[best].fus])best=spk[best].fus;          // una voz fusionada manda a la voz con la que se unió
   const s=spk[best],w=Math.min(s.n,40);s.f0=(s.f0*w+f0)/(w+1);s.hf=(s.hf*w+hf)/(w+1);s.n++;return best;
 }
 const esTono=f0=>!f0?'':f0<150?'grave':f0<210?'media':'aguda';
@@ -1524,7 +1525,7 @@ function esVoz(t){                                         // asigna «Voz N» a
   ES.frames.forEach(f=>{if(f.ms>from&&f.ms<=to&&f.f0){(t.f0s=t.f0s||[]).push(f.f0);(t.hfs=t.hfs||[]).push(f.hf)}});
   t.vm=to;
   if(t.f0s&&t.f0s.length>=6){const f0=esMed(t.f0s),hf=esMed(t.hfs);
-    if(t.spk==null||t.f0s.length<=24)t.spk=esVozDe(ES.spk,f0,hf,6);     // se afina durante los primeros segundos de la frase y luego se fija
+    if(!t.fijo&&(t.spk==null||t.f0s.length<=24))t.spk=esVozDe(ES.spk,f0,hf,8);     // se afina durante los primeros segundos de la frase y luego se fija
     t.f0=Math.round(f0);esRecuerda(t.spk)}
 }
 const ES_NO=new Set('español inglés chino mandarín cantonés francés alemán japonés mexicano mexicana china dios señor señora doctor doctora licenciado licenciada ingeniero ingeniera lunes martes miércoles jueves viernes sábado domingo enero febrero marzo abril mayo junio julio agosto septiembre octubre noviembre diciembre entonces bueno claro además pero sí pues mira oye hola gracias perfecto exacto listo ahora aquí allá todo todos nada algo alguien nadie cada como porque cuando donde quien mucho poco bien mal más menos solo sólo tengo tienes tiene vamos vale fíjate imagínate méxico estados unidos kawiil yoltik donna'.split(' '));
@@ -1575,18 +1576,20 @@ function esPaint(){
     const box=$('#es-box');if(!box)return;
     const now=Date.now(),last=ES.turns.length-1;
     box.hidden=!ES.turns.length;const idle=$('#es-idle');if(idle)idle.hidden=ES.on||ES.turns.length>0;
-    box.innerHTML='<p class="sec" style="margin:0 0 14px">Hoy · '+esClock(esElapsed())+' de grabación</p>'+ES.turns.filter(t=>t.original||t.traduccion).map((t,i)=>{
+    box.innerHTML='<p class="sec" style="margin:0 0 14px">Hoy · '+esClock(esElapsed())+' de grabación</p>'+(window._esTT=ES.turns.filter(t=>t.original||t.traduccion)).map((t,i)=>{
       const live=ES.on&&!ES.paused&&i===last&&now-t.last<2200,k=t.spk!=null?(t.spk%6)+1:0;
-      return '<div class="esl"><span class="av v'+k+'" aria-hidden="true">'+(t.spk!=null?t.spk+1:'?')+'</span><div class="eb"><div class="eh"><span class="nm">'+esc(t.spk!=null?esNombre(t.spk):'Voz por identificar')+'</span>'+
+      return '<div class="esl"><span class="av v'+k+'" aria-hidden="true">'+(t.spk!=null?t.spk+1:'?')+'</span><div class="eb"><div class="eh"><button type="button" class="nm" data-tq="'+i+'" title="Corregir quién habló" style="background:none;border:0;padding:0;font:inherit;color:inherit;cursor:pointer;text-align:left">'+esc(t.spk!=null?esNombre(t.spk):'Voz por identificar')+' ✎</button>'+
         (live?'<span class="tag">Hablando ahora</span>':'<span class="ds">'+esc(esDesc(t.f0))+' · '+esClock(t.t0)+'</span>')+'</div>'+
         '<p class="tx'+(live?' caret':'')+'"><span class="'+(esBajo(t)&&!live?'low':'')+'">'+esc(esEs(t)||'…')+'</span></p>'+
         (ES.orig&&t.original&&esEs(t)!==t.original?'<p class="zh" lang="'+(t.origen==='zh'?'zh-CN':'en')+'">'+esc(t.original)+'</p>':'')+'</div></div>'}).join('');
     if(ES.stick)box.scrollTop=box.scrollHeight;
+    box.querySelectorAll('[data-tq]').forEach(b=>b.onclick=()=>esTurnoQuien(window._esTT[+b.dataset.tq]));
     const L=$('#es-vlist');if(L){
       const cnt={};ES.turns.forEach(t=>{if(t.spk!=null)cnt[t.spk]=(cnt[t.spk]||0)+1});
-      $('#es-vn').textContent=ES.spk.length;
-      L.innerHTML=ES.spk.length?ES.spk.map((s,i)=>'<div class="vrow"><span class="av v'+((i%6)+1)+'" aria-hidden="true">'+(i+1)+'</span><div class="vi"><div class="nm">'+esc(esNombre(i))+'</div><div class="ds">'+esc(esDesc(s.f0))+' · '+(cnt[i]||0)+' intervenciones</div></div><button class="vname" data-vn="'+i+'" aria-label="Nombrar la voz '+(i+1)+'">Nombrar</button></div>').join(''):'<div class="ds" style="padding:6px 2px">Aún no distingo voces. Aparecerán cuando alguien hable.</div>';
+      $('#es-vn').textContent=esVivas().length;
+      L.innerHTML=ES.spk.length?ES.spk.map((s,i)=>s.fus!=null?'':'<div class="vrow"><span class="av v'+((i%6)+1)+'" aria-hidden="true">'+(i+1)+'</span><div class="vi"><div class="nm">'+esc(esNombre(i))+'</div><div class="ds">'+esc(esDesc(s.f0))+' · '+(cnt[i]||0)+' intervenciones</div></div><button class="vname" data-vn="'+i+'" aria-label="Nombrar la voz '+(i+1)+'">Nombrar</button>'+(esVivas().length>1?'<button class="vname" data-vf="'+i+'" aria-label="Es la misma persona que otra voz">= otra</button>':'')+'</div>').join(''):'<div class="ds" style="padding:6px 2px">Aún no distingo voces. Aparecerán cuando alguien hable.</div>';
       L.querySelectorAll('[data-vn]').forEach(b=>b.onclick=()=>esAsignar(+b.dataset.vn));
+      L.querySelectorAll('[data-vf]').forEach(b=>b.onclick=()=>esFusionar(+b.dataset.vf));
       esDetPaint(L);
     }
     const pt=$('#es-pt');if(pt)pt.textContent='';
@@ -1698,14 +1701,14 @@ function esDraftSave(force){                                // la junta en curso
   const u=ts[ts.length-1],key=ts.length+':'+(u.original.length+u.traduccion.length)+':'+JSON.stringify(ES.names)+':'+ES.spk.length;
   if(!force&&key===_dbLast)return ES._dp;_dbLast=key;
   const turnos=ts.map(t=>({o:t.origen,a:t.original,b:t.traduccion,t:Math.round(t.t0||0),s:t.spk==null?null:t.spk,f:Math.round(t.f0||0),l:t.last||0,m:esBajo(t)?1:0}));
-  ES._dp=api('/v1/app/escucha/borrador',{method:'POST',body:JSON.stringify({id:ES.draftId,duracion:Math.round(esElapsed()/1000),live_id:ES.liveId||'',spk:ES.spk.map(s=>({f0:s.f0||0,hf:s.hf||0,n:s.n||1})),names:ES.names,reemplaza:ES.replaceSid||'',turnos})}).catch(e=>{_dbLast='';clog('borrador: '+e.message)});
+  ES._dp=api('/v1/app/escucha/borrador',{method:'POST',body:JSON.stringify({id:ES.draftId,duracion:Math.round(esElapsed()/1000),live_id:ES.liveId||'',spk:ES.spk.map(s=>({f0:s.f0||0,hf:s.hf||0,n:s.n||1,fus:s.fus==null?null:s.fus})),names:ES.names,reemplaza:ES.replaceSid||'',turnos})}).catch(e=>{_dbLast='';clog('borrador: '+e.message)});
   return ES._dp;
 }
 window.addEventListener('pagehide',()=>{if(ES.on)esDraftSave(true)});
 document.addEventListener('visibilitychange',()=>{if(document.hidden&&ES.on)esDraftSave(true)});
 function esDraftLoad(d){                                    // vuelve a poner la junta guardada en pantalla, lista para seguir
   ES.turns=d.turnos.map(x=>({origen:x.o||'en',original:x.a||'',traduccion:x.b||'',t0:x.t||0,last:x.l||Date.now(),lsum:x.m?0:1,ln:1,spk:x.s==null?null:x.s,f0:x.f||0,f0s:[]}));
-  ES.spk=(d.spk||[]).map(s=>({f0:s.f0,hf:s.hf,n:s.n}));ES.names=d.names||{};ES.det={};ES.sugVoz={};ES.frames=[];ES.sentMs=0;
+  ES.spk=(d.spk||[]).map(s=>({f0:s.f0,hf:s.hf,n:s.n,fus:s.fus==null?null:s.fus}));ES.names=d.names||{};ES.det={};ES.sugVoz={};ES.frames=[];ES.sentMs=0;
   ES.inI=ES.outI=ES.turns.length;ES.liveId=d.live_id||'';ES.draftId=d.id||'';ES.replaceSid=d.reemplaza||'';ES.resumeMs=(d.duracion||0)*1000;ES.stick=true;_dbLast='';
   $('#es-idle')&&($('#es-idle').hidden=true);const bx=$('#es-box');if(bx)bx.hidden=false;esPaint();esUI();
 }
@@ -1766,6 +1769,27 @@ duracion:Math.round(dur/1000),
 }
 function esPool(){const a=[];const add=n=>{if(n&&!a.some(x=>x.toLowerCase()===n.toLowerCase()))a.push(n)};
   Object.values(ES.det||{}).forEach(d=>add(d.nombre));(ES.pv||[]).forEach(p=>add(p.nombre));return a}
+const esVivas=()=>ES.spk.map((s,i)=>i).filter(i=>ES.spk[i].fus==null);
+function esFusionarVoces(j,i){                              // la voz j es la misma persona que la i: sus turnos pasan a i y las siguientes detecciones también
+  if(j===i||!ES.spk[j]||!ES.spk[i])return false;
+  while(ES.spk[i].fus!=null)i=ES.spk[i].fus;if(j===i)return false;
+  const a=ES.spk[i],b=ES.spk[j],n=a.n+b.n;a.f0=(a.f0*a.n+b.f0*b.n)/n;a.hf=(a.hf*a.n+b.hf*b.n)/n;a.n=n;
+  ES.spk.forEach(s=>{if(s.fus===j)s.fus=i});b.fus=i;
+  ES.turns.forEach(t=>{if(t.spk===j)t.spk=i});if(ES.names[j]&&!ES.names[i])ES.names[i]=ES.names[j];delete ES.names[j];
+  _dbLast='';esPaint();return true;
+}
+function esFusionar(j){
+  sheet('¿Con qué voz es la misma persona?','<div class="sub">La Voz '+(j+1)+(ES.names[j]?' ('+esc(ES.names[j])+')':'')+' se une a la que elijas: todas sus intervenciones pasan a ella.</div><div class="nq" style="margin-top:8px">'+esVivas().filter(i=>i!==j).map(i=>'<button data-v="'+i+'">Voz '+(i+1)+(ES.names[i]?' · '+esc(ES.names[i]):'')+' · '+esc(esDesc(ES.spk[i].f0))+'</button>').join('')+'</div>');
+  $$('#sh-b [data-v]').forEach(b=>b.onclick=()=>{closeSheet();if(esFusionarVoces(j,+b.dataset.v))toast('Unidas')});
+}
+function esTurnoQuien(t){                                   // «aquí habló otra persona»: corrige SOLO este turno y lo fija para que no se vuelva a mover
+  if(!t)return;
+  sheet('¿Quién habló aquí?','<div class="sub" style="margin-bottom:6px">“'+esc((esEs(t)||'').slice(0,120))+'”</div><div class="nq">'+esVivas().map(i=>'<button data-v="'+i+'">Voz '+(i+1)+(ES.names[i]?' · '+esc(ES.names[i]):'')+(t.spk===i?' ✓':'')+'</button>').join('')+'<button data-v="nueva">➕ Otra persona</button><button data-v="ninguna">Sin identificar</button></div>');
+  $$('#sh-b [data-v]').forEach(b=>b.onclick=()=>{const v=b.dataset.v;
+    if(v==='nueva'){ES.spk.push({f0:t.f0||0,hf:0,n:1});t.spk=ES.spk.length-1}else if(v==='ninguna')t.spk=null;else t.spk=+v;
+    t.fijo=true;_dbLast='';closeSheet();esPaint();if(v==='nueva')esAsignar(t.spk)});
+}
+function esVocesInfo(){return esVivas().map(i=>({n:i+1,nombre:ES.names[i]||'',tono:esTono(ES.spk[i].f0),ej:ES.turns.filter(t=>t.spk===i&&(t.original||t.traduccion)).slice(-2).map(t=>esEs(t).slice(0,140))}))}
 function esAsignar(i){                                    // «¿quién es esta voz?»: sugerencia de la propia grabación, nombres detectados y personas conocidas
   const sug=(ES.sugVoz||{})[i],pool=esPool();
   sheet('¿Quién es la Voz '+(i+1)+'?','<div class="sub">'+esc(esDesc(ES.spk[i]&&ES.spk[i].f0))+'</div>'+(sug?'<div class="sec">Se presentó como</div><div class="nq"><button data-n="'+esc(sug)+'">✓ '+esc(sug)+'</button></div>':'')+
@@ -1782,17 +1806,17 @@ function esDetPaint(L){                                   // nombres que se dije
   L.insertAdjacentHTML('beforeend','<p class="sec" style="margin:14px 2px 6px">Nombres que escuché</p><div class="nq">'+L2.map(d=>'<button data-dn="'+esc(d.nombre)+'">'+esc(d.nombre)+(d.tipo==='presenta'&&d.voz!=null?' · se presentó la Voz '+(d.voz+1):' · le hablaron')+'</button>').join('')+'</div>');
   L.querySelectorAll('[data-dn]').forEach(b=>b.onclick=()=>{const d=ES.det[b.dataset.dn.toLowerCase()];
     if(d&&d.tipo==='presenta'&&d.voz!=null){ES.names[d.voz]=d.nombre;esRecordar(d.voz,d.nombre);esPaint();toast('Voz '+(d.voz+1)+' = '+d.nombre)}
-    else sheet('¿Cuál voz es '+b.dataset.dn+'?','<div class="nq">'+ES.spk.map((s,i)=>'<button data-v="'+i+'">Voz '+(i+1)+' · '+esc(esDesc(s.f0))+(ES.names[i]?' · '+esc(ES.names[i]):'')+'</button>').join('')+'</div>');
+    else sheet('¿Cuál voz es '+b.dataset.dn+'?','<div class="nq">'+ES.spk.map((s,i)=>s.fus!=null?'':'<button data-v="'+i+'">Voz '+(i+1)+' · '+esc(esDesc(s.f0))+(ES.names[i]?' · '+esc(ES.names[i]):'')+'</button>').join('')+'</div>');
     $$('#sh-b [data-v]').forEach(x=>x.onclick=()=>{const i=+x.dataset.v;ES.names[i]=b.dataset.dn;esRecordar(i,b.dataset.dn);closeSheet();esPaint()})})
 }
 function esQuienEsQuien(){                                // antes de guardar: ponerle nombre a cada voz (se puede omitir)
   return new Promise(res=>{
-    const hay=ES.spk.some((s,i)=>!ES.names[i]);const pool=esPool();
-    if(!ES.spk.length||(!hay&&!pool.length)){res();return}
+    const hay=esVivas().some(i=>!ES.names[i]);const pool=esPool();
+    if(!esVivas().length||(!hay&&!pool.length)){res();return}
     const ej=i=>{const t=ES.turns.find(x=>x.spk===i&&x.traduccion);return t?t.traduccion.slice(0,80):''};
     sheet('¿Quién es quién?','<div class="sub">Pon nombre a cada voz y quedarán sus aportaciones en la ficha de cada persona. Puedes omitirlo.</div>'+
       '<datalist id="esq-dl">'+pool.map(n=>'<option value="'+esc(n)+'">').join('')+'</datalist>'+
-      ES.spk.map((s,i)=>'<div class="card" style="margin-top:8px"><div class="row"><b>Voz '+(i+1)+'</b><span class="sub">'+esc(esDesc(s.f0))+'</span></div><div class="sub" style="margin:4px 0">“'+esc(ej(i))+'”</div>'+
+      ES.spk.map((s,i)=>s.fus!=null?'':'<div class="card" style="margin-top:8px"><div class="row"><b>Voz '+(i+1)+'</b><span class="sub">'+esc(esDesc(s.f0))+'</span></div><div class="sub" style="margin:4px 0">“'+esc(ej(i))+'”</div>'+
         '<input class="f" list="esq-dl" data-q="'+i+'" placeholder="Nombre…" maxlength="40" value="'+esc(ES.names[i]||(ES.sugVoz||{})[i]||'')+'"></div>').join('')+
       '<div style="display:flex;gap:8px;margin-top:12px"><button class="btn" id="esq-ok">Guardar con nombres</button><button class="btn ghost" id="esq-no" style="margin:0">Guardar sin nombres</button></div>');
     let hecho=false;const fin=()=>{if(hecho)return;hecho=true;closeSheet();res()};
@@ -1814,8 +1838,9 @@ function asBurbuja(rol,txt,fuentes,avisos){
 async function asAsk(q){
   q=(q||$('#as-in').value).trim();if(!q)return;$('#as-in').value='';if(ES.asMin)asMinSet(false);asTab(1);if(innerWidth<1100&&ES.pane!=='donna')esPane('donna');
   asBurbuja('u',q);const w=asBurbuja('a','Revisando…');w.classList.add('pend');$('#as-go').disabled=true;
-  try{const r=await api('/v1/app/escucha/asistente',{method:'POST',body:JSON.stringify({live_id:esLive(),pregunta:q,lineas:esLineas()})});
+  try{const r=await api('/v1/app/escucha/asistente',{method:'POST',body:JSON.stringify({live_id:esLive(),pregunta:q,lineas:esLineas(),voces:esVocesInfo()})});
     w.remove();const bb=asBurbuja('a',r.respuesta,r.fuentes,r.avisos);if((r.eventos||[]).length)asNotas();
+    (r.eventos||[]).forEach(e=>{if(e.tipo==='voz'&&ES.spk[e.voz-1]){ES.names[e.voz-1]=e.nombre;esRecordar(e.voz-1,e.nombre);_dbLast=''}else if(e.tipo==='fusion')esFusionarVoces(e.origen-1,e.destino-1)});esPaint();
     if(r.ofrece_nota&&bb){const nb=document.createElement('button');nb.type='button';nb.className='asw';nb.textContent='📝 Sí, guardar como nota';nb.style.cssText='margin-top:6px;cursor:pointer';
       nb.onclick=async()=>{nb.disabled=true;try{await api('/v1/app/escucha/nota',{method:'POST',body:JSON.stringify({live_id:esLive(),texto:r.ofrece_nota,hora:esClock(esElapsed())})});nb.textContent='✓ Guardada en las notas';asNotas()}catch(e){nb.disabled=false;toast(e.message)}};bb.appendChild(nb)}if(r.escalada){const l=$('#as-log').lastChild;if(l){const m=document.createElement('div');m.className='asw';m.style.color='var(--mut)';m.textContent='Lo reviso con un modelo más fuerte porque el primero no pudo respaldarlo.';l.appendChild(m)}}}
   catch(e){w.remove();asBurbuja('a','No pude consultar ahora: '+e.message)}

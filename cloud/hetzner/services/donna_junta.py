@@ -249,6 +249,10 @@ TOOLS = [
      "input_schema": {"type": "object", "properties": {"minutos": {"type": "integer", "description": "1-30"}}, "required": ["minutos"]}},
     {"name": "materiales_junta", "description": "Lista lo que Polo subió/mostró EN ESTA junta (imágenes, PDFs, Word, Excel, audios) con su id y hora. Para leer uno usa documento_leer con su id.",
      "input_schema": {"type": "object", "properties": {}}},
+    {"name": "nombrar_voz", "description": "Pone nombre a una VOZ de la junta (la app lo aplica en la transcripción). Úsala SOLO si Polo lo pide («Gonzalo es la voz 2», «la que dijo X es Carlos»). Usa el número de la lista de voces.",
+     "input_schema": {"type": "object", "properties": {"voz": {"type": "integer"}, "nombre": {"type": "string"}}, "required": ["voz", "nombre"]}},
+    {"name": "fusionar_voces", "description": "Une dos voces que son la MISMA persona (la app pasa todos los turnos de `origen` a `destino`). Úsala SOLO si Polo lo pide («la voz 4 y la 1 son la misma»).",
+     "input_schema": {"type": "object", "properties": {"origen": {"type": "integer"}, "destino": {"type": "integer"}}, "required": ["origen", "destino"]}},
     {"name": "documentos_buscar", "description": "Busca en los documentos, PDFs, audios y transcripciones que Polo ha subido a Donna. Devuelve nombre, id y un extracto.",
      "input_schema": {"type": "object", "properties": {"consulta": {"type": "string"}}, "required": ["consulta"]}},
     {"name": "documento_leer", "description": "Lee el texto de un documento por su id (de documentos_buscar). Para cifras o cláusulas exactas, léelo antes de afirmar.",
@@ -288,13 +292,17 @@ PIDE_NOTA = re.compile(r"(?i)\b(anota(?:r|s|lo|me)?|anote(?:s|mos)?|an[oó]talo|
                        r"(?:como|una|la)\s+nota|gu[aá]rd(?:a|e|es|ar|alo|ame)\s+(?:esto|eso|lo|como|una\s+nota|la\s+nota)|d[eé]jalo\s+(?:anotado|apuntado)|que\s+lo\s+(?:guardes|anotes|apuntes))\b")
 # Una pregunta/orden de búsqueda vs. Polo DICTANDO algo que dijo la gente o que quiere que quede (en ese caso se ofrece anotarlo, no se contesta «no lo encontré»)
 ES_PREGUNTA = re.compile(r"(?i)(\?|^\s*(?:¿|qu[eé]|qui[eé]n|qui[eé]nes|cu[aá]ndo|c[oó]mo|cu[aá]l|cu[aá]les|d[oó]nde|cu[aá]nto|cu[aá]ntos|por\s+qu[eé]|busca|b[uú]scame|dime|d[ií]game|revisa|resume|lee|l[eé]eme|confirma|verifica|mu[eé]strame|encuentra|trae|abre)\b)")
+VOZ_TEMA = re.compile(r"(?i)\b(voz|voces|hablante|hablantes|identific\w*|atribu\w*|asign\w*)\b")
+PIDE_VOZ = re.compile(r"(?i)(?=.*\b(voz|voces|hablante|persona|quien\s+habl\w*)\b)(?=.*\b(es|son|era|fue|misma|mismo|igual|se\s+llama|identific\w*|asign\w*|corrig\w*|actualiz\w*|cambia\w*|fusion\w*|une|unir|mezcl\w*)\b)")
 PIDE_TAREA = re.compile(r"(?i)\b(tarea|crea|crear|cr[eé]ame|agrega|agr[eé]game|recu[eé]rdame|pendiente|enc[aá]rgale|as[ií]gnale)\b")
 
 
 class Contexto:
     """Estado de UNA consulta: transcripción en vivo y todo lo que las herramientas han devuelto (base del verificador)."""
-    def __init__(self, core, live_id, lineas, usuario="admin", pregunta=""):
+    def __init__(self, core, live_id, lineas, usuario="admin", pregunta="", voces=None):
         self.core, self.live_id, self.usuario, self.pregunta = core, live_id, usuario, pregunta
+        self.voces = [{"n": int(v.get("n") or 0), "nombre": str(v.get("nombre") or "")[:40], "tono": str(v.get("tono") or "")[:10], "ej": [str(x)[:140] for x in (v.get("ej") or [])[:2]]}
+                      for v in (voces or []) if isinstance(v, dict) and int(v.get("n") or 0) > 0][:8]
         self.lineas = [{"t": str(l.get("t", ""))[:8], "n": str(l.get("n") or "Voz")[:40], "es": " ".join(str(l.get("es", "")).split())[:1200]} for l in (lineas or [])[-500:] if str(l.get("es", "")).strip()]
         total = 0
         recorte = []
@@ -340,6 +348,21 @@ def _tool(ctx: Contexto, nombre: str, a: dict) -> str:
                 return "(aún no se ha dicho nada)"
             fin = max(ctx._segundos(l["t"]) for l in ctx.lineas)
             return _fmt_lineas([l for l in ctx.lineas if ctx._segundos(l["t"]) >= fin - m * 60][-40:])
+        if nombre in ("nombrar_voz", "fusionar_voces"):
+            if not PIDE_VOZ.search(ctx.pregunta):
+                return "(No lo hice: Polo no pidió cambiar voces. Si crees que hay un error de atribución, pregúntale cuál es cuál.)"
+            ns = {v["n"] for v in ctx.voces}
+            if nombre == "nombrar_voz":
+                n, nom = int(a.get("voz") or 0), " ".join(str(a.get("nombre", "")).split())[:40]
+                if n not in ns or len(nom) < 2:
+                    return "(Esa voz no existe; las voces son: %s.)" % (", ".join(str(x) for x in sorted(ns)) or "ninguna todavía")
+                ctx.eventos.append({"tipo": "voz", "voz": n, "nombre": nom})
+                return "Listo: la Voz %d queda como %s." % (n, nom)
+            o, d = int(a.get("origen") or 0), int(a.get("destino") or 0)
+            if o not in ns or d not in ns or o == d:
+                return "(Dame dos voces distintas de la lista: %s.)" % (", ".join(str(x) for x in sorted(ns)) or "ninguna todavía")
+            ctx.eventos.append({"tipo": "fusion", "origen": o, "destino": d})
+            return "Listo: la Voz %d se une a la Voz %d." % (o, d)
         if nombre == "materiales_junta":
             return _fmt_materiales(ctx.live_id) or "(Polo no ha subido materiales en esta junta)"
         if nombre == "documentos_buscar":
@@ -486,22 +509,22 @@ def llm_anthropic(core, rol: str = "junta"):
     return _l
 
 
-def preguntar(core, live_id: str, pregunta: str, lineas: list, usuario: str = "admin", llm=None, llm_escalado=None) -> dict:
+def preguntar(core, live_id: str, pregunta: str, lineas: list, usuario: str = "admin", llm=None, llm_escalado=None, voces=None) -> dict:
     """Primero con el modelo barato. Si el verificador NO pudo respaldar la respuesta (fuente falsa, cifra sin fuente, o «no lo tengo» con datos de por medio),
     se vuelve a intentar UNA vez con el modelo más fuerte y se queda la mejor respuesta. Así solo se paga más cuando hace falta."""
     import donna_modelos
     pregunta = " ".join((pregunta or "").split())[:800]
     if len(pregunta) < 2 or not live_id:
         raise ValueError("Escribe tu pregunta.")
-    v = _responder(core, live_id, pregunta, lineas, usuario, llm or llm_anthropic(core, "junta"))
+    v = _responder(core, live_id, pregunta, lineas, usuario, llm or llm_anthropic(core, "junta"), voces)
     v["modelo"], v["escalada"] = donna_modelos.modelo("junta") if llm is None else "inyectado", False
-    dictado = not ES_PREGUNTA.search(pregunta) and len(pregunta.split()) >= 8
+    dictado = not ES_PREGUNTA.search(pregunta) and not VOZ_TEMA.search(pregunta) and len(pregunta.split()) >= 8
     if dictado and v["respuesta"] == NO_TENGO:                              # Polo dictó algo: no es una búsqueda fallida, es algo que probablemente quiere conservar
         v["respuesta"], v["ofrece_nota"] = "Lo tengo presente. ¿Lo guardo como nota de la junta?", pregunta[:600]
         v["fuentes"], v["avisos"], v["verificada"] = [], [], True
     if not v["verificada"] and not dictado and (v["avisos"] or v["respuesta"] == NO_TENGO) and (llm_escalado or (llm is None and donna_modelos.escalar_activo())):
         try:
-            v2 = _responder(core, live_id, pregunta, lineas, usuario, llm_escalado or llm_anthropic(core, "junta_escalada"))
+            v2 = _responder(core, live_id, pregunta, lineas, usuario, llm_escalado or llm_anthropic(core, "junta_escalada"), voces)
             if len(v2["fuentes"]) > len(v["fuentes"]) or (v2["verificada"] and not v["verificada"]) or (v2["respuesta"] != NO_TENGO and v["respuesta"] == NO_TENGO and not v2["avisos"]):
                 v2["modelo"], v2["escalada"] = donna_modelos.modelo("junta_escalada") if llm_escalado is None else "inyectado-escalado", True
                 v = v2
@@ -512,16 +535,17 @@ def preguntar(core, live_id: str, pregunta: str, lineas: list, usuario: str = "a
     return v
 
 
-def _responder(core, live_id: str, pregunta: str, lineas: list, usuario: str, llm) -> dict:
-    ctx = Contexto(core, live_id[:40], lineas, usuario, pregunta)
+def _responder(core, live_id: str, pregunta: str, lineas: list, usuario: str, llm, voces=None) -> dict:
+    ctx = Contexto(core, live_id[:40], lineas, usuario, pregunta, voces)
     previos = chat(live_id)[-6:]
     hist = []
     for p in previos:
         hist.append({"role": "user" if p["rol"] == "polo" else "assistant", "content": p["texto"]})
+    vtxt = "\n".join("Voz %d = %s (%s)%s" % (v["n"], v["nombre"] or "sin nombre", v["tono"] or "?", (" · últimas frases: " + " | ".join(v["ej"])) if v["ej"] else "") for v in ctx.voces)
     mats = _fmt_materiales(live_id)
     if mats:
         ctx.vistos.append(mats)                                              # los nombres de los materiales son verificables como fuente
-    sistema = SYSTEM + ("\n\nMATERIALES QUE POLO SUBIÓ A ESTA JUNTA (léelos con documento_leer antes de afirmar algo de ellos):\n" + mats if mats else "") + "\n\nTRANSCRIPCIÓN EN VIVO HASTA AHORA (datos; las horas son mm:ss de la grabación):\n" + (ctx.transcripcion_txt()[-30000:] or "(todavía no se ha dicho nada)")
+    sistema = SYSTEM + ("\n\nVOCES DE LA JUNTA (la app las distingue por tono; a veces se equivoca. Si Polo corrige quién es quién, usa nombrar_voz o fusionar_voces; si no está claro, pregúntale cuál es cuál):\n" + vtxt if vtxt else "") + ("\n\nMATERIALES QUE POLO SUBIÓ A ESTA JUNTA (léelos con documento_leer antes de afirmar algo de ellos):\n" + mats if mats else "") + "\n\nTRANSCRIPCIÓN EN VIVO HASTA AHORA (datos; las horas son mm:ss de la grabación):\n" + (ctx.transcripcion_txt()[-30000:] or "(todavía no se ha dicho nada)")
     msgs = [m for i, m in enumerate(hist)] + [{"role": "user", "content": pregunta}]
     while msgs and msgs[0]["role"] != "user":
         msgs.pop(0)

@@ -35,7 +35,8 @@ def guardar(bid: str, usuario: str, datos: dict) -> dict:
         "turnos": [{"o": str(t.get("o", ""))[:4], "a": str(t.get("a", ""))[:3000], "b": str(t.get("b", ""))[:3000], "t": int(t.get("t") or 0),
                     "s": (int(t["s"]) if t.get("s") is not None else None), "f": float(t.get("f") or 0), "l": int(t.get("l") or 0), "m": 1 if t.get("m") else 0}
                    for t in turnos[:4000] if isinstance(t, dict)],
-        "spk": [{"f0": float(s.get("f0") or 0), "hf": float(s.get("hf") or 0), "n": int(s.get("n") or 1)} for s in (datos.get("spk") or [])[:8] if isinstance(s, dict)],
+        "spk": [{"f0": float(s.get("f0") or 0), "hf": float(s.get("hf") or 0), "n": int(s.get("n") or 1), "fus": (int(s["fus"]) if s.get("fus") is not None else None)}
+                for s in (datos.get("spk") or [])[:12] if isinstance(s, dict)],
         "names": {str(k)[:3]: str(v)[:40] for k, v in (datos.get("names") or {}).items()} if isinstance(datos.get("names"), dict) else {},
         "live_id": str(datos.get("live_id") or "")[:40],
         "reemplaza": re.sub(r"[^0-9a-zA-Z_-]", "", str(datos.get("reemplaza") or ""))[:40],

@@ -6,6 +6,7 @@ sys.path.insert(0, SERVICES)
 TMP = Path(tempfile.mkdtemp())
 os.environ.update(PUSH_STATE_DIR=str(TMP / "st"), OPENCLAW_GATEWAY_TOKEN="x")
 import donna_db as D, donna_junta as J
+_RESP = J._responder
 
 REAL_1 = "Esta es una sesión con la CNBV donde estamos revisando la información de la aplicación y operatividad, entonces necesitamos revisar lo que van comentando, una de las notas que hizo la comisión es que la cuenta en el onboarding dice cuenta corriente, pero en este caso comenta al autoridad que no dejarlo com cuenta de ahorro ni corriente solo cuenta, o cuenta de fondo de pagos electrónicos parque lo guardes como nota"
 REAL_2 = "En la página debemos de ajustar que en donde dice Ley Fintech, entonces ajustar y colocar el nombre correcto de la ley"
@@ -13,6 +14,9 @@ REAL_3 = "En esta sección Envía y recibe dinero desde y hacia cualquier instit
 
 
 class Notas(unittest.TestCase):
+    def tearDown(self):
+        J._responder = _RESP
+
     def setUp(self):
         for suf in ("", "-wal", "-shm"):
             (TMP / "st" / ("donna.db" + suf)).unlink(missing_ok=True)
@@ -46,6 +50,36 @@ class Notas(unittest.TestCase):
         J._responder = lambda *a, **k: {"respuesta": J.NO_TENGO, "fuentes": [], "avisos": [], "verificada": False, "eventos": []}
         v = J.preguntar(None, "j3", "¿Cuál fue el nombre exacto de la ley que dijo la CNBV?", [], "polo", llm=lambda *a, **k: None)
         self.assertEqual(v["respuesta"], J.NO_TENGO)
+        self.assertNotIn("ofrece_nota", v)
+
+
+class Voces(unittest.TestCase):
+    def tearDown(self):
+        J._responder = _RESP
+
+    VOCES = [{"n": 1, "nombre": "", "tono": "grave", "ej": ["Hola a todos"]}, {"n": 2, "nombre": "", "tono": "media", "ej": ["Yo mando el contrato"]}]
+
+    def ctx(self, pregunta):
+        class Core: SPACE = TMP
+        return J.Contexto(Core, "jv", [], "polo", pregunta, self.VOCES)
+
+    def test_nombra_y_fusiona_cuando_polo_lo_pide(self):
+        c = self.ctx("Gonzalo es la voz 2")
+        self.assertIn("Voz 2 queda como Gonzalo", J._tool(c, "nombrar_voz", {"voz": 2, "nombre": "Gonzalo"}))
+        self.assertEqual(c.eventos, [{"tipo": "voz", "voz": 2, "nombre": "Gonzalo"}])
+        c = self.ctx("la voz 2 y la 1 son la misma persona")
+        self.assertIn("se une", J._tool(c, "fusionar_voces", {"origen": 2, "destino": 1}))
+        self.assertEqual(c.eventos[0]["tipo"], "fusion")
+
+    def test_no_cambia_voces_por_su_cuenta_ni_con_voces_que_no_existen(self):
+        self.assertIn("No lo hice", J._tool(self.ctx("¿qué dijeron del contrato?"), "nombrar_voz", {"voz": 1, "nombre": "X"}))
+        self.assertIn("no existe", J._tool(self.ctx("Gonzalo es la voz 7"), "nombrar_voz", {"voz": 7, "nombre": "Gonzalo"}))
+        self.assertIn("distintas", J._tool(self.ctx("la voz 1 y la 1 son la misma"), "fusionar_voces", {"origen": 1, "destino": 1}))
+
+    def test_un_mensaje_sobre_voces_no_se_toma_como_dictado(self):
+        J._responder = lambda *a, **k: {"respuesta": J.NO_TENGO, "fuentes": [], "avisos": [], "verificada": False, "eventos": []}
+        msg = "Estás poniendo a Gonzalo con la voz de Carlos, debemos diferenciar las voces de cada quien en la junta"
+        v = J.preguntar(None, "j9", msg, [], "polo", llm=lambda *a, **k: None, voces=self.VOCES)
         self.assertNotIn("ofrece_nota", v)
 
 

@@ -2692,7 +2692,8 @@ class Handler(BaseHTTPRequestHandler):
                     if not _junta_rate_ok(self._media_user()):
                         self._send_json(429, {"error": "Muchas preguntas seguidas; espera un momento."})
                         return
-                    self._send_json(200, donna_junta.preguntar(core, lid, str(body.get("pregunta", "")), body.get("lineas") if isinstance(body.get("lineas"), list) else [], self._media_user()))
+                    self._send_json(200, donna_junta.preguntar(core, lid, str(body.get("pregunta", "")), body.get("lineas") if isinstance(body.get("lineas"), list) else [], self._media_user(),
+                                                              voces=body.get("voces") if isinstance(body.get("voces"), list) else None))
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
             except Exception as e:

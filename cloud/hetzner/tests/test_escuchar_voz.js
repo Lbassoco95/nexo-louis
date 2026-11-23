@@ -47,4 +47,12 @@ assert.equal(esMed([5, 1, 9]), 5); assert.equal(esMed([]), 0);
   const fuerte = laAgc(voz(150, 2048, 0.9, 0), st);                                                                                      // de repente alguien grita
   assert.ok(Math.max(...fuerte.out.map(Math.abs)) <= 0.96, 'no recorta');
 }
+// 8) voz fusionada: una detección que cae cerca de la voz fusionada va a la voz principal (no crea «Voz por identificar» nueva)
+{
+  const sp = [{ f0: 120, hf: 0.2, n: 5 }, { f0: 150, hf: 0.2, n: 3, fus: 0 }];
+  assert.equal(esVozDe(sp, 151, 0.2, 8), 0, 'cae cerca de la fusionada → principal');
+  assert.equal(sp.length, 2, 'no crea voces nuevas');
+  const sp2 = [{ f0: 120, hf: 0.2, n: 5 }];
+  assert.equal(esVozDe(sp2, 135, 0.2, 8), 0, 'variación natural de entonación (~2 semitonos) sigue siendo la misma persona');
+}
 console.log('voz: ok (tono, silencio/ruido, agrupación en voces)');
