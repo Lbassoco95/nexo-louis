@@ -1,5 +1,5 @@
 // Service worker: solo cachea el cascarón de la app (nunca datos). Los datos siempre van a la red.
-const V = 'louis-app-v32';
+const V = 'louis-app-v33';
 const SHELL = ['/app/', '/app/manifest.webmanifest', '/app/icon.svg'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(V).then(c => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener('activate', e => {
