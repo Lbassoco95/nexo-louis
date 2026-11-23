@@ -1158,6 +1158,11 @@ class Handler(BaseHTTPRequestHandler):
                             if a1("kc"):
                                 d["cruce"]["kawiil_central"] = donna_personas.cruce_kawiil_central(core, d["nombre"], d["empresa"])
                             self._send_json(200, d)
+                elif _r0 == "/v1/app/escucha/sesion":                                          # una junta guardada, lista para retomarla
+                    import donna_personas
+                    from urllib.parse import urlparse as _up2, parse_qs as _pq2
+                    d = donna_personas.sesion_a_borrador((_pq2(_up2(self.path).query).get("id") or [""])[0], self._media_user())
+                    self._send_json(200, d) if d else self._send_json(404, {"error": "junta no encontrada"})
                 elif _r0 in ("/v1/app/escucha/borradores", "/v1/app/escucha/borrador"):          # juntas guardadas solas, para retomarlas
                     import donna_borrador
                     from urllib.parse import urlparse as _up, parse_qs as _pq
@@ -2267,6 +2272,9 @@ class Handler(BaseHTTPRequestHandler):
             if live_id:
                 import donna_junta
                 donna_junta.remapear(live_id, ps["sesion_id"])
+            viejo = re.sub(r"[^0-9a-zA-Z_-]", "", str(body.get("reemplaza", "")))[:40]
+            if viejo and donna_personas.reemplazar_sesion(viejo, ps["sesion_id"], self._media_user()):
+                out["reemplazo"] = viejo                          # la junta retomada sustituye a la guardada antes
             out.update(sesion_id=ps["sesion_id"], personas=ps["personas"], sugeridos=ps["sugeridos"], extraccion="leyendo")
             import donna_tareas
             threading.Thread(target=lambda sid=ps["sesion_id"]: _leer_junta(sid), daemon=True).start()   # tareas propuestas, sin hacer esperar al guardado

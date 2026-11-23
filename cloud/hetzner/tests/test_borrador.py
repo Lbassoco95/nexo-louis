@@ -52,5 +52,36 @@ class Borrador(unittest.TestCase):
         self.assertEqual([x["id"] for x in B.listar("polo")], ["nuevo12345"])
 
 
+class RetomarGuardada(unittest.TestCase):
+    def setUp(self):
+        for suf in ("", "-wal", "-shm"):
+            (TMP / "st" / ("donna.db" + suf)).unlink(missing_ok=True)
+        D._INIT_DONE.discard(str(TMP / "st" / "donna.db"))
+        import donna_personas as P
+        self.P = P
+        voces = [{"n": 1, "nombre": "Fernando", "f0": 120, "hf": .2}, {"n": 2, "nombre": ""}]
+        lineas = [{"t": "00:05", "voz": 1, "es": "Hola equipo", "orig": "Hello team", "idioma": "en"}, {"t": "01:10", "voz": 2, "es": "Perfecto", "orig": "", "idioma": "es"}]
+        self.sid = P.guardar_sesion("Junta A", 130, voces, lineas, usuario="polo")["sesion_id"]
+
+    def test_junta_guardada_vuelve_como_borrador(self):
+        d = self.P.sesion_a_borrador(self.sid, "polo")
+        self.assertEqual((len(d["turnos"]), d["reemplaza"], d["duracion"]), (2, self.sid, 130))
+        self.assertEqual(d["turnos"][0]["a"], "Hello team")
+        self.assertEqual(d["turnos"][0]["b"], "Hola equipo")
+        self.assertEqual((d["turnos"][0]["t"], d["turnos"][1]["t"]), (5000, 70000))
+        self.assertEqual(d["names"], {"0": "Fernando"})
+        self.assertEqual(len(d["spk"]), 2)
+        self.assertIsNone(self.P.sesion_a_borrador(self.sid, "otro"))
+
+    def test_el_reemplazo_quita_la_vieja_y_pasa_lo_asociado(self):
+        nuevo = self.P.guardar_sesion("Junta A completa", 400, [{"n": 1, "nombre": "Fernando"}], [{"t": "00:05", "voz": 1, "es": "Hola equipo", "orig": "", "idioma": "es"}], usuario="polo")["sesion_id"]
+        self.assertFalse(self.P.reemplazar_sesion(self.sid, self.sid, "polo"))
+        self.assertFalse(self.P.reemplazar_sesion(self.sid, nuevo, "otro"))
+        self.assertTrue(self.P.reemplazar_sesion(self.sid, nuevo, "polo"))
+        ids = [s["id"] for s in self.P.sesiones("polo")]
+        self.assertEqual(ids, [nuevo])
+        self.assertIsNone(self.P.sesion_a_borrador(self.sid, "polo"))
+
+
 if __name__ == "__main__":
     unittest.main()

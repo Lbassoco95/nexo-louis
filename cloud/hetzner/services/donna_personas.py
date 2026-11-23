@@ -357,6 +357,71 @@ def sesiones(usuario: str = "admin", limite: int = 20) -> list:
         c.close()
 
 
+def _ms(hora: str) -> int:
+    try:
+        p = [int(x) for x in str(hora).split(":")]
+    except ValueError:
+        return 0
+    return (p[0] * 60 + p[1]) * 1000 if len(p) == 2 else (p[0] * 3600 + p[1] * 60 + p[2]) * 1000 if len(p) == 3 else 0
+
+
+def sesion_a_borrador(sid: str, usuario: str = "admin"):
+    """Una junta YA guardada, en forma de borrador, para retomarla y seguir grabando. Al guardar de nuevo reemplaza a esta (`reemplaza`)."""
+    asegurar_esquema()
+    c = _c()
+    try:
+        s = c.execute("SELECT * FROM sesiones_escucha WHERE id=?", (sid,)).fetchone()
+        if not s or (s["usuario"] != usuario and usuario != "admin"):
+            return None
+        turnos, nombres, maxv, f0 = [], {}, 0, {}
+        for r in c.execute("SELECT i.hora, i.voz_n, i.texto, i.original, i.idioma, p.nombre, p.voz_f0, p.voz_hf FROM intervenciones i LEFT JOIN personas p ON p.id=i.persona_id WHERE i.sesion_id=? ORDER BY i.id", (sid,)):
+            v = int(r["voz_n"] or 0)
+            maxv = max(maxv, v)
+            if v and r["nombre"]:
+                nombres[str(v - 1)] = r["nombre"]
+                f0[v] = (r["voz_f0"] or 0, r["voz_hf"] or 0)
+            orig, es = r["original"] or "", r["texto"] or ""
+            turnos.append({"o": r["idioma"] or "en", "a": orig or es, "b": es if orig and orig != es else "", "t": _ms(r["hora"]), "s": (v - 1) if v else None, "f": 0, "l": 0, "m": 0})
+        if not turnos:
+            return None
+        return {"turnos": turnos, "names": nombres, "duracion": int(s["duracion"] or 0), "live_id": "", "reemplaza": sid,
+                "spk": [{"f0": f0.get(i + 1, (0, 0))[0], "hf": f0.get(i + 1, (0, 0))[1], "n": 1} for i in range(maxv)], "titulo": s["titulo"], "id": ""}
+    finally:
+        c.close()
+
+
+def reemplazar_sesion(viejo: str, nuevo: str, usuario: str = "admin") -> bool:
+    """La junta retomada se guardó completa: la versión vieja sale (sus tareas propuestas y notas pasan a la nueva)."""
+    asegurar_esquema()
+    c = _c()
+    try:
+        s = c.execute("SELECT usuario FROM sesiones_escucha WHERE id=?", (viejo,)).fetchone()
+        if not s or viejo == nuevo or (s["usuario"] != usuario and usuario != "admin"):
+            return False
+        ids = [r["id"] for r in c.execute("SELECT id FROM intervenciones WHERE sesion_id=?", (viejo,))]
+        for i in ids:
+            try:
+                c.execute("DELETE FROM interv_fts WHERE interv_id=?", (i,))
+            except Exception:
+                pass
+        c.execute("DELETE FROM menciones WHERE sesion_id=?", (viejo,))
+        c.execute("DELETE FROM intervenciones WHERE sesion_id=?", (viejo,))
+        c.execute("DELETE FROM sesiones_escucha WHERE id=?", (viejo,))
+        for tabla in ("tareas_propuestas", "junta_notas", "junta_chat"):
+            try:
+                c.execute("UPDATE %s SET sesion_id=? WHERE sesion_id=?" % tabla, (nuevo, viejo))
+            except Exception:
+                pass                                              # la tabla puede no existir todavía
+        try:
+            c.execute("DELETE FROM extracciones WHERE sesion_id=?", (viejo,))
+        except Exception:
+            pass
+        c.commit()
+        return True
+    finally:
+        c.close()
+
+
 # ------------------------------------------------------------------ búsqueda y cruce
 def buscar(texto: str, persona_id: str = "", limite: int = 20, usuario: str = "admin") -> list:
     """Frases (de cualquier sesión) que contienen el texto; opcionalmente solo las de una persona."""
