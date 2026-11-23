@@ -107,8 +107,9 @@ class Junta(unittest.TestCase):
         a, b = T.listar(self.sid)
         T.aprobar(FakeCore, a["id"], "agenda")
         T.rechazar(b["id"], "no era tarea")
-        for i in range(3):                                                   # tres rechazos en total suben el umbral un escalón
-            D_id = T.extraer(FakeCore, self.sid, juez([dict(BUENAS[0], que="Otra %d diferente tarea" % i, cita=BUENAS[0]["cita"])]))
+        distintas = ["Llamar al notario sobre la escritura", "Mandar la factura de diciembre al cliente", "Reservar la sala para el comité mensual"]
+        for que in distintas:                                                # tres rechazos en total suben el umbral un escalón (títulos distintos: los parecidos se ven como duplicados)
+            T.extraer(FakeCore, self.sid, juez([dict(BUENAS[0], que=que, cita=BUENAS[0]["cita"])]))
             for t in T.listar(self.sid):
                 T.rechazar(t["id"])
         self.assertGreater(T.umbral(), u0)
