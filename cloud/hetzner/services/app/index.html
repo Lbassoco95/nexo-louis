@@ -1642,15 +1642,15 @@ async function esFinSilencio(seg){                         // 1 h sin voces: el 
 }
 function esAsk(on){const b=$('#es-ask');if(b)b.hidden=!on}
 function esHalt(userStop){
-  clearInterval(ES.dsave);esDraftSave(true);
+  esAudioStop();clearInterval(ES.dsave);esDraftSave(true);
   esAsk(false);ES.on=false;ES.paused=false;ES.stop=!!userStop;clearInterval(ES.tick);clearInterval(ES.ping);
   try{if(ES.ws){ES.ws.onclose=null;esWsSend({t:'close'});ES.ws.close()}}catch(e){}
   ES.ws=null;laStop();try{ES.disp&&ES.disp.getTracks().forEach(t=>t.stop())}catch(e){}ES.disp=null;
   const l=$('#es-lvl');if(l)l.style.width='0';esUI();esPaint();
 }
-function esPause(){if(!ES.on||ES.paused)return;ES.paused=true;ES.pauseAt=Date.now();esWsSend({t:'pausa'});esUI();esPaint()}
+function esPause(){if(!ES.on||ES.paused)return;try{ES.au&&ES.au.mr.state==='recording'&&ES.au.mr.pause()}catch(e){}ES.paused=true;ES.pauseAt=Date.now();esWsSend({t:'pausa'});esUI();esPaint()}
 function esResume(){
-  if(!ES.on||!ES.paused)return;ES.pausedMs+=Date.now()-ES.pauseAt;ES.paused=false;ES.lastVoice=Date.now();
+  if(!ES.on||!ES.paused)return;try{ES.au&&ES.au.mr.state==='paused'&&ES.au.mr.resume()}catch(e){}ES.pausedMs+=Date.now()-ES.pauseAt;ES.paused=false;ES.lastVoice=Date.now();
   if(!ES.ws||ES.ws.readyState>1)esConnect();else esWsSend({t:'continuar'});esUI();esPaint()}
 async function esStart(fuente){
   if(ES.on)return;ES.stop=false;ES.fuente=fuente||'mic';
@@ -1673,7 +1673,7 @@ async function esStart(fuente){
       }
     },()=>false,cons);
   }catch(e){esSt(e.name==='NotAllowedError'?'Permiso denegado. Actívalo en los ajustes del teléfono o del navegador.':'No pude abrir el micrófono: '+e.message);clog('escuchar mic: '+e.name+' '+e.message);return}
-  ES.on=true;ES.paused=false;ES.t0=ES.resumeMs?Date.now()-ES.resumeMs:0;ES.resumeMs=0;ES.pausedMs=0;ES.retry=0;ES.lastVoice=Date.now();
+  ES.on=true;ES.paused=false;const _off=ES.resumeMs;ES.t0=ES.resumeMs?Date.now()-ES.resumeMs:0;ES.resumeMs=0;esAudioStart(_off);ES.pausedMs=0;ES.retry=0;ES.lastVoice=Date.now();
   clearInterval(ES.dsave);ES.dsave=setInterval(()=>esDraftSave(false),20000);
   api('/v1/app/personas').then(r=>{ES.pv=r.items||[]}).catch(()=>{});
   esSt('Conectando…');esUI();esConnect();
@@ -1685,7 +1685,7 @@ function esAskStart(fuente){                                 // privacidad: conf
   let ok=false;try{ok=sessionStorage.getItem('es_consent')==='1'}catch(e){}
   if(ok){esStart(fuente);return}
   sheet('Antes de empezar','<p style="margin:0 0 10px">Esta función <b>graba a otras personas</b>. Avísales o asegúrate de tener su consentimiento.</p>'+
-    '<p class="sub" style="margin:0 0 12px">Solo se guarda el <b>texto</b> de lo que digan; el audio no se almacena. Mientras grabas, el servidor conserva una <b>copia de rescate del texto</b> para que no se pierda si se cae la app; se borra cuando guardas la junta (o a los 30 días). Mientras escucha verás siempre el indicador rojo de grabación.</p>'+
+    '<p class="sub" style="margin:0 0 12px">Se guarda el <b>texto</b> y también el <b>audio</b> de la junta en tu servidor, por el plazo que elegiste en Ajustes (30 días por defecto; puedes borrarlo antes). Al terminar, el audio se manda a <b>OpenAI</b> para verificar quién habló. Mientras grabas hay además una copia de rescate del texto. Si apagaste «Guardar el audio» en Ajustes, solo se guarda el texto. Siempre verás el indicador rojo de grabación.</p>'+
     '<label class="chk"><input type="checkbox" id="esc-ok"><span>Ya avisé a las personas presentes o tengo su consentimiento.</span></label>'+
     '<div style="display:flex;gap:8px;margin-top:14px"><button class="btn" id="esc-go" disabled>Empezar a escuchar</button><button class="btn ghost" id="esc-no" style="margin:0;width:auto;padding:0 18px">Cancelar</button></div>');
   $('#esc-ok').onchange=e=>{$('#esc-go').disabled=!e.target.checked};
@@ -1701,6 +1701,27 @@ async function esResumen(){
   catch(e){toast('No pude resumir: '+e.message)}
   b.disabled=false;
 }
+async function esAudioStart(off){                          // grabación general: el audio se sube por partes MIENTRAS se graba (si la pestaña se cae, solo se pierden unos segundos)
+  esAudioStop();
+  let pa=true;try{pa=(await api('/v1/app/preferencias')).prefs.escucha.audio!==false}catch(e){}
+  if(!pa||!window.MediaRecorder||!LA.stream||!ES.on){return}
+  if(!ES.draftId)ES.draftId='b'+Math.random().toString(36).slice(2,10)+Date.now().toString(36).slice(-5);
+  const mime=MIC_MIMES.find(m=>MediaRecorder.isTypeSupported(m))||'';
+  let mr;try{mr=new MediaRecorder(LA.stream,mime?{mimeType:mime,audioBitsPerSecond:32000}:{audioBitsPerSecond:32000})}catch(e){clog('audio: '+e.message);return}
+  const A=ES.au={mr,aid:'a'+Math.random().toString(36).slice(2,10)+Date.now().toString(36).slice(-5),rid:ES.draftId,off:off||0,mime:mr.mimeType||mime,idx:0,q:Promise.resolve(),fallos:0};
+  mr.ondataavailable=e=>{if(!e.data||!e.data.size)return;const i=A.idx++;A.q=A.q.then(()=>esAudioPut(A,i,e.data)).catch(()=>{A.fallos++})};
+  mr.onstop=()=>{A.q=A.q.then(()=>api('/v1/app/escucha/audio',{method:'POST',body:JSON.stringify({accion:'terminar',aid:A.aid})})).catch(()=>{})};
+  try{mr.start(10000);if(ES.paused&&mr.state==='recording')mr.pause()}catch(e){clog('audio: '+e.message);ES.au=null}
+}
+async function esAudioPut(A,i,blob){
+  for(let t=0;t<6;t++){
+    try{const r=await fetch('/v1/app/escucha/audio/chunk?aid='+A.aid+'&rid='+encodeURIComponent(A.rid)+'&i='+i+'&off='+A.off+'&mime='+encodeURIComponent(A.mime),{method:'PUT',headers:{Authorization:'Bearer '+TOKEN},body:blob});
+      if(r.ok)return;if(r.status===400||r.status===401)throw Object.assign(new Error('rechazado'),{fatal:true})}catch(e){if(e.fatal)throw e}
+    await sleep(1500*(t+1));
+  }
+  throw new Error('sin conexión')
+}
+function esAudioStop(){const A=ES.au;if(!A)return;ES.au=null;try{if(A.mr.state!=='inactive')A.mr.stop()}catch(e){}}
 let _dbLast='';
 function esDraftSave(force){                                // la junta en curso se guarda sola en el servidor (solo texto) para poder retomarla
   const ts=ES.turns.filter(t=>t.original.trim()||t.traduccion.trim());if(!ts.length||!TOKEN)return ES._dp;
@@ -1736,6 +1757,28 @@ async function esDraftsPaint(){
       const d=await api(btn.dataset.r?'/v1/app/escucha/rescate?id='+encodeURIComponent(id):'/v1/app/escucha/borrador?id='+encodeURIComponent(id));esDraftLoad(d);
       if(a==='seguir')esAskStart('mic');else esFinish();
     }catch(e){toast('⚠️ '+e.message)}}));
+}
+async function esVocesRev(sid){                              // con el AUDIO completo: quién habló en cada turno, para corregir interrupciones y voces mezcladas
+  sheet('🎙️ Revisión de voces','<div class="empty">Revisando el audio con el identificador de voces…</div>');
+  const mm=x=>x.hora?'['+esc(x.hora)+'] ':'';
+  for(let n=0;n<75;n++){
+    let d;try{d=await api('/v1/app/escucha/voces?sesion='+encodeURIComponent(sid))}catch(e){$('#sh-b').innerHTML='<div class="empty">No pude consultarlo: '+esc(e.message)+'</div>';return}
+    if(d.estado==='sin_audio'){$('#sh-b').innerHTML='<div class="empty">Esta junta no tiene audio guardado (se grabó antes de activar el audio, lo apagaste en Ajustes, o ya se borró).</div>';return}
+    if(d.estado==='error'){$('#sh-b').innerHTML='<div class="empty">No pude revisar las voces: '+esc(d.error||'error')+'</div><div class="nq"><button id="vz-re">Reintentar</button></div>';
+      $('#vz-re').onclick=async()=>{try{await api('/v1/app/escucha/voces',{method:'POST',body:JSON.stringify({sesion_id:sid,accion:'procesar'})})}catch(e){}esVocesRev(sid)};return}
+    if(d.estado==='lista'){const C=d.cambios||[],X=d.mixtos||[];
+      $('#sh-b').innerHTML='<div class="sub">'+(d.voces_detectadas||'?')+' voces detectadas en '+(d.minutos||'?')+' min de audio · '+C.length+' cambio'+(C.length===1?'':'s')+' propuesto'+(C.length===1?'':'s')+(X.length?' · '+X.length+' turno'+(X.length===1?'':'s')+' con dos voces':'')+'</div>'+
+        (C.length?C.map(c=>`<label class="menurow" style="align-items:flex-start;gap:8px;margin:6px 0"><input type="checkbox" class="vz-ck" data-id="${c.id}" ${c.conf>=0.75&&!c.aplicado?'checked':''} ${c.aplicado?'disabled':''} style="margin-top:4px"><span style="flex:1"><b style="font-weight:600">${mm(c)}«${esc(c.texto)}»</b><small>${c.aplicado?'✓ Aplicado · ':''}${c.de?'Voz '+c.de+(c.nombre_de?' ('+esc(c.nombre_de)+')':''):'Sin identificar'} → Voz ${c.a}${c.nombre_a?' ('+esc(c.nombre_a)+')':''}${c.nueva?' · voz nueva':''} · confianza ${Math.round(c.conf*100)} %</small></span></label>`).join('')+'<div class="nq" style="margin-top:8px"><button id="vz-ap">✓ Aplicar lo marcado</button></div>':'<div class="empty">Las voces de la transcripción coinciden con las del audio 🎉</div>')+
+        (X.length?'<div class="sec" style="margin-top:12px">⚠️ Turnos con dos voces (revísalos tú)</div>'+X.map(x=>`<div class="sub" style="margin:4px 0">${mm(x)}«${esc(x.texto)}»</div>`).join(''):'')+
+        '<div class="sub" style="margin-top:10px">Se aplica en la ficha de la junta y en Personas; el documento de Entregables ya guardado conserva la versión anterior.</div><div class="nq"><button id="vz-del">🗑️ Borrar el audio de esta junta</button></div>';
+      const ap=$('#vz-ap');if(ap)ap.onclick=async()=>{const ids=$$('#sh-b .vz-ck').filter(c=>c.checked&&!c.disabled).map(c=>+c.dataset.id);if(!ids.length){toast('Marca por lo menos uno');return}
+        try{const r=await api('/v1/app/escucha/voces',{method:'POST',body:JSON.stringify({sesion_id:sid,accion:'aplicar',ids})});toast('Apliqué '+r.aplicados+' cambio'+(r.aplicados===1?'':'s'));esVocesRev(sid)}catch(e){toast('⚠️ '+e.message)}};
+      $('#vz-del').onclick=async()=>{if(!confirm('¿Borrar el audio de esta junta? No se podrá volver a revisar con audio.'))return;try{await api('/v1/app/escucha/voces',{method:'POST',body:JSON.stringify({sesion_id:sid,accion:'borrar_audio'})});toast('Audio borrado');closeSheet()}catch(e){toast('⚠️ '+e.message)}};
+      return}
+    if(d.estado==='pendiente'&&n===3){try{await api('/v1/app/escucha/voces',{method:'POST',body:JSON.stringify({sesion_id:sid,accion:'procesar'})})}catch(e){}}
+    await sleep(4000);
+  }
+  $('#sh-b').innerHTML='<div class="empty">Todavía se está revisando (los audios largos tardan). Vuelve a abrirla en unos minutos.</div>';
 }
 async function esRevision(sid){                              // segunda pasada al terminar: lo que quedó sin confirmar y lo que conviene verificar, con cita
   sheet('🔎 Revisión final','<div class="empty">Revisando la junta contra sus notas, tareas y materiales…</div>');
@@ -1775,8 +1818,8 @@ duracion:Math.round(dur/1000),
     ES.draftId='';ES.replaceSid='';ES.parteTitulo='';ES.parteNota='';ES.liveId='';ES.asNotas=0;{const l=$('#as-log');if(l)l.innerHTML='<div class="asempty">Pregúntame por lo que se está diciendo, pídeme un documento, que anote algo o que cree una tarea. Respondo solo con lo dicho y con tus documentos; si no lo tengo, te lo digo.</div>';const n=$('#as-notas');if(n)n.innerHTML='';const nn=$('#as-nn');if(nn)nn.textContent='';if($('#es-as'))asMinSet(ES.asMin)}ES.turns=[];ES.spk=[];ES.names={};ES.det={};ES.sugVoz={};ES.frames=[];ES.sentMs=0;ES.inI=ES.outI=0;ES.t0=0;esPaint();esUI();
     esSt('Guardada como entregable.');
     sheet('Transcripción guardada','<div class="sub">'+esc(r.nombre||'')+'</div>'+((r.personas||[]).length?'<div class="sub" style="margin-top:6px">👥 Quedaron en su ficha: '+r.personas.map(p=>esc(p.nombre)).join(', ')+'</div>':'')+((r.sugeridos||[]).length?'<div class="sub" style="margin-top:4px">También escuché: '+r.sugeridos.map(p=>esc(p.nombre)).join(', ')+' (puedes asignarlos en Personas).</div>':'')+(r.resumen?'<div class="card" style="margin:10px 0">'+md(r.resumen)+'</div>':'<div class="empty">Guardada (muy corta para resumir).</div>')+
-      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">'+(r.sesion_id?'<button class="artcard" id="esg-tar">📝 Tareas propuestas de la junta</button><button class="artcard" id="esg-seguir">▶︎ Seguir grabando esta junta</button><button class="artcard" id="esg-p2">➕ Grabar parte 2 (seguimiento)</button><button class="artcard" id="esg-rev">🔎 Revisión final de la junta</button>':'')+'<button class="artcard" id="esg-per">Ver personas</button><button class="artcard" id="esg-ent">Verla en Entregables</button><button class="artcard" id="esg-ask">Que Donna proponga pendientes</button></div>');
-    $('#esg-ent').onclick=()=>{closeSheet();go('ent')};$('#esg-per').onclick=()=>{closeSheet();go('per')};const et=$('#esg-tar');if(et)et.onclick=()=>openTareas(r.sesion_id);const sg=$('#esg-seguir');if(sg)sg.onclick=()=>esRetomarGuardada(r.sesion_id);const p2=$('#esg-p2');if(p2)p2.onclick=()=>esParte2(r.nombre||'');const rv=$('#esg-rev');if(rv)rv.onclick=()=>esRevision(r.sesion_id);
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">'+(r.sesion_id?'<button class="artcard" id="esg-tar">📝 Tareas propuestas de la junta</button><button class="artcard" id="esg-seguir">▶︎ Seguir grabando esta junta</button><button class="artcard" id="esg-p2">➕ Grabar parte 2 (seguimiento)</button><button class="artcard" id="esg-rev">🔎 Revisión final de la junta</button><button class="artcard" id="esg-voz">🎙️ Revisión de voces (con el audio)</button>':'')+'<button class="artcard" id="esg-per">Ver personas</button><button class="artcard" id="esg-ent">Verla en Entregables</button><button class="artcard" id="esg-ask">Que Donna proponga pendientes</button></div>');
+    $('#esg-ent').onclick=()=>{closeSheet();go('ent')};$('#esg-per').onclick=()=>{closeSheet();go('per')};const et=$('#esg-tar');if(et)et.onclick=()=>openTareas(r.sesion_id);const sg=$('#esg-seguir');if(sg)sg.onclick=()=>esRetomarGuardada(r.sesion_id);const p2=$('#esg-p2');if(p2)p2.onclick=()=>esParte2(r.nombre||'');const rv=$('#esg-rev');if(rv)rv.onclick=()=>esRevision(r.sesion_id);const vz=$('#esg-voz');if(vz)vz.onclick=()=>esVocesRev(r.sesion_id);
     $('#esg-ask').onclick=()=>{closeSheet();go('chat');$('#inp').value='De mi transcripción «'+(r.nombre||'')+'»: propón los pendientes y seguimientos (quién, qué, cuándo).';if(r.mid){PEND.push({name:r.nombre,state:'listo',label:'✓',id:r.mid});paintPend()}$('#inp').focus()};
   }catch(e){esSt('No pude guardar: '+e.message+'. Tu transcripción sigue aquí.');toast('No pude guardar: '+e.message)}
 }
@@ -1907,7 +1950,7 @@ function esView(){
       '<div id="es-drafts"></div><div class="essum" id="es-sumbox" hidden></div>'+
       '<div class="esidle" id="es-idle"><div class="ico"><i data-i="wave" data-s="30"></i></div><h3>Escucha y te escribo en español</h3>'+
         '<p>Deja el teléfono o la computadora cerca de quien habla. Distingo las voces por su tono y te las numero.</p>'+
-        '<div class="esprivacy"><i data-i="alert" data-s="16"></i><span>Graba a otras personas: avísales antes. Solo se guarda el texto (no el audio); hay una copia de rescate que se borra al guardar la junta.</span></div></div>'+
+        '<div class="esprivacy"><i data-i="alert" data-s="16"></i><span>Graba a otras personas: avísales antes. Se guarda el texto y el audio (en tu servidor, con plazo); el audio se manda a OpenAI para verificar las voces.</span></div></div>'+
       '<div class="esbox" id="es-box" hidden aria-live="polite"></div>'+
       '<div class="esctl gl" id="es-ctl"><div class="meter" id="es-meter" aria-hidden="true">'+[10,22,32,18,28,14,26,34,20,12,24,16].map(h=>'<i style="height:'+h+'px"></i>').join('')+'</div>'+
         '<div class="lvl" style="display:none"><i id="es-lvl"></i></div><span class="ctxt" id="es-st">Listo para escuchar.</span>'+
@@ -2654,6 +2697,7 @@ async function loadDiaPrefs(){
       <hr style="border:0;border-top:1px solid var(--line);margin:12px 0"><b>⏰ Recordar lo que tiene hora</b>${sw('recordar','activo','Avisarme antes de mis reuniones y tareas con hora',P.recordar.activo)}
       <div class="row"><span>Cuánto antes</span><select data-s="recordar" data-k="minutos" aria-label="Minutos antes" style="min-height:44px;border-radius:12px;padding:0 10px;font:inherit;background:var(--glass2);color:var(--tx);border:1px solid var(--ctl)">${[10,15,30,45,60,90].map(m=>`<option value="${m}" ${P.recordar.minutos==m?'selected':''}>${m} min</option>`).join('')}</select></div>${can('recordar',P.recordar.canales)}
       <hr style="border:0;border-top:1px solid var(--line);margin:12px 0"><b>🌙 No molestar</b>${sw('no_molestar','activo','Silencio en este horario',P.no_molestar.activo)}<div class="row"><span>Desde</span>${hr('no_molestar','desde',P.no_molestar.desde)}</div><div class="row"><span>Hasta</span>${hr('no_molestar','hasta',P.no_molestar.hasta)}</div>
+      <hr style="border:0;border-top:1px solid var(--line);margin:12px 0"><b>🎙️ Juntas (Escuchar)</b>${sw('escucha','audio','Guardar el audio de las juntas (para verificar las voces con OpenAI)',P.escucha.audio)}<div class="row"><span>Borrar el audio a los</span><select data-s="escucha" data-k="dias" aria-label="Días que se conserva el audio" style="min-height:44px;border-radius:12px;padding:0 10px;font:inherit;background:var(--glass2);color:var(--tx);border:1px solid var(--ctl)">${[7,15,30,60,90,180].map(m=>`<option value="${m}" ${P.escucha.dias==m?'selected':''}>${m} días</option>`).join('')}</select></div>
       <hr style="border:0;border-top:1px solid var(--line);margin:12px 0"><b>Qué incluye mi día</b>${[['reuniones','Reuniones del calendario'],['tareas','Tareas de hoy'],['vencidas','Cuántas vencidas tengo'],['seguimientos','Seguimientos que toca revisar'],['urgente','Lo urgente (planes de Donna)'],['propuestas','Propuestas por decidir']].map(([k,l])=>sw('incluye',k,l,P.incluye[k])).join('')}
       <div class="nq"><button id="dia-now">☀️ Enviarme mi día ahora</button></div>`;
     $$('#diacard [data-s]').forEach(i=>i.onchange=async()=>{

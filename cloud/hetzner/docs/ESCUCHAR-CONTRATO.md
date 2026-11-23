@@ -64,3 +64,10 @@ Panel «💬 Donna en la junta» dentro de Escuchar: mientras se graba, Polo le 
 
 ### Ajuste v33 — la caja de texto del asistente nunca queda cortada
 Caso real: en una ventana baja la caja «Pregúntale…» quedaba cortada. Ahora: el texto de ayuda es el estado vacío del chat (desaparece con el primer mensaje); los atajos van en **una fila deslizable**; el chat es lo que se encoge (la caja de texto siempre queda visible y dentro del panel); «Voces detectadas» se puede plegar también en escritorio y arranca **plegada si la ventana mide menos de 860 px de alto**; el botón dice **«— Minimizar»** (la grabación sigue) y minimizado queda una barra «▢ Abrir». Probado en 2000×1060, 1440×800, 1280×720, 1280×640, 1100×560 y 1280×530. Elección de modelo (corrida real de Polo, 5 casos): **Haiku 4.5** 5/5 · 1.4 s · US$0.0033/consulta; Haiku 5.5 5/5 · 2.8 s · ≈2× los tokens; se queda Haiku 4.5 (escalada a Sonnet 4.6).
+
+## Audio y verificación de voces (decisión de Polo, 23-nov-2026)
+- **Qué se guarda ahora:** el texto (como antes) **y el audio** de la junta, en el servidor de Polo (`/opt/openclaw/state/escucha_audio`, archivos 0600). Mientras graba, la app sube el audio por partes de ~10 s; si la pestaña se cae solo se pierden unos segundos.
+- **Plazo:** el audio se borra solo a los N días de guardar la junta (Ajustes → «Juntas (Escuchar)», 30 por defecto; el audio que nunca se ligó a una junta, a los 30 días sin tocarse). Polo puede borrarlo antes desde «Revisión de voces». Se puede apagar por completo («Guardar el audio de las juntas»).
+- **OpenAI:** al guardar la junta, el audio completo se manda a OpenAI (`gpt-4o-transcribe-diarize`) para etiquetar quién habló. Es una **propuesta**: Polo revisa y aplica; nada cambia solo.
+- **Consentimiento:** el aviso previo a escuchar lo dice (texto + audio + OpenAI + rescate del texto).
+- **Pendiente de validar:** el formato de la API de OpenAI no se pudo probar contra la API real desde el repositorio; usar `tools/probar-diarizacion.py` con un audio de verdad. Alternativa abierta a comparar con el MISMO audio: pyannote «community-1» autoalojado.

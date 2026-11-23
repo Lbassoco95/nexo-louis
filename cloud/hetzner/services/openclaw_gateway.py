@@ -980,6 +980,34 @@ def _build_activity_payload() -> dict:
     }
 
 
+_VOCES_EN_CURSO = set()
+
+
+def _lanzar_voces(sid: str) -> bool:
+    """Arranca la pasada de voces de una junta en segundo plano (una a la vez por junta). False si ya estaba corriendo."""
+    if sid in _VOCES_EN_CURSO:
+        return False
+    _VOCES_EN_CURSO.add(sid)
+
+    def _run():
+        try:
+            import donna_diariza
+            r = donna_diariza.procesar(sid)
+            log.info("voces: junta %s → %s", sid, r.get("estado"))
+            if r.get("estado") == "lista" and r.get("cambios"):
+                try:
+                    import louis_push
+                    louis_push.notify_async("🎙️ Revisión de voces lista", "%d cambios propuestos en quién habló. Revísalos en Escuchar." % len(r["cambios"]), tab="chat", tag="voces", kind="escuchar", link="escuchar:1")
+                except Exception:
+                    log.warning("no pude avisar de la revisión de voces", exc_info=True)
+        except Exception:
+            log.exception("voces falló")
+        finally:
+            _VOCES_EN_CURSO.discard(sid)
+    threading.Thread(target=_run, daemon=True).start()
+    return True
+
+
 class Handler(BaseHTTPRequestHandler):
     def _safe_write(self, body: bytes):
         """Escribe la respuesta tolerando que el cliente cierre la conexión antes
@@ -1160,6 +1188,14 @@ class Handler(BaseHTTPRequestHandler):
                             if a1("kc"):
                                 d["cruce"]["kawiil_central"] = donna_personas.cruce_kawiil_central(core, d["nombre"], d["empresa"])
                             self._send_json(200, d)
+                elif _r0 == "/v1/app/escucha/voces":                                           # propuesta de voces (audio + OpenAI) de una junta guardada
+                    import donna_diariza
+                    from urllib.parse import urlparse as _up5, parse_qs as _pq5
+                    sid5 = (_pq5(_up5(self.path).query).get("sesion") or [""])[0]
+                    if not self._sesion_mia(sid5):
+                        self._send_json(404, {"error": "junta no encontrada"})
+                    else:
+                        self._send_json(200, donna_diariza.estado(sid5))
                 elif _r0 in ("/v1/app/escucha/rescates", "/v1/app/escucha/rescate"):          # copia de rescate del servidor
                     import donna_rescate, donna_borrador
                     from urllib.parse import urlparse as _up3, parse_qs as _pq3
@@ -2259,6 +2295,21 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(500, {"error": str(e)[:200]})
 
     # ---- traductor ----
+    def _sesion_mia(self, sid: str) -> bool:
+        """La junta existe y es del usuario (o es el administrador)."""
+        try:
+            import donna_personas
+            donna_personas.asegurar_esquema()
+            c = donna_personas._c()
+            try:
+                r = c.execute("SELECT usuario FROM sesiones_escucha WHERE id=?", (str(sid),)).fetchone()
+            finally:
+                c.close()
+            u = self._media_user()
+            return bool(r) and (r["usuario"] == u or u == "admin")
+        except Exception:
+            return False
+
     def _escucha_guardar(self, body: dict):
         """POST /v1/app/escucha/guardar — la transcripción de «Escuchar» queda como entregable del usuario (con voces y horas) y como
         documento buscable por Donna. Solo texto: el audio nunca se guarda."""
@@ -2337,6 +2388,18 @@ class Handler(BaseHTTPRequestHandler):
             viejo = re.sub(r"[^0-9a-zA-Z_-]", "", str(body.get("reemplaza", "")))[:40]
             if viejo and donna_personas.reemplazar_sesion(viejo, ps["sesion_id"], self._media_user()):
                 out["reemplazo"] = viejo                          # la junta retomada sustituye a la guardada antes
+                try:
+                    import donna_audio
+                    donna_audio.relinkear(viejo, ps["sesion_id"])    # su audio pasa a la junta nueva
+                except Exception:
+                    log.exception("audio: no pude pasar el audio de la junta reemplazada")
+            try:                                                   # audio de esta grabación → ligado a la junta (empieza a correr su plazo) y pasada de voces con OpenAI
+                import donna_audio
+                if donna_audio.ligar(str(body.get("borrador_id", "")), ps["sesion_id"]) or donna_audio.tramos(ps["sesion_id"]):
+                    out["audio"] = donna_audio.resumen(ps["sesion_id"])
+                    threading.Timer(20, lambda s=ps["sesion_id"]: _lanzar_voces(s)).start()
+            except Exception:
+                log.exception("audio: no pude ligar el audio a la junta")
             out.update(sesion_id=ps["sesion_id"], personas=ps["personas"], sugeridos=ps["sugeridos"], extraccion="leyendo")
             import donna_tareas
             threading.Thread(target=lambda sid=ps["sesion_id"]: _leer_junta(sid), daemon=True).start()   # tareas propuestas, sin hacer esperar al guardado
@@ -2467,6 +2530,22 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(401, {"error": "unauthorized"})
                 return
             self._translate_audio()
+            return
+        if self.path.split("?", 1)[0] == "/v1/app/escucha/audio/chunk":          # audio de la junta, por partes mientras se graba
+            if not _require_app_auth(self):
+                self._send_json(401, {"error": "unauthorized"})
+                return
+            import donna_audio
+            q = parse_qs(urlparse(self.path).query)
+            g1 = lambda k, d="": (q.get(k) or [d])[0]
+            try:
+                self._send_json(200, donna_audio.guardar_parte(g1("aid"), g1("rid"), self._media_user(), int(g1("i", "-1")), self.rfile, int(self.headers.get("Content-Length", "0")),
+                                                               int(g1("off", "0") or 0), g1("mime")))
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
+            except Exception as e:
+                log.exception("audio de la junta falló")
+                self._send_json(500, {"error": str(e)[:200]})
             return
         if self.path.split("?", 1)[0] == "/v1/app/media/quick":
             if not _require_app_auth(self):
@@ -2710,6 +2789,34 @@ class Handler(BaseHTTPRequestHandler):
                         self._send_json(200, donna_aprender.regla_accion(str(body.get("id", "")), str(body.get("accion", "")), str(body.get("regla", "")), str(body.get("cuando", ""))))
                 else:
                     self._send_json(200, donna_aprender.mejora_estado(str(body.get("id", "")), str(body.get("accion", "")), str(body.get("nota", ""))))
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
+            return
+        if self.path in ("/v1/app/escucha/audio", "/v1/app/escucha/voces"):
+            import donna_audio, donna_diariza
+            u = self._media_user()
+            acc = body.get("accion")
+            try:
+                if self.path.endswith("audio"):                                              # el tramo de audio terminó (o se borra)
+                    if acc == "borrar":
+                        self._send_json(200, {"ok": True, "borrados": donna_audio.borrar(str(body.get("id", "")), u)})
+                    else:
+                        self._send_json(200, donna_audio.terminar(str(body.get("aid", "")), u))
+                    return
+                sid = str(body.get("sesion_id", ""))
+                if not self._sesion_mia(sid):
+                    self._send_json(404, {"error": "junta no encontrada"})
+                elif acc == "aplicar":
+                    self._send_json(200, {"ok": True, **donna_diariza.aplicar(sid, body.get("ids") if isinstance(body.get("ids"), list) else "todas", u)})
+                elif acc == "borrar_audio":
+                    self._send_json(200, {"ok": True, "borrados": donna_audio.borrar(sid, u)})
+                elif acc == "procesar":
+                    if not _lanzar_voces(sid):
+                        self._send_json(200, {"ok": True, "ya": True})
+                    else:
+                        self._send_json(200, {"ok": True})
+                else:
+                    self._send_json(400, {"error": "acción no válida"})
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
             return

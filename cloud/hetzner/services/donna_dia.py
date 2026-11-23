@@ -20,6 +20,7 @@ DEFAULTS = {
     "cierre": {"activo": False, "hora": "18:30", "canales": ["push"]},
     "recordar": {"activo": True, "minutos": 30, "canales": ["push"]},
     "no_molestar": {"activo": True, "desde": "22:00", "hasta": "07:00"},
+    "escucha": {"audio": True, "dias": 30},
     "incluye": {"reuniones": True, "tareas": True, "vencidas": True, "seguimientos": True, "urgente": True, "propuestas": True},
 }
 SCHEMA = "CREATE TABLE IF NOT EXISTS preferencias (k TEXT PRIMARY KEY, v TEXT NOT NULL, actualizado INTEGER NOT NULL);"
@@ -64,6 +65,13 @@ def prefs_set(patch: dict) -> dict:
                 v = [x for x in (v if isinstance(v, list) else str(v).split("+")) if x in CANALES]
                 if not v:
                     raise ValueError("Elige por lo menos un canal (notificación, chat o Telegram).")
+            elif k == "dias":
+                try:
+                    v = int(v)
+                except (TypeError, ValueError):
+                    raise ValueError("Los días deben ser un número.")
+                if not 1 <= v <= 365:
+                    raise ValueError("El plazo del audio va de 1 a 365 días.")
             elif k == "minutos":
                 try:
                     v = int(v)

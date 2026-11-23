@@ -494,6 +494,18 @@ def main():
         except Exception as e:
             log.warning(f"tu día falló: {e}")
 
+        # Audio de las juntas: se borra solo cuando vence el plazo que Polo eligió (una vez al día).
+        try:
+            import donna_audio, donna_radar
+            hoy_s = time.strftime("%Y-%m-%d")
+            if not donna_radar.ya_corrio("audio:purga", hoy_s):
+                donna_radar.marcar_corrida("audio:purga", hoy_s)
+                n_a = donna_audio.purgar()
+                if n_a:
+                    log.info(f"audio de juntas: se borraron {n_a} tramo(s) vencidos")
+        except Exception as e:
+            log.warning(f"purga de audio falló: {e}")
+
         # Seguimientos (lo que Donna sigue por Polo) y avisos pospuestos que ya les toca volver. Independiente de los resúmenes.
         try:
             import donna_seg, louis_push

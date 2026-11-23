@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""probar-diarizacion.py — prueba la identificación de voces de OpenAI con un audio REAL, antes de confiar en ella.
+
+La parte de OpenAI (formato de la petición y de la respuesta de `gpt-4o-transcribe-diarize`) se escribió según su documentación pública pero no se pudo
+probar contra la API real desde el repositorio. Este script la ejerce de verdad con tu llave y te muestra qué devuelve.
+
+Uso (en el servidor, como polo):
+  cd /opt/openclaw/scripts && python3 ~/donna-deploy/cloud/hetzner/tools/probar-diarizacion.py AUDIO.m4a [SEGUNDOS]
+  · AUDIO: cualquier audio/video que ffmpeg lea (una grabación de una junta, una nota de voz con dos personas…)
+  · SEGUNDOS: cuánto probar (por defecto 120 s: cuesta centavos). Con 0 procesa todo.
+
+Muestra: voces detectadas, tiempo hablado por voz, primeras líneas con su voz y el tiempo que tardó. Nada se guarda en tu base de datos.
+"""
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from collections import defaultdict
+from pathlib import Path
+
+sys.path.insert(0, "/opt/openclaw/scripts")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "services"))
+os.environ.setdefault("PUSH_STATE_DIR", tempfile.mkdtemp())          # base temporal: no toca donna.db
+import app_media  # noqa: E402
+import donna_diariza as DZ  # noqa: E402
+
+
+def main():
+    if len(sys.argv) < 2:
+        sys.exit(__doc__)
+    audio = Path(sys.argv[1]).expanduser()
+    seg = float(sys.argv[2]) if len(sys.argv) > 2 else 120.0
+    if not audio.exists():
+        sys.exit("No encuentro %s" % audio)
+    key = app_media.openai_key()
+    if not key:
+        sys.exit("Falta OPENAI_API_KEY en el servidor.")
+    trabajo = Path(tempfile.mkdtemp())
+    try:
+        entrada = audio
+        if seg > 0:
+            entrada = trabajo / "corto.wav"
+            subprocess.run(["ffmpeg", "-nostdin", "-y", "-i", str(audio), "-t", str(seg), "-vn", "-ac", "1", "-ar", "16000", str(entrada)], capture_output=True, check=True)
+        t0 = time.time()
+        print("Modelo:", DZ.MODELO, "· audio:", audio.name, "· procesando", ("%d s" % seg) if seg else "todo")
+        segs, info = DZ.diarizar_archivo(key, entrada, trabajo / "w")
+        dt = time.time() - t0
+        por = defaultdict(float)
+        for s in segs:
+            por[s["spk"]] += s["fin"] - s["ini"]
+        print("\nTardó %.0f s · %d segmentos · %d voces · piezas: %d · etiquetas alineadas: %s" % (dt, len(segs), len(por), info["piezas"], info["etiquetas_alineadas"]))
+        for lab, t in sorted(por.items(), key=lambda kv: -kv[1]):
+            print("  voz %-8s %5.0f s hablados" % (lab, t))
+        print("\nPrimeras líneas:")
+        for s in segs[:12]:
+            print("  [%5.1f–%5.1f] %-6s %s" % (s["ini"], s["fin"], s["spk"], s["texto"][:100]))
+        print("\n¿Se distinguió bien a cada persona y las interrupciones? Si no, dime qué ves y probamos pyannote con el MISMO audio.")
+    finally:
+        shutil.rmtree(trabajo, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    main()
