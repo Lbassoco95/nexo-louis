@@ -1715,7 +1715,7 @@ async function esDraftsPaint(){
   try{G=((await api('/v1/app/escucha/sesiones')).items||[]).slice(0,4)}catch(e){}
   const ago=ts=>{const m=Math.round((Date.now()/1000-ts)/60);return m<2?'hace un momento':m<90?'hace '+m+' min':m<2880?'hace '+Math.round(m/60)+' h':'hace '+Math.round(m/1440)+' d'};
   el.innerHTML=L.map(b=>`<div class="card" data-b="${esc(b.id)}" style="margin:8px 0"><div class="row"><b>🎙️ Junta sin guardar</b><span class="sub">${esc(ago(b.actualizado))}</span></div><div class="sub">${b.n} intervenciones · ${Math.max(1,Math.round(b.duracion/60))} min — «${esc((b.ultimo||'').slice(0,90))}»</div><div class="nq"><button data-a="seguir">▶︎ Retomar y seguir grabando</button><button data-a="guardar">💾 Guardarla así</button><button data-a="borrar">Descartar</button></div></div>`).join('');
-  if(G.length)el.insertAdjacentHTML('beforeend','<details class="agg" style="margin:8px 0"><summary class="sec">Juntas guardadas · retomar y complementar</summary>'+G.map(s=>`<div class="card" data-gs="${esc(s.id)}" style="margin:6px 0"><div class="row"><b>${esc((s.titulo||'').replace('Transcripción Escuchar ','Junta '))}</b><span class="sub">${esc(s.fecha)}</span></div><div class="sub">${s.lineas} intervenciones · ${Math.max(1,Math.round(s.duracion/60))} min</div><div class="nq"><button data-g="seguir">▶︎ Retomar y complementar</button></div></div>`).join('')+'</details>');
+  if(G.length)el.insertAdjacentHTML('beforeend','<details class="agg" open style="margin:8px 0"><summary class="sec">Juntas guardadas · retomar y complementar</summary>'+G.map(s=>`<div class="card" data-gs="${esc(s.id)}" style="margin:6px 0"><div class="row"><b>${esc((s.titulo||'').replace('Transcripción Escuchar ','Junta '))}</b><span class="sub">${esc(s.fecha)}</span></div><div class="sub">${s.lineas} intervenciones · ${Math.max(1,Math.round(s.duracion/60))} min</div><div class="nq"><button data-g="seguir">▶︎ Retomar y complementar</button></div></div>`).join('')+'</details>');
   $$('#es-drafts [data-gs] [data-g]').forEach(btn=>btn.onclick=()=>esRetomarGuardada(btn.closest('[data-gs]').dataset.gs));
   $$('#es-drafts [data-b]').forEach(c=>c.querySelectorAll('[data-a]').forEach(btn=>btn.onclick=async()=>{
     const id=c.dataset.b,a=btn.dataset.a;
@@ -1846,13 +1846,13 @@ function esView(){
   const v=$('#v-es');setTimeout(esDraftsPaint,0);
   if(!ES.built){ES.built=true;
     v.innerHTML='<div class="esgrid" data-pane="trans"><div class="escol">'+
-      '<div class="eshead"><h2>Escuchar y transcribir</h2><div class="sub">中文 · English → español · solo transcripción, sin traducir de vuelta</div></div>'+
+      '<div class="eshead"><h2>Escuchar y transcribir</h2><div class="sub">Transcribe la junta, distingue las voces y toma notas contigo</div></div>'+
       '<div id="es-seg" role="group" aria-label="Qué ver"><button type="button" data-p="trans" aria-pressed="true">📜 Transcripción</button><button type="button" data-p="donna" aria-pressed="false">💬 Donna <span id="as-nn2"></span></button></div>'+
       '<div class="esask" id="es-ask" hidden><span class="tag"><i data-i="alert" data-s="14"></i>Sin voces</span><div class="t"><b>Llevo un minuto sin oír a nadie. ¿Sigo escuchando?</b><div class="sub">También te lo aviso con una notificación si sales de la app.</div></div>'+
         '<button class="gb pill" id="es-keep">Seguir escuchando</button><button class="gl2 pill" id="es-end">Detener y guardar</button></div>'+
       '<div id="es-drafts"></div><div class="essum" id="es-sumbox" hidden></div>'+
       '<div class="esidle" id="es-idle"><div class="ico"><i data-i="wave" data-s="30"></i></div><h3>Escucha y te escribo en español</h3>'+
-        '<p>Deja el teléfono o la computadora cerca de quien habla. Distingo las voces por su tono y te las numero. Solo transcribo: no traduzco de vuelta.</p>'+
+        '<p>Deja el teléfono o la computadora cerca de quien habla. Distingo las voces por su tono y te las numero.</p>'+
         '<div class="esprivacy"><i data-i="alert" data-s="16"></i><span>Graba a otras personas: avísales antes. Solo se guarda el texto, y solo si tú guardas.</span></div></div>'+
       '<div class="esbox" id="es-box" hidden aria-live="polite"></div>'+
       '<div class="esctl gl" id="es-ctl"><div class="meter" id="es-meter" aria-hidden="true">'+[10,22,32,18,28,14,26,34,20,12,24,16].map(h=>'<i style="height:'+h+'px"></i>').join('')+'</div>'+
