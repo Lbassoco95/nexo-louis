@@ -23,7 +23,8 @@ from pathlib import Path
 
 sys.path.insert(0, "/opt/openclaw/scripts")
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "services"))
-os.environ.setdefault("PUSH_STATE_DIR", tempfile.mkdtemp())          # base temporal: no toca donna.db
+if not (len(sys.argv) > 1 and sys.argv[1].startswith("sesion:")):     # con un archivo suelto: base temporal (no toca donna.db); con «sesion:ID» hay que leer la real
+    os.environ.setdefault("PUSH_STATE_DIR", tempfile.mkdtemp())
 import app_media  # noqa: E402
 import donna_diariza as DZ  # noqa: E402
 
