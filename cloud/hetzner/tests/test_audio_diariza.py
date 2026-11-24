@@ -159,6 +159,77 @@ class Pasada(unittest.TestCase):
             DZ.aplicar(self.sid, "todas", "otro")
 
 
+class Limites(unittest.TestCase):
+    """OpenAI acepta ~1400 s por llamada: el audio se parte en piezas cortas SIEMPRE; tope de 4 h; las etiquetas de cada tramo/pieza se emparejan por separado."""
+    def setUp(self):
+        limpiar()
+        self.antes = (DZ.PIEZA_S, DZ.MAX_S)
+        self.addCleanup(lambda: (setattr(DZ, "PIEZA_S", self.antes[0]), setattr(DZ, "MAX_S", self.antes[1])))
+        p = TMP / "largo.webm"
+        subprocess.run(["ffmpeg", "-nostdin", "-y", "-f", "lavfi", "-i", "sine=frequency=220:duration=30", "-c:a", "libopus", "-b:a", "24k", str(p)], capture_output=True, check=True)
+        self.audio = p
+
+    def test_siempre_en_piezas_cortas_aunque_pese_poco(self):
+        DZ.PIEZA_S = 10
+        piezas = DZ.preparar(self.audio, TMP / "w1")
+        self.assertEqual(len(piezas), 3)
+        for ini, mp3 in piezas:
+            self.assertLessEqual(A._duracion(mp3), 10.6)
+        self.assertEqual([round(i) for i, _ in piezas], [0, 10, 20])
+
+    def test_tope_de_tiempo(self):
+        DZ.PIEZA_S = 10
+        self.assertEqual(len(DZ.preparar(self.audio, TMP / "w2", max_s=20)), 2)
+
+    def test_el_valor_por_defecto_respeta_el_limite_de_openai(self):
+        self.assertLessEqual(DZ.PIEZA_S, 1300)
+        self.assertEqual(DZ.MAX_S, 4 * 3600)
+
+    def test_procesar_respeta_el_tope_y_avisa_lo_omitido(self):
+        voces = [{"n": 1, "nombre": "Gonzalo"}]
+        sid = P.guardar_sesion("J", 30, voces, [{"t": "00:01", "voz": 1, "es": "hola", "idioma": "es"}], usuario="polo")["sesion_id"]
+        d = self.audio.read_bytes()
+        A.guardar_parte("audlargo01", "ridlargo01", "polo", 0, io.BytesIO(d), len(d), 0, "audio/webm")
+        A.ligar("ridlargo01", sid)
+        DZ.PIEZA_S, DZ.MAX_S = 10, 20
+        llamadas, progresos = [], []
+        def falso(mp3, refs=None):
+            llamadas.append(refs is not None)
+            return {"segments": [{"speaker": "A", "start": 0, "end": 6, "text": "x"}]}
+        orig = DZ._guardar
+        DZ._guardar = lambda s_id, est, datos: (progresos.append(datos.get("progreso")) if est == "procesando" else None, orig(s_id, est, datos))[1]
+        try:
+            r = DZ.procesar(sid, llamar=falso, key="k", trabajo_base=TMP / "w3")
+        finally:
+            DZ._guardar = orig
+        self.assertEqual(r["estado"], "lista", r)
+        self.assertEqual(len(llamadas), 2)                                  # 30 s con tope de 20 s y piezas de 10 s → 2 llamadas
+        self.assertEqual(llamadas[0], False)                                # la primera sin muestras; la segunda con ellas (o sin, si la API no las acepta)
+        self.assertIn("pieza 2 de 2", progresos)
+        self.assertAlmostEqual(r["minutos"], 20 / 60, places=1)
+
+    def test_si_la_api_rechaza_las_muestras_de_voz_se_sigue_sin_ellas(self):
+        DZ.PIEZA_S = 10
+        llamadas = []
+        def rara(mp3, refs=None):
+            llamadas.append(bool(refs))
+            if refs:
+                raise RuntimeError("OpenAI respondió 400: invalid known_speaker_references")
+            return {"segments": [{"speaker": "A", "start": 0, "end": 9, "text": "hola"}]}
+        segs, info = DZ.diarizar_archivo("k", self.audio, TMP / "w4", llamar=rara)
+        self.assertEqual(info["etiquetas_alineadas"], False)
+        self.assertTrue(any(llamadas) and llamadas.count(False) >= 3)       # reintentó sin muestras y terminó las 3 piezas
+        self.assertEqual(len(segs), 3)
+
+    def test_una_voz_del_audio_puede_emparejarse_una_vez_por_tramo(self):
+        turnos = [{"id": 1, "hora": "", "texto": "a", "voz_n": 1, "nombre": "Gonzalo", "ini_ms": 1000, "fin_ms": 11000},
+                  {"id": 2, "hora": "", "texto": "b", "voz_n": 1, "nombre": "Gonzalo", "ini_ms": 101000, "fin_ms": 111000}]
+        segs = [{"spk": "A", "grp": "t1", "ini_ms": 0, "fin_ms": 10000}, {"spk": "A", "grp": "t2", "ini_ms": 100000, "fin_ms": 110000}]
+        r = DZ.proponer(turnos, segs)
+        self.assertEqual(r["cambios"], [])                                  # la «A» de cada tramo es Gonzalo: no se inventa una voz nueva
+        self.assertEqual(r["voces_nuevas"], [])
+
+
 class PorElServidor(unittest.TestCase):
     """El camino completo por HTTP: partes → guardar la junta → pasada de voces (OpenAI simulado) → aplicar → borrar."""
     def test_camino_completo(self):

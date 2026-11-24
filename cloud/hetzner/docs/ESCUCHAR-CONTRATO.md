@@ -86,3 +86,9 @@ Caso real: en una ventana baja la caja «Pregúntale…» quedaba cortada. Ahora
 - **🗑️ Eliminar esta junta** borra la junta y lo que colgaba de ella (si tiene audio, pide confirmar que también se borra el audio). No borra el documento de Entregables.
 - Una junta guardada marca su borrador como «guardada»: un autoguardado tardío ya no lo resucita y guardar otra vez no la duplica.
 - En juntas largas la pantalla solo pinta las últimas 120 intervenciones (botón «Mostrar anteriores») y se repinta a lo más cada 1.5 s: evita que el navegador agote la memoria («Se actualizó esta página web porque estaba utilizando bastante memoria»).
+
+## Revisión de voces: límites medidos con audio real (24-nov-2026)
+- `gpt-4o-transcribe-diarize` acepta como máximo **1400 s (≈23 min) de audio por llamada** (error 400 «longer than 1400 seconds»). El audio se parte SIEMPRE en piezas de 20 min (`DONNA_DIARIZA_PIEZA_S`, 1200 por defecto), aunque el archivo pese poco.
+- Tope por junta: **4 horas** de audio (`DONNA_DIARIZA_MAX_H`); lo que pase de eso no se revisa y la pantalla lo avisa.
+- Medido: 120 s de audio tardaron 44 s (≈0.37× el tiempo real). Una junta de 100 min tarda ~35–40 min en revisarse; la pantalla muestra «pieza X de N».
+- Cada tramo (y cada pieza, si la API no acepta las muestras de voz que se usan para mantener las etiquetas) tiene sus propias etiquetas; la alineación empareja una voz de la transcripción una vez por tramo/pieza, no una vez en toda la junta.

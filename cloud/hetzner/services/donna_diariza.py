@@ -28,7 +28,8 @@ import donna_personas
 MODELO = os.environ.get("DONNA_MODELO_DIARIZA", "gpt-4o-transcribe-diarize")
 URL = os.environ.get("DONNA_URL_DIARIZA", "https://api.openai.com/v1/audio/transcriptions")
 MAX_BYTES = int(os.environ.get("DONNA_DIARIZA_MAX_BYTES", str(24 * 1024 * 1024)))
-PIEZA_S = int(os.environ.get("DONNA_DIARIZA_PIEZA_S", "1800"))                  # audios largos se parten en piezas de 30 min
+MAX_S = int(float(os.environ.get("DONNA_DIARIZA_MAX_H", "4")) * 3600)            # la revisión de voces cubre hasta 4 h de audio por junta (tope de tiempo y de costo)
+PIEZA_S = int(os.environ.get("DONNA_DIARIZA_PIEZA_S", "1200"))                  # OpenAI acepta como máximo 1400 s por llamada: piezas de 20 min
 LAG_MS = 1500                                                                    # el texto de un turno llega ~1.5 s después de que empieza a hablar
 UMBRAL = 0.6                                                                     # un turno cambia de voz solo si esa voz ocupa ≥60 % de su tiempo
 SCHEMA = "CREATE TABLE IF NOT EXISTS junta_voces (sesion_id TEXT PRIMARY KEY, ts INTEGER NOT NULL, estado TEXT NOT NULL, datos TEXT NOT NULL DEFAULT '{}');"
@@ -45,16 +46,16 @@ def _dur(p: Path) -> float:
     return donna_audio._duracion(p)
 
 
-def preparar(audio: Path, trabajo: Path) -> list:
+def preparar(audio: Path, trabajo: Path, max_s: float = None) -> list:
     """→ [(inicio_s, ruta_mp3)]. Mono, 16 kHz, 32 kbps (≈14 MB por hora). Si pasa del límite, se parte en piezas."""
     trabajo.mkdir(parents=True, exist_ok=True)
     dur = _dur(audio)
     if dur <= 0:
         raise ValueError("no pude leer el audio de la junta")
     piezas, ini, k = [], 0.0, 0
-    n = 1 if dur * 4000 <= MAX_BYTES else int(dur // PIEZA_S) + 1
-    paso = dur if n == 1 else PIEZA_S
-    while ini < dur - 0.5:
+    paso = min(float(PIEZA_S), MAX_BYTES / 4000.0)                          # nunca más de PIEZA_S segundos por llamada, ni de lo que cabe en el límite de tamaño
+    tope = min(dur, max_s) if max_s is not None else dur                    # solo se preparan los primeros `max_s` segundos
+    while ini < tope - 0.5:
         out = trabajo / ("pieza%02d.mp3" % k)
         cmd = ["ffmpeg", "-nostdin", "-y", "-i", str(audio), "-ss", "%.2f" % ini, "-t", "%.2f" % paso, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", str(out)]
         r = subprocess.run(cmd, capture_output=True, timeout=1800)
@@ -121,16 +122,18 @@ def leer_segmentos(resp: dict) -> list:
     return out
 
 
-def diarizar_archivo(key: str, audio: Path, trabajo: Path, llamar=None) -> tuple:
+def diarizar_archivo(key: str, audio: Path, trabajo: Path, llamar=None, progreso=None, max_s: float = None) -> tuple:
     """Todo el audio de un tramo → (segmentos con tiempos absolutos DEL TRAMO en segundos, info). Si hay varias piezas intenta mantener las mismas etiquetas con muestras de voz."""
     llamar = llamar or (lambda a, refs=None: llamar_openai(key, a, refs))
-    piezas = preparar(audio, trabajo)
-    todos, refs, info = [], None, {"piezas": len(piezas), "etiquetas_alineadas": len(piezas) == 1}
+    piezas = preparar(audio, trabajo, max_s)
+    todos, refs, info = [], None, {"piezas": len(piezas), "etiquetas_alineadas": len(piezas) == 1, "omitido_s": max(0.0, _dur(audio) - max_s) if max_s is not None else 0.0}
     for k, (ini, mp3) in enumerate(piezas):
+        if progreso:
+            progreso(k, len(piezas))
         try:
             resp = llamar(mp3, refs)
-        except RuntimeError as e:
-            if refs and "known_speaker" in str(e):                    # la API no aceptó las muestras: seguimos sin ellas (las etiquetas de cada pieza irán por separado)
+        except RuntimeError:
+            if refs:                                                  # la API no aceptó las muestras de voz: seguimos sin ellas (las etiquetas de cada pieza irán por separado)
                 refs, info["etiquetas_alineadas"] = None, False
                 resp = llamar(mp3, None)
             else:
@@ -162,34 +165,38 @@ def _solape(a0, a1, b0, b1):
 def proponer(turnos: list, segs: list, umbral: float = UMBRAL) -> dict:
     """turnos: [{id, ini_ms, fin_ms, voz_n, nombre?, texto?}] · segs: [{spk, ini_ms, fin_ms}] en el MISMO reloj.
     Cada etiqueta del identificador se empareja (una a una, por tiempo en común) con una voz de la transcripción; los turnos cuya voz dominante es otra se proponen para cambiar."""
-    M = defaultdict(float)
+    M = defaultdict(float)                                   # (grupo, etiqueta, voz) → ms en común
     dom = {}
+    gr = lambda s: s.get("grp", "")
     for i, t in enumerate(turnos):
         a0, a1 = t["ini_ms"] - LAG_MS, t["fin_ms"] - LAG_MS
         por = defaultdict(float)
         for s in segs:
             ov = _solape(a0, a1, s["ini_ms"], s["fin_ms"])
             if ov > 0:
-                por[s["spk"]] += ov
+                por[(gr(s), s["spk"])] += ov
         total = sum(por.values())
         if total <= 0:
             continue
         lab, mx = max(por.items(), key=lambda kv: kv[1])
         dom[i] = (lab, mx / total, len(por))
-        for l2, ov in por.items():
-            M[(l2, t["voz_n"])] += ov
-    asignado, voz_usada = {}, set()
-    for (lab, voz), seg_ms in sorted(M.items(), key=lambda kv: -kv[1]):
-        if voz and lab not in asignado and voz not in voz_usada:
-            asignado[lab] = voz
-            voz_usada.add(voz)
+        for (g2, l2), ov in por.items():
+            M[(g2, l2, t["voz_n"])] += ov
+    asignado, voz_usada = {}, set()                           # asignado[(grupo, etiqueta)] = voz ; voz_usada = {(grupo, voz)}
+    for (g2, lab, voz), seg_ms in sorted(M.items(), key=lambda kv: -kv[1]):
+        if voz and (g2, lab) not in asignado and (g2, voz) not in voz_usada:
+            asignado[(g2, lab)] = voz
+            voz_usada.add((g2, voz))
     sig = max([t["voz_n"] for t in turnos] + [0])
     nuevas = {}
-    for lab in sorted({l for (l, v) in M}, key=lambda l: -sum(x for (a, b), x in M.items() if a == l)):
-        if lab not in asignado and sum(x for (a, b), x in M.items() if a == lab) >= 2000:   # ≥2 s hablados: es una voz de verdad
+    horas = defaultdict(float)
+    for (g2, l2, v), x in M.items():
+        horas[(g2, l2)] += x
+    for k2 in sorted(horas, key=lambda k: -horas[k]):
+        if k2 not in asignado and horas[k2] >= 2000:          # ≥2 s hablados: es una voz de verdad
             sig += 1
-            asignado[lab] = sig
-            nuevas[sig] = lab
+            asignado[k2] = sig
+            nuevas[sig] = "%s:%s" % k2
     nombre_de = {t["voz_n"]: t.get("nombre") for t in turnos if t.get("nombre") and t["voz_n"]}
     cambios, mixtos = [], []
     for i, t in enumerate(turnos):
@@ -206,7 +213,7 @@ def proponer(turnos: list, segs: list, umbral: float = UMBRAL) -> dict:
         if destino != t["voz_n"]:
             cambios.append({"id": t["id"], "hora": t.get("hora", ""), "texto": (t.get("texto") or "")[:140], "de": t["voz_n"], "a": destino,
                             "nombre_de": nombre_de.get(t["voz_n"], ""), "nombre_a": nombre_de.get(destino, ""), "nueva": destino in nuevas, "conf": round(share, 2)})
-    return {"cambios": cambios, "mixtos": mixtos, "voces_nuevas": sorted(nuevas), "etiquetas": {k: v for k, v in asignado.items()}}
+    return {"cambios": cambios, "mixtos": mixtos, "voces_nuevas": sorted(nuevas), "etiquetas": {"%s:%s" % k: v for k, v in asignado.items()}}
 
 
 def _turnos_de(sesion_id: str) -> list:
@@ -263,19 +270,36 @@ def procesar(sesion_id: str, llamar=None, key: str = None, trabajo_base: Path = 
             raise RuntimeError("Falta OPENAI_API_KEY en el servidor")
         base = (trabajo_base or donna_audio.DIR.parent / "diariza_tmp") / sesion_id
         segs_ms, info, minutos = [], {"piezas": 0, "etiquetas_alineadas": True}, 0.0
+        durs = {t["aid"]: _dur(donna_audio.ensamblar(t["aid"])) for t in tr}
+        presupuesto, omitido = float(MAX_S), 0.0                            # hasta 4 h de audio en total
+        usables = {}
         for t in tr:
+            usa = min(durs[t["aid"]], max(0.0, presupuesto))
+            usables[t["aid"]] = usa
+            omitido += durs[t["aid"]] - usa
+            presupuesto -= usa
+        total_piezas = sum(int(-(-usables[a] // PIEZA_S)) for a in usables if usables[a] > 0.5)
+        hechas = [0]
+        for t in tr:
+            if usables[t["aid"]] <= 0.5:
+                continue
             audio = donna_audio.ensamblar(t["aid"])
-            segs, inf = diarizar_archivo(key, audio, base / t["aid"], llamar)
+            base_hechas = hechas[0]
+            prog = lambda k, n, b=base_hechas: _guardar(sesion_id, "procesando", {"progreso": "pieza %d de %d" % (b + k + 1, total_piezas), "piezas": total_piezas})
+            segs, inf = diarizar_archivo(key, audio, base / t["aid"], llamar, prog, usables[t["aid"]])
+            hechas[0] += inf["piezas"]
             info["piezas"] += inf["piezas"]
             info["etiquetas_alineadas"] = info["etiquetas_alineadas"] and inf["etiquetas_alineadas"]
             minutos += _dur(audio) / 60
             for s in segs:
-                segs_ms.append({"spk": ("%s|%s" % (t["aid"], s["spk"])) if len(tr) > 1 else s["spk"], "ini_ms": int(t["offset_ms"] + s["ini"] * 1000), "fin_ms": int(t["offset_ms"] + s["fin"] * 1000), "texto": s["texto"]})
+                grp = t["aid"] if inf["etiquetas_alineadas"] else "%s/%s" % (t["aid"], s.get("pieza", 0))      # etiquetas propias de cada tramo (y de cada pieza si no se alinearon)
+                segs_ms.append({"spk": s["spk"], "grp": grp, "ini_ms": int(t["offset_ms"] + s["ini"] * 1000), "fin_ms": int(t["offset_ms"] + s["fin"] * 1000), "texto": s["texto"]})
         if not segs_ms:
             raise RuntimeError("El identificador no devolvió voces (¿audio vacío o muy bajo?)")
         turnos = _turnos_de(sesion_id)
         prop = proponer(turnos, segs_ms)
-        prop.update(modelo=MODELO, minutos=round(minutos, 1), segmentos=len(segs_ms), voces_detectadas=len({s["spk"] for s in segs_ms}), **info)
+        info.pop("omitido_s", None)
+        prop.update(modelo=MODELO, minutos=round(sum(usables.values()) / 60, 1), omitido_min=round(omitido / 60), segmentos=len(segs_ms), voces_detectadas=len({(s["grp"], s["spk"]) for s in segs_ms}), **info)
         _guardar(sesion_id, "lista", prop)
         return {"estado": "lista", **prop}
     except Exception as e:
