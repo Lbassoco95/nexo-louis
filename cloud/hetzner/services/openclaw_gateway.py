@@ -994,12 +994,13 @@ def _verificar_audio(sid: str, dur_s: int):
 
 
 def _reintentar_voces_fallidas():
-    """Al arrancar: las revisiones de voces que fallaron por el límite de 1400 s de OpenAI (ya corregido) se vuelven a lanzar solas, una vez."""
+    """Al arrancar: (1) las revisiones de voces que se quedaron a medias porque el servidor se reinició (al arrancar no corre ninguna, así que toda «procesando»
+    quedó huérfana) y (2) las que fallaron por el límite de 1400 s de OpenAI (ya corregido) se vuelven a lanzar solas."""
     try:
         import donna_diariza, donna_audio
         c = donna_diariza._c()
         try:
-            filas = [r["sesion_id"] for r in c.execute("SELECT sesion_id FROM junta_voces WHERE estado='error' AND datos LIKE '%1400 seconds%'")]
+            filas = [r["sesion_id"] for r in c.execute("SELECT sesion_id FROM junta_voces WHERE estado='procesando' OR (estado='error' AND datos LIKE '%1400 seconds%')")]
         finally:
             c.close()
         for sid in filas:

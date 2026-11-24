@@ -1858,7 +1858,9 @@ async function esVocesRev(sid){                              // con el AUDIO com
         try{const r=await api('/v1/app/escucha/voces',{method:'POST',body:JSON.stringify({sesion_id:sid,accion:'aplicar',ids})});toast('Apliqué '+r.aplicados+' cambio'+(r.aplicados===1?'':'s'));esVocesRev(sid)}catch(e){toast('⚠️ '+e.message)}};
       $('#vz-del').onclick=async()=>{if(!confirm('¿Borrar el audio de esta junta? No se podrá volver a revisar con audio.'))return;try{await api('/v1/app/escucha/voces',{method:'POST',body:JSON.stringify({sesion_id:sid,accion:'borrar_audio'})});toast('Audio borrado');closeSheet()}catch(e){toast('⚠️ '+e.message)}};
       return}
-    if(d.estado==='procesando'){$('#sh-b').innerHTML='<div class="empty">Revisando el audio con el identificador de voces…<br><b>'+esc(d.progreso||'')+'</b><br><span class="sub">Una junta larga tarda: más o menos 1 minuto de espera por cada 3 minutos de audio. Puedes cerrar esto; te aviso cuando esté lista.</span></div>'}
+    if(d.estado==='procesando'){const atorada=d.ts&&(Date.now()/1000-d.ts)>1500;
+      $('#sh-b').innerHTML='<div class="empty">Revisando el audio con el identificador de voces…<br><b>'+esc(d.progreso||'')+'</b><br><span class="sub">Una junta larga tarda: más o menos 1 minuto de espera por cada 3 minutos de audio. Puedes cerrar esto; te aviso cuando esté lista.</span></div>'+(atorada?'<div class="sub" style="margin-top:8px">Lleva más de 25 minutos sin avanzar: puede haberse interrumpido (por ejemplo, si el servidor se reinició).</div><div class="nq"><button id="vz-re2">Reintentar</button></div>':'');
+      const r2=$('#vz-re2');if(r2)r2.onclick=async()=>{try{await api('/v1/app/escucha/voces',{method:'POST',body:JSON.stringify({sesion_id:sid,accion:'procesar'})});toast('Reintentando…')}catch(e){toast('⚠️ '+e.message)}}}
     if(d.estado==='pendiente'&&n===3){try{await api('/v1/app/escucha/voces',{method:'POST',body:JSON.stringify({sesion_id:sid,accion:'procesar'})})}catch(e){}}
     await sleep(4000);
   }

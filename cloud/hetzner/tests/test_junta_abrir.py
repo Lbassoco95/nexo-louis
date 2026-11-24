@@ -230,6 +230,10 @@ class AudioPorHttp(unittest.TestCase):
         lanzadas.clear()
         g._reintentar_voces_fallidas()
         self.assertEqual(lanzadas, [])
+        DZ._guardar(sid, "procesando", {"progreso": "pieza 3 de 9"})                          # quedó «procesando» porque el servidor se reinició: huérfana → se relanza
+        g._reintentar_voces_fallidas()
+        self.assertEqual(lanzadas, [sid])
+        self.assertEqual(DZ.estado(sid)["pid"], os.getpid())                                  # se anota qué proceso la está haciendo
 
 
 if __name__ == "__main__":

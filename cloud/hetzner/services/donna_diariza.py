@@ -234,6 +234,8 @@ def _turnos_de(sesion_id: str) -> list:
 
 # ------------------------------------------------------------------ orquestación
 def _guardar(sesion_id: str, estado: str, datos: dict):
+    if estado == "procesando":
+        datos = {**datos, "pid": os.getpid()}                 # quién la está procesando: si ese proceso ya no existe, la revisión quedó huérfana (reinicio) y se puede relanzar
     c = _c()
     try:
         c.execute("INSERT OR REPLACE INTO junta_voces(sesion_id,ts,estado,datos) VALUES(?,?,?,?)", (sesion_id, int(time.time()), estado, json.dumps(datos, ensure_ascii=False)))

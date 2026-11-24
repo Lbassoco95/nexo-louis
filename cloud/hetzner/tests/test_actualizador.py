@@ -1,5 +1,5 @@
 """El actualizador no corta una grabación: con grabación en curso no instala nada; sin ella instala y reinicia; --esperar espera; --forzar no pregunta."""
-import os, sqlite3, subprocess, tempfile, threading, time, unittest
+import json, os, sqlite3, subprocess, tempfile, threading, time, unittest
 from pathlib import Path
 SCRIPT = str(Path(__file__).resolve().parent.parent / "tools" / "actualizar-donna.sh")
 
@@ -14,7 +14,7 @@ class Actualizador(unittest.TestCase):
         (self.t / "dest/nuevo.py").write_text("x=0\n")
         self.db = self.t / "donna.db"
         c = sqlite3.connect(self.db)
-        c.executescript("CREATE TABLE escucha_audio(aid TEXT, estado TEXT, actualizado INTEGER);CREATE TABLE escucha_rescate(id TEXT, actualizado INTEGER);CREATE TABLE escucha_borradores(id TEXT, actualizado INTEGER);")
+        c.executescript("CREATE TABLE escucha_audio(aid TEXT, estado TEXT, actualizado INTEGER);CREATE TABLE escucha_rescate(id TEXT, actualizado INTEGER);CREATE TABLE escucha_borradores(id TEXT, actualizado INTEGER);CREATE TABLE junta_voces(sesion_id TEXT, ts INTEGER, estado TEXT, datos TEXT);")
         c.commit(); c.close()
         self.env = {**os.environ, "NO_GIT": "1", "NO_VERIFY": "1", "REPO": str(self.t / "repo"), "DEST": str(self.t / "dest"), "DONNA_DB": str(self.db), "SUDO": "",
                     "OWNER": os.popen("id -un").read().strip(), "SYSTEMCTL": "echo REINICIO", "ESPERA": "1"}
@@ -65,6 +65,24 @@ class Actualizador(unittest.TestCase):
 
     def test_base_sin_tablas_o_sin_archivo_no_bloquea(self):
         self.db.unlink()
+        self.assertTrue(self.correr().returncode == 0 and self.instalado())
+
+    def _voces(self, estado, pid, hace_s=60):
+        c = sqlite3.connect(self.db)
+        c.execute("DELETE FROM junta_voces")
+        c.execute("INSERT INTO junta_voces VALUES('s1',?,?,?)", (int(time.time()) - hace_s, estado, json.dumps({"pid": pid} if pid else {})))
+        c.commit(); c.close()
+
+    def test_una_revision_de_voces_en_curso_cuenta_como_ocupado_pero_una_huerfana_no(self):
+        self._voces("procesando", os.getpid())                                    # su proceso (este) sigue vivo → se espera
+        r = self.correr()
+        self.assertFalse(self.instalado())
+        self.assertIn("revisión de voces", r.stdout)
+        self._voces("procesando", 4000000)                                        # el proceso ya no existe (el servidor se reinició) → no bloquea
+        self.assertTrue(self.correr().returncode == 0 and self.instalado())
+
+    def test_una_revision_sin_pid_o_ya_terminada_no_bloquea(self):
+        self._voces("procesando", None)
         self.assertTrue(self.correr().returncode == 0 and self.instalado())
 
     def test_opcion_desconocida(self):
