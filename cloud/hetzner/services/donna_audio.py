@@ -269,6 +269,9 @@ def exportar(sesion_id: str) -> Path:
     return mp3
 
 
+TOLERANCIA_S = 20.0
+
+
 def clip(sesion_id: str, hora: str, antes_s: float = 3.0, dur_s: float = 16.0) -> Path:
     """Un fragmento corto (MP3) del momento «MM:SS» del reloj de la junta, para ESCUCHAR y comprobar quién habla. Se busca el tramo que cubre ese momento
     (cada tramo tiene su propio inicio en el reloj de la junta, así que no se usa la posición del audio descargado completo, que no tiene los huecos)."""
@@ -276,8 +279,8 @@ def clip(sesion_id: str, hora: str, antes_s: float = 3.0, dur_s: float = 16.0) -
     for t in tramos(sesion_id):
         ini = t["offset_ms"] / 1000.0
         dur = duracion_tramo(t["aid"])
-        if dur > 0 and ini <= t_s <= ini + dur:
-            desde = max(0.0, t_s - ini - antes_s)
+        if dur > 0 and ini - TOLERANCIA_S <= t_s <= ini + dur + TOLERANCIA_S:      # un turno puede empezar unos segundos antes de que arranque el audio (o terminar después)
+            desde = min(max(0.0, t_s - ini - antes_s), max(0.0, dur - 1.0))
             destino = DIR / "export"
             destino.mkdir(parents=True, exist_ok=True, mode=0o700)
             mp3 = destino / ("c-%s-%d.mp3" % (sesion_id, int(t_s * 1000)))             # el id de la junta va en el nombre: borrar() la quita junto con el audio

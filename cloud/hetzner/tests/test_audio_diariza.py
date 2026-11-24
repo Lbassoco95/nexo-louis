@@ -187,8 +187,19 @@ class Pasada(unittest.TestCase):
         self.assertTrue(A.clip(self.sid, "01:45").exists())                                           # cae en el segundo tramo
         with self.assertRaises(ValueError):
             A.clip(self.sid, "01:00")                                                                 # hueco: no hay audio de ese momento
+        self.assertTrue(A.clip(self.sid, "01:35").exists())                                           # 5 s antes de que arranque el audio: se toca desde el principio
+        with self.assertRaises(ValueError):
+            A.clip(self.sid, "01:10")                                                                 # 30 s antes: eso sí es otro momento
         A.borrar(self.sid, "polo")
         self.assertEqual(list((A.DIR / "export").glob("c-*")), [])                                    # al borrar el audio se van también los fragmentos
+
+    def test_frase_corta_se_marca(self):
+        sid2 = P.guardar_sesion("Corta", 30, [{"n": 1, "nombre": ""}], [{"t": "00:01", "voz": 1, "es": "Sí", "idioma": "es"}, {"t": "00:03", "voz": 1, "es": "Una frase larga que dura bastante", "idioma": "es"}, {"t": "00:12", "voz": 1, "es": "Fin", "idioma": "es"}], usuario="polo")["sesion_id"]
+        ids = {f["hora"]: f["id"] for f in P._c().execute("SELECT id, hora FROM intervenciones WHERE sesion_id=?", (sid2,))}
+        DZ._guardar(sid2, "lista", {"cambios": [{"id": ids["00:01"], "hora": "00:01", "texto": "Sí", "de": 1, "a": 2, "conf": 1.0}, {"id": ids["00:03"], "hora": "00:03", "texto": "x", "de": 1, "a": 2, "conf": 1.0}]})
+        cam = {c["hora"]: c for c in DZ.estado(sid2)["cambios"]}
+        self.assertTrue(cam["00:01"]["corto"])                                                        # 2 s hasta el siguiente turno: el 100 % no es de fiar
+        self.assertFalse(cam["00:03"]["corto"])                                                       # 9 s
 
 
 class Limites(unittest.TestCase):

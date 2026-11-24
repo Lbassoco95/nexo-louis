@@ -31,6 +31,7 @@ MAX_BYTES = int(os.environ.get("DONNA_DIARIZA_MAX_BYTES", str(24 * 1024 * 1024))
 MAX_S = int(float(os.environ.get("DONNA_DIARIZA_MAX_H", "4")) * 3600)            # la revisión de voces cubre hasta 4 h de audio por junta (tope de tiempo y de costo)
 PIEZA_S = int(os.environ.get("DONNA_DIARIZA_PIEZA_S", "1200"))                  # OpenAI acepta como máximo 1400 s por llamada: piezas de 20 min
 LAG_MS = 1500                                                                    # el texto de un turno llega ~1.5 s después de que empieza a hablar
+CORTO_MS = 4000
 UMBRAL = 0.6                                                                     # un turno cambia de voz solo si esa voz ocupa ≥60 % de su tiempo
 SCHEMA = "CREATE TABLE IF NOT EXISTS junta_voces (sesion_id TEXT PRIMARY KEY, ts INTEGER NOT NULL, estado TEXT NOT NULL, datos TEXT NOT NULL DEFAULT '{}');"
 
@@ -257,6 +258,10 @@ def estado(sesion_id: str) -> dict:
     d.update(estado=r["estado"], ts=r["ts"], audio=donna_audio.resumen(sesion_id))
     if r["estado"] == "lista":
         d["voces"] = voces_de(sesion_id)
+        turnos = {t["id"]: t for t in _turnos_de(sesion_id)}                        # «corto»: una frase de menos de 4 s da poca base para decidir quién habla (el % de confianza se infla)
+        for x in d.get("cambios", []):
+            t = turnos.get(x["id"])
+            x["corto"] = bool(t and t["fin_ms"] - t["ini_ms"] < CORTO_MS)
     return d
 
 
