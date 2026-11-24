@@ -36,6 +36,11 @@ def valido(x) -> bool:
 def _c():
     c = donna_db.conn()
     c.executescript(SCHEMA)
+    try:                                                      # migración: duración real de cada tramo (se mide una vez y se guarda)
+        c.execute("ALTER TABLE escucha_audio ADD COLUMN dur_s REAL NOT NULL DEFAULT 0")
+        c.commit()
+    except Exception:
+        pass
     return c
 
 
@@ -299,4 +304,115 @@ def purgar(ahora: int = None) -> int:
 
 def resumen(sesion_id: str) -> dict:
     t = tramos(sesion_id)
-    return {"tramos": len(t), "bytes": sum(x["bytes"] for x in t), "vence": max([x["vence"] for x in t] or [0])}
+    conocido = bool(t) and all((x.get("dur_s") or 0) > 0 for x in t)
+    return {"tramos": len(t), "bytes": sum(x["bytes"] for x in t), "vence": max([x["vence"] for x in t] or [0]),
+            "audio_s": int(sum(x["dur_s"] for x in t)) if conocido else 0}
+
+
+def duracion_tramo(aid: str) -> float:
+    """Duración REAL del audio de un tramo (se mide una vez con ffprobe y se guarda)."""
+    e = estado(aid)
+    if not e or e["estado"] == "borrado":
+        return 0.0
+    if (e.get("dur_s") or 0) > 0:
+        return float(e["dur_s"])
+    try:
+        d = _duracion(ensamblar(aid))
+    except Exception:
+        d = 0.0
+    if d > 0:
+        c = _c()
+        try:
+            c.execute("UPDATE escucha_audio SET dur_s=? WHERE aid=?", (d, aid))
+            c.commit()
+        finally:
+            c.close()
+    return d
+
+
+def verificar(sesion_id: str, duracion_junta_s: float = 0) -> dict:
+    """¿El audio guardado de la junta es BUENO y cuánto de la junta cubre? Revisa que cada tramo se pueda leer y que dure lo que debería (partes × 10 s),
+    y calcula qué tramos de la junta (en su reloj) tienen audio y cuáles no.
+    → {ok, cubre_s, total_s, huecos:[[ini_s, fin_s]], tramos:[{aid, ini_s, dur_s, partes, mb, ok}], avisos:[texto]}"""
+    tr = tramos(sesion_id)
+    out = {"ok": bool(tr), "cubre_s": 0, "total_s": int(duracion_junta_s), "huecos": [], "tramos": [], "avisos": []}
+    if not tr:
+        out["avisos"].append("Esta junta no tiene audio guardado.")
+        return out
+    ints = []
+    for t in tr:
+        d = duracion_tramo(t["aid"])
+        esperado = max(1, t["partes"] - 1) * TIMESLICE_S
+        bueno = d > 0 and d >= 0.6 * esperado
+        if not bueno:
+            out["ok"] = False
+            out["avisos"].append("El tramo %s no se pudo leer completo (dura %d s y debería durar ~%d s)." % (t["aid"][:6], d, esperado))
+        ini = t["offset_ms"] / 1000.0
+        out["tramos"].append({"aid": t["aid"], "ini_s": int(ini), "dur_s": int(d), "partes": t["partes"], "mb": round(t["bytes"] / 1e6, 1), "ok": bueno})
+        if d > 0:
+            ints.append((ini, ini + d))
+    ints.sort()
+    union, cur = [], None
+    for a, b in ints:
+        if cur and a <= cur[1] + 15:                          # huecos de menos de 15 s entre tramos no cuentan (reconexiones)
+            cur[1] = max(cur[1], b)
+        else:
+            cur = [a, b]
+            union.append(cur)
+    out["cubre_s"] = int(sum(b - a for a, b in union))
+    total = float(duracion_junta_s or 0)
+    if total > 0:
+        pos = 0.0
+        for a, b in union:
+            if a - pos > 30:
+                out["huecos"].append([int(pos), int(a)])
+            pos = max(pos, b)
+        if total - pos > 30:
+            out["huecos"].append([int(pos), int(total)])
+        if out["huecos"]:
+            out["avisos"].append("El audio cubre %d de %d min; sin audio: %s." % (out["cubre_s"] // 60, total // 60, ", ".join("%s–%s" % (_hms(a), _hms(b)) for a, b in out["huecos"])))
+    return out
+
+
+def _hms(s) -> str:
+    s = int(s)
+    return "%d:%02d:%02d" % (s // 3600, s % 3600 // 60, s % 60) if s >= 3600 else "%d:%02d" % (s // 60, s % 60)
+
+
+def huerfanos(usuario: str) -> list:
+    """Audio que NO quedó ligado a ninguna junta guardada (la pestaña se cerró antes de guardar, etc.)."""
+    c = _c()
+    try:
+        filas = c.execute("SELECT aid, rid, creado, actualizado, offset_ms, partes, bytes FROM escucha_audio WHERE sesion_id='' AND estado!='borrado' AND (usuario=? OR ?='admin') ORDER BY actualizado DESC", (usuario, usuario))
+        return [dict(r) for r in filas]
+    finally:
+        c.close()
+
+
+def ligar_tramo(aid: str, sesion_id: str, usuario: str, dias: int = None) -> bool:
+    """Liga a mano un audio huérfano a una junta guardada (recuperar un audio que quedó suelto)."""
+    c = _c()
+    try:
+        r = c.execute("SELECT usuario FROM escucha_audio WHERE aid=? AND estado!='borrado'", (aid,)).fetchone()
+        if not r or (r["usuario"] != usuario and usuario != "admin"):
+            return False
+        c.execute("UPDATE escucha_audio SET sesion_id=?, vence=?, estado=CASE WHEN estado='grabando' THEN 'cerrado' ELSE estado END WHERE aid=?", (sesion_id, int(time.time()) + int(dias or dias_por_defecto()) * 86400, aid))
+        c.commit()
+        return True
+    finally:
+        c.close()
+
+
+def exportar_tramo(aid: str) -> Path:
+    """Un solo MP3 de UN tramo (para descargar un audio que aún no tiene junta)."""
+    destino = DIR / "export"
+    destino.mkdir(parents=True, exist_ok=True, mode=0o700)
+    mp3 = destino / ("t-%s.mp3" % aid)
+    if mp3.exists():
+        return mp3
+    fuente = ensamblar(aid)
+    r = subprocess.run(["ffmpeg", "-nostdin", "-y", "-i", str(fuente), "-vn", "-ac", "1", "-ar", "22050", "-b:a", "48k", str(mp3)], capture_output=True, timeout=3600)
+    if r.returncode != 0 or not mp3.exists():
+        raise ValueError("no pude preparar el audio para descargarlo")
+    os.chmod(mp3, 0o600)
+    return mp3

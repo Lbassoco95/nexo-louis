@@ -178,5 +178,59 @@ class PorElServidor(unittest.TestCase):
         self.assertEqual(len(json.loads(self.req("/v1/app/escucha/sesiones").read())["items"]), 1)
 
 
+class AudioPorHttp(unittest.TestCase):
+    def setUp(self):
+        limpiar()
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), g.Handler)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.base = "http://127.0.0.1:%d" % self.srv.server_address[1]
+        self.H = {"Authorization": "Bearer master-x"}
+
+    def tearDown(self):
+        self.srv.shutdown()
+
+    def req(self, path, body=None):
+        r = urllib.request.Request(self.base + path, json.dumps(body).encode() if body is not None else None, {**self.H, "Content-Type": "application/json"})
+        return urllib.request.urlopen(r)
+
+    def test_estado_del_audio_y_recuperar_audio_suelto(self):
+        sid = crear_junta("admin")
+        d = tono(10, 260)
+        A.guardar_parte("tramohttp01", "ridhttp0001", "admin", 0, io.BytesIO(d), len(d), 0, "audio/webm")      # suelto: la pestaña se cerró antes de guardar
+        hu = json.loads(self.req("/v1/app/escucha/audio_huerfano").read())["items"]
+        self.assertEqual([h["aid"] for h in hu], ["tramohttp01"])
+        r = self.req("/v1/app/escucha/descargar?que=tramo&aid=tramohttp01")
+        self.assertEqual(r.headers["Content-Type"], "audio/mpeg")
+        self.assertGreater(len(r.read()), 1000)
+        self.assertTrue(json.loads(self.req("/v1/app/escucha/audio", {"accion": "ligar", "aid": "tramohttp01", "sesion_id": sid}).read())["ok"])
+        self.assertEqual(json.loads(self.req("/v1/app/escucha/audio_huerfano").read())["items"], [])
+        v = json.loads(self.req("/v1/app/escucha/audio_estado?sesion=" + sid).read())
+        self.assertEqual((v["ok"], len(v["tramos"])), (True, 1))
+        self.assertTrue(v["huecos"])                                                          # la junta dura 3 h y el audio ~10 s: avisa lo que falta
+        self.assertIn("cubre", " ".join(v["avisos"]))
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.req("/v1/app/escucha/audio", {"accion": "ligar", "aid": "tramohttp01", "sesion_id": "inexistente"})
+        self.assertEqual(cm.exception.code, 400)
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.req("/v1/app/escucha/descargar?que=tramo&aid=noexiste123")
+        self.assertEqual(cm.exception.code, 404)
+
+    def test_reintento_automatico_de_las_revisiones_que_fallaron_por_el_limite(self):
+        import donna_diariza as DZ
+        sid = crear_junta("admin")
+        d = tono(6, 330)
+        A.guardar_parte("tramoreint1", "ridreint001", "admin", 0, io.BytesIO(d), len(d), 0, "audio/webm")
+        A.ligar("ridreint001", sid)
+        DZ._guardar(sid, "error", {"error": "OpenAI respondió 400: audio duration 3567 seconds is longer than 1400 seconds which is the maximum for this model"})
+        lanzadas = []
+        g._lanzar_voces = lambda s: lanzadas.append(s) or True
+        g._reintentar_voces_fallidas()
+        self.assertEqual(lanzadas, [sid])
+        DZ._guardar(sid, "error", {"error": "OpenAI respondió 500: otra cosa"})              # otros errores NO se reintentan solos
+        lanzadas.clear()
+        g._reintentar_voces_fallidas()
+        self.assertEqual(lanzadas, [])
+
+
 if __name__ == "__main__":
     unittest.main()

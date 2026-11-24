@@ -92,3 +92,9 @@ Caso real: en una ventana baja la caja «Pregúntale…» quedaba cortada. Ahora
 - Tope por junta: **4 horas** de audio (`DONNA_DIARIZA_MAX_H`); lo que pase de eso no se revisa y la pantalla lo avisa.
 - Medido: 120 s de audio tardaron 44 s (≈0.37× el tiempo real). Una junta de 100 min tarda ~35–40 min en revisarse; la pantalla muestra «pieza X de N».
 - Cada tramo (y cada pieza, si la API no acepta las muestras de voz que se usan para mantener las etiquetas) tiene sus propias etiquetas; la alineación empareja una voz de la transcripción una vez por tramo/pieza, no una vez en toda la junta.
+
+## Audio: comprobar que quedó bien, cuánto cubre y recuperar audio suelto
+- **Solo hay audio de las juntas grabadas desde la versión con audio (v49).** Las anteriores nunca lo tuvieron y no se puede recuperar. Cada junta con audio muestra «cubre X de Y min» y avisa si faltan partes (p. ej. una junta que empezó antes de activar el audio).
+- **Verificación automática al guardar:** a los 8 s se comprueba que cada tramo se pueda leer y que dure lo que debe (partes × 10 s); si algo falla llega una notificación «⚠️ Revisa el audio de la junta». En la junta abierta se ve el detalle por tramo.
+- **Audio suelto** (se grabó pero la junta nunca se guardó): aparece en Escuchar → «🎧 Audio sin junta guardada» con Ligar a una junta / Descargar / Borrar. Se borra solo a los 30 días sin tocarse.
+- **Revisión de voces:** las que fallaron por el límite de 1400 s de OpenAI se relanzan solas una vez, 90 s después de arrancar el servidor. `tools/verificar-junta.py` muestra la cobertura del audio y el estado de la revisión (lista, procesando «pieza X de N», o el error).

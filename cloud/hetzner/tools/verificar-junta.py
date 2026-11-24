@@ -38,12 +38,28 @@ def main():
             avisos.append("hay una intervención de %d caracteres: puede estar cortada a 3000" % iv["mx"])
         if iv["n"] and iv["sinvoz"] == iv["n"]:
             avisos.append("ninguna voz identificada")
-        audio = q(c, "SELECT COUNT(*) AS n, COALESCE(SUM(bytes),0) AS b, MAX(vence) AS v FROM escucha_audio WHERE sesion_id=? AND estado!='borrado'", (s["id"],))
-        voces = q(c, "SELECT estado FROM junta_voces WHERE sesion_id=?", (s["id"],))
+        audio = q(c, "SELECT COUNT(*) AS n, COALESCE(SUM(bytes),0) AS b, MAX(vence) AS v, COALESCE(SUM(dur_s),0) AS d, SUM(CASE WHEN dur_s>0 THEN 0 ELSE 1 END) AS sin_medir FROM escucha_audio WHERE sesion_id=? AND estado!='borrado'", (s["id"],)) \
+            or q(c, "SELECT COUNT(*) AS n, COALESCE(SUM(bytes),0) AS b, MAX(vence) AS v, 0 AS d, COUNT(*) AS sin_medir FROM escucha_audio WHERE sesion_id=? AND estado!='borrado'", (s["id"],))
+        voces = q(c, "SELECT estado, datos FROM junta_voces WHERE sesion_id=?", (s["id"],))
         print("\n• %s · %s · %d min · id %s" % (s["cuando"], s["titulo"], mins, s["id"]))
         print("  intervenciones: %d (%d caracteres en total, la más larga %d) · sin identificar: %s" % (iv["n"], iv["chars"], iv["mx"], iv["sinvoz"]))
         if audio and audio[0]["n"]:
-            print("  audio: %d tramo(s), %.1f MB, vence %s · revisión de voces: %s" % (audio[0]["n"], audio[0]["b"] / 1e6, time.strftime("%Y-%m-%d", time.localtime(audio[0]["v"])) if audio[0]["v"] else "sin plazo", voces[0]["estado"] if voces else "sin correr"))
+            print("  audio: %d tramo(s), %.1f MB, vence %s" % (audio[0]["n"], audio[0]["b"] / 1e6, time.strftime("%Y-%m-%d", time.localtime(audio[0]["v"])) if audio[0]["v"] else "sin plazo"))
+            if audio[0]["sin_medir"] == 0 and audio[0]["d"]:
+                cub = audio[0]["d"] / 60
+                print("  cobertura del audio: %d de %d min%s" % (cub, mins, "  ⚠️ NO cubre toda la junta" if cub < mins * 0.9 else "  ✓"))
+                if cub < mins * 0.9:
+                    avisos.append("el audio no cubre toda la junta")
+            else:
+                print("  cobertura del audio: sin medir (abre la junta en la app y se mide)")
+            if voces:
+                import json as _j
+                dv = _j.loads(voces[0]["datos"] or "{}")
+                det = {"lista": "lista: %s cambios propuestos, %s voces en %s min de audio%s" % (len(dv.get("cambios", [])), dv.get("voces_detectadas", "?"), dv.get("minutos", "?"), (" (se omitieron %s min por el tope)" % dv["omitido_min"]) if dv.get("omitido_min") else ""),
+                       "procesando": "procesando (%s)" % dv.get("progreso", "…"), "error": "ERROR: %s" % str(dv.get("error", ""))[:200]}.get(voces[0]["estado"], voces[0]["estado"])
+                print("  revisión de voces: " + det)
+            else:
+                print("  revisión de voces: sin correr")
         else:
             print("  audio: no hay")
         for a in avisos:

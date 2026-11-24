@@ -980,6 +980,36 @@ def _build_activity_payload() -> dict:
     }
 
 
+def _verificar_audio(sid: str, dur_s: int):
+    """Tras guardar una junta: ¿el audio se puede leer y cuánto cubre? Si algo está mal se avisa (notificación) en vez de enterarse meses después."""
+    try:
+        import donna_audio
+        v = donna_audio.verificar(sid, dur_s)
+        log.info("audio de la junta %s: ok=%s cubre %d de %d s, avisos=%s", sid, v["ok"], v["cubre_s"], v["total_s"], v["avisos"])
+        if v["avisos"]:
+            import louis_push
+            louis_push.notify_async("⚠️ Revisa el audio de la junta", v["avisos"][0][:160], tab="chat", tag="audio", kind="escuchar", link="escuchar:1")
+    except Exception:
+        log.exception("verificación del audio falló")
+
+
+def _reintentar_voces_fallidas():
+    """Al arrancar: las revisiones de voces que fallaron por el límite de 1400 s de OpenAI (ya corregido) se vuelven a lanzar solas, una vez."""
+    try:
+        import donna_diariza, donna_audio
+        c = donna_diariza._c()
+        try:
+            filas = [r["sesion_id"] for r in c.execute("SELECT sesion_id FROM junta_voces WHERE estado='error' AND datos LIKE '%1400 seconds%'")]
+        finally:
+            c.close()
+        for sid in filas:
+            if donna_audio.resumen(sid)["tramos"] > 0:
+                log.info("voces: reintento automático de la junta %s (falló por el límite de duración)", sid)
+                _lanzar_voces(sid)
+    except Exception:
+        log.exception("reintento de voces falló")
+
+
 _VOCES_EN_CURSO = set()
 
 
@@ -1200,10 +1230,17 @@ class Handler(BaseHTTPRequestHandler):
                     from urllib.parse import urlparse as _up6, parse_qs as _pq6
                     _q6 = _pq6(_up6(self.path).query)
                     sid6 = (_q6.get("id") or _q6.get("sesion") or [""])[0]
-                    if not self._sesion_mia(sid6):
+                    if (_q6.get("que") or [""])[0] != "tramo" and not self._sesion_mia(sid6):
                         self._send_json(404, {"error": "junta no encontrada"})
                     elif _r0.endswith("junta"):
                         self._send_json(200, donna_minuta.datos(sid6, self._media_user()))
+                    elif (_q6.get("que") or [""])[0] == "tramo":
+                        aid6 = (_q6.get("aid") or [""])[0]
+                        e6 = donna_audio.estado(aid6) if donna_audio.valido(aid6) else None
+                        if not e6 or (e6["usuario"] != self._media_user() and self._media_user() != "admin") or e6["estado"] == "borrado":
+                            self._send_json(404, {"error": "audio no encontrado"})
+                        else:
+                            self._enviar_archivo(donna_audio.exportar_tramo(aid6), "audio/mpeg", "audio-%s.mp3" % aid6[:8])
                     elif (_q6.get("que") or [""])[0] == "audio":
                         try:
                             mp3 = donna_audio.exportar(sid6)
@@ -1220,6 +1257,22 @@ class Handler(BaseHTTPRequestHandler):
                         self.send_header("Content-Length", str(len(cuerpo)))
                         self.end_headers()
                         self.wfile.write(cuerpo)
+                elif _r0 in ("/v1/app/escucha/audio_estado", "/v1/app/escucha/audio_huerfano"):  # ¿el audio quedó bien y cuánto cubre? / audio sin junta
+                    import donna_audio, donna_personas
+                    from urllib.parse import urlparse as _up7, parse_qs as _pq7
+                    if _r0.endswith("huerfano"):
+                        self._send_json(200, {"items": donna_audio.huerfanos(self._media_user())})
+                    else:
+                        sid7 = (_pq7(_up7(self.path).query).get("sesion") or [""])[0]
+                        if not self._sesion_mia(sid7):
+                            self._send_json(404, {"error": "junta no encontrada"})
+                        else:
+                            c7 = donna_personas._c()
+                            try:
+                                dur7 = c7.execute("SELECT duracion FROM sesiones_escucha WHERE id=?", (sid7,)).fetchone()["duracion"]
+                            finally:
+                                c7.close()
+                            self._send_json(200, donna_audio.verificar(sid7, dur7))
                 elif _r0 == "/v1/app/escucha/duplicadas":                                      # juntas guardadas varias veces
                     import donna_minuta
                     self._send_json(200, donna_minuta.duplicadas(self._media_user()))
@@ -2471,6 +2524,7 @@ class Handler(BaseHTTPRequestHandler):
                 if donna_audio.ligar(str(body.get("borrador_id", "")), ps["sesion_id"]) or donna_audio.tramos(ps["sesion_id"]):
                     out["audio"] = donna_audio.resumen(ps["sesion_id"])
                     threading.Timer(20, lambda s=ps["sesion_id"]: _lanzar_voces(s)).start()
+                    threading.Timer(8, lambda s=ps["sesion_id"], d=dur: _verificar_audio(s, d)).start()
             except Exception:
                 log.exception("audio: no pude ligar el audio a la junta")
             out.update(sesion_id=ps["sesion_id"], personas=ps["personas"], sugeridos=ps["sugeridos"], extraccion="leyendo")
@@ -2871,7 +2925,13 @@ class Handler(BaseHTTPRequestHandler):
             acc = body.get("accion")
             try:
                 if self.path.endswith("audio"):                                              # el tramo de audio terminó (o se borra)
-                    if acc == "borrar":
+                    if acc == "ligar":
+                        if not self._sesion_mia(str(body.get("sesion_id", ""))):
+                            raise ValueError("junta no encontrada")
+                        if not donna_audio.ligar_tramo(str(body.get("aid", "")), str(body.get("sesion_id", "")), u):
+                            raise ValueError("audio no encontrado")
+                        self._send_json(200, {"ok": True})
+                    elif acc == "borrar":
                         self._send_json(200, {"ok": True, "borrados": donna_audio.borrar(str(body.get("id", "")), u)})
                     else:
                         self._send_json(200, donna_audio.terminar(str(body.get("aid", "")), u))
@@ -3276,6 +3336,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    threading.Timer(90, lambda: _reintentar_voces_fallidas()).start()
     log.info("Arrancando openclaw-gateway en %s:%d", HOST, PORT)
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     srv.started_at = int(time.time())

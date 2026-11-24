@@ -230,6 +230,55 @@ class Limites(unittest.TestCase):
         self.assertEqual(r["voces_nuevas"], [])
 
 
+class Cobertura(unittest.TestCase):
+    """¿El audio quedó bueno y cuánto de la junta cubre? Huecos, tramos ilegibles, audio suelto."""
+    def setUp(self):
+        limpiar()
+
+    def _tramo(self, aid, rid, seg, off, hz=220):
+        p = TMP / ("c%s.webm" % aid)
+        subprocess.run(["ffmpeg", "-nostdin", "-y", "-f", "lavfi", "-i", "sine=frequency=%d:duration=%d" % (hz, seg), "-c:a", "libopus", "-b:a", "24k", str(p)], capture_output=True, check=True)
+        d = p.read_bytes()
+        n = len(d) // 2 + 1
+        for i in range(2):
+            A.guardar_parte(aid, rid, "polo", i, io.BytesIO(d[i * n:(i + 1) * n]), len(d[i * n:(i + 1) * n]), off, "audio/webm")
+
+    def test_la_cobertura_y_los_huecos(self):
+        self._tramo("tramoaaa01", "ridcob0001", 20, 100000)             # cubre 100–120 s
+        self._tramo("tramobbb01", "ridcob0001", 20, 140000)             # cubre 140–160 s (hueco de 20 s no cuenta como hueco: < 30 s)
+        A.ligar("ridcob0001", "sesion-cob")
+        v = A.verificar("sesion-cob", 300)
+        self.assertTrue(v["ok"])
+        self.assertAlmostEqual(v["cubre_s"], 40, delta=3)
+        self.assertEqual([h[0] for h in v["huecos"]], [0, 160])         # falta del 0 al 100 y del 160 al 300 (el hueco corto entre tramos no cuenta)
+        self.assertTrue(any("cubre 0 de 5 min" in a or "cubre" in a for a in v["avisos"]))
+        self.assertGreater(A.resumen("sesion-cob")["audio_s"], 35)      # la duración queda guardada: la lista la puede mostrar sin volver a medir
+
+    def test_un_tramo_ilegible_se_avisa(self):
+        A.guardar_parte("tramomalo01", "ridmalo001", "polo", 0, io.BytesIO(b"esto no es audio" * 50), 800, 0, "audio/webm")
+        A.guardar_parte("tramomalo01", "ridmalo001", "polo", 1, io.BytesIO(b"tampoco" * 50), 350, 0, "audio/webm")
+        A.guardar_parte("tramomalo01", "ridmalo001", "polo", 2, io.BytesIO(b"nada" * 50), 200, 0, "audio/webm")
+        A.ligar("ridmalo001", "sesion-malo")
+        v = A.verificar("sesion-malo", 60)
+        self.assertFalse(v["ok"])
+        self.assertTrue(any("no se pudo leer" in a for a in v["avisos"]))
+
+    def test_sin_audio_lo_dice(self):
+        v = A.verificar("nadie", 60)
+        self.assertEqual((v["ok"], v["tramos"]), (False, []))
+
+    def test_audio_suelto_se_lista_se_liga_y_se_descarga(self):
+        self._tramo("sueltoabc1", "ridsuelto01", 8, 0)
+        self.assertEqual([h["aid"] for h in A.huerfanos("polo")], ["sueltoabc1"])
+        self.assertEqual(A.huerfanos("otro"), [])
+        mp3 = A.exportar_tramo("sueltoabc1")
+        self.assertGreater(A._duracion(mp3), 6)
+        self.assertFalse(A.ligar_tramo("sueltoabc1", "sesion-x", "otro"))      # de otra persona no
+        self.assertTrue(A.ligar_tramo("sueltoabc1", "sesion-x", "polo"))
+        self.assertEqual(A.huerfanos("polo"), [])
+        self.assertEqual([t["aid"] for t in A.tramos("sesion-x")], ["sueltoabc1"])
+
+
 class PorElServidor(unittest.TestCase):
     """El camino completo por HTTP: partes → guardar la junta → pasada de voces (OpenAI simulado) → aplicar → borrar."""
     def test_camino_completo(self):
