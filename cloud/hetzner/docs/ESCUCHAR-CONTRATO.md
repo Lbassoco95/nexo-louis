@@ -98,3 +98,9 @@ Caso real: en una ventana baja la caja «Pregúntale…» quedaba cortada. Ahora
 - **Verificación automática al guardar:** a los 8 s se comprueba que cada tramo se pueda leer y que dure lo que debe (partes × 10 s); si algo falla llega una notificación «⚠️ Revisa el audio de la junta». En la junta abierta se ve el detalle por tramo.
 - **Audio suelto** (se grabó pero la junta nunca se guardó): aparece en Escuchar → «🎧 Audio sin junta guardada» con Ligar a una junta / Descargar / Borrar. Se borra solo a los 30 días sin tocarse.
 - **Revisión de voces:** las que fallaron por el límite de 1400 s de OpenAI se relanzan solas una vez, 90 s después de arrancar el servidor. `tools/verificar-junta.py` muestra la cobertura del audio y el estado de la revisión (lista, procesando «pieza X de N», o el error).
+
+## Micrófono: volumen y cortes
+- **Audio guardado:** al descargarlo y al mandarlo a OpenAI se le quita el rumble, se **amplifica hasta +25 dB** y se nivela (`AF_VOZ` en `donna_audio.py`), sin recortar. El audio original guardado no se modifica.
+- **En vivo:** ganancia automática (ya existente) para que la transcripción oiga voces bajas; el micrófono se pide sin cancelación de eco ni de ruido para no apagar a quien habla lejos.
+- **Si el sistema silencia o corta el micrófono** (otra app lo usa, AirPods, suspensión): la app avisa, lo **reabre sola** sin detener la escucha y abre un tramo de audio nuevo. Si solo hay ceros con la pista «viva» (AirPods en un cuarto callado también los dan) espera 90 s y reintenta cada 10 min como máximo.
+- Pendiente de diseño aprobado: `docs/BIBLIOTECA-DE-VOCES.md`.

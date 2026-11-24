@@ -1364,6 +1364,7 @@ async function laStart(onFrame,gateFn,cons){
   await LA.ctx.resume();
   LA.stream=(cons&&cons.stream)||await navigator.mediaDevices.getUserMedia({audio:Object.assign({echoCancellation:true,noiseSuppression:true,autoGainControl:true,channelCount:1},cons||{})});
   try{if(navigator.wakeLock)LA.wl=await navigator.wakeLock.request('screen')}catch(e){}
+  laVigilaPista(LA.stream);
   LA.src=LA.ctx.createMediaStreamSource(LA.stream);
   LA.proc=LA.ctx.createScriptProcessor(2048,1,1);
   const mute=LA.ctx.createGain();mute.gain.value=0;
@@ -1390,6 +1391,24 @@ function laPlay(int16){
 }
 const laSpeaking=()=>!!(LA.ctx&&LA.nextT>LA.ctx.currentTime+0.05);
 function laFlush(){LA.srcs.forEach(s=>{try{s.stop()}catch(e){}});LA.srcs=[];LA.nextT=0}
+function laVigilaPista(stream){                              // si el sistema silencia o corta el micrófono (otra app lo usa, AirPods, suspensión), se avisa y se reabre solo
+  const tr=stream&&stream.getAudioTracks&&stream.getAudioTracks()[0];if(!tr)return;
+  tr.onmute=()=>{LA.muted=true;if(typeof ES!=='undefined'&&ES.on)esSt('🎤 El micrófono se silenció (otra app lo está usando o se desconectó). Espero a que vuelva…')};
+  tr.onunmute=()=>{LA.muted=false;if(typeof ES!=='undefined'&&ES.on)esSt('🎤 El micrófono volvió')};
+  tr.onended=()=>{if(typeof ES!=='undefined'&&ES.on&&!ES.stop&&ES.fuente==='mic')laReabrir('el micrófono se cortó')};
+}
+async function laReabrir(why){                               // vuelve a pedir el micrófono SIN detener la escucha y abre un tramo de audio nuevo
+  if(LA.reabriendo||!LA.ctx||!(typeof ES!=='undefined'&&ES.on)||ES.fuente!=='mic')return;LA.reabriendo=true;
+  try{
+    const s=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:true,channelCount:1}});
+    try{LA.src&&LA.src.disconnect()}catch(e){}
+    try{LA.stream&&LA.stream.getTracks().forEach(t=>t.stop())}catch(e){}
+    LA.stream=s;laVigilaPista(s);LA.src=LA.ctx.createMediaStreamSource(s);LA.src.connect(LA.proc);LA.muted=false;LA.vivo=Date.now();
+    esAudioStart(esElapsed());
+    toast('🎤 Micrófono reconectado ('+(why||'')+')');clog('mic reabierto: '+(why||''));
+  }catch(e){toast('⚠️ No pude reabrir el micrófono: '+e.message);clog('mic no reabrió: '+e.message)}
+  setTimeout(()=>{LA.reabriendo=false},8000);
+}
 function laStop(){
   laFlush();LA.agc=false;
   try{if(LA.proc){LA.proc.onaudioprocess=null;LA.proc.disconnect()}}catch(e){}
@@ -1708,7 +1727,7 @@ async function esStart(fuente){
   api('/v1/app/personas').then(r=>{ES.pv=r.items||[]}).catch(()=>{});
   esSt('Conectando…');esUI();esConnect();
   ES.ping=setInterval(()=>esWsSend({t:'ping'}),20000);
-  ES.tick=setInterval(()=>{esVigilaTexto();if(LA.agc&&LA.st.g>=9&&LA.speech&&Date.now()-(ES.avisoBajo||0)>45000&&!ES.paused){ES.avisoBajo=Date.now();toast('🔈 Se oye muy bajo: acerca el teléfono a quien habla')}
+  ES.tick=setInterval(()=>{esVigilaMic();esVigilaTexto();if(LA.agc&&LA.st.g>=9&&LA.speech&&Date.now()-(ES.avisoBajo||0)>45000&&!ES.paused){ES.avisoBajo=Date.now();toast('🔈 Se oye muy bajo: acerca el teléfono a quien habla')}
     const l=$('#es-lvl');if(l)l.style.width=Math.min(100,Math.round(LA.level*500))+'%';esUI();if(ES.turns.length&&$('#v-es').classList.contains('on'))esPaint()},500);
 }
 function esAskStart(fuente){                                 // privacidad: confirmación del consentimiento, una vez por sesión de la app
@@ -1730,6 +1749,16 @@ async function esResumen(){
   try{const r=await api('/v1/app/translate/resumen',{method:'POST',body:JSON.stringify({texto:tx})});ES.sum=r.resumen;const box=$('#es-sumbox');box.hidden=false;box.innerHTML='<b>De qué hablan (hasta ahora)</b>'+md(r.resumen)}
   catch(e){toast('No pude resumir: '+e.message)}
   b.disabled=false;
+}
+function esVigilaMic(){                                     // micrófono MUERTO: si el sistema lo marca silenciado/cortado se actúa pronto; si solo hay ceros con la pista «viva» (AirPods en un cuarto callado también los dan) se espera mucho más y se reintenta pocas veces
+  if(!ES.on||ES.paused||ES.stop||ES.fuente!=='mic'||!LA.ctx)return;
+  const ahora=Date.now();
+  if((LA.raw||0)>=0.00015){LA.vivo=ahora;return}
+  if(!LA.vivo)LA.vivo=ahora;
+  const tr=LA.stream&&LA.stream.getAudioTracks&&LA.stream.getAudioTracks()[0];
+  const roto=!tr||tr.muted||tr.readyState!=='live';
+  const espera=roto?25000:90000,pausa=roto?60000:600000;
+  if(ahora-LA.vivo>espera&&ahora-(ES.avisoMic||0)>pausa){ES.avisoMic=ahora;esSt('⚠️ No llega señal del micrófono: lo reabro…');toast('⚠️ No llega señal del micrófono');laReabrir(roto?'micrófono silenciado o cortado':'sin señal '+Math.round(espera/1000)+' s')}
 }
 function esVigilaTexto(){                                   // si se OYEN voces pero la transcripción no llega (conexión caída en silencio), se avisa y se reconecta: el reloj no debe correr sin texto
   if(!ES.on||ES.paused||ES.stop||!LA.speech)return;

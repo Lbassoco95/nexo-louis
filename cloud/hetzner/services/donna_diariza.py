@@ -57,7 +57,7 @@ def preparar(audio: Path, trabajo: Path, max_s: float = None) -> list:
     tope = min(dur, max_s) if max_s is not None else dur                    # solo se preparan los primeros `max_s` segundos
     while ini < tope - 0.5:
         out = trabajo / ("pieza%02d.mp3" % k)
-        cmd = ["ffmpeg", "-nostdin", "-y", "-i", str(audio), "-ss", "%.2f" % ini, "-t", "%.2f" % paso, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", str(out)]
+        cmd = ["ffmpeg", "-nostdin", "-y", "-i", str(audio), "-ss", "%.2f" % ini, "-t", "%.2f" % paso, "-af", donna_audio.AF_VOZ, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", str(out)]
         r = subprocess.run(cmd, capture_output=True, timeout=1800)
         if r.returncode != 0 or not out.exists():
             raise ValueError("ffmpeg no pudo preparar el audio")

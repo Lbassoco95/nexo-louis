@@ -279,6 +279,42 @@ class Cobertura(unittest.TestCase):
         self.assertEqual([t["aid"] for t in A.tramos("sesion-x")], ["sueltoabc1"])
 
 
+class Amplificacion(unittest.TestCase):
+    """Una voz baja o lejana se guarda/descarga/manda a OpenAI AMPLIFICADA (el audio original no se toca)."""
+    def setUp(self):
+        limpiar()
+
+    def _volumen_medio_db(self, ruta) -> float:
+        r = subprocess.run(["ffmpeg", "-nostdin", "-i", str(ruta), "-af", "volumedetect", "-f", "null", "-"], capture_output=True, text=True)
+        import re
+        return float(re.search(r"mean_volume: (-?[\d.]+) dB", r.stderr).group(1))
+
+    def test_el_audio_exportado_y_el_de_openai_suenan_mas_fuerte_que_el_original(self):
+        # voz muy baja: seno al 2 % de volumen (≈ -37 dB de pico)
+        p = TMP / "baja.webm"
+        subprocess.run(["ffmpeg", "-nostdin", "-y", "-f", "lavfi", "-i", "sine=frequency=220:duration=12", "-af", "volume=0.02", "-c:a", "libopus", "-b:a", "24k", str(p)], capture_output=True, check=True)
+        d = p.read_bytes()
+        A.guardar_parte("bajoaud001", "ridbajo001", "polo", 0, io.BytesIO(d), len(d), 0, "audio/webm")
+        A.ligar("ridbajo001", "sesion-baja")
+        original = self._volumen_medio_db(A.ensamblar("bajoaud001"))
+        exportado = self._volumen_medio_db(A.exportar("sesion-baja"))
+        piezas = DZ.preparar(A.ensamblar("bajoaud001"), TMP / "wamp")
+        para_openai = self._volumen_medio_db(piezas[0][1])
+        self.assertLess(original, -30)                                         # el original es de verdad bajito
+        self.assertGreater(exportado - original, 12)                           # la descarga sube más de 12 dB
+        self.assertGreater(para_openai - original, 12)                         # y lo que recibe OpenAI también
+        self.assertLess(exportado, -0.5)                                       # sin recortar
+        self.assertAlmostEqual(self._volumen_medio_db(A.ensamblar("bajoaud001")), original, delta=0.5)   # el original guardado no cambió
+
+    def test_una_voz_normal_no_se_distorsiona(self):
+        p = TMP / "normal.webm"
+        subprocess.run(["ffmpeg", "-nostdin", "-y", "-f", "lavfi", "-i", "sine=frequency=220:duration=8", "-af", "volume=0.5", "-c:a", "libopus", "-b:a", "24k", str(p)], capture_output=True, check=True)
+        d = p.read_bytes()
+        A.guardar_parte("normalaud1", "ridnormal01", "polo", 0, io.BytesIO(d), len(d), 0, "audio/webm")
+        A.ligar("ridnormal01", "sesion-normal")
+        self.assertLess(self._volumen_medio_db(A.exportar("sesion-normal")), -0.5)
+
+
 class PorElServidor(unittest.TestCase):
     """El camino completo por HTTP: partes → guardar la junta → pasada de voces (OpenAI simulado) → aplicar → borrar."""
     def test_camino_completo(self):

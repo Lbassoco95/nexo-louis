@@ -27,6 +27,8 @@ _ID = re.compile(r"^[a-z0-9]{6,32}$")
 PART_MAX = 8 * 1024 * 1024
 HUERFANO_DIAS = 30                 # audio que nunca se ligó a una junta guardada (la pestaña se cerró): se conserva 30 días desde su última parte
 TIMESLICE_S = 10
+# Voz baja o lejana: quita el rumble, sube el volumen (hasta +25 dB) y nivela los cambios entre quien habla cerca y quien habla lejos, sin recortar.
+AF_VOZ = "highpass=f=70,dynaudnorm=f=200:g=21:m=25:p=0.95:s=6,alimiter=limit=0.95"
 
 
 def valido(x) -> bool:
@@ -255,7 +257,9 @@ def exportar(sesion_id: str) -> Path:
     for f in fuentes:
         cmd += ["-i", str(f)]
     if len(fuentes) > 1:
-        cmd += ["-filter_complex", "".join("[%d:a]" % i for i in range(len(fuentes))) + "concat=n=%d:v=0:a=1[out]" % len(fuentes), "-map", "[out]"]
+        cmd += ["-filter_complex", "".join("[%d:a]" % i for i in range(len(fuentes))) + "concat=n=%d:v=0:a=1[c];[c]%s[out]" % (len(fuentes), AF_VOZ), "-map", "[out]"]
+    else:
+        cmd += ["-af", AF_VOZ]
     cmd += ["-vn", "-ac", "1", "-ar", "22050", "-b:a", "48k", str(mp3)]
     r = subprocess.run(cmd, capture_output=True, timeout=3600)
     if r.returncode != 0 or not mp3.exists():
@@ -411,7 +415,7 @@ def exportar_tramo(aid: str) -> Path:
     if mp3.exists():
         return mp3
     fuente = ensamblar(aid)
-    r = subprocess.run(["ffmpeg", "-nostdin", "-y", "-i", str(fuente), "-vn", "-ac", "1", "-ar", "22050", "-b:a", "48k", str(mp3)], capture_output=True, timeout=3600)
+    r = subprocess.run(["ffmpeg", "-nostdin", "-y", "-i", str(fuente), "-af", AF_VOZ, "-vn", "-ac", "1", "-ar", "22050", "-b:a", "48k", str(mp3)], capture_output=True, timeout=3600)
     if r.returncode != 0 or not mp3.exists():
         raise ValueError("no pude preparar el audio para descargarlo")
     os.chmod(mp3, 0o600)
