@@ -491,6 +491,14 @@ body.dkfull #dock{width:calc(100vw - 32px);left:16px;z-index:34}body.dkfull.dock
 /* ---------- Escuchar y transcribir ---------- */
 .chk{display:flex;gap:12px;align-items:flex-start;font-size:14.5px;cursor:pointer;color:var(--tx);margin:0}.chk input{margin-top:1px}
 #v-es{overflow:hidden}
+#es-remoto{flex:0 0 auto}#es-drafts{flex:0 1 auto;min-height:0;overflow-y:auto;padding-right:6px;overscroll-behavior:contain}
+.escol.conlista #es-drafts{flex:1 1 auto}.escol.conlista .esidle{display:none}
+@media (hover:hover) and (pointer:fine){
+  #es-drafts,#es-box,.sheet .bd,.aslog,.asnotas,.esside,.esvoz,.scroll{scrollbar-width:thin;scrollbar-color:rgba(90,100,140,.55) rgba(120,130,170,.12)}
+  #es-drafts::-webkit-scrollbar,#es-box::-webkit-scrollbar,.sheet .bd::-webkit-scrollbar,.aslog::-webkit-scrollbar,.asnotas::-webkit-scrollbar,.esside::-webkit-scrollbar,.esvoz::-webkit-scrollbar,.scroll::-webkit-scrollbar{width:12px}
+  #es-drafts::-webkit-scrollbar-thumb,#es-box::-webkit-scrollbar-thumb,.sheet .bd::-webkit-scrollbar-thumb,.aslog::-webkit-scrollbar-thumb,.asnotas::-webkit-scrollbar-thumb,.esside::-webkit-scrollbar-thumb,.esvoz::-webkit-scrollbar-thumb,.scroll::-webkit-scrollbar-thumb{background:rgba(90,100,140,.5);border-radius:10px;border:3px solid transparent;background-clip:content-box;min-height:40px}
+  #es-drafts::-webkit-scrollbar-track,#es-box::-webkit-scrollbar-track,.sheet .bd::-webkit-scrollbar-track,.aslog::-webkit-scrollbar-track,.asnotas::-webkit-scrollbar-track,.esside::-webkit-scrollbar-track,.esvoz::-webkit-scrollbar-track,.scroll::-webkit-scrollbar-track{background:rgba(120,130,170,.12);border-radius:10px}
+}
 .esgrid{display:flex;gap:16px;height:100%;padding:16px 18px 18px;min-height:0}
 .escol{flex:1;min-width:0;display:flex;flex-direction:column;gap:12px;min-height:0}
 .eshead h2{margin:0;font-size:20px;font-weight:650}.eshead .sub{margin-top:2px}
@@ -1694,7 +1702,7 @@ async function esStart(fuente){
       }
     },()=>false,cons);
   }catch(e){esSt(e.name==='NotAllowedError'?'Permiso denegado. Actívalo en los ajustes del teléfono o del navegador.':'No pude abrir el micrófono: '+e.message);clog('escuchar mic: '+e.name+' '+e.message);return}
-  ES.on=true;ES.paused=false;const _off=ES.resumeMs;ES.t0=ES.resumeMs?Date.now()-ES.resumeMs:0;ES.resumeMs=0;esAudioStart(_off);ES.pausedMs=0;ES.retry=0;ES.lastVoice=Date.now();
+  ES.on=true;ES.paused=false;esDraftsClear();const _off=ES.resumeMs;ES.t0=ES.resumeMs?Date.now()-ES.resumeMs:0;ES.resumeMs=0;esAudioStart(_off);ES.pausedMs=0;ES.retry=0;ES.lastVoice=Date.now();
   clearInterval(ES.dsave);ES.dsave=setInterval(()=>esDraftSave(false),20000);
   api('/v1/app/personas').then(r=>{ES.pv=r.items||[]}).catch(()=>{});
   esSt('Conectando…');esUI();esConnect();
@@ -1769,9 +1777,10 @@ function esDraftLoad(d){                                    // vuelve a poner la
   ES.inI=ES.outI=ES.turns.length;ES.liveId=d.live_id||'';ES.draftId=d.id||'';ES.replaceSid=d.reemplaza||'';ES.parteTitulo=d.titulo||'';ES.parteNota=d.nota_origen||'';ES.resumeMs=(d.duracion||0)*1000;ES.stick=true;_dbLast='';
   $('#es-idle')&&($('#es-idle').hidden=true);const bx=$('#es-box');if(bx)bx.hidden=false;esPaint();esUI();
 }
+function esDraftsClear(){const el=$('#es-drafts');if(el)el.innerHTML='';const c=document.querySelector('.escol');if(c)c.classList.remove('conlista')}
 async function esDraftsPaint(){
   const el=$('#es-drafts');if(!el)return;
-  if(ES.on||ES.turns.length){el.innerHTML='';return}
+  if(ES.on||ES.turns.length){esDraftsClear();return}
   let L=[],G=[],R=[];try{L=(await api('/v1/app/escucha/borradores')).items||[]}catch(e){return}
   try{R=(await api('/v1/app/escucha/rescates')).items||[]}catch(e){}
   let ACT=new Set();try{ACT=new Set(((await api('/v1/app/escucha/activas')).items||[]).map(x=>x.id))}catch(e){}
@@ -1783,6 +1792,7 @@ async function esDraftsPaint(){
   if(DUP.sobran)el.insertAdjacentHTML('beforeend',`<div class="card" style="margin:8px 0;border:1px solid var(--ctl)"><div class="row"><b>🧹 Hay ${DUP.sobran} copia${DUP.sobran>1?'s':''} duplicada${DUP.sobran>1?'s':''}</b></div><div class="sub">La misma junta se guardó varias veces. Elimino las copias y conservo la que tiene el audio (o la más reciente). Nunca borro una con audio.</div><div class="nq"><button id="dup-go">🧹 Eliminar duplicadas</button></div></div>`);
   {const dg=$('#dup-go');if(dg)dg.onclick=async()=>{if(!confirm('¿Eliminar '+DUP.sobran+' copia(s) duplicada(s)? Se conserva la que tiene audio.'))return;try{const r=await api('/v1/app/escucha/duplicadas',{method:'POST',body:'{}'});toast('Eliminé '+r.eliminadas+' copia(s)');esDraftsPaint()}catch(e){toast('⚠️ '+e.message)}}}
   if(G.length)el.insertAdjacentHTML('beforeend','<details class="agg" open style="margin:8px 0"><summary class="sec">Juntas guardadas · retomar y complementar</summary>'+G.map(s=>`<div class="card" data-gs="${esc(s.id)}" style="margin:6px 0"><div class="row"><b>${esc((s.titulo||'').replace('Transcripción Escuchar ','Junta '))}</b><span class="sub">${esc(s.fecha)}</span></div><div class="sub">${s.lineas} intervenciones · ${Math.max(1,Math.round(s.duracion/60))} min</div><div class="nq"><button data-g="abrir">👁️ Abrir</button><button data-g="seguir">▶︎ Retomar y complementar</button><button data-g="p2" data-t="${esc(s.titulo||'')}">➕ Parte 2</button></div>${(s.audio&&s.audio.tramos)?'<div class="sub">🎧 con audio · '+Math.round(s.audio.bytes/1048576)+' MB</div>':''}</div>`).join('')+'</details>');
+  {const col=document.querySelector('.escol');if(col)col.classList.toggle('conlista',el.children.length>0)}
   $$('#es-drafts [data-gs] [data-g]').forEach(btn=>btn.onclick=()=>{const sid=btn.closest('[data-gs]').dataset.gs;btn.dataset.g==='p2'?esParte2(btn.dataset.t):btn.dataset.g==='abrir'?esJunta(sid):esRetomarGuardada(sid)});
   $$('#es-drafts [data-b]').forEach(c=>c.querySelectorAll('[data-a]').forEach(btn=>btn.onclick=async()=>{
     const id=c.dataset.b,a=btn.dataset.a;
@@ -1844,18 +1854,22 @@ async function esJunta(sid){                                 // abrir una junta 
     `<div class="sub" style="margin:4px 0 8px">${d.voces.map(v=>esc(v.nombre)+' ('+v.n+')').join(' · ')||'sin voces identificadas'}</div>`+
     `<div class="nq" style="margin-bottom:8px"><button id="j-min">⬇️ Descargar minuta (.md)</button>${a.tramos?'<button id="j-play">🎧 Escuchar la grabación</button><button id="j-aud">⬇️ Descargar audio</button>':''}</div>`+
     `<div id="j-player"></div>`+
+    `<div class="nq" id="j-nav" style="position:sticky;top:0;z-index:2;padding:6px 0"><button data-to="j-res">Resumen</button><button data-to="j-notas">Notas</button><button data-to="j-tx-t">Transcripción</button><button id="j-ini">⬆︎ Inicio</button><button id="j-fin">⬇︎ Final</button></div>`+
     (a.tramos?`<div class="sub">🎧 Audio guardado: ${Math.round(a.bytes/1048576)} MB${a.vence?' · se borra el '+new Date(a.vence*1000).toLocaleDateString('es-MX'):''}</div>`:'<div class="sub">Sin audio guardado en esta junta.'+(conAud?' <b>Esta es una copia duplicada:</b> el audio está en otra copia de la misma junta.</div><div class="nq"><button id="j-copia">🎧 Abrir la copia que tiene el audio</button></div>':'</div>'))+
-    (d.resumen?`<div class="sec" style="margin-top:12px">Resumen</div><div class="card">${md(d.resumen)}</div>`:'')+
-    (d.notas.length?`<div class="sec" style="margin-top:12px">Notas · ${d.notas.length}</div>`+d.notas.map(n=>`<div class="sub" style="margin:3px 0">${n.hora?'['+esc(n.hora)+'] ':''}${esc(n.texto)}</div>`).join(''):'')+
+    (d.resumen?`<div class="sec" id="j-res" style="margin-top:12px">Resumen</div><div class="card">${md(d.resumen)}</div>`:'')+
+    (d.notas.length?`<div class="sec" id="j-notas" style="margin-top:12px">Notas · ${d.notas.length}</div>`+d.notas.map(n=>`<div class="sub" style="margin:3px 0">${n.hora?'['+esc(n.hora)+'] ':''}${esc(n.texto)}</div>`).join(''):'')+
     (d.materiales.length?`<div class="sec" style="margin-top:12px">📎 Materiales · ${d.materiales.length}</div>`+d.materiales.map(m=>`<div class="sub" style="margin:3px 0">${esc(m.nombre)}</div>`).join(''):'')+
     (d.tareas.length?`<div class="sec" style="margin-top:12px">Tareas propuestas · ${d.tareas.length}</div>`+d.tareas.map(t=>`<div class="sub" style="margin:3px 0">• ${esc(t.titulo)}${t.responsable?' — '+esc(t.responsable):''}</div>`).join(''):'')+
-    `<div class="sec" style="margin-top:12px">Transcripción</div><div id="j-tx"></div>`+
+    `<div class="sec" id="j-tx-t" style="margin-top:12px">Transcripción</div><div id="j-tx"></div>`+
     `<div class="nq" style="margin-top:12px"><button id="j-voz">🎙️ Revisión de voces</button><button id="j-rev">🔎 Revisión final</button><button id="j-seg">▶︎ Retomar y complementar</button><button id="j-p2">➕ Parte 2</button><button id="j-del">🗑️ Eliminar esta junta</button></div>`;
   let mostradas=0;const tx=$('#j-tx'),paso=150;
   const mas=()=>{const hasta=Math.min(d.lineas.length,mostradas+paso);tx.insertAdjacentHTML('beforeend',d.lineas.slice(mostradas,hasta).map(l=>`<p class="sub" style="margin:6px 0"><b>[${esc(l.hora)}] ${esc(l.quien)}:</b> ${esc(l.texto)}</p>`).join(''));mostradas=hasta;
     const b=$('#j-mas');if(b)b.remove();if(mostradas<d.lineas.length){tx.insertAdjacentHTML('beforeend','<div class="nq" id="j-mas"><button>Mostrar más ('+(d.lineas.length-mostradas)+' restantes)</button></div>');$('#j-mas button').onclick=mas}};
   mas();
   {const jc=$('#j-copia');if(jc)jc.onclick=()=>esJunta(conAud.conservar)}
+  document.querySelectorAll('#j-nav [data-to]').forEach(b=>b.onclick=()=>{const el=document.getElementById(b.dataset.to);if(el)el.scrollIntoView({behavior:'smooth',block:'start'});else toast('Esta junta no tiene esa sección')});
+  $('#j-ini').onclick=()=>{$('#sh-b').scrollTo({top:0})};
+  $('#j-fin').onclick=()=>{while(mostradas<d.lineas.length)mas();const b=$('#sh-b');b.scrollTo({top:b.scrollHeight})};
   $('#j-min').onclick=async()=>{try{const b=await esBajar('/v1/app/escucha/descargar?sesion='+encodeURIComponent(sid)+'&que=minuta','', 'Preparando la minuta…');esGuardarBlob(b,'minuta-'+d.fecha+'.md')}catch(e){toast('⚠️ '+e.message)}};
   if(a.tramos){
     $('#j-aud').onclick=async()=>{try{const b=await esBajar('/v1/app/escucha/descargar?sesion='+encodeURIComponent(sid)+'&que=audio','', 'Preparando el audio (puede tardar un minuto)…');esGuardarBlob(b,'junta-'+d.fecha+'.mp3')}catch(e){toast('⚠️ '+e.message)}};
