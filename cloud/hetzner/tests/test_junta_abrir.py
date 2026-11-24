@@ -81,6 +81,45 @@ class Datos(unittest.TestCase):
             A.exportar(self.sid)
 
 
+class Duplicadas(unittest.TestCase):
+    def setUp(self):
+        limpiar()
+
+    def _copias(self, n, usuario="polo"):
+        ids = []
+        for _ in range(n):
+            ids.append(crear_junta(usuario))
+            time.sleep(1.1)                                   # distinta marca de tiempo
+        return ids
+
+    def test_conserva_la_que_tiene_audio_y_nunca_borra_una_con_audio(self):
+        a, b, c, d = self._copias(4)
+        x = tono(5, 250)
+        A.guardar_parte("audcopia02", "ridcopia02", "polo", 0, io.BytesIO(x), len(x), 0, "audio/webm")
+        A.ligar("ridcopia02", b)                              # el audio quedó en la segunda copia (no en la más reciente)
+        r = M.duplicadas("polo")
+        self.assertEqual(r["sobran"], 3)
+        self.assertEqual(r["grupos"][0]["conservar"], b)
+        self.assertEqual(set(r["grupos"][0]["borrar"]), {a, c, d})
+        self.assertEqual(M.limpiar_duplicadas("polo"), 3)
+        self.assertEqual([s["id"] for s in P.sesiones("polo")], [b])
+        self.assertEqual(A.tramos(b)[0]["aid"], "audcopia02")             # el audio sigue ahí
+        self.assertEqual(M.duplicadas("polo")["sobran"], 0)
+
+    def test_sin_audio_conserva_la_mas_reciente_y_otra_junta_distinta_no_se_toca(self):
+        a, b = self._copias(2)
+        otra = P.guardar_sesion("Otra junta", 600, [], [{"t": "00:01", "voz": 0, "es": "x", "idioma": "es"}], usuario="polo")["sesion_id"]
+        r = M.duplicadas("polo")
+        self.assertEqual((r["grupos"][0]["conservar"], r["grupos"][0]["borrar"]), (b, [a]))
+        M.limpiar_duplicadas("polo")
+        self.assertEqual({s["id"] for s in P.sesiones("polo")}, {b, otra})
+
+    def test_solo_las_del_usuario(self):
+        self._copias(2, "otro")
+        self.assertEqual(M.duplicadas("polo")["sobran"], 0)
+        self.assertEqual(M.duplicadas("otro")["sobran"], 1)
+
+
 class PorElServidor(unittest.TestCase):
     def setUp(self):
         limpiar()

@@ -1220,6 +1220,9 @@ class Handler(BaseHTTPRequestHandler):
                         self.send_header("Content-Length", str(len(cuerpo)))
                         self.end_headers()
                         self.wfile.write(cuerpo)
+                elif _r0 == "/v1/app/escucha/duplicadas":                                      # juntas guardadas varias veces
+                    import donna_minuta
+                    self._send_json(200, donna_minuta.duplicadas(self._media_user()))
                 elif _r0 == "/v1/app/escucha/activas":                                         # escuchas activas (para detenerlas desde cualquier dispositivo)
                     import donna_remoto
                     self._send_json(200, {"items": donna_remoto.activas(self._media_user())})
@@ -2889,6 +2892,12 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json(400, {"error": "acción no válida"})
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
+            return
+        if self.path == "/v1/app/escucha/duplicadas":                # «Eliminar duplicadas»: conserva la que tiene audio (o la más reciente) y nunca borra una con audio
+            import donna_minuta
+            n = donna_minuta.limpiar_duplicadas(self._media_user())
+            log.info("escucha: %d junta(s) duplicadas eliminadas", n)
+            self._send_json(200, {"ok": True, "eliminadas": n})
             return
         if self.path == "/v1/app/escucha/eliminar":                  # borrar una junta guardada (p. ej. una copia duplicada); el audio solo si se pide
             import donna_personas, donna_audio

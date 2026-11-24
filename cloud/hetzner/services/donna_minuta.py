@@ -75,3 +75,31 @@ def minuta_md(sesion_id: str, usuario: str = "admin"):
     L.append("_Generado por Donna el %s. El audio de la junta se descarga aparte._" % time.strftime("%Y-%m-%d %H:%M"))
     nombre = re.sub(r"[^\w.-]+", "-", "%s-%s" % (d["titulo"].replace("Transcripción Escuchar ", "junta "), d["fecha"]), flags=re.UNICODE).strip("-")[:80] or "junta"
     return nombre + ".md", "\n".join(L) + "\n"
+
+
+def duplicadas(usuario: str = "admin") -> dict:
+    """Juntas guardadas varias veces (mismo título, duración y número de intervenciones). Se conserva UNA por grupo: la que tiene audio y, si ninguna, la más reciente.
+    Nunca propone borrar una junta con audio. → {grupos:[{conservar, borrar:[ids]}], sobran:n}"""
+    import donna_audio
+    grupos = {}
+    for s in donna_personas.sesiones(usuario, 200):
+        grupos.setdefault((s["titulo"], s["duracion"], s["lineas"]), []).append(s)
+    out = []
+    for g in grupos.values():
+        if len(g) < 2:
+            continue
+        con_audio = [s for s in g if donna_audio.resumen(s["id"])["tramos"] > 0]
+        conservar = max(con_audio, key=lambda s: s["ts"]) if con_audio else max(g, key=lambda s: s["ts"])
+        borrar = [s["id"] for s in g if s["id"] != conservar["id"] and donna_audio.resumen(s["id"])["tramos"] == 0]
+        if borrar:
+            out.append({"conservar": conservar["id"], "borrar": borrar})
+    return {"grupos": out, "sobran": sum(len(x["borrar"]) for x in out)}
+
+
+def limpiar_duplicadas(usuario: str = "admin") -> int:
+    n = 0
+    for gr in duplicadas(usuario)["grupos"]:
+        for sid in gr["borrar"]:
+            donna_personas.eliminar_sesion(sid, usuario)
+            n += 1
+    return n
