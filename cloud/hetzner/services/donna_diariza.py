@@ -255,6 +255,8 @@ def estado(sesion_id: str) -> dict:
         return {"estado": "sin_audio" if not a["tramos"] else "pendiente", "audio": a}
     d = json.loads(r["datos"] or "{}")
     d.update(estado=r["estado"], ts=r["ts"], audio=donna_audio.resumen(sesion_id))
+    if r["estado"] == "lista":
+        d["voces"] = voces_de(sesion_id)
     return d
 
 
@@ -311,8 +313,55 @@ def procesar(sesion_id: str, llamar=None, key: str = None, trabajo_base: Path = 
         shutil.rmtree((trabajo_base or donna_audio.DIR.parent / "diariza_tmp") / sesion_id, ignore_errors=True)
 
 
-def aplicar(sesion_id: str, ids=None, usuario: str = "admin") -> dict:
-    """Aplica los cambios propuestos (todos o los ids elegidos): la intervención pasa a la voz propuesta y a su persona, si ya tiene nombre."""
+def voces_de(sesion_id: str) -> list:
+    """Las voces de la junta (para elegir a cuál pasa un turno): [{n, nombre, turnos}]."""
+    donna_personas.asegurar_esquema()
+    pc = donna_personas._c()
+    try:
+        return [{"n": int(r["voz_n"] or 0), "nombre": r["nombre"] or "", "turnos": r["k"]} for r in pc.execute(
+            "SELECT i.voz_n, MAX(p.nombre) AS nombre, COUNT(*) AS k FROM intervenciones i LEFT JOIN personas p ON p.id=i.persona_id WHERE i.sesion_id=? GROUP BY i.voz_n ORDER BY i.voz_n", (sesion_id,))]
+    finally:
+        pc.close()
+
+
+def deshacer(sesion_id: str, usuario: str = "admin") -> dict:
+    """Regresa cada turno aplicado a la voz y persona que tenía ANTES de aplicar (solo los que se aplicaron con esta versión, que guarda lo anterior)."""
+    c = _c()
+    try:
+        r = c.execute("SELECT estado, datos FROM junta_voces WHERE sesion_id=?", (sesion_id,)).fetchone()
+        if not r or r["estado"] != "lista":
+            raise ValueError("No hay una revisión de voces para esta junta.")
+        d = json.loads(r["datos"])
+        pc = donna_personas._c()
+        try:
+            ses = pc.execute("SELECT usuario FROM sesiones_escucha WHERE id=?", (sesion_id,)).fetchone()
+            if not ses or (ses["usuario"] != usuario and usuario != "admin"):
+                raise ValueError("junta no encontrada")
+            n = sin = 0
+            for x in d.get("cambios", []):
+                if not x.get("aplicado"):
+                    continue
+                if "antes_voz" not in x:
+                    sin += 1
+                    continue
+                pc.execute("UPDATE intervenciones SET voz_n=?, persona_id=? WHERE id=? AND sesion_id=?", (x["antes_voz"], x.get("antes_persona"), x["id"], sesion_id))
+                for k in ("aplicado", "antes_voz", "antes_persona", "aplicado_a"):
+                    x.pop(k, None)
+                n += 1
+            pc.commit()
+        finally:
+            pc.close()
+        c.execute("UPDATE junta_voces SET datos=? WHERE sesion_id=?", (json.dumps(d, ensure_ascii=False), sesion_id))
+        c.commit()
+        return {"deshechos": n, "sin_respaldo": sin}
+    finally:
+        c.close()
+
+
+def aplicar(sesion_id: str, ids=None, usuario: str = "admin", destinos=None) -> dict:
+    """Aplica los cambios propuestos (todos o los ids elegidos): la intervención pasa a la voz propuesta (o a la que Polo eligió en `destinos` {id: voz}) y a su
+    persona, si ya tiene nombre. Guarda la voz y persona anteriores de cada turno para poder «Deshacer»."""
+    destinos = {int(k): int(v) for k, v in (destinos or {}).items() if str(v).lstrip("-").isdigit() and int(v) >= 0}
     c = _c()
     try:
         r = c.execute("SELECT estado, datos FROM junta_voces WHERE sesion_id=?", (sesion_id,)).fetchone()
@@ -331,8 +380,12 @@ def aplicar(sesion_id: str, ids=None, usuario: str = "admin") -> dict:
                 voz_persona.setdefault(f["voz_n"], f["persona_id"])
             n = 0
             for x in cambios:
-                pc.execute("UPDATE intervenciones SET voz_n=?, persona_id=? WHERE id=? AND sesion_id=?", (x["a"], voz_persona.get(x["a"]), x["id"], sesion_id))
-                x["aplicado"] = True
+                a = destinos.get(x["id"], x["a"])
+                antes = pc.execute("SELECT voz_n, persona_id FROM intervenciones WHERE id=? AND sesion_id=?", (x["id"], sesion_id)).fetchone()
+                if not antes:
+                    continue
+                pc.execute("UPDATE intervenciones SET voz_n=?, persona_id=? WHERE id=? AND sesion_id=?", (a, voz_persona.get(a), x["id"], sesion_id))
+                x.update(aplicado=True, aplicado_a=a, antes_voz=int(antes["voz_n"] or 0), antes_persona=antes["persona_id"])
                 n += 1
             pc.commit()
         finally:

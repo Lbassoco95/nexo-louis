@@ -1242,6 +1242,11 @@ class Handler(BaseHTTPRequestHandler):
                             self._send_json(404, {"error": "audio no encontrado"})
                         else:
                             self._enviar_archivo(donna_audio.exportar_tramo(aid6), "audio/mpeg", "audio-%s.mp3" % aid6[:8])
+                    elif (_q6.get("que") or [""])[0] == "clip":                  # un fragmento corto de un momento de la junta (para comprobar quién habla)
+                        try:
+                            self._enviar_archivo(donna_audio.clip(sid6, (_q6.get("hora") or [""])[0]), "audio/mpeg", "fragmento.mp3")
+                        except ValueError as e:
+                            self._send_json(404, {"error": str(e)})
                     elif (_q6.get("que") or [""])[0] == "audio":
                         try:
                             mp3 = donna_audio.exportar(sid6)
@@ -2941,7 +2946,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._sesion_mia(sid):
                     self._send_json(404, {"error": "junta no encontrada"})
                 elif acc == "aplicar":
-                    self._send_json(200, {"ok": True, **donna_diariza.aplicar(sid, body.get("ids") if isinstance(body.get("ids"), list) else "todas", u)})
+                    self._send_json(200, {"ok": True, **donna_diariza.aplicar(sid, body.get("ids") if isinstance(body.get("ids"), list) else "todas", u, body.get("destinos") if isinstance(body.get("destinos"), dict) else None)})
+                elif acc == "deshacer":
+                    self._send_json(200, {"ok": True, **donna_diariza.deshacer(sid, u)})
                 elif acc == "borrar_audio":
                     self._send_json(200, {"ok": True, "borrados": donna_audio.borrar(sid, u)})
                 elif acc == "procesar":

@@ -269,6 +269,28 @@ def exportar(sesion_id: str) -> Path:
     return mp3
 
 
+def clip(sesion_id: str, hora: str, antes_s: float = 3.0, dur_s: float = 16.0) -> Path:
+    """Un fragmento corto (MP3) del momento «MM:SS» del reloj de la junta, para ESCUCHAR y comprobar quién habla. Se busca el tramo que cubre ese momento
+    (cada tramo tiene su propio inicio en el reloj de la junta, así que no se usa la posición del audio descargado completo, que no tiene los huecos)."""
+    t_s = _ms_hora(hora) / 1000.0
+    for t in tramos(sesion_id):
+        ini = t["offset_ms"] / 1000.0
+        dur = duracion_tramo(t["aid"])
+        if dur > 0 and ini <= t_s <= ini + dur:
+            desde = max(0.0, t_s - ini - antes_s)
+            destino = DIR / "export"
+            destino.mkdir(parents=True, exist_ok=True, mode=0o700)
+            mp3 = destino / ("c-%s-%d.mp3" % (sesion_id, int(t_s * 1000)))             # el id de la junta va en el nombre: borrar() la quita junto con el audio
+            if not mp3.exists():
+                r = subprocess.run(["ffmpeg", "-nostdin", "-y", "-ss", "%.2f" % desde, "-t", "%.2f" % dur_s, "-i", str(ensamblar(t["aid"])), "-af", AF_VOZ, "-vn", "-ac", "1", "-ar", "22050", "-b:a", "48k", str(mp3)],
+                                   capture_output=True, timeout=300)
+                if r.returncode != 0 or not mp3.exists():
+                    raise ValueError("no pude preparar ese fragmento")
+                os.chmod(mp3, 0o600)
+            return mp3
+    raise ValueError("Ese momento no tiene audio guardado (la grabación empezó después o hubo un hueco).")
+
+
 def borrar(sesion_o_aid: str, usuario: str) -> int:
     """Borra el audio (por id de tramo o de sesión). Devuelve cuántos tramos."""
     c = _c()

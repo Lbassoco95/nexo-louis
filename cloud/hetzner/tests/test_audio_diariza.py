@@ -158,6 +158,38 @@ class Pasada(unittest.TestCase):
         with self.assertRaises(ValueError):
             DZ.aplicar(self.sid, "todas", "otro")
 
+    def voces(self):
+        return {f["hora"]: (f["voz_n"], f["persona_id"]) for f in P._c().execute("SELECT hora, voz_n, persona_id FROM intervenciones WHERE sesion_id=?", (self.sid,))}
+
+    def test_elegir_otra_voz_y_deshacer(self):
+        r = DZ.procesar(self.sid, llamar=self.falso, key="k", trabajo_base=TMP / "w")
+        antes = self.voces()
+        ids = {c["hora"]: c["id"] for c in r["cambios"]}
+        self.assertEqual({v["n"] for v in DZ.estado(self.sid)["voces"]}, {1, 2})                      # la pantalla ofrece las voces de la junta
+        DZ.aplicar(self.sid, [ids["00:12"]], "polo", {ids["00:12"]: 2})                               # Polo escuchó y eligió la Voz 2, no la propuesta
+        self.assertEqual(self.voces()["00:12"][0], 2)
+        self.assertEqual(self.voces()["00:22"], antes["00:22"])                                       # lo no marcado no se toca
+        DZ.aplicar(self.sid, "todas", "polo")                                                         # el resto se aplica como se propuso
+        self.assertEqual(self.voces()["00:22"][0], 1)
+        self.assertEqual(DZ.deshacer(self.sid, "polo"), {"deshechos": 2, "sin_respaldo": 0})
+        self.assertEqual(self.voces(), antes)                                                         # todo regresó, voz y persona
+        self.assertEqual(DZ.aplicar(self.sid, "todas", "polo")["aplicados"], 2)                       # y se puede volver a aplicar
+        with self.assertRaises(ValueError):
+            DZ.deshacer(self.sid, "otro")
+
+    def test_fragmento_del_momento_usa_el_reloj_de_cada_tramo(self):
+        subir("aud999abc", "rid999abc", audio_de_prueba(30), offset=100000)                           # segundo tramo: empieza en 01:40 del reloj de la junta
+        A.ligar("rid999abc", self.sid)
+        mp3 = A.clip(self.sid, "00:12")
+        self.assertTrue(mp3.exists())
+        self.assertGreater(A._duracion(mp3), 10)
+        self.assertLess(A._duracion(mp3), 18)
+        self.assertTrue(A.clip(self.sid, "01:45").exists())                                           # cae en el segundo tramo
+        with self.assertRaises(ValueError):
+            A.clip(self.sid, "01:00")                                                                 # hueco: no hay audio de ese momento
+        A.borrar(self.sid, "polo")
+        self.assertEqual(list((A.DIR / "export").glob("c-*")), [])                                    # al borrar el audio se van también los fragmentos
+
 
 class Limites(unittest.TestCase):
     """OpenAI acepta ~1400 s por llamada: el audio se parte en piezas cortas SIEMPRE; tope de 4 h; las etiquetas de cada tramo/pieza se emparejan por separado."""
