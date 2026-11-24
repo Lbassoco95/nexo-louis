@@ -233,6 +233,33 @@ def ensamblar(aid: str) -> Path:
     return union
 
 
+def exportar(sesion_id: str) -> Path:
+    """Un solo MP3 con TODOS los tramos de la junta, en orden (para descargar). Se guarda en caché hasta que cambie el audio."""
+    tr = tramos(sesion_id)
+    if not tr:
+        raise ValueError("esta junta no tiene audio guardado")
+    destino = DIR / "export"
+    destino.mkdir(parents=True, exist_ok=True, mode=0o700)
+    firma = "-".join("%s:%d" % (t["aid"], t["bytes"]) for t in tr)
+    mp3 = destino / ("%s.mp3" % sesion_id)
+    marca = destino / ("%s.firma" % sesion_id)
+    if mp3.exists() and marca.exists() and marca.read_text() == firma:
+        return mp3
+    fuentes = [ensamblar(t["aid"]) for t in tr]
+    cmd = ["ffmpeg", "-nostdin", "-y"]
+    for f in fuentes:
+        cmd += ["-i", str(f)]
+    if len(fuentes) > 1:
+        cmd += ["-filter_complex", "".join("[%d:a]" % i for i in range(len(fuentes))) + "concat=n=%d:v=0:a=1[out]" % len(fuentes), "-map", "[out]"]
+    cmd += ["-vn", "-ac", "1", "-ar", "22050", "-b:a", "48k", str(mp3)]
+    r = subprocess.run(cmd, capture_output=True, timeout=3600)
+    if r.returncode != 0 or not mp3.exists():
+        raise ValueError("no pude preparar el audio para descargarlo")
+    os.chmod(mp3, 0o600)
+    marca.write_text(firma)
+    return mp3
+
+
 def borrar(sesion_o_aid: str, usuario: str) -> int:
     """Borra el audio (por id de tramo o de sesión). Devuelve cuántos tramos."""
     c = _c()
@@ -245,6 +272,9 @@ def borrar(sesion_o_aid: str, usuario: str) -> int:
             shutil.rmtree(_dir(f["aid"]), ignore_errors=True)
             c.execute("UPDATE escucha_audio SET estado='borrado', bytes=0, partes=0 WHERE aid=?", (f["aid"],))
             n += 1
+        for e in (DIR / "export").glob("*") if (DIR / "export").exists() else []:      # las exportaciones para descargar también se van
+            if sesion_o_aid in e.name:
+                e.unlink(missing_ok=True)
         c.commit()
         return n
     finally:

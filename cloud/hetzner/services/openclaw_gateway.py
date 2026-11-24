@@ -1178,7 +1178,14 @@ class Handler(BaseHTTPRequestHandler):
                     elif _r0 == "/v1/app/aportaciones":
                         self._send_json(200, {"items": donna_personas.buscar(a1("q"), a1("persona"), 30, u)})
                     elif _r0 == "/v1/app/escucha/sesiones":
-                        self._send_json(200, {"items": donna_personas.sesiones(u)})
+                        import donna_audio
+                        its = donna_personas.sesiones(u)
+                        for it in its:
+                            try:
+                                it["audio"] = donna_audio.resumen(it["id"])
+                            except Exception:
+                                it["audio"] = {"tramos": 0, "bytes": 0, "vence": 0}
+                        self._send_json(200, {"items": its})
                     else:
                         d = donna_personas.detalle(a1("id"))
                         if not d or d["usuario"] != u and u != "admin":
@@ -1188,6 +1195,31 @@ class Handler(BaseHTTPRequestHandler):
                             if a1("kc"):
                                 d["cruce"]["kawiil_central"] = donna_personas.cruce_kawiil_central(core, d["nombre"], d["empresa"])
                             self._send_json(200, d)
+                elif _r0 in ("/v1/app/escucha/junta", "/v1/app/escucha/descargar"):            # abrir una junta guardada / descargar su minuta o su audio
+                    import donna_minuta, donna_audio
+                    from urllib.parse import urlparse as _up6, parse_qs as _pq6
+                    _q6 = _pq6(_up6(self.path).query)
+                    sid6 = (_q6.get("id") or _q6.get("sesion") or [""])[0]
+                    if not self._sesion_mia(sid6):
+                        self._send_json(404, {"error": "junta no encontrada"})
+                    elif _r0.endswith("junta"):
+                        self._send_json(200, donna_minuta.datos(sid6, self._media_user()))
+                    elif (_q6.get("que") or [""])[0] == "audio":
+                        try:
+                            mp3 = donna_audio.exportar(sid6)
+                        except ValueError as e:
+                            self._send_json(404, {"error": str(e)})
+                        else:
+                            self._enviar_archivo(mp3, "audio/mpeg", "junta-%s.mp3" % sid6[:8])
+                    else:
+                        nombre, texto = donna_minuta.minuta_md(sid6, self._media_user())
+                        cuerpo = texto.encode("utf-8")
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/markdown; charset=utf-8")
+                        self.send_header("Content-Disposition", 'attachment; filename="%s"' % nombre.encode("ascii", "replace").decode())
+                        self.send_header("Content-Length", str(len(cuerpo)))
+                        self.end_headers()
+                        self.wfile.write(cuerpo)
                 elif _r0 == "/v1/app/escucha/activas":                                         # escuchas activas (para detenerlas desde cualquier dispositivo)
                     import donna_remoto
                     self._send_json(200, {"items": donna_remoto.activas(self._media_user())})
@@ -2309,6 +2341,25 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(500, {"error": str(e)[:200]})
 
     # ---- traductor ----
+    def _enviar_archivo(self, ruta, mime: str, nombre: str):
+        """Entrega un archivo grande por bloques (descarga autenticada)."""
+        try:
+            size = ruta.stat().st_size
+            self.send_response(200)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Disposition", 'attachment; filename="%s"' % nombre)
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Length", str(size))
+            self.end_headers()
+            with open(ruta, "rb") as f:
+                while True:
+                    blk = f.read(1024 * 1024)
+                    if not blk:
+                        break
+                    self.wfile.write(blk)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+
     def _sesion_mia(self, sid: str) -> bool:
         """La junta existe y es del usuario (o es el administrador)."""
         try:
@@ -2839,6 +2890,23 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
             return
+        if self.path == "/v1/app/escucha/eliminar":                  # borrar una junta guardada (p. ej. una copia duplicada); el audio solo si se pide
+            import donna_personas, donna_audio
+            sid = str(body.get("sesion_id", ""))
+            try:
+                if not self._sesion_mia(sid):
+                    raise ValueError("junta no encontrada")
+                con_audio = donna_audio.resumen(sid)["tramos"] > 0
+                if con_audio and not body.get("borrar_audio"):
+                    raise ValueError("Esta junta tiene audio guardado. Confirma que también quieres borrar el audio.")
+                r = donna_personas.eliminar_sesion(sid, self._media_user())
+                if con_audio:
+                    donna_audio.borrar(sid, self._media_user())
+                log.info("escucha: junta %s eliminada (%d intervenciones%s)", sid, r["intervenciones"], ", con audio" if con_audio else "")
+                self._send_json(200, {"ok": True, **r, "audio_borrado": con_audio})
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
+            return
         if self.path == "/v1/app/escucha/detener":                   # detener y guardar la(s) escucha(s) activa(s) desde cualquier dispositivo
             import donna_remoto
             ids = donna_remoto.ordenar(self._media_user(), str(body.get("excepto", ""))[:30])
@@ -2854,7 +2922,10 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json(200, {"ok": True, "borrados": donna_borrador.descartar(rid_d, self._media_user()) + donna_rescate.descartar(rid_d, self._media_user())})
                 else:
                     import donna_remoto
-                    self._send_json(200, {"ok": True, **donna_borrador.guardar(str(body.get("id", "")), self._media_user(), body), "orden": donna_remoto.orden_de(str(body.get("id", "")))})
+                    if donna_remoto.ya_guardada(str(body.get("id", ""))):                  # esa junta ya se guardó: un autoguardado tardío no debe resucitar el borrador
+                        self._send_json(200, {"ok": True, "guardada": True, "orden": ""})
+                    else:
+                        self._send_json(200, {"ok": True, **donna_borrador.guardar(str(body.get("id", "")), self._media_user(), body), "orden": donna_remoto.orden_de(str(body.get("id", "")))})
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
             return

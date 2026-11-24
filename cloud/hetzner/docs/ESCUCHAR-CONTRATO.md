@@ -80,3 +80,9 @@ Caso real: en una ventana baja la caja «Pregúntale…» quedaba cortada. Ahora
 - En Escuchar, si hay una escucha activa en otra pantalla (conexión en vivo o autoguardado/rescate de los últimos 2 min) aparece «Hay una escucha activa» con **⏹ Detener y guardar en todos los dispositivos**.
 - La orden llega a esa pantalla por la conexión en vivo (`detener_remoto`, al instante) y en la respuesta de su autoguardado (cada ~20 s, aunque la conexión esté caída). La pantalla se detiene y guarda la junta sola (sin pedir nombres). La orden caduca a los 10 min.
 - Una junta no se guarda dos veces: si dos pantallas intentan guardar la misma, la segunda recibe «ya se guardó desde otra pantalla». Un borrador cuya escucha sigue activa no ofrece «Guardarla así» (se pisaría con la otra pantalla).
+
+## Abrir una junta guardada (ver, oír, descargar, eliminar)
+- En Escuchar → Juntas guardadas, cada junta tiene **👁️ Abrir**: resumen, voces, notas, materiales, tareas propuestas y la transcripción completa (por tramos de 150 líneas), con **⬇️ Descargar minuta (.md)**, **🎧 Escuchar la grabación** (reproductor) y **⬇️ Descargar audio** (un solo MP3 con todos los tramos).
+- **🗑️ Eliminar esta junta** borra la junta y lo que colgaba de ella (si tiene audio, pide confirmar que también se borra el audio). No borra el documento de Entregables.
+- Una junta guardada marca su borrador como «guardada»: un autoguardado tardío ya no lo resucita y guardar otra vez no la duplica.
+- En juntas largas la pantalla solo pinta las últimas 120 intervenciones (botón «Mostrar anteriores») y se repinta a lo más cada 1.5 s: evita que el navegador agote la memoria («Se actualizó esta página web porque estaba utilizando bastante memoria»).

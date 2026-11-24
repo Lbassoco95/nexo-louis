@@ -357,6 +357,35 @@ def sesiones(usuario: str = "admin", limite: int = 20) -> list:
         c.close()
 
 
+def eliminar_sesion(sid: str, usuario: str = "admin") -> dict:
+    """Borra una junta guardada y lo que colgaba de ella (intervenciones, menciones, tareas por decidir, notas, materiales, revisiones). NO borra el documento
+    de Entregables ni el audio (el audio lo decide quien llama). Devuelve cuántas intervenciones se borraron."""
+    asegurar_esquema()
+    c = _c()
+    try:
+        r = c.execute("SELECT usuario FROM sesiones_escucha WHERE id=?", (sid,)).fetchone()
+        if not r or (r["usuario"] != usuario and usuario != "admin"):
+            raise ValueError("junta no encontrada")
+        ids = [x["id"] for x in c.execute("SELECT id FROM intervenciones WHERE sesion_id=?", (sid,))]
+        for i in ids:
+            try:
+                c.execute("DELETE FROM interv_fts WHERE interv_id=?", (i,))
+            except Exception:
+                pass
+        c.execute("DELETE FROM menciones WHERE sesion_id=?", (sid,))
+        c.execute("DELETE FROM intervenciones WHERE sesion_id=?", (sid,))
+        c.execute("DELETE FROM sesiones_escucha WHERE id=?", (sid,))
+        for tabla in ("tareas_propuestas", "extracciones", "junta_notas", "junta_chat", "junta_materiales", "junta_revision", "junta_voces"):
+            try:
+                c.execute("DELETE FROM %s WHERE sesion_id=?" % tabla, (sid,))
+            except Exception:
+                pass                                              # esa tabla puede no existir todavía
+        c.commit()
+        return {"intervenciones": len(ids)}
+    finally:
+        c.close()
+
+
 def _ms(hora: str) -> int:
     try:
         p = [int(x) for x in str(hora).split(":")]
