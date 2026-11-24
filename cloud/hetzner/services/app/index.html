@@ -491,6 +491,7 @@ body.dkfull #dock{width:calc(100vw - 32px);left:16px;z-index:34}body.dkfull.dock
 /* ---------- Escuchar y transcribir ---------- */
 .chk{display:flex;gap:12px;align-items:flex-start;font-size:14.5px;cursor:pointer;color:var(--tx);margin:0}.chk input{margin-top:1px}
 #v-es{overflow:hidden}
+#j-top .nq{gap:6px}#j-top .nq button{min-height:32px;padding:0 11px;font-size:13px}
 #es-remoto{flex:0 0 auto}#es-drafts{flex:0 1 auto;min-height:0;overflow-y:auto;padding-right:6px;overscroll-behavior:contain}
 .escol.conlista #es-drafts{flex:1 1 auto}.escol.conlista .esidle{display:none}
 @media (hover:hover) and (pointer:fine){
@@ -1850,18 +1851,19 @@ async function esJunta(sid){                                 // abrir una junta 
   const dur=d.duracion>=3600?Math.floor(d.duracion/3600)+' h '+String(Math.floor(d.duracion%3600/60)).padStart(2,'0')+' min':Math.max(1,Math.round(d.duracion/60))+' min';
   const a=d.audio||{tramos:0,bytes:0};
   const conAud=(window._dup&&(window._dup.grupos||[]).find(g=>g.borrar.includes(sid)))||null;
-  $('#sh-b').innerHTML=`<div class="sub">${esc(d.fecha)} · ${esc(dur)} · ${d.lineas.length} intervenciones</div>`+
-    `<div class="sub" style="margin:4px 0 8px">${d.voces.map(v=>esc(v.nombre)+' ('+v.n+')').join(' · ')||'sin voces identificadas'}</div>`+
-    `<div class="nq" style="margin-bottom:8px"><button id="j-min">⬇️ Descargar minuta (.md)</button>${a.tramos?'<button id="j-play">🎧 Escuchar la grabación</button><button id="j-aud">⬇️ Descargar audio</button>':''}</div>`+
+  $('#sh-b').innerHTML=`<div id="j-top" style="position:sticky;top:-14px;z-index:5;background:var(--bg);margin:-14px -16px 10px;padding:10px 16px 8px;border-bottom:1px solid var(--line)">`+
+    `<div class="sub">${esc(d.fecha)} · ${esc(dur)} · ${d.lineas.length} intervenciones</div>`+
+    `<div class="nq" style="margin:6px 0 4px;flex-wrap:wrap"><button id="j-min">⬇️ Minuta</button>${a.tramos?'<button id="j-play">🎧 Escuchar</button><button id="j-aud">⬇️ Audio</button>':''}</div>`+
+    `<div class="nq" id="j-nav" style="margin:0;flex-wrap:wrap"><button data-to="j-res">Resumen</button><button data-to="j-notas">Notas</button><button data-to="j-tx-t">Transcripción</button><button id="j-ini" aria-label="Ir al inicio" title="Ir al inicio">⬆︎</button><button id="j-fin" aria-label="Ir al final" title="Ir al final">⬇︎</button></div></div>`+
     `<div id="j-player"></div>`+
-    `<div class="nq" id="j-nav" style="position:sticky;top:0;z-index:2;padding:6px 0"><button data-to="j-res">Resumen</button><button data-to="j-notas">Notas</button><button data-to="j-tx-t">Transcripción</button><button id="j-ini">⬆︎ Inicio</button><button id="j-fin">⬇︎ Final</button></div>`+
+    `<div class="sub" style="margin:4px 0 8px">${d.voces.map(v=>esc(v.nombre)+' ('+v.n+')').join(' · ')||'sin voces identificadas'}</div>`+
     (a.tramos?`<div class="sub">🎧 Audio guardado: ${Math.round(a.bytes/1048576)} MB${a.vence?' · se borra el '+new Date(a.vence*1000).toLocaleDateString('es-MX'):''}</div>`:'<div class="sub">Sin audio guardado en esta junta.'+(conAud?' <b>Esta es una copia duplicada:</b> el audio está en otra copia de la misma junta.</div><div class="nq"><button id="j-copia">🎧 Abrir la copia que tiene el audio</button></div>':'</div>'))+
     (d.resumen?`<div class="sec" id="j-res" style="margin-top:12px">Resumen</div><div class="card">${md(d.resumen)}</div>`:'')+
     (d.notas.length?`<div class="sec" id="j-notas" style="margin-top:12px">Notas · ${d.notas.length}</div>`+d.notas.map(n=>`<div class="sub" style="margin:3px 0">${n.hora?'['+esc(n.hora)+'] ':''}${esc(n.texto)}</div>`).join(''):'')+
     (d.materiales.length?`<div class="sec" style="margin-top:12px">📎 Materiales · ${d.materiales.length}</div>`+d.materiales.map(m=>`<div class="sub" style="margin:3px 0">${esc(m.nombre)}</div>`).join(''):'')+
     (d.tareas.length?`<div class="sec" style="margin-top:12px">Tareas propuestas · ${d.tareas.length}</div>`+d.tareas.map(t=>`<div class="sub" style="margin:3px 0">• ${esc(t.titulo)}${t.responsable?' — '+esc(t.responsable):''}</div>`).join(''):'')+
     `<div class="sec" id="j-tx-t" style="margin-top:12px">Transcripción</div><div id="j-tx"></div>`+
-    `<div class="nq" style="margin-top:12px"><button id="j-voz">🎙️ Revisión de voces</button><button id="j-rev">🔎 Revisión final</button><button id="j-seg">▶︎ Retomar y complementar</button><button id="j-p2">➕ Parte 2</button><button id="j-del">🗑️ Eliminar esta junta</button></div>`;
+    `<div class="nq" style="margin-top:12px"><button id="j-min2">⬇️ Descargar minuta</button>${a.tramos?'<button id="j-aud2">⬇️ Descargar audio</button>':''}<button id="j-voz">🎙️ Revisión de voces</button><button id="j-rev">🔎 Revisión final</button><button id="j-seg">▶︎ Retomar y complementar</button><button id="j-p2">➕ Parte 2</button><button id="j-del">🗑️ Eliminar esta junta</button></div>`;
   let mostradas=0;const tx=$('#j-tx'),paso=150;
   const mas=()=>{const hasta=Math.min(d.lineas.length,mostradas+paso);tx.insertAdjacentHTML('beforeend',d.lineas.slice(mostradas,hasta).map(l=>`<p class="sub" style="margin:6px 0"><b>[${esc(l.hora)}] ${esc(l.quien)}:</b> ${esc(l.texto)}</p>`).join(''));mostradas=hasta;
     const b=$('#j-mas');if(b)b.remove();if(mostradas<d.lineas.length){tx.insertAdjacentHTML('beforeend','<div class="nq" id="j-mas"><button>Mostrar más ('+(d.lineas.length-mostradas)+' restantes)</button></div>');$('#j-mas button').onclick=mas}};
@@ -1870,9 +1872,11 @@ async function esJunta(sid){                                 // abrir una junta 
   document.querySelectorAll('#j-nav [data-to]').forEach(b=>b.onclick=()=>{const el=document.getElementById(b.dataset.to);if(el)el.scrollIntoView({behavior:'smooth',block:'start'});else toast('Esta junta no tiene esa sección')});
   $('#j-ini').onclick=()=>{$('#sh-b').scrollTo({top:0})};
   $('#j-fin').onclick=()=>{while(mostradas<d.lineas.length)mas();const b=$('#sh-b');b.scrollTo({top:b.scrollHeight})};
-  $('#j-min').onclick=async()=>{try{const b=await esBajar('/v1/app/escucha/descargar?sesion='+encodeURIComponent(sid)+'&que=minuta','', 'Preparando la minuta…');esGuardarBlob(b,'minuta-'+d.fecha+'.md')}catch(e){toast('⚠️ '+e.message)}};
+  const bajarMinuta=async()=>{try{const b=await esBajar('/v1/app/escucha/descargar?sesion='+encodeURIComponent(sid)+'&que=minuta','', 'Preparando la minuta…');esGuardarBlob(b,'minuta-'+d.fecha+'.md');toast('Minuta descargada')}catch(e){toast('⚠️ '+e.message)}};
+  $('#j-min').onclick=bajarMinuta;$('#j-min2').onclick=bajarMinuta;
   if(a.tramos){
-    $('#j-aud').onclick=async()=>{try{const b=await esBajar('/v1/app/escucha/descargar?sesion='+encodeURIComponent(sid)+'&que=audio','', 'Preparando el audio (puede tardar un minuto)…');esGuardarBlob(b,'junta-'+d.fecha+'.mp3')}catch(e){toast('⚠️ '+e.message)}};
+    const bajarAudio=async()=>{try{const b=await esBajar('/v1/app/escucha/descargar?sesion='+encodeURIComponent(sid)+'&que=audio','', 'Preparando el audio (puede tardar un minuto en juntas largas)…');esGuardarBlob(b,'junta-'+d.fecha+'.mp3');toast('Audio descargado')}catch(e){toast('⚠️ '+e.message)}};
+    $('#j-aud').onclick=bajarAudio;$('#j-aud2').onclick=bajarAudio;
     $('#j-play').onclick=async()=>{const pl=$('#j-player');pl.innerHTML='<div class="sub">Preparando el audio… (puede tardar un minuto en juntas largas)</div>';
       try{const b=await esBajar('/v1/app/escucha/descargar?sesion='+encodeURIComponent(sid)+'&que=audio','', 'Preparando el audio…');pl.innerHTML='<audio controls style="width:100%;margin:6px 0"></audio>';const au=pl.querySelector('audio');au.src=URL.createObjectURL(b);au.play().catch(()=>{})}catch(e){pl.innerHTML='<div class="sub">⚠️ '+esc(e.message)+'</div>'}};
   }
