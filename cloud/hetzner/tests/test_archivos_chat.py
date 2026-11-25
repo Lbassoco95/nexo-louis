@@ -292,5 +292,93 @@ class Orquestacion(unittest.TestCase):
         self.assertIn('"max_tokens": 6000 if len(user_msg) > 8000 else 2048', src)
 
 
+MENSAJE_CON_ADJUNTOS = (
+    "de Mati a Dazon ya se envió a Peter, la envió Carmen el lunes, se mandaron estos tres documentos, ayúdame a guardarlos y crear el prospecto en Patio\n"
+    "📎 Presentacion_Yoltik_Dazon_ES-ZH_2026-11-03_2.pdf\n📎 Contrato_Marco_Yoltik_JUOSHUI_2026-11-03_FINAL.docx"
+    "\n\n[ADJUNTO m0123456789 «Contrato_Marco_Yoltik_JUOSHUI_2026-11-03_FINAL.docx» (documento)]\nCONTRATO MARCO ... se revisó la última versión de la propuesta"
+    "\n\n[ADJUNTO m9876543210 «Presentacion_Yoltik_Dazon_ES-ZH_2026-11-03_2.pdf» (documento)]\ntexto de la presentación")
+
+
+class DetectoresAutomaticos(unittest.TestCase):
+    """Los atajos automáticos (revisión de entregable, agente, memoria…) solo miran lo que Polo ESCRIBIÓ, no el texto que la app pega de sus adjuntos."""
+    def test_el_nombre_de_un_adjunto_ya_no_dispara_la_revision_de_un_entregable(self):
+        self.assertTrue(core._REV_TITULO.search(MENSAJE_CON_ADJUNTOS))                              # la causa del fallo: el «nombre.docx» del adjunto parecía el título de un entregable
+        solo = core._texto_de_polo(MENSAJE_CON_ADJUNTOS)
+        self.assertNotIn("[ADJUNTO", solo)
+        self.assertIn("se mandaron estos tres documentos", solo)                                    # lo que Polo escribió se conserva (incluidas las líneas 📎 de la app)
+        self.assertIn("📎 Presentacion_Yoltik_Dazon", solo)
+        self.assertIsNone(core._REV_TITULO.search(solo))
+        self.assertIsNone(core.try_deterministic_revision(solo))
+
+    def test_tambien_se_quita_el_contexto_de_un_tablero(self):
+        t = "¿cómo vamos?\n\n---\nCONTEXTO: Polo tiene abierto el TABLERO «Estado Yoltik» (id a0123456789)\n..."
+        self.assertEqual(core._texto_de_polo(t), "¿cómo vamos?")
+
+    def test_el_enrutador_recibe_solo_el_texto_de_polo(self):
+        visto = []
+        orig = {n: getattr(core, n) for n in ("try_deterministic_reminder", "try_deterministic_memory_write", "try_deterministic_agenda_query", "try_deterministic_evidencia",
+                                               "try_deterministic_revision", "try_deterministic_agente", "is_first_conversation_today")}
+        nada = lambda m, *a, **k: visto.append(m) or None
+        try:
+            core.is_first_conversation_today = lambda *a, **k: False
+            for n in ("try_deterministic_reminder", "try_deterministic_memory_write", "try_deterministic_agenda_query", "try_deterministic_evidencia", "try_deterministic_agente"):
+                setattr(core, n, nada)
+            core.try_deterministic_revision = lambda m, *a, **k: visto.append(m) or "REVISION"      # corta el flujo aquí: ya vimos lo que recibieron los anteriores
+            r = core._call_llm_impl("k", "", [], MENSAJE_CON_ADJUNTOS)
+        finally:
+            for n, f in orig.items():
+                setattr(core, n, f)
+        self.assertEqual(r[1], "revision-directa")
+        self.assertGreaterEqual(len(visto), 5)
+        self.assertTrue(all("[ADJUNTO" not in v for v in visto), visto)
+
+
+class CorregirMemoria(unittest.TestCase):
+    """Cuando Polo corrige un dato, se REEMPLAZA lo equivocado (con respaldo y registro); no se apila otra línea que contradiga la vieja."""
+    def setUp(self):
+        self.viejo = core.SPACE
+        core.SPACE = TMP / "memoria-prueba"
+        core.SPACE.mkdir(exist_ok=True)
+        (core.SPACE / "PROJECTS.md").write_text("# Proyectos\n- Constitución cooperativa: la lleva Kuali A.C., firma de bases pendiente.\n- Ikán reforma XII: 20 %.\n")
+
+    def tearDown(self):
+        core.SPACE = self.viejo
+
+    def test_reemplaza_lo_equivocado_y_no_deja_la_contradiccion(self):
+        r = core.execute_tool("memoria_corregir", {"filename": "PROJECTS.md", "buscar": "la lleva Kuali A.C.", "reemplazar": "la lleva Kawiil", "motivo": "Polo: la lleva Kawiil, no Kuali"})
+        self.assertTrue(r.startswith("OK corregido"))
+        self.assertIn("Antes: la lleva Kuali A.C.", r)
+        self.assertIn("Ahora: la lleva Kawiil", r)
+        txt = (core.SPACE / "PROJECTS.md").read_text()
+        self.assertIn("la lleva Kawiil, firma de bases pendiente", txt)
+        self.assertNotIn("Kuali", txt)                                                              # no queda la versión vieja contradiciendo a la nueva
+        respaldo = next(core.SPACE.glob("PROJECTS.md.bak-*"))
+        self.assertIn("Kuali A.C.", respaldo.read_text())                                           # el original se puede recuperar
+        reg = json.loads((core.SPACE / "correcciones-memoria.jsonl").read_text().splitlines()[0])
+        self.assertEqual((reg["archivo"], reg["antes"], reg["despues"]), ("PROJECTS.md", "la lleva Kuali A.C.", "la lleva Kawiil"))
+
+    def test_no_adivina_si_el_texto_no_es_exacto_o_no_es_unico(self):
+        (core.SPACE / "PROJECTS.md").write_text("- uno: la lleva Kuali\n- dos: la lleva Kuali\n")
+        self.assertIn("2 veces", core.execute_tool("memoria_corregir", {"filename": "PROJECTS.md", "buscar": "la lleva Kuali", "reemplazar": "la lleva Kawiil"}))
+        self.assertIn("No encontré", core.execute_tool("memoria_corregir", {"filename": "PROJECTS.md", "buscar": "texto que no está en el archivo", "reemplazar": "x"}))
+        self.assertTrue(core.execute_tool("memoria_corregir", {"filename": "PROJECTS.md", "buscar": "ab", "reemplazar": "x"}).startswith("ERROR"))
+        self.assertEqual((core.SPACE / "PROJECTS.md").read_text(), "- uno: la lleva Kuali\n- dos: la lleva Kuali\n")  # nada cambió
+
+    def test_no_sale_de_la_carpeta_de_memoria(self):
+        (TMP / "secreto.txt").write_text("no tocar")
+        self.assertTrue(core.execute_tool("memoria_corregir", {"filename": "../secreto.txt", "buscar": "no tocar", "reemplazar": "x"}).startswith("ERROR"))
+        self.assertEqual((TMP / "secreto.txt").read_text(), "no tocar")
+
+    def test_se_puede_borrar_una_linea_equivocada(self):
+        r = core.execute_tool("memoria_corregir", {"filename": "PROJECTS.md", "buscar": "- Ikán reforma XII: 20 %.\n", "reemplazar": ""})
+        self.assertIn("(borrado)", r)
+        self.assertNotIn("Ikán", (core.SPACE / "PROJECTS.md").read_text())
+
+    def test_las_instrucciones_piden_corregir_con_fidelidad_y_no_prometer_lo_imposible(self):
+        src = open(os.path.join(SERVICES, "louis_core.py")).read()
+        for frase in ("CUANDO POLO TE CORRIGE UN DATO", "si dijo «la lleva Kawiil», pon Kawiil", "LO QUE NO PUEDES HACER", "NO puedes enviar mensajes de Slack", "NO puedes crear prospectos"):
+            self.assertIn(frase, src)
+
+
 if __name__ == "__main__":
     unittest.main()

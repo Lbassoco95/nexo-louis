@@ -1029,6 +1029,14 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "Polo sigue con otras cosas mientras tanto: para encargos largos usa `trabajo_crear` (corre en segundo plano y le avisa).\n"
         "REGLAS: antes de decir que un cliente no existe, búscalo por nombre con `kawiil_central_clientes` (Vizum existe). NO vuelvas a entregar un archivo que ya está en la conversación salvo que Polo lo pida. "
         "NUNCA digas que algo se envió, entregó o revisó si la herramienta no lo confirmó.\n"
+        "\n# CUANDO POLO TE CORRIGE UN DATO\n"
+        "1) Lee el archivo de memoria (`read_memory`) y localiza la línea equivocada. 2) REEMPLÁZALA con `memoria_corregir` (no agregues otra línea que contradiga la vieja). "
+        "3) Escribe SOLO lo que Polo dijo, con sus palabras: NO deduzcas, no agregues explicaciones ni datos que no dijo, no cambies quién es quién (si dijo «la lleva Kawiil», pon Kawiil). "
+        "4) Contéstale mostrando «Antes: … / Ahora: …» tal como quedó guardado y pregúntale si así está bien. Si no entendiste la corrección, PREGUNTA en vez de guardar.\n"
+        "\n# LO QUE NO PUEDES HACER (dilo claro y ofrece la alternativa; no prometas ni aparentes)\n"
+        "- NO puedes enviar mensajes de Slack (solo leer canales y tu propio DM): redáctale a Polo el mensaje LISTO PARA COPIAR y dile que lo mande él.\n"
+        "- NO puedes crear prospectos, clientes ni proyectos en Patio Yoltik: solo cambiar tareas y agregar comentarios/avances a tareas. Si Polo lo pide, prepárale los datos del prospecto listos para capturar y, si hay una tarea relacionada, deja el seguimiento como comentario con `patio_avance`.\n"
+        "- NO puedes guardar archivos en Dropbox. Los adjuntos que Polo sube a la app quedan guardados en la app (los lees con adjuntos_leer).\n"
         "Flujo cuando Polo pide 'pásame el PDF del DOF': usa `dof_pdf(cod)` con el cod que ya tienes "
         "de legal_buscar. Cuando pide un documento suyo: `dropbox_buscar` → `dropbox_enviar`. "
         "IMPORTANTE: el backfill del DOF NO guarda PDFs en Dropbox (solo texto en la BD). Para el PDF "
@@ -3075,6 +3083,11 @@ TOOLS_DEFINITION = [
             },
             "required": ["viejo", "nuevo"],
         },
+    },
+    {
+        "name": "memoria_corregir",
+        "description": "CORRIGE un dato equivocado en un archivo de memoria (PROJECTS.md, CLIENTS.md, PEOPLE.md, IMPORTANT.md…): REEMPLAZA el texto exacto que está mal por el correcto (o lo borra si `reemplazar` va vacío). Úsala cuando Polo corrige un dato, en lugar de agregar una línea nueva que contradiga la vieja. Antes lee el archivo con read_memory y copia el texto equivocado EXACTO (único en el archivo). Guarda respaldo y registro.",
+        "input_schema": {"type": "object", "properties": {"filename": {"type": "string"}, "buscar": {"type": "string", "description": "Texto equivocado, EXACTO y único en el archivo"}, "reemplazar": {"type": "string", "description": "Texto correcto, con las palabras de Polo (vacío = borrar)"}, "motivo": {"type": "string"}}, "required": ["filename", "buscar"]},
     },
     {
         "name": "aprender_correccion",
@@ -9637,6 +9650,41 @@ MEXICANIZE_DOCTRINE = (
 )
 
 
+def _memoria_corregir(filename: str, buscar: str, reemplazar: str = "", motivo: str = "") -> str:
+    """REEMPLAZA un texto equivocado de un archivo de memoria (en vez de agregar otra línea que lo contradiga). Exige el texto exacto y único, guarda un respaldo
+    del archivo antes de tocarlo y registra antes/después. Con `reemplazar` vacío borra el texto."""
+    try:
+        path = (SPACE / filename).resolve()
+        path.relative_to(SPACE.resolve())
+    except (ValueError, OSError):
+        return "ERROR: ese archivo no está en la memoria."
+    if not path.is_file():
+        return f"ERROR: {filename} no existe."
+    buscar = str(buscar or "")
+    if len(buscar.strip()) < 6:
+        return "ERROR: dame el texto EXACTO a corregir (al menos una frase corta); léelo antes con read_memory."
+    txt = path.read_text()
+    n = txt.count(buscar)
+    if n == 0:
+        return f"No encontré ese texto exacto en {filename}. Léelo con read_memory y copia la línea tal cual está."
+    if n > 1:
+        return f"Ese texto aparece {n} veces en {filename}: usa un fragmento más largo que sea único."
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup = path.with_name(f"{path.name}.bak-{stamp}")
+    backup.write_text(txt)
+    for viejo in sorted(path.parent.glob(path.name + ".bak-*"))[:-20]:        # solo los últimos 20 respaldos
+        viejo.unlink(missing_ok=True)
+    path.write_text(txt.replace(buscar, str(reemplazar or ""), 1))
+    try:
+        with open(path.parent / "correcciones-memoria.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"ts": datetime.now().isoformat(timespec="seconds"), "archivo": filename, "antes": buscar[:600], "despues": str(reemplazar or "")[:600],
+                                "motivo": (motivo or "")[:300], "respaldo": backup.name}, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    return (f"OK corregido en {filename}.\nAntes: {buscar[:400]}\nAhora: {(str(reemplazar) or '(borrado)')[:400]}\n(respaldo: {backup.name}). "
+            f"MUÉSTRALE a Polo ese antes/ahora tal cual y pregúntale si así quedó bien.")
+
+
 def execute_tool(name: str, args: dict) -> str:
     """Ejecuta un tool y devuelve resultado como string."""
     try:
@@ -9668,6 +9716,8 @@ def execute_tool(name: str, args: dict) -> str:
             with path.open("a") as f:
                 f.write("\n" + content + "\n")
             return f"OK agregado a {args['filename']}"
+        elif name == "memoria_corregir":
+            return _memoria_corregir(args["filename"], args["buscar"], args.get("reemplazar", ""), args.get("motivo", ""))
         elif name == "reloj":
             return _reloj_tool(args.get("zona", ""))
         elif name == "zona_horaria":
@@ -10905,6 +10955,12 @@ def try_deterministic_agenda_query(user_message: str):
     return out.strip()
 
 
+def _texto_de_polo(user_message: str) -> str:
+    """Lo que Polo escribió, SIN los bloques que la app le pega al mensaje (texto de los adjuntos «[ADJUNTO m… «nombre» …]», contexto de un tablero abierto).
+    Los detectores automáticos (revisión, agente, recordatorio, memoria…) deben mirar solo esto: antes un «nombre.docx» entre comillas del adjunto los disparaba por error."""
+    return re.split(r"\n\n(?=\[ADJUNTO m[0-9a-f]{10} )|\n\n---\nCONTEXTO:", user_message or "", maxsplit=1)[0]
+
+
 def _call_llm_impl(
     api_key: str,
     system_prompt: str,
@@ -10921,35 +10977,36 @@ def _call_llm_impl(
     Returns: (response, model_used).
     """
     msg = (user_message or "").strip().lower()
+    solo_polo = _texto_de_polo(user_message)
     first_of_day = is_first_conversation_today(history_file)
 
     # Recordatorio relativo a prueba de fallos: "recuérdame en N min/horas …" se crea
     # DIRECTO en el servidor (reloj real), sin depender del modelo ni de Ollama.
-    det_rem = try_deterministic_reminder(user_message)
+    det_rem = try_deterministic_reminder(solo_polo)
     if det_rem is not None:
         _mark_last_route("recordatorio-directo")
         return det_rem, "recordatorio-directo"
 
     # Aprendizaje a prueba de fallos: "anota en AGENDA: …" se guarda directo,
     # sin gastar créditos y aunque Anthropic esté sin saldo.
-    det_mem = try_deterministic_memory_write(user_message, strict=True)
+    det_mem = try_deterministic_memory_write(solo_polo, strict=True)
     if det_mem is not None:
         _mark_last_route("memoria-directa")
         return det_mem, "memoria-directa"
 
     # «¿Qué tengo hoy?» y similares: respuesta directa con la AGENDA real (no depende del modelo).
-    det_ag = try_deterministic_agenda_query(user_message)
+    det_ag = try_deterministic_agenda_query(solo_polo)
     if det_ag is not None:
         _mark_last_route("agenda-directa")
         return det_ag, "agenda-directa"
 
     # Revisar un entregable contra las fuentes / pedir un agente de Kawiil Central: se hace en código, no dependen de que el modelo elija bien las herramientas.
-    det_evi = try_deterministic_evidencia(user_message)
+    det_evi = try_deterministic_evidencia(solo_polo)
     if det_evi is not None:
         _mark_last_route("evidencia-directa")
         return det_evi, "evidencia-directa"
-    det_rev = try_deterministic_revision(user_message)
-    det_agt = try_deterministic_agente(user_message)
+    det_rev = try_deterministic_revision(solo_polo)
+    det_agt = try_deterministic_agente(solo_polo)
     if det_rev is not None and det_agt is not None:                      # una sola petición con las dos cosas (revisar el entregable + ir al agente): se atienden las dos
         _mark_last_route("revision-directa")
         return det_rev + "\n\n———\n\n🤖 " + det_agt, "revision-directa"
