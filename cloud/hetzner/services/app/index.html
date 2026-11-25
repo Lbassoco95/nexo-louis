@@ -35,18 +35,25 @@ nav .badge{position:absolute;margin:-2px 0 0 14px;background:var(--bad);color:#f
 .msg{max-width:88%;margin:0 0 10px;padding:10px 13px;border-radius:var(--r);word-wrap:break-word;overflow-wrap:anywhere}
 .msg.u{margin-left:auto;background:var(--grad);color:#fff;border-bottom-right-radius:4px;white-space:pre-wrap}
 .msg.a{background:var(--panel);border:1px solid var(--line);border-bottom-left-radius:4px}
-.msg .meta{font-size:11px;color:var(--mut);margin-top:6px;display:flex;gap:12px}
+.msg .meta{font-size:11px;color:var(--mut);margin-top:6px;display:flex;flex-wrap:wrap;gap:4px 12px}
 .msg .meta button{background:none;border:0;color:var(--mut);padding:0;font-size:11px}
 .ver{font:600 11px/1 inherit;font-family:inherit;color:var(--mut);background:rgba(128,128,128,.16);border:0;border-radius:999px;padding:4px 8px;margin-left:8px;cursor:pointer;vertical-align:middle;white-space:nowrap;min-width:0}
 .ver.bad{background:rgba(245,158,11,.25);color:#b45309}
 @media (min-width:760px){#ver-h{display:none}}
-.fcard{display:flex;align-items:center;gap:10px;border:1px solid rgba(128,128,128,.32);border-radius:14px;padding:8px 10px;margin:10px 0 4px;background:rgba(128,128,128,.07)}
-.fcard .fi{font-size:24px}.fcard .fn{flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.fcard .fn small{display:block;font-weight:400;color:var(--mut);font-size:12px}
+.fcard{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;border:1px solid rgba(128,128,128,.32);border-radius:14px;padding:8px 10px;margin:10px 0 4px;background:rgba(128,128,128,.07)}
+.fcard .fi{font-size:24px}.fcard .fn{flex:1 1 150px;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.fcard .fn small{display:block;font-weight:400;color:var(--mut);font-size:12px}
 .fcard button{border:1px solid rgba(128,128,128,.4);background:transparent;color:inherit;border-radius:999px;padding:6px 12px;font:inherit;font-size:13px;white-space:nowrap}
 iframe.fprev{width:100%;height:68vh;border:1px solid rgba(128,128,128,.3);border-radius:12px;background:#fff}img.fprev{max-width:100%;border-radius:12px}
 .ftxt{white-space:pre-wrap;word-break:break-word;font:13px/1.55 ui-monospace,Menlo,monospace;max-height:68vh;overflow:auto;margin:0}
-#sheet .in.ancha{background:var(--base,#fff);-webkit-backdrop-filter:none;backdrop-filter:none}
-@media (min-width:760px){#sheet .in.ancha{width:min(780px,64vw)}}
+/* vista previa de documentos: vive en el panel acoplado de la derecha (no flota sobre el chat) */
+@media (max-width:759px){#dock{background:var(--base,#fff)!important;-webkit-backdrop-filter:none!important;backdrop-filter:none!important}}
+body.dock-file #dock{background:var(--base,#fff)}
+#dk-file{display:none;flex:1;min-height:0;overflow:auto;padding:12px 14px calc(14px + env(safe-area-inset-bottom))}
+body.dock-file #dk-file{display:block}
+body.dock-file #dk-f,body.dock-file .dkft,body.dock-file .dkth,body.dock-file .dkchips,body.dock-file .dkact,body.dock-file #dk-list{display:none!important}
+#dk-file .docprev,#dk-file .pptprev,#dk-file .mdprev{max-height:none;overflow:visible}
+#dk-file iframe.fprev{height:calc(100dvh - 190px);min-height:320px}#dk-file .xwrap{max-height:calc(100dvh - 250px)}#dk-file .ftxt{max-height:none}
+@media (min-width:1100px){body.dock-file #dock{width:min(46vw,820px)}body.dock-file.docked #app{margin-right:calc(min(46vw,820px) + 32px)}}
 .docprev{background:#e4e6ea;border-radius:12px;padding:8px;max-height:72vh;overflow:auto;color:#000}.docprev .docx-wrapper{background:transparent!important;padding:6px 0!important}
 .docprev section.docx{box-shadow:0 1px 4px rgba(0,0,0,.25);margin-bottom:10px!important}
 .xtabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 8px}.xtabs button{border:1px solid rgba(128,128,128,.4);background:transparent;color:inherit;border-radius:999px;padding:4px 12px;font:inherit;font-size:12.5px}.xtabs button.on{background:rgba(79,70,229,.16);font-weight:600}
@@ -739,7 +746,7 @@ html.lowfx body::before{display:none}
   <p class="sec">Tablero reciente</p><div id="ctx-tab"></div>
 </aside>
 <section id="dock" aria-label="Tablero"><div class="dkhd"><button id="dk-back" aria-label="Volver a la conversación"><i data-i="back"></i> Donna</button><b id="dk-t"></b><button id="dk-fs" aria-label="Pantalla completa"><i data-i="expand"></i></button><button id="dk-x" aria-label="Cerrar el tablero"><i data-i="x"></i></button></div>
-  <iframe id="dk-f" sandbox="" referrerpolicy="no-referrer" title="Tablero"></iframe><div class="dkft" id="dk-ft"></div>
+  <iframe id="dk-f" sandbox="" referrerpolicy="no-referrer" title="Tablero"></iframe><div id="dk-file" aria-label="Vista previa del documento"></div><div class="dkft" id="dk-ft"></div>
   <div class="dkth" id="dk-th" hidden></div>
   <div class="dkchips" id="dk-chips"></div>
   <div class="dkact"><textarea id="dk-in" rows="1" placeholder="Pregunta o pide cambios…" enterkeyhint="send" aria-label="Pregunta o pide cambios sobre este tablero"></textarea><button id="dk-send" aria-label="Enviar"><i data-i="send"></i></button><button class="g" id="dk-list" aria-label="Todos los tableros"><i data-i="grid"></i></button></div></section>
@@ -1044,7 +1051,8 @@ function xlsHtml(wb){
   return '<div class="xtabs">'+names.map((n,i)=>'<button data-xs="'+i+'"'+(i===0?' class="on"':'')+'>'+esc(n)+'</button>').join('')+'</div><div class="xwrap" id="xw">'+tabla(names[0])+'</div>'+'<template id="xt">'+names.map(tabla).map(t=>'<div>'+t+'</div>').join('')+'</template>'}
 async function bajarArchivo(f){try{const b=await esBajar('/v1/app/media/'+encodeURIComponent(f.id)+'/file','','Preparando…');esGuardarBlob(b,f.nombre);toast('Descargado')}catch(e){toast('⚠️ '+e.message)}}
 async function verArchivo(f){
-  sheet(f.nombre,'<div class="empty">Abriendo…</div>');const box=document.querySelector('#sheet .in');if(box)box.classList.add('ancha');
+  closeSheet();dkId='';document.body.classList.remove('dkfull');document.body.classList.add('docked','dock-file');
+  $('#dk-t').textContent=f.nombre;$('#dk-f').srcdoc='';$('#dk-file').innerHTML='<div class="empty">Abriendo…</div>';
   try{const p=await api('/v1/app/media/'+encodeURIComponent(f.id)+'/preview'),url='/v1/app/media/'+encodeURIComponent(f.id)+'/file';let h='';
     if(p.modo==='pdf'||p.modo==='imagen'){const b=await esBajar(url,'','Abriendo…'),u=URL.createObjectURL(b);h=p.modo==='pdf'?'<iframe class="fprev" src="'+u+'"></iframe>':'<img class="fprev" src="'+u+'" alt="">'}
     else if(p.modo==='html')h='<iframe class="fprev" sandbox="" srcdoc="'+esc(p.html)+'"></iframe>';
@@ -1052,7 +1060,7 @@ async function verArchivo(f){
     else if(p.modo==='md')h='<div class="mdprev msg a" style="max-width:100%">'+md(p.texto)+'</div>';
     else if(p.modo==='docx'||p.modo==='xlsx'||p.modo==='csv'||p.modo==='pptx')h='<div id="vz-box"><div class="empty">Preparando la vista previa…</div></div>';
     else h='<div class="empty">No puedo mostrar este tipo de archivo aquí. Descárgalo para abrirlo.</div>';
-    $('#sh-b').innerHTML=h+'<div class="nq" style="margin-top:8px"><button id="fv-dl">⬇️ Descargar</button></div>';$('#fv-dl').onclick=()=>bajarArchivo(f);
+    $('#dk-file').innerHTML='<div class="nq" style="margin:0 0 10px"><button id="fv-dl">⬇️ Descargar</button></div>'+h;$('#fv-dl').onclick=()=>bajarArchivo(f);
     if(p.modo==='docx'||p.modo==='xlsx'||p.modo==='csv'||p.modo==='pptx'){
       const box=$('#vz-box');
       try{const b=await esBajar(url,'','Abriendo…');
@@ -1064,7 +1072,7 @@ async function verArchivo(f){
         else{await cargaLib(L_XLSX);const wb=p.modo==='csv'?XLSX.read(await b.text(),{type:'string'}):XLSX.read(await b.arrayBuffer(),{type:'array'});box.innerHTML=xlsHtml(wb);
           const tp=$('#xt');box.querySelectorAll('[data-xs]').forEach(bt=>bt.onclick=()=>{box.querySelectorAll('[data-xs]').forEach(x=>x.classList.toggle('on',x===bt));$('#xw').innerHTML=tp.content.children[+bt.dataset.xs].innerHTML})}
       }catch(e){box.innerHTML='<div class="empty">No pude dibujar este documento aquí ('+esc(e.message)+'). Descárgalo para abrirlo.</div>'}}
-  }catch(e){$('#sh-b').innerHTML='<div class="empty">No pude abrirlo: '+esc(e.message)+'</div>'}}
+  }catch(e){$('#dk-file').innerHTML='<div class="empty">No pude abrirlo: '+esc(e.message)+'</div>'}}
 const HERO=[{i:'check',t:'¿Qué tengo hoy?',h:'Tu día en una vista: agenda, pendientes y vencimientos.'},
   {i:'box',t:'Entregables esperando mi Vo.Bo.',q:'¿Qué entregables esperan mi Vo.Bo.?',h:'Revisa y aprueba sin salir de la conversación.'},
   {i:'cal',t:'¿Qué vence esta semana?',h:'Plazos y fechas límite, ordenados por urgencia.'},
@@ -2801,10 +2809,10 @@ async function openArt(id,silent){
     dkId=id;dkTitle=a.titulo||'Tablero';
     $('#dk-t').textContent=dkTitle;$('#dk-f').srcdoc=a.doc;
     $('#dk-ft').textContent='v'+a.version+' · '+(a.verificado?'✓ ':'⚠️ ')+(a.procedencia||'');
-    closeSheet();document.body.classList.add('docked');paintDock();
+    closeSheet();document.body.classList.remove('dock-file');$('#dk-file').innerHTML='';document.body.classList.add('docked');paintDock();
   }catch(e){if(!silent)toast('⚠️ No pude abrir el tablero: '+e.message)}
 }
-function closeDock(){document.body.classList.remove('docked','dkfull');dkId='';$('#dk-f').srcdoc=''}
+function closeDock(){document.body.classList.remove('docked','dkfull','dock-file');dkId='';$('#dk-f').srcdoc='';$('#dk-file').innerHTML=''}
 $('#dk-x').onclick=closeDock;$('#dk-back').onclick=closeDock;
 $('#dk-fs').onclick=()=>document.body.classList.toggle('dkfull');
 $('#dk-list').onclick=openArtList;
