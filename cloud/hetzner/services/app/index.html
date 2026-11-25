@@ -37,6 +37,9 @@ nav .badge{position:absolute;margin:-2px 0 0 14px;background:var(--bad);color:#f
 .msg.a{background:var(--panel);border:1px solid var(--line);border-bottom-left-radius:4px}
 .msg .meta{font-size:11px;color:var(--mut);margin-top:6px;display:flex;gap:12px}
 .msg .meta button{background:none;border:0;color:var(--mut);padding:0;font-size:11px}
+.ver{font:600 11px/1 inherit;font-family:inherit;color:var(--mut);background:rgba(128,128,128,.16);border:0;border-radius:999px;padding:4px 8px;margin-left:8px;cursor:pointer;vertical-align:middle;white-space:nowrap;min-width:0}
+.ver.bad{background:rgba(245,158,11,.25);color:#b45309}
+@media (min-width:760px){#ver-h{display:none}}
 .fcard{display:flex;align-items:center;gap:10px;border:1px solid rgba(128,128,128,.32);border-radius:14px;padding:8px 10px;margin:10px 0 4px;background:rgba(128,128,128,.07)}
 .fcard .fi{font-size:24px}.fcard .fn{flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.fcard .fn small{display:block;font-weight:400;color:var(--mut);font-size:12px}
 .fcard button{border:1px solid rgba(128,128,128,.4);background:transparent;color:inherit;border-radius:999px;padding:6px 12px;font:inherit;font-size:13px;white-space:nowrap}
@@ -44,6 +47,12 @@ iframe.fprev{width:100%;height:68vh;border:1px solid rgba(128,128,128,.3);border
 .ftxt{white-space:pre-wrap;word-break:break-word;font:13px/1.55 ui-monospace,Menlo,monospace;max-height:68vh;overflow:auto;margin:0}
 #sheet .in.ancha{background:var(--base,#fff);-webkit-backdrop-filter:none;backdrop-filter:none}
 @media (min-width:760px){#sheet .in.ancha{width:min(780px,64vw)}}
+.docprev{background:#e4e6ea;border-radius:12px;padding:8px;max-height:72vh;overflow:auto;color:#000}.docprev .docx-wrapper{background:transparent!important;padding:6px 0!important}
+.docprev section.docx{box-shadow:0 1px 4px rgba(0,0,0,.25);margin-bottom:10px!important}
+.xtabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 8px}.xtabs button{border:1px solid rgba(128,128,128,.4);background:transparent;color:inherit;border-radius:999px;padding:4px 12px;font:inherit;font-size:12.5px}.xtabs button.on{background:rgba(79,70,229,.16);font-weight:600}
+.xwrap{overflow:auto;max-height:66vh;border:1px solid rgba(128,128,128,.3);border-radius:10px;background:#fff;color:#111}
+table.xtab{border-collapse:collapse;font-size:12.5px}table.xtab td,table.xtab th{border:1px solid #d5d8de;padding:3px 8px;white-space:nowrap;text-align:left}table.xtab th{background:#f1f3f6;position:sticky;top:0;font-weight:600}
+.pptprev{background:#e4e6ea;border-radius:12px;padding:8px;max-height:72vh;overflow:auto}.mdprev{max-height:70vh;overflow:auto}
 .msg p{margin:.35em 0}.msg p:first-child{margin-top:0}.msg p:last-child{margin-bottom:0}
 .msg ul,.msg ol{margin:.35em 0;padding-left:1.25em}
 .msg h3,.msg h4{margin:.6em 0 .25em;font-size:15px}
@@ -656,7 +665,7 @@ html.lowfx body::before{display:none}
     <button class="ib" id="hback" hidden aria-label="Volver a la conversación" style="order:-1"><i data-i="back"></i></button>
     <span class="hbrand"><img src="/app/icon.svg" alt=""></span>
     <span class="dot" id="dot"></span>
-    <h1 id="h1" style="order:1"><span id="title">{{AGENT_NAME}}</span><small id="hsub"> · en línea</small></h1>
+    <h1 id="h1" style="order:1"><span id="title">{{AGENT_NAME}}</span><small id="hsub"> · en línea</small><button class="ver" id="ver-h" type="button" aria-label="Versión de la app"></button></h1>
     <button class="recpill" id="recpill" style="order:5" aria-label="Abrir la escucha en segundo plano"><span class="rdot"></span><span id="rec-t">Escuchando · 00:00</span></button>
     <button class="ib" id="bell" style="order:10" aria-label="Notificaciones"><i data-i="bell"></i><span class="bbadge" id="bbadge" hidden></span></button>
     <button class="ib" id="vmbtn" style="order:11" aria-label="Conversar por voz"><i data-i="mic"></i></button>
@@ -706,7 +715,7 @@ html.lowfx body::before{display:none}
 
 <div id="scrim"></div>
 <aside id="side" aria-label="Conversaciones y secciones">
-  <div class="sdhd"><img src="/app/icon.svg" alt=""><b>{{AGENT_NAME}}</b><button class="ib" id="sd-x" aria-label="Cerrar el menú"><i data-i="x"></i></button></div>
+  <div class="sdhd"><img src="/app/icon.svg" alt=""><b>{{AGENT_NAME}}</b><button class="ver" id="ver-s" type="button" aria-label="Versión de la app"></button><button class="ib" id="sd-x" aria-label="Cerrar el menú"><i data-i="x"></i></button></div>
   <button class="sdnew" id="sd-new"><i data-i="plus" data-s="18"></i>Nueva conversación</button>
   <label class="sdsearch"><i data-i="search" data-s="18"></i><span class="vh">Buscar en conversaciones</span><input id="sd-q" type="search" placeholder="Buscar en conversaciones…"></label>
   <div id="sdlist"></div>
@@ -836,6 +845,21 @@ const AGENT='{{AGENT_NAME}}';
 let chat=LS.get('chat',[]);          // [{r:'u'|'a', t:'texto', ts, model}]
 let busy=false;
 
+/* Versión de la app: la pantalla trae su número (APP_V), el servidor dice cuál corre y cuál está instalada. Si no coinciden se marca ⚠️. */
+const APP_V='{{APP_VERSION}}',VER={srv:null,inst:null};
+function verPaint(){
+  const mi=/^\d+$/.test(APP_V)?APP_V:'?';let txt='v'+mi,bad=false,tip='Versión de la pantalla: v'+mi;
+  if(VER.srv){tip+=' · servidor: v'+VER.srv;
+    if(VER.srv!==mi){bad=true;txt='v'+mi+' ⚠️';tip+=' — esta pantalla no es la del servidor: toca para actualizar'}
+    else if(VER.inst&&VER.inst!==VER.srv){bad=true;txt='v'+VER.srv+' ⚠️';tip+=' — hay archivos v'+VER.inst+' instalados pero el servidor sigue en v'+VER.srv+': hay que reiniciarlo'}
+    else txt='v'+mi+' ✓'}
+  document.querySelectorAll('.ver').forEach(b=>{b.textContent=txt;b.title=tip;b.classList.toggle('bad',bad)})}
+async function verCheck(){try{const d=await api('/v1/app/ping');VER.srv=d.version||null;VER.inst=d.instalada||null}catch(e){}verPaint()}
+function verInfo(){
+  const mi=/^\d+$/.test(APP_V)?APP_V:'?',ok=VER.srv&&VER.srv===mi&&(!VER.inst||VER.inst===VER.srv);
+  const est=!VER.srv?'No pude consultar al servidor.':VER.srv!==mi?'⚠️ Esta pantalla es de una versión distinta a la del servidor. Pulsa «Actualizar la pantalla ahora».':(VER.inst&&VER.inst!==VER.srv)?'⚠️ Hay archivos más nuevos instalados (v'+VER.inst+') pero el servidor sigue corriendo v'+VER.srv+'. En el servidor: sudo systemctl restart openclaw-gateway.':'✓ Pantalla, servidor y archivos instalados están en la misma versión.';
+  sheet('Versión de la app','<div class="sub">Pantalla (lo que ves): <b>v'+esc(mi)+'</b></div><div class="sub">Servidor (lo que está corriendo): <b>'+(VER.srv?'v'+esc(VER.srv):'—')+'</b></div><div class="sub">Instalada en disco: <b>'+(VER.inst?'v'+esc(VER.inst):'—')+'</b></div><div class="sub" style="margin:10px 0;font-weight:600">'+est+'</div><div class="nq"><button id="ver-up">'+(ok?'Volver a cargar la pantalla':'Actualizar la pantalla ahora')+'</button></div>');
+  $('#ver-up').onclick=async()=>{try{if(navigator.serviceWorker){for(const r of await navigator.serviceWorker.getRegistrations())await r.unregister()}if(window.caches){for(const k of await caches.keys())await caches.delete(k)}}catch(e){}location.reload()}}
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('on');setTimeout(()=>t.classList.remove('on'),1800)}
 
@@ -1007,6 +1031,17 @@ const FICON={pdf:'📕',doc:'📘',docx:'📘',xls:'📗',xlsx:'📗',csv:'📗'
 const fIcon=n=>FICON[(String(n).split('.').pop()||'').toLowerCase()]||'📄';
 const fSize=b=>b>=1048576?(b/1048576).toFixed(1)+' MB':Math.max(1,Math.round((b||0)/1024))+' KB';
 function filesHtml(fl){if(!fl||!fl.length)return '';return fl.map((f,i)=>`<div class="fcard"><span class="fi">${fIcon(f.nombre)}</span><span class="fn">${esc(f.nombre)}<small>${fSize(f.tamano)}</small></span><button data-fv="${i}">Ver</button><button data-fd="${i}">Descargar</button></div>`).join('')}
+/* Visores de documentos: las librerías viajan con la app (/app/vendor-*.js) y se cargan solo al abrir un Word/Excel/PowerPoint. */
+const LIBS={};
+function cargaLib(n){return LIBS[n]||(LIBS[n]=new Promise((ok,no)=>{const s=document.createElement('script');s.src='/app/'+n;s.onload=ok;s.onerror=()=>{delete LIBS[n];no(new Error('No pude cargar el visor ('+n+')'))};document.head.appendChild(s)}))}
+const L_JSZIP='vendor-jszip-3.10.2.min.js',L_DOCX='vendor-docx-preview-0.4.1.min.js',L_XLSX='vendor-xlsx-mini-0.20.3.min.js',L_PPTX='vendor-pptx-preview-1.0.7.umd.js';
+function xlsHtml(wb){
+  const names=wb.SheetNames||[];if(!names.length)return '<div class="empty">El archivo no tiene hojas.</div>';
+  const tabla=n=>{const ws=wb.Sheets[n],rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:false,defval:''}),lim=rows.slice(0,400),cols=Math.min(60,Math.max(1,...lim.map(r=>r.length)));
+    let h='<table class="xtab"><thead><tr><th></th>'+Array.from({length:cols},(_,i)=>'<th>'+XLSX.utils.encode_col(i)+'</th>').join('')+'</tr></thead><tbody>';
+    lim.forEach((r,i)=>{h+='<tr><th>'+(i+1)+'</th>'+Array.from({length:cols},(_,j)=>'<td>'+esc(r[j]==null?'':r[j])+'</td>').join('')+'</tr>'});
+    return h+'</tbody></table>'+(rows.length>400?'<div class="sub" style="padding:6px">Se muestran las primeras 400 filas de '+rows.length+'. Descarga el archivo para verlo completo.</div>':'')};
+  return '<div class="xtabs">'+names.map((n,i)=>'<button data-xs="'+i+'"'+(i===0?' class="on"':'')+'>'+esc(n)+'</button>').join('')+'</div><div class="xwrap" id="xw">'+tabla(names[0])+'</div>'+'<template id="xt">'+names.map(tabla).map(t=>'<div>'+t+'</div>').join('')+'</template>'}
 async function bajarArchivo(f){try{const b=await esBajar('/v1/app/media/'+encodeURIComponent(f.id)+'/file','','Preparando…');esGuardarBlob(b,f.nombre);toast('Descargado')}catch(e){toast('⚠️ '+e.message)}}
 async function verArchivo(f){
   sheet(f.nombre,'<div class="empty">Abriendo…</div>');const box=document.querySelector('#sheet .in');if(box)box.classList.add('ancha');
@@ -1014,8 +1049,21 @@ async function verArchivo(f){
     if(p.modo==='pdf'||p.modo==='imagen'){const b=await esBajar(url,'','Abriendo…'),u=URL.createObjectURL(b);h=p.modo==='pdf'?'<iframe class="fprev" src="'+u+'"></iframe>':'<img class="fprev" src="'+u+'" alt="">'}
     else if(p.modo==='html')h='<iframe class="fprev" sandbox="" srcdoc="'+esc(p.html)+'"></iframe>';
     else if(p.modo==='texto')h='<pre class="ftxt">'+esc(p.texto)+'</pre>';
+    else if(p.modo==='md')h='<div class="mdprev msg a" style="max-width:100%">'+md(p.texto)+'</div>';
+    else if(p.modo==='docx'||p.modo==='xlsx'||p.modo==='csv'||p.modo==='pptx')h='<div id="vz-box"><div class="empty">Preparando la vista previa…</div></div>';
     else h='<div class="empty">No puedo mostrar este tipo de archivo aquí. Descárgalo para abrirlo.</div>';
-    $('#sh-b').innerHTML=h+'<div class="nq" style="margin-top:8px"><button id="fv-dl">⬇️ Descargar</button></div>';$('#fv-dl').onclick=()=>bajarArchivo(f)
+    $('#sh-b').innerHTML=h+'<div class="nq" style="margin-top:8px"><button id="fv-dl">⬇️ Descargar</button></div>';$('#fv-dl').onclick=()=>bajarArchivo(f);
+    if(p.modo==='docx'||p.modo==='xlsx'||p.modo==='csv'||p.modo==='pptx'){
+      const box=$('#vz-box');
+      try{const b=await esBajar(url,'','Abriendo…');
+        if(p.modo==='docx'){await cargaLib(L_JSZIP);await cargaLib(L_DOCX);box.innerHTML='<div class="docprev"></div>';const dp=box.firstChild;
+          await docx.renderAsync(b,dp,null,{inWrapper:true,ignoreWidth:false,ignoreHeight:true,breakPages:true,renderHeaders:true,renderFooters:true,useBase64URL:true});
+          const pg=dp.querySelector('section.docx');if(pg){const k=Math.min(1,(dp.clientWidth-16)/pg.offsetWidth);if(k<1)dp.querySelector('.docx-wrapper').style.zoom=k}}
+        else if(p.modo==='pptx'){await cargaLib(L_PPTX);box.innerHTML='<div class="pptprev"></div>';const pp=box.firstChild,w=Math.max(280,Math.min(900,pp.clientWidth-16));
+          const pv=pptxPreview.init(pp,{width:w,height:Math.round(w*9/16)});await pv.preview(await b.arrayBuffer())}
+        else{await cargaLib(L_XLSX);const wb=p.modo==='csv'?XLSX.read(await b.text(),{type:'string'}):XLSX.read(await b.arrayBuffer(),{type:'array'});box.innerHTML=xlsHtml(wb);
+          const tp=$('#xt');box.querySelectorAll('[data-xs]').forEach(bt=>bt.onclick=()=>{box.querySelectorAll('[data-xs]').forEach(x=>x.classList.toggle('on',x===bt));$('#xw').innerHTML=tp.content.children[+bt.dataset.xs].innerHTML})}
+      }catch(e){box.innerHTML='<div class="empty">No pude dibujar este documento aquí ('+esc(e.message)+'). Descárgalo para abrirlo.</div>'}}
   }catch(e){$('#sh-b').innerHTML='<div class="empty">No pude abrirlo: '+esc(e.message)+'</div>'}}
 const HERO=[{i:'check',t:'¿Qué tengo hoy?',h:'Tu día en una vista: agenda, pendientes y vencimientos.'},
   {i:'box',t:'Entregables esperando mi Vo.Bo.',q:'¿Qué entregables esperan mi Vo.Bo.?',h:'Revisa y aprueba sin salir de la conversación.'},
@@ -2880,6 +2928,7 @@ async function openEnt(f){
     $('#ask').onclick=()=>{closeSheet();go('chat');$('#inp').value='Sobre el entregable «'+(m.titulo||f)+'»: ';$('#inp').focus()};
   }catch(e){sheet('Error',esc(e.message))}
 }
+verPaint();document.querySelectorAll('.ver').forEach(b=>b.onclick=verInfo);setInterval(verCheck,90000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)verCheck()});
 function sheet(t,b){$('#sh-t').textContent=t;$('#sh-b').innerHTML=b;$('#sheet').classList.add('on')}
 function closeSheet(){$('#sheet').classList.remove('on');clearInterval(TBT);if(LS.get('tab','chat')==='trab')loadTrab()}
 $('#sh-x').onclick=closeSheet;$('#sheet').onclick=e=>{if(e.target.id==='sheet')closeSheet()};
@@ -2930,7 +2979,7 @@ function renderCfg(){
   ping().then(ok=>{$('#st').textContent=ok?'🟢 Conectado':'🔴 Sin conexión'});
   renderPush();
 }
-async function ping(){try{await api('/v1/app/ping');online(true);return true}catch(e){online(false);return false}}
+async function ping(){try{await api('/v1/app/ping');online(true);if(VER.srv===null)verCheck();return true}catch(e){online(false);return false}}
 
 /* ---------- Push ---------- */
 const isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);

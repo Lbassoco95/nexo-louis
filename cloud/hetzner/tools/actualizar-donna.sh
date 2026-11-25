@@ -82,7 +82,10 @@ fi
 $SUDO install -m 0755 -o "$OWNER" -g "$OWNER" "$SRC"/*.py "$DEST"/ || { echo "✗ no pude instalar el servidor"; exit 1; }
 $SUDO install -m 0644 -o "$OWNER" -g "$OWNER" "$SRC"/app/* "$DEST"/app/ || { echo "✗ no pude instalar la pantalla"; exit 1; }
 $SUDO $SYSTEMCTL restart $SERVICIOS || { echo "✗ no pude reiniciar los servicios"; exit 1; }
-echo "✓ Instalado y reiniciado. Cierra la app por completo y ábrela de nuevo para cargar la versión nueva."
+VER=$(grep -o 'louis-app-v[0-9]*' "$DEST/app/sw.js" 2>/dev/null | head -1 | sed 's/louis-app-v//')
+echo "✓ Instalado y reiniciado — versión v${VER:-?}. Cierra la app por completo y ábrela de nuevo: junto a «Donna» debe decir v${VER:-?} ✓."
 if [ -z "${NO_VERIFY:-}" ]; then
-  bash "$REPO/cloud/hetzner/tools/verificar-donna.sh" | tail -5
+  VOUT=$(bash "$REPO/cloud/hetzner/tools/verificar-donna.sh" 2>&1)
+  echo "$VOUT" | grep -a "✗" | sed 's/\x1b\[[0-9;]*m//g'                # qué falló, aunque no esté entre las últimas líneas
+  echo "$VOUT" | tail -5
 fi

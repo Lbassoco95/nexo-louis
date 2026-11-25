@@ -161,5 +161,42 @@ class PorHttp(unittest.TestCase):
         self.assertEqual(e.exception.code, 404)
 
 
+class VisoresDeDocumentos(unittest.TestCase):
+    """Word, Excel y PowerPoint se dibujan en la pantalla con librerías que viajan dentro de la app (sin internet ni instalar nada en el servidor)."""
+    def setUp(self):
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), g.Handler)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.base = "http://127.0.0.1:%d" % self.srv.server_address[1]
+
+    def tearDown(self):
+        self.srv.shutdown()
+
+    def get(self, path, auth=True):
+        h = {"Authorization": "Bearer master-x"} if auth else {}
+        return urllib.request.urlopen(urllib.request.Request(self.base + path, headers=h))
+
+    def test_cada_tipo_tiene_su_visor(self):
+        esperado = {"c.docx": "docx", "h.xlsx": "xlsx", "m.xlsm": "xlsx", "p.pptx": "pptx", "d.csv": "csv", "n.md": "md", "v.pdf": "pdf", "f.png": "imagen"}
+        for nombre, modo in esperado.items():
+            m = app_media.register_bytes(b"x" * 20, nombre, user="polo")
+            self.assertEqual(json.loads(self.get("/v1/app/media/%s/preview" % m["id"]).read())["modo"], modo, nombre)
+
+    def test_las_librerias_de_los_visores_se_sirven_desde_la_app_sin_sesion(self):
+        html = open(os.path.join(SERVICES, "app", "index.html")).read()
+        nombres = set(re.findall(r"'(vendor-[A-Za-z0-9.\-]+\.js)'", html))
+        self.assertGreaterEqual(len(nombres), 4)                                                   # jszip, docx-preview, xlsx, pptx-preview
+        for n in nombres:
+            self.assertTrue(os.path.exists(os.path.join(SERVICES, "app", n)), n + " no está en la carpeta de la app")
+            r = self.get("/app/" + n, auth=False)                                                  # es código público: no lleva datos
+            self.assertIn("javascript", r.headers["Content-Type"])
+            self.assertIn("immutable", r.headers["Cache-Control"])
+            self.assertGreater(len(r.read()), 50000)
+        for malo in ("/app/vendor-.js/../../etc/passwd", "/app/vendor-x.html", "/app/vendor-no-existe.js"):
+            with self.assertRaises(urllib.error.HTTPError):
+                self.get(malo, auth=False)
+
+
+import re
+
 if __name__ == "__main__":
     unittest.main()

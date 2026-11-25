@@ -189,6 +189,17 @@ _APP_FILES = {
 }
 
 
+def _version_instalada() -> str:
+    """Número de versión de la app. Sale de sw.js (el mismo número que renueva la caché del teléfono): una sola fuente, no se puede desalinear."""
+    try:
+        m = re.search(rb"louis-app-v(\d+)", (_APP_DIR / "sw.js").read_bytes())
+        return m.group(1).decode() if m else "?"
+    except OSError:
+        return "?"
+
+
+_VERSION_ARRANQUE = _version_instalada()          # la versión con la que ARRANCÓ este proceso (lo que de verdad está corriendo)
+
 _NAME_SAFE = re.compile(r"[^\w .\-]", re.UNICODE)
 
 
@@ -208,9 +219,18 @@ def _base_url(host: str = "") -> str:
     return "https://" + (dom or "donna.kawiil.mx")
 
 
+_APP_VENDOR = re.compile(r"^/app/(vendor-[A-Za-z0-9.\-]+\.js)$")        # librerías de terceros para la vista previa de documentos (Word, Excel, PowerPoint); llevan su versión en el nombre
+
+
 def _app_file(ruta: str, host: str = ""):
     """(bytes, content-type) del cascarón de la app, o None. {{AGENT_NAME}} y {{BASE_URL}} se sustituyen al servir."""
     ent = _APP_FILES.get(ruta)
+    mv = None if ent else _APP_VENDOR.match(ruta)
+    if mv:
+        try:
+            return (_APP_DIR / mv.group(1)).read_bytes(), "application/javascript; charset=utf-8"           # tal cual, sin sustituir nada
+        except OSError:
+            return None
     if not ent:
         return None
     try:
@@ -219,6 +239,7 @@ def _app_file(ruta: str, host: str = ""):
         return None
     raw = raw.replace(b"{{AGENT_NAME}}", _agent_name().encode("utf-8"))
     raw = raw.replace(b"{{BASE_URL}}", _base_url(host).encode("utf-8"))
+    raw = raw.replace(b"{{APP_VERSION}}", _VERSION_ARRANQUE.encode("ascii", "replace"))
     return raw, ent[1]
 
 
@@ -1165,7 +1186,7 @@ class Handler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                 pass
             return
-        if _r0 in _APP_FILES:
+        if _r0 in _APP_FILES or _APP_VENDOR.match(_r0):
             f = _app_file(_r0, self.headers.get("Host", ""))
             if not f:
                 self._send_json(404, {"error": "app no instalada"})
@@ -1175,7 +1196,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(body)))
-                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Cache-Control", "public, max-age=604800, immutable" if _APP_VENDOR.match(_r0) else "no-cache")
                 self.send_header("X-Content-Type-Options", "nosniff")
                 self.send_header("Referrer-Policy", "no-referrer")
                 if ctype.startswith("text/html"):
@@ -1193,7 +1214,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 if _r0 == "/v1/app/ping":
                     kind, ses = self._auth
-                    self._send_json(200, {"ok": True, "modo": kind, "user": (ses or {}).get("user", "")})
+                    self._send_json(200, {"ok": True, "modo": kind, "user": (ses or {}).get("user", ""),
+                                          "version": _VERSION_ARRANQUE, "instalada": _version_instalada()})
                 elif _r0 == "/v1/app/sessions":
                     kind, ses = self._auth
                     self._send_json(200, {"sesiones": app_auth.list_sessions(
@@ -1719,6 +1741,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, {"modo": "imagen"})
             elif ext in (".html", ".htm"):
                 self._send_json(200, {"modo": "html", "html": fp.read_text(errors="replace")[:400000]})
+            elif ext in (".docx", ".xlsx", ".xlsm", ".pptx", ".csv"):      # la pantalla los dibuja con su formato (visores incluidos en la app)
+                self._send_json(200, {"modo": ext.lstrip(".").replace("xlsm", "xlsx")})
+            elif ext in (".md", ".markdown"):
+                self._send_json(200, {"modo": "md", "texto": fp.read_text(errors="replace")[:200000]})
             else:
                 try:
                     texto = fp.read_text(errors="replace") if ext in (".txt", ".md", ".csv", ".json", ".xml") else app_media.extract_document(fp)

@@ -1,0 +1,6 @@
+Librerías de terceros que la app usa en el navegador para mostrar documentos (vista previa). Se sirven desde este mismo servidor; no se conectan a internet.
+
+- JSZip 3.10.2 (MIT o GPL-3.0-o-posterior; se usa bajo MIT) — https://stuk.github.io/jszip/
+- docx-preview 0.4.1 (Apache-2.0) — https://github.com/VolodymyrBaydalka/docxjs
+- SheetJS Community Edition «mini» 0.20.3, publicado como @e965/xlsx (Apache-2.0) — https://sheetjs.com/
+- pptx-preview 1.0.7 (ISC) — https://www.npmjs.com/package/pptx-preview

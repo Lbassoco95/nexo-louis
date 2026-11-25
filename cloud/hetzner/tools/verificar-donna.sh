@@ -101,6 +101,11 @@ for f in sw.js index.html manifest.webmanifest; do
   [[ "$sz" -ge "$min" ]] && ok "app/$f ($sz bytes)" || bad "app/$f VACÍO O INCOMPLETO ($sz bytes) → reinstalar: sudo install -m 0644 -o polo -g polo ~/donna-deploy/cloud/hetzner/services/app/$f $OC/scripts/app/"
 done
 
+VI=$($SUDO grep -o 'louis-app-v[0-9]*' "$OC/scripts/app/sw.js" 2>/dev/null | head -1 | sed 's/louis-app-v//')
+VS=$(curl -s --max-time 10 "$URL/app/" | grep -o "APP_V='[0-9?]*'" | head -1 | grep -o "[0-9?][0-9?]*")
+if [[ -n "$VI" && "$VI" == "$VS" ]]; then ok "versión de la app: v$VI (instalada y sirviéndose)"
+else bad "la versión instalada es v${VI:-?} pero el servidor sirve v${VS:-?} → sudo systemctl restart openclaw-gateway"; fi
+
 echo "3j) Traducción en vivo"
 [[ -f "$OC/scripts/ws_lite.py" ]] && ok "ws_lite.py instalado (WebSocket del traductor en vivo)" || bad "falta ws_lite.py → sudo install -m 0755 -o polo -g polo ~/donna-deploy/cloud/hetzner/services/ws_lite.py $OC/scripts/"
 
