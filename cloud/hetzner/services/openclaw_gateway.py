@@ -1086,6 +1086,36 @@ def _lanzar_voces(sid: str) -> bool:
     return True
 
 
+_RECON_EN_CURSO: set = set()
+
+
+def _lanzar_reconstruccion(aid: str, usuario: str) -> bool:
+    """Reconstruye el texto de un audio suelto en segundo plano (una a la vez por audio). False si ya estaba corriendo."""
+    if aid in _RECON_EN_CURSO:
+        return False
+    _RECON_EN_CURSO.add(aid)
+
+    def _run():
+        try:
+            import donna_reconstruir
+            r = donna_reconstruir.procesar(aid, usuario)
+            log.info("reconstruir: audio %s → %s", aid, r.get("estado"))
+            try:
+                import louis_push
+                if r.get("estado") == "lista":
+                    louis_push.notify_async("🧾 Texto reconstruido", "%d intervenciones de %s min de audio. Ya está en tus juntas guardadas." % (r.get("turnos", 0), r.get("minutos", "?")), tab="chat", tag="reconstruir-" + aid[:8], kind="media")
+                else:
+                    louis_push.notify_async("No pude reconstruir el texto", str(r.get("error", ""))[:160], tab="chat", tag="reconstruir-" + aid[:8], kind="media")
+            except Exception:
+                log.warning("no pude avisar de la reconstrucción", exc_info=True)
+        except Exception:
+            log.exception("reconstruir falló")
+        finally:
+            _RECON_EN_CURSO.discard(aid)
+    threading.Thread(target=_run, daemon=True).start()
+    return True
+
+
 class Handler(BaseHTTPRequestHandler):
     def _safe_write(self, body: bytes):
         """Escribe la respuesta tolerando que el cliente cierre la conexión antes
@@ -1312,10 +1342,13 @@ class Handler(BaseHTTPRequestHandler):
                         self.end_headers()
                         self.wfile.write(cuerpo)
                 elif _r0 in ("/v1/app/escucha/audio_estado", "/v1/app/escucha/audio_huerfano"):  # ¿el audio quedó bien y cuánto cubre? / audio sin junta
-                    import donna_audio, donna_personas
+                    import donna_audio, donna_personas, donna_reconstruir
                     from urllib.parse import urlparse as _up7, parse_qs as _pq7
                     if _r0.endswith("huerfano"):
-                        self._send_json(200, {"items": donna_audio.huerfanos(self._media_user())})
+                        its = donna_audio.huerfanos(self._media_user())
+                        for it in its:
+                            it["recon"] = donna_reconstruir.estado(it["aid"])         # ¿se está reconstruyendo su texto? ¿ya quedó?
+                        self._send_json(200, {"items": its})
                     else:
                         sid7 = (_pq7(_up7(self.path).query).get("sesion") or [""])[0]
                         if not self._sesion_mia(sid7):
@@ -3007,6 +3040,11 @@ class Handler(BaseHTTPRequestHandler):
                         if not donna_audio.ligar_tramo(str(body.get("aid", "")), str(body.get("sesion_id", "")), u):
                             raise ValueError("audio no encontrado")
                         self._send_json(200, {"ok": True})
+                    elif acc == "reconstruir":                                               # el audio sale hacia OpenAI SOLO si Polo lo pide con este botón
+                        import donna_reconstruir
+                        aid = str(body.get("aid", ""))
+                        donna_reconstruir.validar(aid, u)
+                        self._send_json(200, {"ok": True, "ya": not _lanzar_reconstruccion(aid, u)})
                     elif acc == "borrar":
                         self._send_json(200, {"ok": True, "borrados": donna_audio.borrar(str(body.get("id", "")), u)})
                     else:

@@ -104,3 +104,10 @@ Caso real: en una ventana baja la caja «Pregúntale…» quedaba cortada. Ahora
 - **En vivo:** ganancia automática (ya existente) para que la transcripción oiga voces bajas; el micrófono se pide sin cancelación de eco ni de ruido para no apagar a quien habla lejos.
 - **Si el sistema silencia o corta el micrófono** (otra app lo usa, AirPods, suspensión): la app avisa, lo **reabre sola** sin detener la escucha y abre un tramo de audio nuevo. Si solo hay ceros con la pista «viva» (AirPods en un cuarto callado también los dan) espera 90 s y reintenta cada 10 min como máximo.
 - Pendiente de diseño aprobado: `docs/BIBLIOTECA-DE-VOCES.md`.
+
+## Reconstruir el texto desde el audio
+- Cuando la transcripción en vivo falló y solo quedó el audio, en **Escuchar → Audio sin junta guardada** aparece **🧾 Reconstruir texto**.
+- **Solo se hace cuando Polo lo pide con ese botón y confirma** que el audio sale hacia OpenAI (`gpt-4o-transcribe-diarize`: texto y quién habló, con tiempos). Cuesta saldo de OpenAI y tarda (≈ 1 min por cada 3 de audio; hasta 4 h por audio).
+- El resultado es una **junta nueva** (intervenciones con hora y voz, voces sin nombre) ligada a ese mismo audio, y un aviso cuando termina. La junta original no se toca; nada se reemplaza.
+- **Una grabación en curso no se toca:** si llegó audio en los últimos 3 minutos, no se puede reconstruir, ligar ni borrar desde otra pantalla (se muestra «se está grabando ahora mismo»).
+- El actualizador no reinicia el servidor mientras una reconstrucción esté corriendo.

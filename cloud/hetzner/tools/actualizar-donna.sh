@@ -46,6 +46,13 @@ for q in ("SELECT COUNT(*) FROM escucha_audio WHERE estado='grabando' AND actual
             sys.exit(0)
     except sqlite3.Error:
         pass
+try:                                                          # una reconstrucción de texto desde audio EN CURSO (su proceso sigue vivo): reiniciar la pierde
+    for (datos,) in c.execute("SELECT datos FROM audio_reconstruccion WHERE estado='procesando' AND ts>?", (time.time() - 7200,)):
+        pid = json.loads(datos or "{}").get("pid")
+        if pid and os.path.exists("/proc/%d" % int(pid)):
+            sys.exit(0)
+except sqlite3.Error:
+    pass
 try:                                                          # una revisión de voces EN CURSO (su proceso sigue vivo): reiniciar la pierde (35–40 min y su costo). Una huérfana (el proceso ya no existe) no cuenta.
     for (datos,) in c.execute("SELECT datos FROM junta_voces WHERE estado='procesando' AND ts>?", (time.time() - 1800,)):
         pid = json.loads(datos or "{}").get("pid")

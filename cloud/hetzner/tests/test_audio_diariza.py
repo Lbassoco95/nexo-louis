@@ -336,6 +336,7 @@ class Cobertura(unittest.TestCase):
 
     def test_audio_suelto_se_lista_se_liga_y_se_descarga(self):
         self._tramo("sueltoabc1", "ridsuelto01", 8, 0)
+        _c = A._c(); _c.execute("UPDATE escucha_audio SET actualizado=? WHERE aid=?", (int(time.time()) - 3600, "sueltoabc1")); _c.commit(); _c.close()     # la pestaña se cerró hace rato: ya no cuenta como grabación en curso
         self.assertEqual([h["aid"] for h in A.huerfanos("polo")], ["sueltoabc1"])
         self.assertEqual(A.huerfanos("otro"), [])
         mp3 = A.exportar_tramo("sueltoabc1")

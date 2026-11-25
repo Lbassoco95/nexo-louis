@@ -308,11 +308,21 @@ def clip(sesion_id: str, hora: str, antes_s: float = 3.0, dur_s: float = 16.0) -
     raise ValueError("Ese momento no tiene audio guardado (la grabación empezó después o hubo un hueco).")
 
 
+ACTIVO_S = 180
+
+
+def activo(fila: dict) -> bool:
+    """¿Esta grabación está corriendo AHORA? (estado «grabando» y llegó una parte hace menos de 3 minutos). Una grabación en curso no se borra, no se liga ni se reconstruye."""
+    return (fila or {}).get("estado") == "grabando" and time.time() - ((fila or {}).get("actualizado") or 0) < ACTIVO_S
+
+
 def borrar(sesion_o_aid: str, usuario: str) -> int:
     """Borra el audio (por id de tramo o de sesión). Devuelve cuántos tramos."""
     c = _c()
     try:
-        filas = [dict(r) for r in c.execute("SELECT aid, usuario FROM escucha_audio WHERE (aid=? OR sesion_id=? OR rid=?) AND estado!='borrado'", (sesion_o_aid, sesion_o_aid, sesion_o_aid))]
+        filas = [dict(r) for r in c.execute("SELECT aid, usuario, estado, actualizado FROM escucha_audio WHERE (aid=? OR sesion_id=? OR rid=?) AND estado!='borrado'", (sesion_o_aid, sesion_o_aid, sesion_o_aid))]
+        if any(activo(f) and (f["usuario"] == usuario or usuario == "admin") for f in filas):
+            raise ValueError("Esa grabación está en curso ahora mismo: termínala y guárdala primero (así no se pierde).")
         n = 0
         for f in filas:
             if f["usuario"] != usuario and usuario != "admin":
@@ -426,8 +436,13 @@ def huerfanos(usuario: str) -> list:
     """Audio que NO quedó ligado a ninguna junta guardada (la pestaña se cerró antes de guardar, etc.)."""
     c = _c()
     try:
-        filas = c.execute("SELECT aid, rid, creado, actualizado, offset_ms, partes, bytes FROM escucha_audio WHERE sesion_id='' AND estado!='borrado' AND (usuario=? OR ?='admin') ORDER BY actualizado DESC", (usuario, usuario))
-        return [dict(r) for r in filas]
+        filas = c.execute("SELECT aid, rid, creado, actualizado, offset_ms, partes, bytes, estado FROM escucha_audio WHERE sesion_id='' AND estado!='borrado' AND (usuario=? OR ?='admin') ORDER BY actualizado DESC", (usuario, usuario))
+        out = []
+        for r in filas:
+            d = dict(r)
+            d["activo"] = activo(d)                                # se está grabando ahora: la pantalla lo muestra sin botones
+            out.append(d)
+        return out
     finally:
         c.close()
 
@@ -436,9 +451,11 @@ def ligar_tramo(aid: str, sesion_id: str, usuario: str, dias: int = None) -> boo
     """Liga a mano un audio huérfano a una junta guardada (recuperar un audio que quedó suelto)."""
     c = _c()
     try:
-        r = c.execute("SELECT usuario FROM escucha_audio WHERE aid=? AND estado!='borrado'", (aid,)).fetchone()
+        r = c.execute("SELECT usuario, estado, actualizado FROM escucha_audio WHERE aid=? AND estado!='borrado'", (aid,)).fetchone()
         if not r or (r["usuario"] != usuario and usuario != "admin"):
             return False
+        if activo(dict(r)):
+            raise ValueError("Esa grabación está en curso ahora mismo: termínala y guárdala primero.")
         c.execute("UPDATE escucha_audio SET sesion_id=?, vence=?, estado=CASE WHEN estado='grabando' THEN 'cerrado' ELSE estado END WHERE aid=?", (sesion_id, int(time.time()) + int(dias or dias_por_defecto()) * 86400, aid))
         c.commit()
         return True

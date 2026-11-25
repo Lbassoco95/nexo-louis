@@ -197,6 +197,7 @@ class AudioPorHttp(unittest.TestCase):
         sid = crear_junta("admin")
         d = tono(10, 260)
         A.guardar_parte("tramohttp01", "ridhttp0001", "admin", 0, io.BytesIO(d), len(d), 0, "audio/webm")      # suelto: la pestaña se cerró antes de guardar
+        _c = A._c(); _c.execute("UPDATE escucha_audio SET actualizado=? WHERE aid=?", (int(time.time()) - 3600, "tramohttp01")); _c.commit(); _c.close()     # la pestaña se cerró hace rato: ya no cuenta como grabación en curso
         hu = json.loads(self.req("/v1/app/escucha/audio_huerfano").read())["items"]
         self.assertEqual([h["aid"] for h in hu], ["tramohttp01"])
         r = self.req("/v1/app/escucha/descargar?que=tramo&aid=tramohttp01")
