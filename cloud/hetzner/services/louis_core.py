@@ -1019,6 +1019,16 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "Usa la ruta exacta que te dio dropbox_buscar/dropbox_listar.\n"
         "- `dof_pdf(cod)` — baja el PDF OFICIAL del DOF por su cod_nota y se lo manda a Polo. "
         "Para esto NO necesitas Dropbox ni browser — el PDF se baja directo del DOF.\n"
+        "- `dropbox_leer(path)` — lee el TEXTO de un archivo de Dropbox (Word, PDF, Excel, PowerPoint) para que sepas qué dice.\n"
+        "\n# TÚ ERES EL CANAL Y EL SEGUIMIENTO; LOS AGENTES HACEN EL TRABAJO ESPECIALIZADO\n"
+        "Cuando Polo pida revisar, validar, homologar, redactar o analizar algo ESPECIALIZADO (un contrato, compliance, un tema legal, investigación…), NO lo resuelvas tú ni le pidas que pegue texto o que te diga dónde están las partes: "
+        "ENCÁRGALO a un agente con `encargar_a_agente` (nombres con `listar_agentes`: p. ej. kawiil-amatl contratos, kawiil-nelli compliance) y pásale el material en `documentos` (ruta de Dropbox o id de adjunto): "
+        "el servidor le entrega el texto completo. En `contexto` va lo que TÚ sabes: cliente, versión del documento, qué se pidió y qué decidió Polo. "
+        "Si ningún agente sirve, CRÉALO con `crear_agente` (Polo ya lo autorizó) y avísale después qué creaste y para qué. "
+        "Tu parte es el contexto, la orquestación (varios agentes si hace falta), el seguimiento y traerle el resultado resumido, con qué falta y qué sigue. "
+        "Polo sigue con otras cosas mientras tanto: para encargos largos usa `trabajo_crear` (corre en segundo plano y le avisa).\n"
+        "REGLAS: antes de decir que un cliente no existe, búscalo por nombre con `kawiil_central_clientes` (Vizum existe). NO vuelvas a entregar un archivo que ya está en la conversación salvo que Polo lo pida. "
+        "NUNCA digas que algo se envió, entregó o revisó si la herramienta no lo confirmó.\n"
         "Flujo cuando Polo pide 'pásame el PDF del DOF': usa `dof_pdf(cod)` con el cod que ya tienes "
         "de legal_buscar. Cuando pide un documento suyo: `dropbox_buscar` → `dropbox_enviar`. "
         "IMPORTANTE: el backfill del DOF NO guarda PDFs en Dropbox (solo texto en la BD). Para el PDF "
@@ -3398,7 +3408,7 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "crear_agente",
-        "description": "Crea un sub-agente especializado (ej: 'asistente-rrhh', 'redactor-correos', 'asistente-personal'). Guarda su system prompt en spaces/general/agents/{nombre}.md. Confirma con Polo el prompt antes de crear.",
+        "description": "Crea un sub-agente especializado (ej: 'asistente-rrhh', 'redactor-correos', 'asistente-personal'). Guarda su system prompt en spaces/general/agents/{nombre}.md. Polo YA autorizó que lo crees cuando ningún agente existente sirva: no pidas permiso antes, pero AVÍSALE después (qué agente, para qué). Queda registrado con quién lo creó, cuándo y para qué (`motivo`).",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -3406,6 +3416,7 @@ TOOLS_DEFINITION = [
                 "especialidad": {"type": "string", "description": "Una línea describiendo qué hace"},
                 "prompt": {"type": "string", "description": "System prompt completo del agente (rol, tono, qué debe hacer y qué no)"},
                 "modelo": {"type": "string", "enum": ["claude-sonnet-4-6", "claude-haiku-4-5", "ollama"], "default": "claude-sonnet-4-6", "description": "Qué modelo usa por default cuando lo invoques"},
+                "motivo": {"type": "string", "description": "Para qué lo creas (queda en el registro)"},
             },
             "required": ["nombre", "especialidad", "prompt"],
         },
@@ -3424,6 +3435,7 @@ TOOLS_DEFINITION = [
                 "nombre": {"type": "string", "description": "Nombre del agente a invocar"},
                 "tarea": {"type": "string", "description": "Instrucción que se le da al agente"},
                 "contexto": {"type": "string", "description": "Contexto adicional (datos, restricciones), opcional"},
+                "documentos": {"type": "array", "items": {"type": "string"}, "description": "Documentos que el agente debe leer: ruta de Dropbox o id de adjunto (m…). El servidor le entrega el texto COMPLETO; tú no copies nada."},
                 "modelo_override": {"type": "string", "description": "Forzar 'ollama' para sub-call local sin Anthropic"},
             },
             "required": ["nombre", "tarea"],
@@ -4070,6 +4082,11 @@ TOOLS_DEFINITION = [
         },
     },
     {
+        "name": "dropbox_leer",
+        "description": "Lee el TEXTO de un archivo de Dropbox (Word, PDF, Excel, PowerPoint, txt, md, csv) por su ruta exacta, por tramos (`desde`). Úsala para revisar un documento tú, resumirlo o conocer su contenido. Para que un agente especializado lo revise NO copies este texto: pásale la ruta en `documentos` de `encargar_a_agente`.",
+        "input_schema": {"type": "object", "properties": {"path": {"type": "string", "description": "Ruta exacta (path_display de dropbox_buscar/dropbox_listar)"}, "desde": {"type": "integer"}, "limite": {"type": "integer"}}, "required": ["path"]},
+    },
+    {
         "name": "dropbox_enviar",
         "description": "Descarga un archivo de Dropbox por su ruta exacta y SE LO ENTREGA a Polo en la conversación (tarjeta con vista previa y descarga). Usa la ruta (path_display) que devolvió dropbox_buscar/dropbox_listar. Úsala cuando Polo pida que le pases/mandes un archivo para revisarlo.",
         "input_schema": {
@@ -4512,7 +4529,8 @@ TOOLS_DEFINITION = [
                 "agente": {"type": "string", "description": "Nombre del agente (ej. kawiil-nelli)."},
                 "tarea": {"type": "string", "description": "Instrucción clara de lo que debe producir."},
                 "cliente": {"type": "string", "description": "Cliente al que corresponde (opcional)."},
-                "contexto": {"type": "string", "description": "Insumos/contexto para el agente (opcional)."},
+                "contexto": {"type": "string", "description": "Insumos/contexto para el agente (opcional): qué se pidió, qué decidió Polo, versiones."},
+                "documentos": {"type": "array", "items": {"type": "string"}, "description": "Documentos que el agente debe revisar: ruta de Dropbox (la de dropbox_buscar) o id de adjunto (m…). El servidor le entrega el texto COMPLETO; no lo copies tú."},
             },
             "required": ["agente", "tarea"],
         },
@@ -6654,7 +6672,74 @@ def _dropbox_enviar(path: str) -> str:
         return err.replace("ERROR descargando", "ERROR descargando de Dropbox")
     filename = path.rsplit("/", 1)[-1] or "archivo"
     _queue_file(content, filename, f"📄 {filename} (Dropbox)")
-    return f"Archivo '{filename}' ({len(content) // 1024} KB) descargado de Dropbox — entregado en la conversación (tarjeta con vista previa y descarga)."
+    return (f"Archivo '{filename}' ({len(content) // 1024} KB) descargado de Dropbox — entregado en la conversación (tarjeta con vista previa y descarga). "
+            f"Para REVISARLO: léelo con `dropbox_leer` o encárgalo a un agente con `encargar_a_agente(..., documentos=[\"{path}\"])` (el servidor le entrega el texto completo).")
+
+
+_DOC_TEXTO_MAX = 60000
+
+
+def _texto_de_bytes(content: bytes, filename: str) -> str:
+    """Texto de un archivo (docx, pdf, xlsx, pptx, txt, md, csv, html) a partir de sus bytes. Lanza RuntimeError si no se puede leer."""
+    import tempfile
+    import app_media
+    suf = Path(filename).suffix.lower() or ".txt"
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / ("doc" + suf)
+        p.write_bytes(content)
+        return app_media.extract_document(p)
+
+
+def _dropbox_leer(path: str, desde: int = 0, limite: int = 40000) -> str:
+    """Baja un archivo de Dropbox y devuelve su TEXTO (por tramos) para que Donna pueda revisarlo, resumirlo o dárselo a un agente."""
+    content, err = _dropbox_download_bytes(path)
+    if err:
+        return err.replace("ERROR descargando", "ERROR descargando de Dropbox")
+    filename = path.rsplit("/", 1)[-1] or "archivo"
+    try:
+        texto = _texto_de_bytes(content, filename)
+    except Exception as e:
+        return f"No pude sacar el texto de '{filename}': {e}"
+    if not texto.strip():
+        return f"'{filename}' no tiene texto extraíble (¿es un escaneo o una imagen?)."
+    desde = max(0, int(desde or 0))
+    limite = max(1000, min(int(limite or 40000), _DOC_TEXTO_MAX))
+    trozo = texto[desde:desde + limite]
+    resto = len(texto) - desde - len(trozo)
+    return (f"[{filename} · {len(texto):,} caracteres · mostrando {desde:,}–{desde + len(trozo):,}]\n\n{trozo}"
+            + (f"\n\n… faltan {resto:,} caracteres: vuelve a llamar con desde={desde + len(trozo)}." if resto > 0 else ""))
+
+
+def _texto_documentos(documentos, max_total: int = _DOC_TEXTO_MAX) -> str:
+    """Bloque con el texto COMPLETO de los documentos (rutas de Dropbox o ids de adjuntos de la app) para anteponerlo al contexto de un agente.
+    El servidor lo copia: el modelo no tiene que pegar nada (y no puede olvidarlo ni recortarlo)."""
+    if isinstance(documentos, str):
+        documentos = [documentos]
+    out, usado = [], 0
+    for d in [str(x).strip() for x in (documentos or []) if str(x).strip()][:6]:
+        try:
+            if re.match(r"^m[0-9a-f]{10}$", d):
+                import app_media
+                nombre = (app_media.get(d) or {}).get("nombre", d)
+                texto = app_media.leer_texto(d, 0, max_total)
+            else:
+                content, err = _dropbox_download_bytes(d)
+                if err:
+                    out.append(f"=== DOCUMENTO: {d} ===\n(no pude descargarlo: {err[:200]})")
+                    continue
+                nombre = d.rsplit("/", 1)[-1] or d
+                texto = _texto_de_bytes(content, nombre)
+        except Exception as e:
+            out.append(f"=== DOCUMENTO: {d} ===\n(no pude leerlo: {str(e)[:200]})")
+            continue
+        if not str(texto).strip():
+            out.append(f"=== DOCUMENTO: {nombre} ===\n(no tiene texto extraíble)")
+            continue
+        cupo = max(2000, max_total - usado)
+        recorte = str(texto)[:cupo]
+        usado += len(recorte)
+        out.append(f"=== DOCUMENTO: {nombre} ({len(str(texto)):,} caracteres{'; se entrega recortado' if len(str(texto)) > len(recorte) else ''}) ===\n{recorte}")
+    return ("\n\n".join(out) + "\n") if out else ""
 
 
 def _dropbox_norm_name(s: str) -> str:
@@ -9155,8 +9240,8 @@ def log_agent_activity(evento: str, agente: str, modelo: str = "", detalle: str 
         pass  # nunca dejar que la bitácora rompa la ejecución del agente
 
 
-def _crear_agente(nombre: str, especialidad: str, prompt: str, modelo: str = "claude-sonnet-4-6") -> str:
-    """Registra un sub-agente en AGENTS_DIR/{nombre}.md."""
+def _crear_agente(nombre: str, especialidad: str, prompt: str, modelo: str = "claude-sonnet-4-6", motivo: str = "") -> str:
+    """Registra un sub-agente en AGENTS_DIR/{nombre}.md y deja constancia (quién lo creó, cuándo y para qué) en agentes-creados.jsonl."""
     if not _AGENT_NAME_RE.match(nombre):
         return f"ERROR: nombre '{nombre}' inválido. Usa kebab-case (a-z, 0-9, guiones), 2-41 chars."
     AGENTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -9174,7 +9259,14 @@ def _crear_agente(nombre: str, especialidad: str, prompt: str, modelo: str = "cl
     )
     path.write_text(body)
     log_agent_activity("created", nombre, modelo, especialidad)
-    return f"OK: agente '{nombre}' creado en {path.name} (especialidad: {especialidad}, modelo: {modelo})"
+    try:
+        with open(AGENTS_DIR.parent / "agentes-creados.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"ts": datetime.now().isoformat(timespec="seconds"), "agente": nombre, "creado_por": "donna", "especialidad": especialidad,
+                                "modelo": modelo, "motivo": (motivo or "")[:300]}, ensure_ascii=False) + "\n")
+    except OSError:
+        log.warning("no pude registrar la creación del agente %s", nombre)
+    return (f"OK: agente '{nombre}' creado en {path.name} (especialidad: {especialidad}, modelo: {modelo}). "
+            f"Queda registrado. DILE a Polo qué agente creaste y para qué.")
 
 
 def _parse_agent_file(path: Path) -> dict:
@@ -9359,7 +9451,7 @@ def _invocar_agente_impl(
     headers = {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
     body = {
         "model": modelo if modelo.startswith("claude") else "claude-sonnet-4-6",
-        "max_tokens": 2048,
+        "max_tokens": 6000 if len(user_msg) > 8000 else 2048,          # revisar un documento largo necesita más espacio que una consulta corta
         "system": sub_system,
         "messages": [{"role": "user", "content": user_msg}],
     }
@@ -9929,6 +10021,8 @@ def execute_tool(name: str, args: dict) -> str:
             return _dropbox_analizar_imagen(args["path"], args.get("pregunta", ""))
         elif name == "dropbox_enviar":
             return _dropbox_enviar(args["path"])
+        elif name == "dropbox_leer":
+            return _dropbox_leer(args["path"], args.get("desde", 0), args.get("limite", 40000))
         elif name == "dof_pdf":
             return _dof_pdf(str(args["cod"]))
         elif name == "dof_nota":
@@ -9946,7 +10040,7 @@ def execute_tool(name: str, args: dict) -> str:
         elif name == "crear_agente":
             return _crear_agente(
                 args["nombre"], args["especialidad"], args["prompt"],
-                args.get("modelo", "claude-sonnet-4-6"),
+                args.get("modelo", "claude-sonnet-4-6"), args.get("motivo", ""),
             )
         elif name == "listar_agentes":
             return _listar_agentes()
@@ -9954,7 +10048,7 @@ def execute_tool(name: str, args: dict) -> str:
             return _invocar_agente(
                 args["nombre"],
                 args["tarea"],
-                args.get("contexto", ""),
+                (args.get("contexto", "") + "\n\n" + _texto_documentos(args.get("documentos"))).strip(),
                 args.get("modelo_override"),
             )
         elif name == "consejo_experto_legal":
@@ -9972,7 +10066,7 @@ def execute_tool(name: str, args: dict) -> str:
         elif name == "encargar_a_agente":
             return _encargar_a_agente(
                 args["agente"], args["tarea"],
-                args.get("cliente", ""), args.get("contexto", ""))
+                args.get("cliente", ""), (args.get("contexto", "") + "\n\n" + _texto_documentos(args.get("documentos"))).strip())
         elif name == "entregable_registrar":
             return _entregable_registrar(
                 args["titulo"], args.get("cliente", ""), args.get("contenido", ""),

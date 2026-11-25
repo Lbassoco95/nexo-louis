@@ -312,6 +312,7 @@ def _entregar_archivos(rid: str, user: str) -> list:
     for content, fname, _cap in core.get_pending_files(owner=rid):
         try:
             m = app_media.register_bytes(content, fname, user=user, origen="donna")
+            app_media.indexar_texto(m["id"])                 # Donna podrá releerlo después (adjuntos_leer) sin volver a Dropbox
             out.append({k: m.get(k) for k in ("id", "nombre", "tamano", "tipo", "mime")})
         except Exception:
             log.warning("no pude guardar el archivo %s para entregarlo", fname, exc_info=True)

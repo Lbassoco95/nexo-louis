@@ -198,5 +198,99 @@ class VisoresDeDocumentos(unittest.TestCase):
 
 import re
 
+
+def docx_bytes(*parrafos) -> bytes:
+    """Un .docx mínimo pero real (zip con word/document.xml) para probar la lectura de texto sin depender de python-docx."""
+    import io, zipfile
+    cuerpo = "".join("<w:p><w:r><w:t>%s</w:t></w:r></w:p>" % p for p in parrafos)
+    b = io.BytesIO()
+    with zipfile.ZipFile(b, "w") as z:
+        z.writestr("[Content_Types].xml", '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>')
+        z.writestr("word/document.xml", '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>%s</w:body></w:document>' % cuerpo)
+    return b.getvalue()
+
+
+CONTRATO = docx_bytes("CLÁUSULA TERCERA. La comisión será un monto fijo mensual.", "CLÁUSULA QUINTA. La comisión se pacta por cada transacción.")
+
+
+class Orquestacion(unittest.TestCase):
+    """Donna es el canal y el seguimiento: lee el documento, se lo entrega COMPLETO a un agente especializado (sin copiarlo ella) y puede crear agentes."""
+    def setUp(self):
+        self._dl = core._dropbox_download_bytes
+        core._dropbox_download_bytes = lambda path: (CONTRATO, None) if "LIMPIO" in path else (None, "ERROR descargando '%s': not_found" % path)
+
+    def tearDown(self):
+        core._dropbox_download_bytes = self._dl
+
+    def test_donna_puede_leer_un_word_de_dropbox(self):
+        t = core.execute_tool("dropbox_leer", {"path": "/Contratos/CPS-LIMPIO.docx"})
+        self.assertIn("monto fijo mensual", t)
+        self.assertIn("por cada transacción", t)
+        self.assertIn("CPS-LIMPIO.docx", t)
+        t2 = core.execute_tool("dropbox_leer", {"path": "/Contratos/CPS-LIMPIO.docx", "desde": 60, "limite": 1000})
+        self.assertIn("mostrando 60", t2)
+        self.assertTrue(core.execute_tool("dropbox_leer", {"path": "/no/existe.docx"}).startswith("ERROR"))
+
+    def test_el_servidor_entrega_el_texto_completo_al_agente(self):
+        visto = {}
+        orig = (core._invocar_agente, core._entregable_registrar, core._encolar_notificacion)
+        core._invocar_agente = lambda nombre, tarea, contexto="", *a, **k: visto.update(nombre=nombre, tarea=tarea, contexto=contexto) or "[%s respondió]\nRevisión lista" % nombre
+        core._entregable_registrar = lambda *a, **k: "OK"
+        core._encolar_notificacion = lambda *a, **k: None
+        try:
+            core.execute_tool("encargar_a_agente", {"agente": "kawiil-amatl", "tarea": "Homologa la comisión por transacción", "cliente": "",
+                                                     "contexto": "Polo pidió homologar la comisión.", "documentos": ["/Contratos/CPS-LIMPIO.docx"]})
+            self.assertIn("=== DOCUMENTO: CPS-LIMPIO.docx", visto["contexto"])
+            self.assertIn("monto fijo mensual", visto["contexto"])                                  # el texto viaja entero: el modelo no tuvo que copiarlo
+            self.assertIn("Polo pidió homologar", visto["contexto"])
+            visto.clear()
+            core.execute_tool("invocar_agente", {"nombre": "kawiil-amatl", "tarea": "Revisa", "documentos": ["/Contratos/CPS-LIMPIO.docx", "/no/existe.docx"]})
+            self.assertIn("por cada transacción", visto["contexto"])
+            self.assertIn("no pude descargarlo", visto["contexto"])                                 # un documento que falla se avisa al agente, no se calla
+        finally:
+            core._invocar_agente, core._entregable_registrar, core._encolar_notificacion = orig
+
+    def test_un_adjunto_de_la_app_tambien_se_puede_dar_a_un_agente(self):
+        m = app_media.register_bytes(CONTRATO, "Contrato.docx", user="polo")
+        self.assertGreater(app_media.indexar_texto(m["id"]), 50)
+        self.assertIn("monto fijo mensual", core._texto_documentos([m["id"]]))
+        self.assertEqual(core._texto_documentos([]), "")
+
+    def test_lo_que_se_entrega_al_chat_queda_leible(self):
+        core._FILE_TLS.owner = "rid-lee-0001"
+        try:
+            core._queue_file(CONTRATO, "CPS.docx")
+        finally:
+            core._FILE_TLS.owner = None
+        a = g._entregar_archivos("rid-lee-0001", "polo")[0]
+        self.assertIn("por cada transacción", app_media.leer_texto(a["id"], 0, 5000))             # adjuntos_leer funciona sobre lo que ella entregó
+
+    def test_crear_un_agente_queda_registrado_con_quien_cuando_y_para_que(self):
+        dest = TMP / "agentes-prueba"
+        viejo = core.AGENTS_DIR
+        core.AGENTS_DIR = dest / "agents"
+        try:
+            r = core.execute_tool("crear_agente", {"nombre": "revisor-contratos", "especialidad": "Revisa contratos", "prompt": "Eres revisor de contratos.", "motivo": "Polo pidió revisar el contrato CPS"})
+            self.assertTrue(r.startswith("OK"))
+            self.assertIn("DILE a Polo", r)
+            linea = json.loads(open(dest / "agentes-creados.jsonl").read().splitlines()[0])
+            self.assertEqual((linea["agente"], linea["creado_por"], linea["motivo"]), ("revisor-contratos", "donna", "Polo pidió revisar el contrato CPS"))
+            self.assertTrue((dest / "agents" / "revisor-contratos.md").exists())
+        finally:
+            core.AGENTS_DIR = viejo
+
+    def test_las_instrucciones_de_donna_dicen_que_delegue(self):
+        src = open(os.path.join(SERVICES, "louis_core.py")).read()
+        for frase in ("LOS AGENTES HACEN EL TRABAJO ESPECIALIZADO", "`documentos`", "kawiil_central_clientes", "dropbox_leer"):
+            self.assertIn(frase, src)
+        nombres = {t["name"] for t in core.TOOLS} if hasattr(core, "TOOLS") else set()
+        if nombres:
+            self.assertIn("dropbox_leer", nombres)
+
+    def test_la_respuesta_del_agente_tiene_espacio_para_un_documento_largo(self):
+        src = open(os.path.join(SERVICES, "louis_core.py")).read()
+        self.assertIn('"max_tokens": 6000 if len(user_msg) > 8000 else 2048', src)
+
+
 if __name__ == "__main__":
     unittest.main()

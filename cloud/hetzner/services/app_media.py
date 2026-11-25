@@ -578,6 +578,24 @@ def ingerir_todo(limite: int = 500) -> dict:
 
 
 # ------------------------------------------------------------------ consulta
+def indexar_texto(mid: str) -> int:
+    """Saca y guarda el texto de un archivo ya registrado (para que `adjuntos_leer` y `documentos=[id]` lo puedan leer). → caracteres, 0 si no tiene texto."""
+    fp, m = file_path(mid)
+    if not fp:
+        return 0
+    try:
+        texto = extract_document(fp)[:TEXT_CAP]
+    except Exception:
+        return 0
+    if not texto.strip():
+        return 0
+    fd = os.open(_dir(mid) / "text.txt", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(texto)
+    _update(mid, texto_chars=len(texto))
+    return len(texto)
+
+
 def register_bytes(content: bytes, nombre: str, mime: str = "", user: str = "", origen: str = "donna") -> dict:
     """Guarda un archivo que Donna produjo o bajó de Dropbox para entregarlo en el chat (ver y descargar). No se transcribe ni entra a la base de conocimiento."""
     import mimetypes

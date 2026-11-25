@@ -159,7 +159,10 @@ class Gateway(unittest.TestCase):
 
     def test_la_sesion_usa_la_app(self):
         t = self.entrar()
-        self.assertEqual(self.call("GET", "/v1/app/ping", token=t)[1], {"ok": True, "modo": "sesion", "user": "polo"})
+        ping = self.call("GET", "/v1/app/ping", token=t)[1]
+        self.assertEqual({k: ping[k] for k in ("ok", "modo", "user")}, {"ok": True, "modo": "sesion", "user": "polo"})
+        self.assertRegex(ping["version"], r"^\d+$")                                              # ping también dice la versión que corre y la instalada (número junto a «Donna»)
+        self.assertEqual(ping["version"], ping["instalada"])
         self.assertEqual(self.call("GET", "/v1/app/hoy", token=t)[0], 200)
 
     def test_la_sesion_NO_alcanza_lo_administrativo(self):
