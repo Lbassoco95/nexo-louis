@@ -270,6 +270,17 @@ def exportar(sesion_id: str) -> Path:
 
 
 TOLERANCIA_S = 20.0
+GANANCIA_MAX_DB = 50.0                                          # tope de lo que se puede subir un fragmento muy bajo (más allá solo sube el ruido)
+
+
+def _ganancia_db(fuente, desde: float, dur_s: float) -> float:
+    """Cuántos dB subirle a un fragmento para que su pico llegue a ~-3 dBFS (se mide el fragmento mismo, no toda la junta)."""
+    try:
+        r = subprocess.run(["ffmpeg", "-nostdin", "-ss", "%.2f" % desde, "-t", "%.2f" % dur_s, "-i", str(fuente), "-af", "volumedetect", "-f", "null", "-"], capture_output=True, text=True, timeout=300)
+        m = re.search(r"max_volume:\s*(-?[0-9.]+) dB", r.stderr)
+        return max(0.0, min(GANANCIA_MAX_DB, -3.0 - float(m.group(1)))) if m else 0.0
+    except Exception:
+        return 0.0
 
 
 def clip(sesion_id: str, hora: str, antes_s: float = 3.0, dur_s: float = 16.0) -> Path:
@@ -285,7 +296,10 @@ def clip(sesion_id: str, hora: str, antes_s: float = 3.0, dur_s: float = 16.0) -
             destino.mkdir(parents=True, exist_ok=True, mode=0o700)
             mp3 = destino / ("c-%s-%d.mp3" % (sesion_id, int(t_s * 1000)))             # el id de la junta va en el nombre: borrar() la quita junto con el audio
             if not mp3.exists():
-                r = subprocess.run(["ffmpeg", "-nostdin", "-y", "-ss", "%.2f" % desde, "-t", "%.2f" % dur_s, "-i", str(ensamblar(t["aid"])), "-af", AF_VOZ, "-vn", "-ac", "1", "-ar", "22050", "-b:a", "48k", str(mp3)],
+                fuente = ensamblar(t["aid"])
+                gan = _ganancia_db(fuente, desde, dur_s)
+                af = "highpass=f=70,volume=%.1fdB,dynaudnorm=f=200:g=15:m=10:p=0.95:s=6,alimiter=limit=0.95" % gan
+                r = subprocess.run(["ffmpeg", "-nostdin", "-y", "-ss", "%.2f" % desde, "-t", "%.2f" % dur_s, "-i", str(fuente), "-af", af, "-vn", "-ac", "1", "-ar", "22050", "-b:a", "48k", str(mp3)],
                                    capture_output=True, timeout=300)
                 if r.returncode != 0 or not mp3.exists():
                     raise ValueError("no pude preparar ese fragmento")

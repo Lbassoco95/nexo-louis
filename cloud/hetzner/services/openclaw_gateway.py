@@ -2947,6 +2947,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json(404, {"error": "junta no encontrada"})
                 elif acc == "aplicar":
                     self._send_json(200, {"ok": True, **donna_diariza.aplicar(sid, body.get("ids") if isinstance(body.get("ids"), list) else "todas", u, body.get("destinos") if isinstance(body.get("destinos"), dict) else None)})
+                elif acc == "decidir":
+                    self._send_json(200, {"ok": True, **donna_diariza.decidir(sid, body.get("decisiones"), u)})
                 elif acc == "deshacer":
                     self._send_json(200, {"ok": True, **donna_diariza.deshacer(sid, u)})
                 elif acc == "borrar_audio":

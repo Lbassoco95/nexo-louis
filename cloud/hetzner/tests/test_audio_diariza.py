@@ -177,6 +177,30 @@ class Pasada(unittest.TestCase):
         with self.assertRaises(ValueError):
             DZ.deshacer(self.sid, "otro")
 
+    def test_decisiones_se_guardan_y_al_aplicar_se_verifica_en_la_base(self):
+        r = DZ.procesar(self.sid, llamar=self.falso, key="k", trabajo_base=TMP / "w")
+        ids = {c["hora"]: c["id"] for c in r["cambios"]}
+        out = DZ.decidir(self.sid, {str(ids["00:12"]): {"m": True, "v": 2}, "9999": {"m": True, "v": 1}}, "polo")
+        self.assertEqual(out["guardadas"], 1)                                                         # un id que no es de esta propuesta se ignora
+        self.assertEqual(DZ.estado(self.sid)["decisiones"][str(ids["00:12"])], {"m": True, "v": 2})   # lo marcado vuelve al reabrir la pantalla
+        with self.assertRaises(ValueError):
+            DZ.decidir(self.sid, {}, "otro")
+        ap = DZ.aplicar(self.sid, [ids["00:12"]], "polo", {ids["00:12"]: 2})
+        self.assertEqual((ap["aplicados"], ap["verificados"], ap["sin_cambio"]), (1, 1, 0))           # releyó la base: quedó en la voz elegida
+        ap2 = DZ.aplicar(self.sid, [ids["00:22"]], "polo", {ids["00:22"]: 2})                         # eligió «como está» (ya era la Voz 2)
+        self.assertEqual((ap2["aplicados"], ap2["sin_cambio"], ap2["verificados"]), (1, 1, 1))
+        self.assertEqual(self.voces()["00:22"][0], 2)
+
+    def test_fragmento_muy_bajo_se_sube_de_volumen(self):
+        import re
+        p = TMP / "bajo.webm"
+        subprocess.run(["ffmpeg", "-nostdin", "-y", "-f", "lavfi", "-i", "sine=frequency=220:duration=30", "-af", "volume=0.004", "-c:a", "libopus", "-b:a", "24k", str(p)], capture_output=True, check=True)
+        subir("audbajo01", "ridbajo01", p.read_bytes(), offset=200000)
+        A.ligar("ridbajo01", self.sid)
+        mp3 = A.clip(self.sid, "03:30")
+        r = subprocess.run(["ffmpeg", "-nostdin", "-i", str(mp3), "-af", "volumedetect", "-f", "null", "-"], capture_output=True, text=True)
+        self.assertGreater(float(re.search(r"mean_volume:\s*(-?[0-9.]+)", r.stderr).group(1)), -30)   # la fuente está a ~-52 dB: el fragmento se oye
+
     def test_fragmento_del_momento_usa_el_reloj_de_cada_tramo(self):
         subir("aud999abc", "rid999abc", audio_de_prueba(30), offset=100000)                           # segundo tramo: empieza en 01:40 del reloj de la junta
         A.ligar("rid999abc", self.sid)

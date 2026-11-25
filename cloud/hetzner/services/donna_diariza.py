@@ -363,6 +363,39 @@ def deshacer(sesion_id: str, usuario: str = "admin") -> dict:
         c.close()
 
 
+def decidir(sesion_id: str, decisiones, usuario: str = "admin") -> dict:
+    """Guarda lo que Polo va marcando y eligiendo en la revisión ({id: {m: marcado, v: voz elegida}}), para que no se pierda si cierra la pantalla."""
+    if not isinstance(decisiones, dict):
+        raise ValueError("decisiones inválidas")
+    c = _c()
+    try:
+        r = c.execute("SELECT estado, datos FROM junta_voces WHERE sesion_id=?", (sesion_id,)).fetchone()
+        if not r or r["estado"] != "lista":
+            raise ValueError("No hay una revisión de voces lista para esta junta.")
+        pc = donna_personas._c()
+        try:
+            ses = pc.execute("SELECT usuario FROM sesiones_escucha WHERE id=?", (sesion_id,)).fetchone()
+        finally:
+            pc.close()
+        if not ses or (ses["usuario"] != usuario and usuario != "admin"):
+            raise ValueError("junta no encontrada")
+        d = json.loads(r["datos"])
+        validos = {int(x["id"]) for x in d.get("cambios", [])}
+        dec = d.setdefault("decisiones", {})
+        n = 0
+        for k, v in decisiones.items():
+            if not str(k).isdigit() or int(k) not in validos or not isinstance(v, dict):
+                continue
+            voz = v.get("v")
+            dec[str(int(k))] = {"m": bool(v.get("m")), "v": int(voz) if str(voz).lstrip("-").isdigit() and int(voz) >= 0 else None}
+            n += 1
+        c.execute("UPDATE junta_voces SET datos=? WHERE sesion_id=?", (json.dumps(d, ensure_ascii=False), sesion_id))
+        c.commit()
+        return {"guardadas": n, "total": len(dec)}
+    finally:
+        c.close()
+
+
 def aplicar(sesion_id: str, ids=None, usuario: str = "admin", destinos=None) -> dict:
     """Aplica los cambios propuestos (todos o los ids elegidos): la intervención pasa a la voz propuesta (o a la que Polo eligió en `destinos` {id: voz}) y a su
     persona, si ya tiene nombre. Guarda la voz y persona anteriores de cada turno para poder «Deshacer»."""
@@ -383,20 +416,25 @@ def aplicar(sesion_id: str, ids=None, usuario: str = "admin", destinos=None) -> 
             voz_persona = {}
             for f in pc.execute("SELECT voz_n, persona_id FROM intervenciones WHERE sesion_id=? AND persona_id IS NOT NULL AND voz_n>0", (sesion_id,)):
                 voz_persona.setdefault(f["voz_n"], f["persona_id"])
-            n = 0
+            n = igual = 0
+            hechos = []
             for x in cambios:
                 a = destinos.get(x["id"], x["a"])
                 antes = pc.execute("SELECT voz_n, persona_id FROM intervenciones WHERE id=? AND sesion_id=?", (x["id"], sesion_id)).fetchone()
                 if not antes:
                     continue
+                if a == int(antes["voz_n"] or 0):                                     # eligió la voz que ya tenía: no hay nada que cambiar (la propuesta del audio se descarta)
+                    igual += 1
                 pc.execute("UPDATE intervenciones SET voz_n=?, persona_id=? WHERE id=? AND sesion_id=?", (a, voz_persona.get(a), x["id"], sesion_id))
                 x.update(aplicado=True, aplicado_a=a, antes_voz=int(antes["voz_n"] or 0), antes_persona=antes["persona_id"])
+                hechos.append((x["id"], a))
                 n += 1
             pc.commit()
+            verificados = sum(1 for i, a in hechos if (pc.execute("SELECT voz_n FROM intervenciones WHERE id=? AND sesion_id=?", (i, sesion_id)).fetchone() or {"voz_n": -1})["voz_n"] == a)
         finally:
             pc.close()
         c.execute("UPDATE junta_voces SET datos=? WHERE sesion_id=?", (json.dumps(d, ensure_ascii=False), sesion_id))
         c.commit()
-        return {"aplicados": n}
+        return {"aplicados": n, "sin_cambio": igual, "verificados": verificados}
     finally:
         c.close()
