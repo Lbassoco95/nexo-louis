@@ -279,8 +279,27 @@ _VOZ_BLOQUE = (
 )
 
 
+# Donna a veces dice «adjunto/enviado por Telegram» sin haber entregado nada (Telegram está apagado y la app no tiene «clip»): si la respuesta lo afirma
+# y esta respuesta NO trajo ningún archivo, se avisa claro en lugar de dejar creer que llegó.
+_AFIRMA_ENVIO = re.compile(r"📎|por telegram|enviado por|te lo (?:mand|envi)é por (?:telegram|aquí)", re.I)
+_AVISO_SIN_ARCHIVO = "\n\n⚠️ En este mensaje NO se adjuntó ningún archivo: no se envió nada. Pídemelo de nuevo («mándame el documento») y lo intento otra vez."
+
+
+def _entregar_archivos(rid: str, user: str) -> list:
+    """Los archivos que las herramientas dejaron en cola durante ESTA respuesta se guardan en el almacén de adjuntos y se devuelven para pintarlos en el chat."""
+    out = []
+    for content, fname, _cap in core.get_pending_files(owner=rid):
+        try:
+            m = app_media.register_bytes(content, fname, user=user, origen="donna")
+            out.append({k: m.get(k) for k in ("id", "nombre", "tamano", "tipo", "mime")})
+        except Exception:
+            log.warning("no pude guardar el archivo %s para entregarlo", fname, exc_info=True)
+    return out
+
+
 def _chat_worker(rid: str, user_msg: str, history: list, voz: bool = False, registrar: bool = True, extra: str = "", etiqueta: str = "", cid: str = "", user: str = ""):
     res = _RESULTS[rid]
+    core._FILE_TLS.owner = rid                         # lo que las herramientas encolen en este hilo es de ESTA respuesta
     try:
         api_key = core.load_anthropic_key()
         sys_prompt = core.load_system_prompt(channel="api") + (_VOZ_BLOQUE if voz else "")
@@ -288,17 +307,23 @@ def _chat_worker(rid: str, user_msg: str, history: list, voz: bool = False, regi
         if registrar:
             _hist_append("user", (etiqueta + " " if etiqueta else "") + user_msg)
         text, model = core.call_llm(api_key, sys_prompt, history, user_msg + extra, history_file=APP_HISTORY_FILE)
+        archivos = _entregar_archivos(rid, user)
+        if text and not archivos and _AFIRMA_ENVIO.search(text):
+            text += _AVISO_SIN_ARCHIVO
         if text and registrar:
             _hist_append("assistant", text)
-        out = {"text": text or "(sin respuesta)", "model": model, "error": None}
+        out = {"text": text or "(sin respuesta)", "model": model, "error": None, "archivos": archivos}
         if cid and text and app_chats and not res.get("cancelled"):          # la respuesta queda en SU conversación aunque el usuario ya esté en otra
             try:
-                app_chats.agregar_respuesta(user, cid, text, model)
+                app_chats.agregar_respuesta(user, cid, text, model, archivos)
             except Exception:
                 log.warning("no pude agregar la respuesta a la conversación", exc_info=True)
     except Exception as e:
         log.exception("chat stream falló")
-        out = {"text": "", "model": "", "error": str(e)[:200] or "error"}
+        out = {"text": "", "model": "", "error": str(e)[:200] or "error", "archivos": []}
+    finally:
+        core._FILE_TLS.owner = None
+        core.get_pending_files(owner=rid)               # lo que no se entregó (error) no se queda en memoria
     with _RESULTS_LOCK:
         res.update(out, done=True)
         gone = res.get("client_gone")
@@ -1180,7 +1205,7 @@ class Handler(BaseHTTPRequestHandler):
                     with _RESULTS_LOCK:
                         r = _RESULTS.get(rid) if _RID_OK.match(rid) else None
                         out = ({"found": True, "done": bool(r.get("done")), "text": r.get("text", ""),
-                                "model": r.get("model", ""), "error": r.get("error")} if r else {"found": False})
+                                "model": r.get("model", ""), "error": r.get("error"), "archivos": r.get("archivos") or []} if r else {"found": False})
                     self._send_json(200, out)
                 elif _r0 == "/v1/app/push/key":
                     import louis_push
@@ -1682,6 +1707,24 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"activos": app_media.share_list(mid)})
         elif parts[4] == "text":
             self._send_json(200, {"texto": app_media.leer_texto(mid, 0, 30000)})
+        elif parts[4] == "preview":                                    # cómo se puede ver este archivo en la app: pdf/imagen (se baja y se muestra), html o texto
+            fp, m = app_media.file_path(mid)
+            if not fp:
+                self._send_json(404, {"error": "archivo no disponible"})
+                return
+            ext = fp.suffix.lower()
+            if ext == ".pdf" or (m.get("mime") or "").startswith("application/pdf"):
+                self._send_json(200, {"modo": "pdf"})
+            elif m.get("tipo") == "imagen":
+                self._send_json(200, {"modo": "imagen"})
+            elif ext in (".html", ".htm"):
+                self._send_json(200, {"modo": "html", "html": fp.read_text(errors="replace")[:400000]})
+            else:
+                try:
+                    texto = fp.read_text(errors="replace") if ext in (".txt", ".md", ".csv", ".json", ".xml") else app_media.extract_document(fp)
+                except Exception:
+                    texto = ""
+                self._send_json(200, {"modo": "texto" if texto.strip() else "nada", "texto": texto[:60000]})
         elif parts[4] == "file":
             fp, m = app_media.file_path(mid)
             if not fp:
@@ -2778,7 +2821,7 @@ class Handler(BaseHTTPRequestHandler):
                         break
                     time.sleep(delay)
                 if alive:
-                    alive = self._sse("done", {"model": res["model"]})
+                    alive = self._sse("done", {"model": res["model"], "archivos": res.get("archivos") or []})
         if not alive:
             with _RESULTS_LOCK:
                 res["client_gone"] = True

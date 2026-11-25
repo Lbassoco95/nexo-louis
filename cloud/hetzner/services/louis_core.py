@@ -1011,10 +1011,11 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "privado, dile: 'reenvíamela aquí o pide que la pongan en el canal #cumplimiento-sylon (u otro) "
         "y la leo'. Para cualquier pregunta de canales, llama `slack_resumen` ANTES de responder."
         "\n\n# DROPBOX Y PDFs — MANDAR ARCHIVOS A POLO\n"
-        "PUEDES leer el Dropbox de Polo y mandarle archivos por Telegram. NO digas que no puedes:\n"
+        "PUEDES leer el Dropbox de Polo y entregarle archivos: aparecen en ESTA conversación como tarjeta con vista previa y descarga (NUNCA por Telegram). NO digas que no puedes:\n"
         "- `dropbox_buscar(query)` — busca un archivo por nombre/contenido. Devuelve la ruta exacta.\n"
         "- `dropbox_listar(carpeta)` — navega carpetas (vacío = raíz).\n"
-        "- `dropbox_enviar(path)` — baja el archivo de Dropbox y SE LO MANDA a Polo por Telegram. "
+        "- `dropbox_enviar(path)` — baja el archivo de Dropbox y SE LO ENTREGA a Polo en esta conversación (tarjeta con vista previa y descarga). "
+        "Solo existe lo que la herramienta confirma: NUNCA inventes nombres de archivo ni digas «enviado» si la herramienta no lo confirmó. "
         "Usa la ruta exacta que te dio dropbox_buscar/dropbox_listar.\n"
         "- `dof_pdf(cod)` — baja el PDF OFICIAL del DOF por su cod_nota y se lo manda a Polo. "
         "Para esto NO necesitas Dropbox ni browser — el PDF se baja directo del DOF.\n"
@@ -1080,12 +1081,12 @@ def load_system_prompt(channel: str = "telegram") -> str:
         "Cuando Polo pida un documento, dictamen, informe, plan, presentación o tabla 'como PDF', "
         "'en PDF', 'documento', 'PowerPoint', 'Excel', o 'para compartir con el equipo':\n"
         "- DEBES llamar la tool `generar_documento(tipo, titulo, contenido)` EN ESE MISMO TURNO. "
-        "El servidor genera el archivo REAL y se lo manda a Polo por Telegram automáticamente.\n"
+        "El servidor genera el archivo REAL y se lo entrega a Polo en esta conversación automáticamente (tarjeta con vista previa y descarga).\n"
         "- `tipo`: 'pdf' para dictámenes/informes/planes de texto; 'pptx' para presentaciones; "
         "'xlsx' para tablas/datos financieros.\n"
         "- `contenido`: el documento COMPLETO en markdown (# para títulos, - para listas, | para tablas).\n"
         "- PROHIBIDO preguntar '¿procedo a generar el PDF?', '¿lo genero ahora?', 'lo dejo listo en tu Mac'. "
-        "NUNCA digas que dejas algo 'en la Mac' — tú corres en el servidor y entregas por Telegram. "
+        "NUNCA digas que dejas algo 'en la Mac' — tú corres en el servidor y entregas en la conversación. "
         "Si Polo pidió PDF, llamas `generar_documento` de inmediato. El default es GENERAR Y ENTREGAR.\n"
         "- Flujo cuando un agente ya produjo el contenido: tomas ese texto → llamas `generar_documento` "
         "con él → se manda el archivo. No vuelvas a delegar si ya tienes el contenido.\n"
@@ -4070,7 +4071,7 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "dropbox_enviar",
-        "description": "Descarga un archivo de Dropbox por su ruta exacta y SE LO MANDA a Polo por Telegram. Usa la ruta (path_display) que devolvió dropbox_buscar/dropbox_listar. Úsala cuando Polo pida que le pases/mandes un archivo para revisarlo.",
+        "description": "Descarga un archivo de Dropbox por su ruta exacta y SE LO ENTREGA a Polo en la conversación (tarjeta con vista previa y descarga). Usa la ruta (path_display) que devolvió dropbox_buscar/dropbox_listar. Úsala cuando Polo pida que le pases/mandes un archivo para revisarlo.",
         "input_schema": {
             "type": "object",
             "properties": {"path": {"type": "string", "description": "Ruta exacta del archivo en Dropbox (ej '/Contratos/acuerdo.pdf')"}},
@@ -4091,7 +4092,7 @@ TOOLS_DEFINITION = [
     },
     {
         "name": "dof_pdf",
-        "description": "Descarga el PDF oficial de una publicación del DOF por su cod_nota y se lo MANDA a Polo por Telegram. Usa el cod que devuelve legal_buscar (ej: 5789080). Úsala cuando Polo pida el PDF de una publicación del DOF.",
+        "description": "Descarga el PDF oficial de una publicación del DOF por su cod_nota y se lo ENTREGA a Polo en la conversación. Usa el cod que devuelve legal_buscar (ej: 5789080). Úsala cuando Polo pida el PDF de una publicación del DOF.",
         "input_schema": {
             "type": "object",
             "properties": {"cod": {"type": "string", "description": "cod_nota de la publicación DOF"}},
@@ -4149,7 +4150,7 @@ TOOLS_DEFINITION = [
     {
         "name": "generar_documento",
         "description": (
-            "Genera un documento REAL en el servidor y se lo manda a Polo por Telegram. "
+            "Genera un documento REAL en el servidor y se lo entrega a Polo en la conversación. "
             "Úsala cuando Polo pida un documento formal para compartir con su equipo: dictámenes, planes, reportes, "
             "presentaciones, tablas. EL FORMATO POR DEFECTO ES HTML interactivo (el estándar de Kawiil: dashboard "
             "colapsable + buscador + chat embebido). SOLO usa otro formato si Polo lo pide explícitamente: "
@@ -5865,24 +5866,30 @@ def _slack_resumen(canales: list | None = None, msgs_por_canal: int = 10) -> str
 # Las tools no pueden mandar archivos directo (devuelven texto). En su lugar
 # encolan (bytes, nombre, caption) aquí; el bridge los drena tras call_llm y
 # los envía con telegram_send_document.
+import threading as _thq
 _PENDING_FILES: list = []
+_PENDING_META: list = []                      # (dueño, hash) de cada archivo de _PENDING_FILES, en el mismo orden
 _QUEUED_HASHES: set = set()
+_FILE_TLS = _thq.local()                      # dueño de lo que encola ESTE hilo: la app pone aquí el id de la respuesta en curso
+_FILE_LOCK = _thq.Lock()
 
 
 def _queue_file(content: bytes, filename: str, caption: str = "") -> None:
-    # Dedupe: no encolar el MISMO archivo dos veces (evita el bug de mandar
-    # el mismo PDF 3 veces). Compara por hash del contenido.
+    # Dedupe: no encolar el MISMO archivo dos veces en la misma entrega (evita el bug de mandar
+    # el mismo PDF 3 veces). Compara por hash del contenido; al entregarse, el hash se olvida.
     import hashlib as _hl
     try:
         h = _hl.sha256(content).hexdigest()
     except Exception:
         h = None
-    if h and h in _QUEUED_HASHES:
-        log.info(f"_queue_file: omito duplicado {filename}")
-        return
-    if h:
-        _QUEUED_HASHES.add(h)
-    _PENDING_FILES.append((content, filename, caption))
+    with _FILE_LOCK:
+        if h and h in _QUEUED_HASHES:
+            log.info(f"_queue_file: omito duplicado {filename}")
+            return
+        if h:
+            _QUEUED_HASHES.add(h)
+        _PENDING_FILES.append((content, filename, caption))
+        _PENDING_META.append((getattr(_FILE_TLS, "owner", None), h))
 
 
 # ===== Proyectos (sync desde ~/Documents/Claude/Projects de la Mac) =====
@@ -6000,10 +6007,27 @@ def _proyecto_leer(proyecto: str, archivo: str) -> str:
 
 
 
-def get_pending_files() -> list:
-    """Devuelve y limpia la cola de archivos pendientes de envío."""
-    files = list(_PENDING_FILES)
-    _PENDING_FILES.clear()
+def get_pending_files(owner=None) -> list:
+    """Devuelve y limpia la cola de archivos pendientes de entrega. Sin `owner` (Telegram/Slack): todos. Con `owner` (la app): solo los que encoló
+    esa respuesta, para que dos conversaciones a la vez no se mezclen los archivos."""
+    with _FILE_LOCK:
+        if owner is None:
+            files, metas = list(_PENDING_FILES), list(_PENDING_META)
+            _PENDING_FILES.clear()
+            _PENDING_META.clear()
+        else:
+            files, metas, kf, km = [], [], [], []
+            for f, m in zip(_PENDING_FILES, _PENDING_META):
+                if m[0] == owner:
+                    files.append(f)
+                    metas.append(m)
+                else:
+                    kf.append(f)
+                    km.append(m)
+            _PENDING_FILES[:] = kf
+            _PENDING_META[:] = km
+        for _o, h in metas:
+            _QUEUED_HASHES.discard(h)
     return files
 
 
@@ -6405,7 +6429,7 @@ def _generar_documento_tool(tipo: str, titulo: str, contenido: str, agente: str 
     _queue_file(data, fname, captions.get(tipo, f"📄 {titulo[:60]}"))
     saved = _guardar_generado(data, fname)
     extra = " · guardado en Hetzner (se sincroniza a tu Mac)" if saved else ""
-    return f"✅ {tipo.upper()} generado: {fname} ({len(data):,} bytes) — enviándolo por Telegram ahora{extra}"
+    return f"✅ {tipo.upper()} generado: {fname} ({len(data):,} bytes) — entregado en la conversación (tarjeta con vista previa y descarga){extra}"
 
 
 def _doc_tipo_de_mensaje(user_message: str) -> str:
@@ -6630,7 +6654,7 @@ def _dropbox_enviar(path: str) -> str:
         return err.replace("ERROR descargando", "ERROR descargando de Dropbox")
     filename = path.rsplit("/", 1)[-1] or "archivo"
     _queue_file(content, filename, f"📄 {filename} (Dropbox)")
-    return f"Archivo '{filename}' ({len(content) // 1024} KB) descargado de Dropbox — enviándolo por Telegram."
+    return f"Archivo '{filename}' ({len(content) // 1024} KB) descargado de Dropbox — entregado en la conversación (tarjeta con vista previa y descarga)."
 
 
 def _dropbox_norm_name(s: str) -> str:
@@ -6781,7 +6805,7 @@ def _dof_pdf(cod: str) -> str:
     content = doc.encode("utf-8")
     _queue_file(content, f"DOF_{cod}.html", f"📄 DOF {cod} — {titulo[:60]}")
     return (f"Documento del DOF (cod={cod}, {len(content) // 1024} KB) generado desde la BD — "
-            f"enviándolo por Telegram. Ábrelo en el navegador para leerlo o imprimirlo a PDF.")
+            f"entregado en la conversación. Ábrelo desde la tarjeta para leerlo o descargarlo.")
 
 
 def _dof_nota_texto(cod: str) -> str:

@@ -578,9 +578,27 @@ def ingerir_todo(limite: int = 500) -> dict:
 
 
 # ------------------------------------------------------------------ consulta
+def register_bytes(content: bytes, nombre: str, mime: str = "", user: str = "", origen: str = "donna") -> dict:
+    """Guarda un archivo que Donna produjo o bajó de Dropbox para entregarlo en el chat (ver y descargar). No se transcribe ni entra a la base de conocimiento."""
+    import mimetypes
+    if not content:
+        raise ValueError("archivo vacío")
+    mime = mime or mimetypes.guess_type(nombre or "")[0] or "application/octet-stream"
+    r = init(nombre, mime, len(content), user, origen)
+    mid = r["id"]
+    d = _dir(mid)
+    shutil.rmtree(d / "parts", ignore_errors=True)
+    (d / "data").mkdir(exist_ok=True, mode=0o700)
+    final = d / "data" / _meta(mid)["nombre"]
+    fd = os.open(final, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(content)
+    return public(_update(mid, estado="listo", tamano=len(content), partes=1, motor="entregado"))
+
+
 def public(m: dict) -> dict:
     return {k: m.get(k) for k in ("id", "nombre", "tipo", "tamano", "estado", "creado", "texto_chars", "error", "progreso",
-                                 "motor", "origen")} | {"resumen": (m.get("resumen") or "")[:1500]}
+                                 "motor", "origen", "mime")} | {"resumen": (m.get("resumen") or "")[:1500]}
 
 
 def get(mid: str):

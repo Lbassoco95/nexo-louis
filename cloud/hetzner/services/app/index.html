@@ -37,6 +37,13 @@ nav .badge{position:absolute;margin:-2px 0 0 14px;background:var(--bad);color:#f
 .msg.a{background:var(--panel);border:1px solid var(--line);border-bottom-left-radius:4px}
 .msg .meta{font-size:11px;color:var(--mut);margin-top:6px;display:flex;gap:12px}
 .msg .meta button{background:none;border:0;color:var(--mut);padding:0;font-size:11px}
+.fcard{display:flex;align-items:center;gap:10px;border:1px solid rgba(128,128,128,.32);border-radius:14px;padding:8px 10px;margin:10px 0 4px;background:rgba(128,128,128,.07)}
+.fcard .fi{font-size:24px}.fcard .fn{flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.fcard .fn small{display:block;font-weight:400;color:var(--mut);font-size:12px}
+.fcard button{border:1px solid rgba(128,128,128,.4);background:transparent;color:inherit;border-radius:999px;padding:6px 12px;font:inherit;font-size:13px;white-space:nowrap}
+iframe.fprev{width:100%;height:68vh;border:1px solid rgba(128,128,128,.3);border-radius:12px;background:#fff}img.fprev{max-width:100%;border-radius:12px}
+.ftxt{white-space:pre-wrap;word-break:break-word;font:13px/1.55 ui-monospace,Menlo,monospace;max-height:68vh;overflow:auto;margin:0}
+#sheet .in.ancha{background:var(--base,#fff);-webkit-backdrop-filter:none;backdrop-filter:none}
+@media (min-width:760px){#sheet .in.ancha{width:min(780px,64vw)}}
 .msg p{margin:.35em 0}.msg p:first-child{margin-top:0}.msg p:last-child{margin-bottom:0}
 .msg ul,.msg ol{margin:.35em 0;padding-left:1.25em}
 .msg h3,.msg h4{margin:.6em 0 .25em;font-size:15px}
@@ -988,11 +995,28 @@ function fmtTime(ts){try{return new Date(ts).toLocaleTimeString('es-MX',{hour:'2
 function bubble(m,i){
   const d=document.createElement('div');d.className='msg '+m.r;
   if(m.r==='u'){d.textContent=m.t}
-  else{d.innerHTML=md(m.t)+`<div class="meta"><span>${fmtTime(m.ts)}${m.model?' · '+esc(m.model):''}</span><button data-c="${i}">Copiar</button><button data-x="${i}" title="Dile qué estuvo mal y cómo debió ser: lo aprende">Corregir</button></div>`;
+  else{d.innerHTML=md(m.t)+filesHtml(m.f)+`<div class="meta"><span>${fmtTime(m.ts)}${m.model?' · '+esc(m.model):''}</span><button data-c="${i}">Copiar</button><button data-x="${i}" title="Dile qué estuvo mal y cómo debió ser: lo aprende">Corregir</button></div>`;
     d.querySelector('[data-c]').onclick=()=>{navigator.clipboard&&navigator.clipboard.writeText(m.t).then(()=>toast('Copiado'))};
     d.querySelector('[data-x]').onclick=()=>{const t=prompt('¿Qué estuvo mal y cómo debió hacerlo? Donna lo aprende para la próxima vez.');if(t&&t.trim())sendMsg('Corrección sobre tu respuesta anterior: '+t.trim()+'. Aprende esto para la próxima vez (guárdalo como regla) y dime en una frase qué aprendiste.')}}
+  d.querySelectorAll('[data-fv]').forEach(b=>b.onclick=()=>verArchivo(m.f[+b.dataset.fv]));
+  d.querySelectorAll('[data-fd]').forEach(b=>b.onclick=()=>bajarArchivo(m.f[+b.dataset.fd]));
   return d;
 }
+/* Archivos que Donna entrega en la conversación: tarjeta con «Ver» (vista previa en el panel de la derecha) y «Descargar». Nada va por Telegram. */
+const FICON={pdf:'📕',doc:'📘',docx:'📘',xls:'📗',xlsx:'📗',csv:'📗',ppt:'📙',pptx:'📙',png:'🖼️',jpg:'🖼️',jpeg:'🖼️',gif:'🖼️',webp:'🖼️',html:'🌐',htm:'🌐'};
+const fIcon=n=>FICON[(String(n).split('.').pop()||'').toLowerCase()]||'📄';
+const fSize=b=>b>=1048576?(b/1048576).toFixed(1)+' MB':Math.max(1,Math.round((b||0)/1024))+' KB';
+function filesHtml(fl){if(!fl||!fl.length)return '';return fl.map((f,i)=>`<div class="fcard"><span class="fi">${fIcon(f.nombre)}</span><span class="fn">${esc(f.nombre)}<small>${fSize(f.tamano)}</small></span><button data-fv="${i}">Ver</button><button data-fd="${i}">Descargar</button></div>`).join('')}
+async function bajarArchivo(f){try{const b=await esBajar('/v1/app/media/'+encodeURIComponent(f.id)+'/file','','Preparando…');esGuardarBlob(b,f.nombre);toast('Descargado')}catch(e){toast('⚠️ '+e.message)}}
+async function verArchivo(f){
+  sheet(f.nombre,'<div class="empty">Abriendo…</div>');const box=document.querySelector('#sheet .in');if(box)box.classList.add('ancha');
+  try{const p=await api('/v1/app/media/'+encodeURIComponent(f.id)+'/preview'),url='/v1/app/media/'+encodeURIComponent(f.id)+'/file';let h='';
+    if(p.modo==='pdf'||p.modo==='imagen'){const b=await esBajar(url,'','Abriendo…'),u=URL.createObjectURL(b);h=p.modo==='pdf'?'<iframe class="fprev" src="'+u+'"></iframe>':'<img class="fprev" src="'+u+'" alt="">'}
+    else if(p.modo==='html')h='<iframe class="fprev" sandbox="" srcdoc="'+esc(p.html)+'"></iframe>';
+    else if(p.modo==='texto')h='<pre class="ftxt">'+esc(p.texto)+'</pre>';
+    else h='<div class="empty">No puedo mostrar este tipo de archivo aquí. Descárgalo para abrirlo.</div>';
+    $('#sh-b').innerHTML=h+'<div class="nq" style="margin-top:8px"><button id="fv-dl">⬇️ Descargar</button></div>';$('#fv-dl').onclick=()=>bajarArchivo(f)
+  }catch(e){$('#sh-b').innerHTML='<div class="empty">No pude abrirlo: '+esc(e.message)+'</div>'}}
 const HERO=[{i:'check',t:'¿Qué tengo hoy?',h:'Tu día en una vista: agenda, pendientes y vencimientos.'},
   {i:'box',t:'Entregables esperando mi Vo.Bo.',q:'¿Qué entregables esperan mi Vo.Bo.?',h:'Revisa y aprueba sin salir de la conversación.'},
   {i:'cal',t:'¿Qué vence esta semana?',h:'Plazos y fechas límite, ordenados por urgencia.'},
@@ -1015,7 +1039,7 @@ function setBusy(b){busy=b;sendBtn()}
 const unreadSet=()=>new Set(LS.get('unread',[]));
 function markUnread(c){const u=unreadSet();u.add(c);LS.set('unread',[...u].slice(-50))}
 function clearUnread(c){const u=unreadSet();if(u.delete(c))LS.set('unread',[...u])}
-function finishMsg(t,model){chat.push(curArt?{r:'a',t,ts:Date.now(),model,art:curArt}:{r:'a',t,ts:Date.now(),model});{const m=String(t).match(/\[\[artefacto:(a[0-9a-f]{10})\]\]/);if(m&&(innerWidth>=760||dkId===m[1]))setTimeout(()=>openArt(m[1],true),300)}LS.set('chat',chat.slice(-200));LS.del('pending')}
+function finishMsg(t,model,f){const e=curArt?{r:'a',t,ts:Date.now(),model,art:curArt}:{r:'a',t,ts:Date.now(),model};if(f&&f.length)e.f=f;chat.push(e);{const m=String(t).match(/\[\[artefacto:(a[0-9a-f]{10})\]\]/);if(m&&(innerWidth>=760||dkId===m[1]))setTimeout(()=>openArt(m[1],true),300)}LS.set('chat',chat.slice(-200));LS.del('pending')}
 let curArt='';
 function paintQueue(){
   const q=QUEUE.get(cid)||[],box=$('#queue');if(!box)return;box.hidden=!q.length;document.body.classList.toggle('hay-fila',q.length>0);
@@ -1055,7 +1079,7 @@ async function sendMsg(text,art,pre){
   if(here()){$('#log').appendChild(d);scrollDown()}
   let dd=null;if(art){const th=$('#dk-th');th.hidden=false;dd=d.cloneNode(true);th.appendChild(dd);th.scrollTop=th.scrollHeight}
   const hist=chat.slice(0,R.userIdx).slice(-16).map(m=>({role:m.r==='u'?'user':'assistant',content:m.t}));
-  let acc='',model='',gotDone=false,failed='',raf=0;
+  let acc='',model='',gotDone=false,failed='',raf=0,files=[];
   const paint=()=>{raf=0;d.classList.add('has');d.innerHTML=md(acc);if(here())scrollDown();if(dd){dd.className='msg a live has';dd.innerHTML=d.innerHTML;const th=$('#dk-th');th.scrollTop=th.scrollHeight}};
   try{
     const r=await fetch('/v1/app/chat/stream',{method:'POST',signal:R.ctl.signal,
@@ -1067,7 +1091,7 @@ async function sendMsg(text,art,pre){
     const onEv=(ev,data)=>{
       if(ev==='status'){const st=d.querySelector('.st');if(st&&!acc)st.textContent='Pensando… '+data.s+' s'+(data.s>=20?' · puedes seguir en otro chat: te aviso cuando termine':'')}
       else if(ev==='delta'){acc+=data.d;if(!raf)raf=requestAnimationFrame(paint)}
-      else if(ev==='done'){gotDone=true;model=data.model}
+      else if(ev==='done'){gotDone=true;model=data.model;files=data.archivos||[]}
       else if(ev==='fail'){failed=data.error}
     };
     if(!r.body){const t=await r.text();parseSSE(t,onEv)}
@@ -1076,7 +1100,7 @@ async function sendMsg(text,art,pre){
         const k=buf.lastIndexOf('\n\n');if(k>=0){parseSSE(buf.slice(0,k+2),onEv);buf=buf.slice(k+2)}}}
     if(failed)throw new Error(failed);
     if(!gotDone&&!acc)throw new Error('conexión interrumpida');
-    if(here()){curArt=art;finishMsg(acc,model);curArt='';if(navigator.vibrate)navigator.vibrate(15)}else bgDone(org,acc,model);
+    if(here()){curArt=art;finishMsg(acc,model,files);curArt='';if(navigator.vibrate)navigator.vibrate(15)}else bgDone(org,acc,model);
   }catch(e){
     if(e.name==='AbortError'){
       if(R.merge){                                   // «actualizar el anterior»: se descarta lo que había y se pregunta de nuevo con la corrección
@@ -1107,7 +1131,7 @@ async function recoverPending(show){
     for(let n=0;n<90;n++){
       const r=await api('/v1/app/chat/result?rid='+encodeURIComponent(p.id));online(true);
       if(!r.found){LS.del('pending');break}
-      if(r.done){finishMsg(r.error?'⚠️ '+r.error:r.text,r.model);break}
+      if(r.done){finishMsg(r.error?'⚠️ '+r.error:r.text,r.model,r.archivos);break}
       await new Promise(ok=>setTimeout(ok,2000));if(document.hidden)break;
     }
   }catch(e){}

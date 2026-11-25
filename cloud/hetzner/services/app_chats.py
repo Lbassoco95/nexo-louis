@@ -36,6 +36,16 @@ def nuevo_id() -> str:
     return "c" + secrets.token_hex(5)
 
 
+def _limpiar_archivos(fl) -> list:
+    """Archivos que Donna entregó en un mensaje: solo los datos para pintar la tarjeta (el contenido vive en el almacén de adjuntos)."""
+    out = []
+    for x in (fl if isinstance(fl, list) else [])[:8]:
+        if isinstance(x, dict) and re.match(r"^m[0-9a-f]{10}$", str(x.get("id", ""))):
+            out.append({"id": x["id"], "nombre": str(x.get("nombre", ""))[:120], "tamano": int(x.get("tamano") or 0),
+                        "tipo": str(x.get("tipo", ""))[:12], "mime": str(x.get("mime", ""))[:100]})
+    return out
+
+
 def _limpiar(msgs) -> list:
     out = []
     for m in (msgs or [])[-MAX_MSGS:]:
@@ -49,6 +59,9 @@ def _limpiar(msgs) -> list:
             e["model"] = str(m["model"])[:40]
         if re.match(r"^a[0-9a-f]{10}$", str(m.get("art", ""))):
             e["art"] = m["art"]
+        fl = _limpiar_archivos(m.get("f"))
+        if fl:
+            e["f"] = fl
         out.append(e)
     return out
 
@@ -136,7 +149,7 @@ def borrar(user: str, cid: str) -> bool:
     return existed
 
 
-def agregar_respuesta(user: str, cid: str, texto: str, model: str = "") -> bool:
+def agregar_respuesta(user: str, cid: str, texto: str, model: str = "", archivos=None) -> bool:
     """Agrega la respuesta de Donna al final de una conversación guardada (si existe y esa respuesta no está ya).
     Así una respuesta larga queda en SU conversación aunque el usuario ya esté en otro chat o haya cerrado la app."""
     texto = str(texto or "").strip()
@@ -152,6 +165,8 @@ def agregar_respuesta(user: str, cid: str, texto: str, model: str = "") -> bool:
         e = {"r": "a", "t": texto[:MAX_TEXTO], "ts": int(time.time() * 1000)}
         if model:
             e["model"] = str(model)[:40]
+        if _limpiar_archivos(archivos):
+            e["f"] = _limpiar_archivos(archivos)
         msgs.append(e)
         d["msgs"] = msgs[-MAX_MSGS:]
         d["actualizado"] = int(time.time() * 1000)
