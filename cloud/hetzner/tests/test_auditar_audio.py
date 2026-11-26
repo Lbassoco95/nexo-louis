@@ -65,7 +65,8 @@ class Auditoria(unittest.TestCase):
         subir("audencurso01", viejo=False)
         antes = sorted(p.name for p in (A.DIR / "audencurso01").iterdir())
         out = correr()
-        self.assertIn("se está grabando ahora", out)
+        self.assertIn("se está grabando ahora mismo", out)
+        self.assertNotIn("⚠️ audencur", out)                                                       # una grabación en curso no es un problema
         self.assertEqual(sorted(p.name for p in (A.DIR / "audencurso01").iterdir()), antes)         # no ensambló ni cambió nada: es de solo lectura
         self.assertEqual(A.estado("audencurso01")["estado"], "grabando")
 

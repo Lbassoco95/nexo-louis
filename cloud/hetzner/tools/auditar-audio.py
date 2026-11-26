@@ -76,11 +76,14 @@ def main():
         elif f["sesion_id"]:
             liga = "⚠️ ligado a una junta que ya no existe (%s)" % f["sesion_id"]
             marcas.append(liga)
+        elif f["estado"] == "grabando" and time.time() - (f["actualizado"] or 0) < 180:
+            liga = "🔴 se está grabando ahora mismo (todavía sin junta: se liga al guardarla)"
         else:
-            liga = "⚠️ SIN JUNTA: no está ligado a ninguna (se puede ligar o reconstruir su texto en Escuchar)" + (" · se está grabando ahora" if f["estado"] == "grabando" and time.time() - (f["actualizado"] or 0) < 180 else "")
+            liga = "SIN JUNTA: no está ligado a ninguna (en Escuchar puedes ligarlo a una junta o reconstruir su texto)"
+            marcas.append("⚠️ " + liga)
         icono = "✓" if not [m for m in marcas if m.startswith("⚠️")] and f["estado"] != "borrado" else ("🗑️" if f["estado"] == "borrado" else "⚠️")
         print("%s %s · %s → %s (%s) · %.0f MB · %d partes · estado: %s" % (icono, f["aid"][:8], hora(f["creado"]), hora(f["actualizado"]), mins(dur), mb, len(partes), f["estado"]))
-        if liga and not liga.startswith("⚠️ ligado"):
+        if liga and not liga.startswith("⚠️ ligado") and not liga.startswith("SIN JUNTA"):
             print("     " + liga)
         for m in marcas:
             print("     " + m)
