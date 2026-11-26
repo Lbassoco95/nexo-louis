@@ -47,18 +47,18 @@ def _dur(p: Path) -> float:
     return donna_audio._duracion(p)
 
 
-def preparar(audio: Path, trabajo: Path, max_s: float = None) -> list:
-    """→ [(inicio_s, ruta_mp3)]. Mono, 16 kHz, 32 kbps (≈14 MB por hora). Si pasa del límite, se parte en piezas."""
+def preparar(audio: Path, trabajo: Path, max_s: float = None, desde_s: float = 0.0) -> list:
+    """→ [(inicio_s, ruta_mp3)]. Mono, 16 kHz, 32 kbps (≈14 MB por hora). Si pasa del límite, se parte en piezas. `desde_s`: empezar en ese segundo del audio (los inicios que devuelve son del audio completo)."""
     trabajo.mkdir(parents=True, exist_ok=True)
     dur = _dur(audio)
     if dur <= 0:
         raise ValueError("no pude leer el audio de la junta")
-    piezas, ini, k = [], 0.0, 0
+    piezas, ini, k = [], max(0.0, float(desde_s or 0.0)), 0
     paso = min(float(PIEZA_S), MAX_BYTES / 4000.0)                          # nunca más de PIEZA_S segundos por llamada, ni de lo que cabe en el límite de tamaño
-    tope = min(dur, max_s) if max_s is not None else dur                    # solo se preparan los primeros `max_s` segundos
+    tope = min(dur, ini + max_s) if max_s is not None else dur              # solo se preparan `max_s` segundos a partir de `desde_s`
     while ini < tope - 0.5:
         out = trabajo / ("pieza%02d.mp3" % k)
-        cmd = ["ffmpeg", "-nostdin", "-y", "-i", str(audio), "-ss", "%.2f" % ini, "-t", "%.2f" % paso, "-af", donna_audio.AF_VOZ, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", str(out)]
+        cmd = ["ffmpeg", "-nostdin", "-y", "-ss", "%.2f" % ini, "-i", str(audio), "-t", "%.2f" % min(paso, tope - ini), "-af", donna_audio.AF_VOZ, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", str(out)]
         r = subprocess.run(cmd, capture_output=True, timeout=1800)
         if r.returncode != 0 or not out.exists():
             raise ValueError("ffmpeg no pudo preparar el audio")
@@ -123,11 +123,11 @@ def leer_segmentos(resp: dict) -> list:
     return out
 
 
-def diarizar_archivo(key: str, audio: Path, trabajo: Path, llamar=None, progreso=None, max_s: float = None) -> tuple:
+def diarizar_archivo(key: str, audio: Path, trabajo: Path, llamar=None, progreso=None, max_s: float = None, desde_s: float = 0.0) -> tuple:
     """Todo el audio de un tramo → (segmentos con tiempos absolutos DEL TRAMO en segundos, info). Si hay varias piezas intenta mantener las mismas etiquetas con muestras de voz."""
     llamar = llamar or (lambda a, refs=None: llamar_openai(key, a, refs))
-    piezas = preparar(audio, trabajo, max_s)
-    todos, refs, info = [], None, {"piezas": len(piezas), "etiquetas_alineadas": len(piezas) == 1, "omitido_s": max(0.0, _dur(audio) - max_s) if max_s is not None else 0.0}
+    piezas = preparar(audio, trabajo, max_s, desde_s)
+    todos, refs, info = [], None, {"piezas": len(piezas), "etiquetas_alineadas": len(piezas) == 1, "omitido_s": max(0.0, _dur(audio) - desde_s - max_s) if max_s is not None else 0.0}
     for k, (ini, mp3) in enumerate(piezas):
         if progreso:
             progreso(k, len(piezas))

@@ -2025,6 +2025,7 @@ async function esJunta(sid){                                 // abrir una junta 
     `<div id="j-player"></div>`+
     `<div class="sub" style="margin:4px 0 8px">${d.voces.map(v=>esc(v.nombre)+' ('+v.n+')').join(' · ')||'sin voces identificadas'}</div>`+
     (a.tramos?`<div class="sub">🎧 Audio guardado: ${Math.round(a.bytes/1048576)} MB${a.vence?' · se borra el '+new Date(a.vence*1000).toLocaleDateString('es-MX'):''}</div><div class="sub" id="j-aud-info">Revisando que el audio se pueda leer completo…</div>`:'<div class="sub">Sin audio guardado en esta junta.'+(conAud?' <b>Esta es una copia duplicada:</b> el audio está en otra copia de la misma junta.</div><div class="nq"><button id="j-copia">🎧 Abrir la copia que tiene el audio</button></div>':'</div>'))+
+    `<div id="j-falta"></div>`+
     (d.resumen?`<div class="sec" id="j-res" style="margin-top:12px">Resumen</div><div class="card">${md(d.resumen)}</div>`:'')+
     (d.notas.length?`<div class="sec" id="j-notas" style="margin-top:12px">Notas · ${d.notas.length}</div>`+d.notas.map(n=>`<div class="sub" style="margin:3px 0">${n.hora?'['+esc(n.hora)+'] ':''}${esc(n.texto)}</div>`).join(''):'')+
     (d.materiales.length?`<div class="sec" style="margin-top:12px">📎 Materiales · ${d.materiales.length}</div>`+d.materiales.map(m=>`<div class="sub" style="margin:3px 0">${esc(m.nombre)}</div>`).join(''):'')+
@@ -2049,6 +2050,18 @@ async function esJunta(sid){                                 // abrir una junta 
     $('#j-play').onclick=async()=>{const pl=$('#j-player');pl.innerHTML='<div class="sub">Preparando el audio… (puede tardar un minuto en juntas largas)</div>';
       try{const b=await esBajar('/v1/app/escucha/descargar?sesion='+encodeURIComponent(sid)+'&que=audio','', 'Preparando el audio…');pl.innerHTML='<audio controls style="width:100%;margin:6px 0"></audio>';const au=pl.querySelector('audio');au.src=URL.createObjectURL(b);au.play().catch(()=>{})}catch(e){pl.innerHTML='<div class="sub">⚠️ '+esc(e.message)+'</div>'}};
   }
+  if(a.tramos)(async function falta(){                       // ¿el audio guardado tiene partes sin texto? → ofrecer completarlas (en esta misma junta)
+    const box=$('#j-falta');if(!box)return;
+    let p;try{p=await api('/v1/app/escucha/completar?sesion='+encodeURIComponent(sid))}catch(e){return}
+    const st=p.estado||{},min=s=>s>=3600?Math.floor(s/3600)+' h '+String(Math.round(s%3600/60)).padStart(2,'0')+' min':Math.max(1,Math.round(s/60))+' min';
+    if(st.estado==='procesando'){box.innerHTML='<div class="card" style="border:1px solid var(--ctl);margin-top:10px"><b>🧾 Completando el texto desde el audio…</b> '+esc(st.progreso||'')+'<div class="sub">Puedes cerrar esto; te aviso cuando termine.</div></div>';setTimeout(()=>{if($('#j-falta')===box)falta()},8000);return}
+    if(p.falta_s<=0){if(st.estado==='lista'&&st.turnos)box.innerHTML='<div class="sub" style="margin-top:8px">✓ Texto completado desde el audio: '+st.turnos+' intervenciones nuevas, al final de la transcripción.</div>';return}
+    box.innerHTML='<div class="card" style="border:1px solid var(--ctl);margin-top:10px"><b>🧾 Falta el texto de '+min(p.falta_s)+' de audio</b><div class="sub">El audio guardado de esta junta es más largo que su transcripción'+(p.tramos.length>1?' ('+p.tramos.length+' audios)':'')+'. Puedo escribir lo que falta a partir del audio y agregarlo al final de esta misma junta, sin tocar lo que ya tiene.'+((p.reubicar||[]).length?' Los audios que se encimaban se acomodan uno tras otro.':'')+'</div>'
+      +(st.estado==='error'?'<div class="sub">⚠️ Último intento: '+esc(st.error||'')+'</div>':'')
+      +(p.activo?'<div class="sub">🔴 Hay un audio grabándose ahora: termina y guarda primero.</div>':'<div class="nq"><button id="j-comp">🧾 Completar el texto desde el audio</button></div>')+'</div>';
+    const bt=$('#j-comp');if(bt)bt.onclick=async()=>{if(!confirm('Voy a mandar a OpenAI hasta '+min(p.falta_s)+' de audio (omito el silencio) para escribir lo que se habló y quién habló, y lo agrego al final de esta junta. Tarda (más o menos 1 min por cada 3 de audio) y gasta saldo de OpenAI. ¿Continuar?'))return;
+      try{await api('/v1/app/escucha/completar',{method:'POST',body:JSON.stringify({sesion_id:sid})});toast('Completando el texto… te aviso cuando termine');falta()}catch(e){toast('⚠️ '+e.message)}}
+  })();
   $('#j-voz').onclick=()=>esVocesRev(sid);$('#j-rev').onclick=()=>esRevision(sid);$('#j-seg').onclick=()=>esRetomarGuardada(sid);$('#j-p2').onclick=()=>esParte2(d.titulo);
   $('#j-del').onclick=async()=>{
     const aviso=a.tramos?'Esta junta tiene AUDIO guardado ('+Math.round(a.bytes/1048576)+' MB). Se borrará junto con la junta y no se podrá recuperar. ¿Eliminarla?':'¿Eliminar esta junta? No se podrá recuperar (el documento de Entregables no se borra).';

@@ -1086,6 +1086,37 @@ def _lanzar_voces(sid: str) -> bool:
     return True
 
 
+_COMP_EN_CURSO: set = set()
+
+
+def _lanzar_completar(sid: str, usuario: str) -> bool:
+    """Completa en segundo plano el texto que le falta a una junta (una a la vez por junta). False si ya estaba corriendo."""
+    if sid in _COMP_EN_CURSO:
+        return False
+    _COMP_EN_CURSO.add(sid)
+
+    def _run():
+        try:
+            import donna_completar
+            r = donna_completar.procesar(sid, usuario)
+            log.info("completar: junta %s → %s", sid, r.get("estado"))
+            try:
+                import louis_push
+                if r.get("estado") == "lista":
+                    louis_push.notify_async("🧾 Texto completado", "%d intervenciones nuevas en tu junta (%s min de audio revisados, %s min sin voz omitidos)." % (r.get("turnos", 0), r.get("min_revisados", 0), r.get("min_sin_voz", 0)),
+                                            tab="chat", tag="completar-" + sid[:8], kind="media")
+                else:
+                    louis_push.notify_async("No pude completar el texto", str(r.get("error", ""))[:160], tab="chat", tag="completar-" + sid[:8], kind="media")
+            except Exception:
+                log.warning("no pude avisar de que se completó el texto", exc_info=True)
+        except Exception:
+            log.exception("completar falló")
+        finally:
+            _COMP_EN_CURSO.discard(sid)
+    threading.Thread(target=_run, daemon=True).start()
+    return True
+
+
 _RECON_EN_CURSO: set = set()
 
 
@@ -1374,6 +1405,14 @@ class Handler(BaseHTTPRequestHandler):
                         self._send_json(404, {"error": "junta no encontrada"})
                     else:
                         self._send_json(200, donna_diariza.estado(sid5))
+                elif _r0 == "/v1/app/escucha/completar":                                       # qué texto le falta a una junta (según su audio) y cómo va
+                    import donna_completar
+                    from urllib.parse import urlparse as _up8, parse_qs as _pq8
+                    sid8 = (_pq8(_up8(self.path).query).get("sesion") or [""])[0]
+                    if not self._sesion_mia(sid8):
+                        self._send_json(404, {"error": "junta no encontrada"})
+                    else:
+                        self._send_json(200, donna_completar.planear(sid8))
                 elif _r0 in ("/v1/app/escucha/rescates", "/v1/app/escucha/rescate"):          # copia de rescate del servidor
                     import donna_rescate, donna_borrador
                     from urllib.parse import urlparse as _up3, parse_qs as _pq3
@@ -3025,6 +3064,21 @@ class Handler(BaseHTTPRequestHandler):
                         self._send_json(200, donna_aprender.regla_accion(str(body.get("id", "")), str(body.get("accion", "")), str(body.get("regla", "")), str(body.get("cuando", ""))))
                 else:
                     self._send_json(200, donna_aprender.mejora_estado(str(body.get("id", "")), str(body.get("accion", "")), str(body.get("nota", ""))))
+            except ValueError as e:
+                self._send_json(400, {"error": str(e)})
+            return
+        if self.path == "/v1/app/escucha/completar":                  # completar el texto que falta de una junta desde su audio (el audio sale hacia OpenAI: solo con este botón)
+            import donna_completar
+            sid = str(body.get("sesion_id", ""))
+            try:
+                if not self._sesion_mia(sid):
+                    raise ValueError("junta no encontrada")
+                plan = donna_completar.planear(sid)
+                if plan["activo"]:
+                    raise ValueError("Esta junta tiene un audio que se está grabando ahora mismo. Termina y guarda primero.")
+                if plan["falta_s"] <= 0:
+                    raise ValueError("No falta texto: todo el audio de esta junta ya tiene transcripción.")
+                self._send_json(200, {"ok": True, "ya": not _lanzar_completar(sid, self._media_user()), "falta_s": plan["falta_s"]})
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
             return

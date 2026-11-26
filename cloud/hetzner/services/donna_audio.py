@@ -463,6 +463,39 @@ def ligar_tramo(aid: str, sesion_id: str, usuario: str, dias: int = None) -> boo
         c.close()
 
 
+def reubicar(sesion_id: str, aplicar: bool = True, margen_s: float = 60.0) -> list:
+    """Audios de una junta que se ENCIMAN en el reloj (típico: audios sueltos ligados a mano, todos con inicio 0): el más reciente conserva su lugar (es el que llevó el texto en vivo) y los demás se
+    acomodan DESPUÉS, uno tras otro en orden de grabación. Con aplicar=False solo dice qué movería. → [{aid, de_ms, a_ms}]"""
+    tr = [t for t in tramos(sesion_id)]
+    info = [{"aid": t["aid"], "ini": t["offset_ms"] / 1000.0, "dur": duracion_tramo(t["aid"]), "creado": t["creado"]} for t in tr]
+    info = [i for i in info if i["dur"] > 0]
+    if len(info) < 2:
+        return []
+    chocan = set()
+    for i, a in enumerate(info):
+        for b in info[i + 1:]:
+            if a["ini"] < b["ini"] + b["dur"] and b["ini"] < a["ini"] + a["dur"]:
+                chocan.update((a["aid"], b["aid"]))
+    if not chocan:
+        return []
+    ancla = max((i for i in info if i["aid"] in chocan), key=lambda i: i["creado"])
+    fin = max([i["ini"] + i["dur"] for i in info if i["aid"] not in chocan] + [ancla["ini"] + ancla["dur"]])
+    out = []
+    for i in sorted((x for x in info if x["aid"] in chocan and x["aid"] != ancla["aid"]), key=lambda x: x["creado"]):
+        nuevo = fin + margen_s
+        out.append({"aid": i["aid"], "de_ms": int(i["ini"] * 1000), "a_ms": int(nuevo * 1000)})
+        fin = nuevo + i["dur"]
+    if aplicar and out:
+        c = _c()
+        try:
+            for m in out:
+                c.execute("UPDATE escucha_audio SET offset_ms=? WHERE aid=?", (m["a_ms"], m["aid"]))
+            c.commit()
+        finally:
+            c.close()
+    return out
+
+
 def exportar_tramo(aid: str) -> Path:
     """Un solo MP3 de UN tramo (para descargar un audio que aún no tiene junta)."""
     destino = DIR / "export"

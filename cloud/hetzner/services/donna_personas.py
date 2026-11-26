@@ -323,6 +323,40 @@ def guardar_sesion(titulo: str, duracion: int, voces: list, lineas: list, mid: s
         c.close()
 
 
+def anexar_lineas(sesion_id: str, lineas: list, usuario: str = "admin", duracion: int = 0) -> dict:
+    """Agrega intervenciones AL FINAL de una junta ya guardada (texto reconstruido de un audio que no tenía). No toca lo que ya hay. lineas: [{t, voz, es, orig, idioma}]; las voces nuevas quedan sin nombre."""
+    asegurar_esquema()
+    c = _c()
+    try:
+        ses = c.execute("SELECT usuario FROM sesiones_escucha WHERE id=?", (sesion_id,)).fetchone()
+        if not ses or (ses["usuario"] != usuario and usuario != "admin"):
+            raise ValueError("junta no encontrada")
+        conocidos = [r["nombre"] for r in c.execute("SELECT nombre FROM personas WHERE usuario=?", (usuario,))]
+        n = 0
+        for l in lineas:
+            es = str(l.get("es", ""))[:3000]
+            if not es.strip():
+                continue
+            vn = int(l.get("voz") or 0)
+            cur = c.execute("INSERT INTO intervenciones(sesion_id,persona_id,voz_n,hora,texto,original,idioma) VALUES(?,?,?,?,?,?,?)",
+                            (sesion_id, None, vn, str(l.get("t", ""))[:8], es, str(l.get("orig", ""))[:3000], str(l.get("idioma", ""))[:4]))
+            iid = cur.lastrowid
+            n += 1
+            try:
+                c.execute("INSERT INTO interv_fts(texto, interv_id) VALUES(?,?)", (es, iid))
+            except Exception:
+                pass
+            if vn:
+                for d in detectar_nombres(es, conocidos):
+                    pid = resolver(d["nombre"], usuario, False, c)
+                    c.execute("INSERT INTO menciones(sesion_id,interv_id,persona_id,nombre,tipo) VALUES(?,?,?,?,?)", (sesion_id, iid, pid, d["nombre"], d["tipo"]))
+        c.execute("UPDATE sesiones_escucha SET lineas=lineas+?, duracion=MAX(duracion,?) WHERE id=?", (n, int(duracion or 0), sesion_id))
+        c.commit()
+        return {"agregadas": n}
+    finally:
+        c.close()
+
+
 def asignar(sesion_id: str, voz_n: int, nombre: str, usuario: str = "admin") -> dict:
     """Después de guardar: «la Voz 2 de esta sesión era Fernando». Actualiza sus frases y su perfil."""
     c = _c()

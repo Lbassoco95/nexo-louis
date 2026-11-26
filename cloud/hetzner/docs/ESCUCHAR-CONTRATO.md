@@ -111,3 +111,11 @@ Caso real: en una ventana baja la caja «Pregúntale…» quedaba cortada. Ahora
 - El resultado es una **junta nueva** (intervenciones con hora y voz, voces sin nombre) ligada a ese mismo audio, y un aviso cuando termina. La junta original no se toca; nada se reemplaza.
 - **Una grabación en curso no se toca:** si llegó audio en los últimos 3 minutos, no se puede reconstruir, ligar ni borrar desde otra pantalla (se muestra «se está grabando ahora mismo»).
 - El actualizador no reinicia el servidor mientras una reconstrucción esté corriendo.
+
+## Completar el texto que falta de una junta (misma junta)
+- En la ficha de una junta con audio aparece **🧾 Falta el texto de X de audio** cuando el audio guardado es más largo que su transcripción (la transcripción en vivo se cayó, o se ligaron a mano audios que nunca tuvieron texto).
+- **Solo corre con el botón «Completar el texto desde el audio» y tras confirmar** que ese audio sale hacia OpenAI. Se mide qué partes NO tienen texto, **se omite el silencio** y solo lo demás se manda a OpenAI.
+- El texto nuevo se **agrega al final de la misma junta**, con una marca «Texto reconstruido desde el audio…»; **no toca ni reemplaza** lo que ya había. Las voces nuevas quedan sin nombre (Voz 3, 4…).
+- Si varios audios se encimaban en el reloj (todos empezaban en 0 al ligarlos a mano), el **más reciente conserva su lugar** (se asume que es el que llevó el texto en vivo) y los demás se acomodan después, uno tras otro, en orden de grabación.
+- Lo ya revisado (con texto o silencio) se recuerda: no se vuelve a ofrecer ni a cobrar. Si se interrumpe, lo ya hecho se conserva.
+- Una junta con un audio grabándose ahora mismo no se toca. El actualizador no reinicia mientras esto corre.
