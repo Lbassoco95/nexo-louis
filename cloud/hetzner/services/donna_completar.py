@@ -150,7 +150,7 @@ def _tramos_con_voz(serie: list, a: float, b: float, piso: float) -> list:
 
 
 # ------------------------------------------------------------------ completar
-def procesar(sesion_id: str, usuario: str = "admin", llamar=None, key: str = None, trabajo_base: Path = None) -> dict:
+def procesar(sesion_id: str, usuario: str = "admin", llamar=None, key: str = None, trabajo_base: Path = None, traducir=None) -> dict:
     """Pasada completa. Nunca lanza: deja el resultado (o el error) en la tabla. Agrega el texto nuevo al final de la MISMA junta, audio por audio (si se interrumpe, lo ya hecho se conserva)."""
     clave = _clave(sesion_id)
     try:
@@ -189,6 +189,7 @@ def procesar(sesion_id: str, usuario: str = "admin", llamar=None, key: str = Non
         finally:
             pc.close()
         nuevos = revisados_s = omitidos = 0.0
+        traducidos = sin_traducir = 0
         total_t = len([t for t in plan["tramos"] if t["huecos"]])
         hechos = 0
         for t in plan["tramos"]:
@@ -217,13 +218,16 @@ def procesar(sesion_id: str, usuario: str = "admin", llamar=None, key: str = Non
                         lineas.append({"t": R._hora(tn["ini"] + t["desde_s"]), "voz": voz[tn["spk"]], "es": tn["texto"], "orig": "", "idioma": ""})
                         ult = max(ult, tn["fin"] + t["desde_s"])
             if lineas:
+                h, sn = R.aplicar_traduccion(lineas, traducir)                                      # lo que se habló en chino queda en español (el original se conserva)
+                traducidos += h
+                sin_traducir += sn
                 cuando = time.strftime("%d-%b-%Y a las %H:%M", time.localtime(t["creado"]))
                 marca = {"t": lineas[0]["t"], "voz": 0, "es": "— Texto reconstruido desde el audio grabado el %s —" % cuando, "orig": "", "idioma": ""}
                 donna_personas.anexar_lineas(sesion_id, [marca] + lineas, usuario, int(ult))
                 nuevos += len(lineas)
             revisado = _unir(revisado + [(ha, hb) for ha, hb in t["huecos"]])                   # todo el hueco queda revisado (con texto o sin voz)
-        guardar("lista", {"turnos": int(nuevos), "min_revisados": round(revisados_s / 60), "min_sin_voz": round(omitidos / 60), "audios": total_t})
-        return {"estado": "lista", "turnos": int(nuevos), "min_revisados": round(revisados_s / 60), "min_sin_voz": round(omitidos / 60)}
+        guardar("lista", {"turnos": int(nuevos), "min_revisados": round(revisados_s / 60), "min_sin_voz": round(omitidos / 60), "audios": total_t, "traducidos": traducidos, "sin_traducir": sin_traducir})
+        return {"estado": "lista", "turnos": int(nuevos), "min_revisados": round(revisados_s / 60), "min_sin_voz": round(omitidos / 60), "traducidos": traducidos, "sin_traducir": sin_traducir}
     except Exception as ex:
         guardar("error", {"error": str(ex)[:300]})
         return {"estado": "error", "error": str(ex)[:300]}

@@ -150,6 +150,19 @@ class Completar(unittest.TestCase):
         n = P._c().execute("SELECT lineas FROM sesiones_escucha WHERE id=?", (sid,)).fetchone()[0]
         self.assertEqual(n, len(ahora))
 
+    def test_lo_que_se_hablo_en_chino_queda_en_espanol_en_la_misma_junta(self):
+        subir("audchino0002")
+        sid = junta(TEXTO_VIVO)
+        A.ligar_tramo("audchino0002", sid, "polo")
+        chino = lambda mp3, refs=None: {"segments": [{"speaker": "A", "start": 5, "end": 25, "text": "合同的佣金按每笔交易收取，请大家确认这一条款。"}]}
+        r = C.procesar(sid, "polo", llamar=chino, key="k", trabajo_base=TMP / "w", traducir=lambda ts: ["La comisión del contrato se cobra por cada transacción; confirmen esta cláusula."] * len(ts))
+        self.assertEqual((r["estado"], r["traducidos"], r["sin_traducir"]), ("lista", 1, 0))
+        f = [dict(x) for x in P._c().execute("SELECT texto, original, idioma FROM intervenciones WHERE sesion_id=? ORDER BY id", (sid,))]
+        nueva = [x for x in f if x["idioma"] == "zh"]
+        self.assertEqual(len(nueva), 1)
+        self.assertIn("por cada transacción", nueva[0]["texto"])
+        self.assertIn("佣金", nueva[0]["original"])
+
     def test_es_idempotente_si_ya_no_falta_no_manda_nada(self):
         subir("audidem00001")
         sid = junta(TEXTO_VIVO)

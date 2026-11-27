@@ -1921,7 +1921,7 @@ async function esDraftsPaint(){
   if(HU.some(h=>h.recon&&h.recon.estado==='procesando'))setTimeout(()=>{if(!ES.on&&document.querySelector('#es-drafts [data-hu]'))esDraftsPaint()},8000);
   document.querySelectorAll('#es-drafts [data-hu] [data-h]').forEach(btn=>btn.onclick=async()=>{const aid=btn.closest('[data-hu]').dataset.hu,acc=btn.dataset.h;
     try{
-      if(acc==='recon'){const mn=btn.closest('[data-hu]').dataset.min;if(!confirm('Voy a mandar este audio (~'+mn+' min) a OpenAI para escribir lo que se habló y quién habló, y con eso crear una junta nueva. Tarda (más o menos 1 min por cada 3 de audio) y gasta saldo de OpenAI. ¿Continuar?'))return;
+      if(acc==='recon'){const mn=btn.closest('[data-hu]').dataset.min;if(!confirm('Voy a mandar este audio (~'+mn+' min) a OpenAI para escribir lo que se habló y quién habló, y con eso crear una junta nueva. Lo que esté en chino se traduce al español (el original se conserva). Tarda (más o menos 1 min por cada 3 de audio) y gasta saldo de OpenAI. ¿Continuar?'))return;
         await api('/v1/app/escucha/audio',{method:'POST',body:JSON.stringify({accion:'reconstruir',aid})});toast('Reconstruyendo el texto… te aviso cuando esté lista');esDraftsPaint()}
       else if(acc==='abrir'){esJunta(btn.closest('[data-hu]').dataset.sid)}
       else if(acc==='borrar'){if(!confirm('¿Borrar este audio? No se podrá recuperar.'))return;await api('/v1/app/escucha/audio',{method:'POST',body:JSON.stringify({accion:'borrar',id:aid})});toast('Audio borrado');esDraftsPaint()}
@@ -2059,7 +2059,7 @@ async function esJunta(sid){                                 // abrir una junta 
     box.innerHTML='<div class="card" style="border:1px solid var(--ctl);margin-top:10px"><b>🧾 Falta el texto de '+min(p.falta_s)+' de audio</b><div class="sub">El audio guardado de esta junta es más largo que su transcripción'+(p.tramos.length>1?' ('+p.tramos.length+' audios)':'')+'. Puedo escribir lo que falta a partir del audio y agregarlo al final de esta misma junta, sin tocar lo que ya tiene.'+((p.reubicar||[]).length?' Los audios que se encimaban se acomodan uno tras otro.':'')+'</div>'
       +(st.estado==='error'?'<div class="sub">⚠️ Último intento: '+esc(st.error||'')+'</div>':'')
       +(p.activo?'<div class="sub">🔴 Hay un audio grabándose ahora: termina y guarda primero.</div>':'<div class="nq"><button id="j-comp">🧾 Completar el texto desde el audio</button></div>')+'</div>';
-    const bt=$('#j-comp');if(bt)bt.onclick=async()=>{if(!confirm('Voy a mandar a OpenAI hasta '+min(p.falta_s)+' de audio (omito el silencio) para escribir lo que se habló y quién habló, y lo agrego al final de esta junta. Tarda (más o menos 1 min por cada 3 de audio) y gasta saldo de OpenAI. ¿Continuar?'))return;
+    const bt=$('#j-comp');if(bt)bt.onclick=async()=>{if(!confirm('Voy a mandar a OpenAI hasta '+min(p.falta_s)+' de audio (omito el silencio) para escribir lo que se habló y quién habló, y lo agrego al final de esta junta. Lo que esté en chino se traduce al español (el original se conserva). Tarda (más o menos 1 min por cada 3 de audio) y gasta saldo de OpenAI. ¿Continuar?'))return;
       try{await api('/v1/app/escucha/completar',{method:'POST',body:JSON.stringify({sesion_id:sid})});toast('Completando el texto… te aviso cuando termine');falta()}catch(e){toast('⚠️ '+e.message)}}
   })();
   $('#j-voz').onclick=()=>esVocesRev(sid);$('#j-rev').onclick=()=>esRevision(sid);$('#j-seg').onclick=()=>esRetomarGuardada(sid);$('#j-p2').onclick=()=>esParte2(d.titulo);

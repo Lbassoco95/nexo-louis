@@ -168,5 +168,40 @@ class PorHttp(unittest.TestCase):
         self.assertEqual(self.req("/v1/app/escucha/audio_huerfano")["items"][0]["activo"], True)
 
 
+class TraduccionAlEspanol(unittest.TestCase):
+    """Lo que se habla en chino queda traducido al español como texto principal, con el original guardado."""
+    def test_solo_se_traduce_lo_que_esta_en_chino_y_por_lotes(self):
+        lineas = [{"es": "Buenos días", "orig": "", "idioma": ""}] + [{"es": "我们今天讨论合同的佣金条款第%d条" % i, "orig": "", "idioma": ""} for i in range(40)]
+        lotes = []
+        def trad(ts):
+            lotes.append(len(ts))
+            return ["ES:" + t for t in ts]
+        h, sin = R.aplicar_traduccion(lineas, trad)
+        self.assertEqual((h, sin), (40, 0))
+        self.assertEqual(lineas[0], {"es": "Buenos días", "orig": "", "idioma": ""})                 # el español no se toca
+        self.assertTrue(lineas[1]["es"].startswith("ES:我们今天"))
+        self.assertEqual((lineas[1]["orig"], lineas[1]["idioma"]), ("我们今天讨论合同的佣金条款第0条", "zh"))
+        self.assertTrue(all(n <= R.LOTE_N for n in lotes) and len(lotes) >= 3)                      # varios lotes, ninguno enorme
+
+    def test_si_no_se_puede_traducir_se_conserva_el_original_y_se_cuenta(self):
+        lineas = [{"es": "好的，我们继续讨论这个问题吧", "orig": "", "idioma": ""}, {"es": "合同需要在周五之前签署", "orig": "", "idioma": ""}]
+        h, sin = R.aplicar_traduccion(lineas, lambda ts: None)
+        self.assertEqual((h, sin), (0, 2))
+        self.assertEqual((lineas[0]["es"], lineas[0]["orig"], lineas[0]["idioma"]), ("好的，我们继续讨论这个问题吧",) * 2 + ("zh",))
+        def rota(ts): raise RuntimeError("se cayó")
+        self.assertEqual(R.aplicar_traduccion([{"es": "我们今天讨论合同", "orig": "", "idioma": ""}], rota), (0, 1))     # una falla no tumba la reconstrucción
+
+    def test_la_junta_reconstruida_queda_en_espanol_con_el_original_en_chino(self):
+        limpiar()
+        subir("audchino0001")
+        chino = lambda mp3, refs=None: {"segments": [{"speaker": "A", "start": 0, "end": 9, "text": "佣金按每笔交易收取，这一点必须在合同里写清楚。"}, {"speaker": "B", "start": 12, "end": 20, "text": "Entendido, lo revisamos."}]}
+        r = R.procesar("audchino0001", "polo", llamar=chino, key="k", trabajo_base=TMP / "w", traducir=lambda ts: ["La comisión se cobra por cada transacción; debe quedar claro en el contrato."] * len(ts))
+        self.assertEqual((r["estado"], r["traducidos"], r["sin_traducir"]), ("lista", 1, 0))
+        f = [dict(x) for x in P._c().execute("SELECT texto, original, idioma FROM intervenciones WHERE sesion_id=? ORDER BY id", (r["sesion_id"],))]
+        self.assertEqual(f[0]["texto"], "La comisión se cobra por cada transacción; debe quedar claro en el contrato.")
+        self.assertIn("佣金按每笔交易收取", f[0]["original"])
+        self.assertEqual((f[0]["idioma"], f[1]["idioma"], f[1]["texto"]), ("zh", "", "Entendido, lo revisamos."))
+
+
 if __name__ == "__main__":
     unittest.main()
