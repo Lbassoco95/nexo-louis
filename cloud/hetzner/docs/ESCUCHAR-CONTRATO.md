@@ -120,3 +120,7 @@ Caso real: en una ventana baja la caja «Pregúntale…» quedaba cortada. Ahora
 - Lo ya revisado (con texto o silencio) se recuerda: no se vuelve a ofrecer ni a cobrar. Si se interrumpe, lo ya hecho se conserva.
 - Una junta con un audio grabándose ahora mismo no se toca. El actualizador no reinicia mientras esto corre.
 - **Chino (y japonés):** el texto reconstruido de lo que se habló en chino se **traduce al español** (traducción automática por lotes con Haiku) y queda como texto principal; el **original se conserva** en la intervención (idioma «zh») y sale en la minuta. Si un lote no se puede traducir, esas intervenciones conservan el original y se cuentan como «sin traducir». La traducción es automática: para decisiones importantes conviene verificarla.
+
+## OpenAI sin saldo
+- Si OpenAI responde que la cuenta no tiene créditos (error 429 «no credits remaining»), Escuchar muestra un **aviso rojo fijo** («NO se está transcribiendo; el audio sigue guardándose»), **no reconecta en bucle** y manda **una notificación** (como máximo una por hora). La grabación del audio no se interrumpe: cuando recargues el saldo, el botón «Ya recargué: reintentar» reconecta, y el texto de lo que faltó se recupera con «Completar el texto desde el audio».
+- Reconstruir, completar y revisar voces dicen lo mismo con las palabras claras («OpenAI no tiene saldo…») en lugar del error crudo.

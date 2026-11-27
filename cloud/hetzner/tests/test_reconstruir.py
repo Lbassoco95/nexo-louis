@@ -203,5 +203,60 @@ class TraduccionAlEspanol(unittest.TestCase):
         self.assertEqual((f[0]["idioma"], f[1]["idioma"], f[1]["texto"]), ("zh", "", "Entendido, lo revisamos."))
 
 
+class SinSaldoEnOpenAI(unittest.TestCase):
+    """Sin créditos en OpenAI (429): se dice claro y con qué hacer, no un error críptico; el aviso a Polo sale una vez por hora."""
+    MSG = '{ "error": { "message": "You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing", "type": "insufficient_quota" } }'
+
+    def test_reconoce_los_mensajes_de_falta_de_saldo(self):
+        import donna_diariza as DZ
+        for t in (self.MSG, "You exceeded your current quota", "insufficient_quota", "billing_hard_limit_reached", "Add credits to continue"):
+            self.assertTrue(DZ.sin_saldo(t), t)
+        for t in ("Rate limit reached for requests", "bad request", "", None):
+            self.assertFalse(DZ.sin_saldo(t), t)
+
+    def test_la_llamada_a_openai_explica_que_no_hay_saldo(self):
+        import donna_diariza as DZ, urllib.request, urllib.error
+        orig = urllib.request.urlopen
+        def err(code, cuerpo):
+            def f(*a, **k): raise urllib.error.HTTPError("u", code, "x", {}, io.BytesIO(cuerpo.encode()))
+            return f
+        arch = TMP / "a.mp3"; arch.write_bytes(b"x" * 100)
+        try:
+            urllib.request.urlopen = err(429, self.MSG)
+            with self.assertRaises(RuntimeError) as e:
+                DZ.llamar_openai("k", arch)
+            self.assertIn("no tiene saldo", str(e.exception)); self.assertIn("platform.openai.com/settings/organization/billing", str(e.exception))
+            urllib.request.urlopen = err(400, '{"error": "otra cosa"}')
+            with self.assertRaises(RuntimeError) as e2:
+                DZ.llamar_openai("k", arch)
+            self.assertIn("OpenAI respondió 400", str(e2.exception))                                # los demás errores siguen igual
+        finally:
+            urllib.request.urlopen = orig
+
+    def test_reconstruir_sin_saldo_deja_un_mensaje_que_se_entiende(self):
+        limpiar()
+        subir("audsinsaldo01")
+        import donna_diariza as DZ
+        def sin(mp3, refs=None): raise RuntimeError("OpenAI no tiene saldo (error 429: sin créditos). Recarga en https://platform.openai.com/settings/organization/billing y vuelve a intentarlo.")
+        r = R.procesar("audsinsaldo01", "polo", llamar=sin, key="k", trabajo_base=TMP / "w")
+        self.assertEqual(r["estado"], "error")
+        self.assertIn("no tiene saldo", R.estado("audsinsaldo01")["error"])
+
+    def test_el_aviso_de_sin_saldo_sale_una_vez_por_hora(self):
+        import louis_push
+        vistos = []
+        orig = louis_push.notify_async
+        louis_push.notify_async = lambda *a, **k: vistos.append(a[0])
+        g._SALDO_AVISO["ts"] = 0.0
+        try:
+            g._aviso_sin_saldo(); g._aviso_sin_saldo(); g._aviso_sin_saldo()
+            self.assertEqual(len(vistos), 1)
+            g._SALDO_AVISO["ts"] = time.time() - 4000
+            g._aviso_sin_saldo()
+            self.assertEqual(len(vistos), 2)
+        finally:
+            louis_push.notify_async = orig
+
+
 if __name__ == "__main__":
     unittest.main()

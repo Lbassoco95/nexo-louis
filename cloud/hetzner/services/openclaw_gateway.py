@@ -1086,6 +1086,22 @@ def _lanzar_voces(sid: str) -> bool:
     return True
 
 
+_SALDO_AVISO = {"ts": 0.0}
+
+
+def _aviso_sin_saldo():
+    """OpenAI sin saldo: una notificación (como máximo cada hora) para que Polo lo sepa aunque no esté mirando la pantalla de Escuchar."""
+    if time.time() - _SALDO_AVISO["ts"] < 3600:
+        return
+    _SALDO_AVISO["ts"] = time.time()
+    try:
+        import louis_push
+        louis_push.notify_async("⚠️ OpenAI sin saldo", "Escuchar NO está transcribiendo. El audio se sigue guardando. Recarga el saldo en platform.openai.com/settings/organization/billing y reconecta.",
+                                tab="chat", tag="openai-saldo", kind="escuchar")
+    except Exception:
+        log.warning("no pude avisar de que OpenAI no tiene saldo", exc_info=True)
+
+
 _COMP_EN_CURSO: set = set()
 
 
@@ -1961,7 +1977,12 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 up = ws_lite.connect_url(url, {"Authorization": f"Bearer {apikey}"})
             except Exception as e:
-                aviso("error", m="No pude conectar con el traductor en vivo: " + str(e)[:120])
+                import donna_diariza as _dz
+                if _dz.sin_saldo(str(e)) or "429" in str(e):
+                    _aviso_sin_saldo()
+                    aviso("error", m="OpenAI no respondió (sin saldo o límite): " + str(e)[:140], grave="saldo")
+                else:
+                    aviso("error", m="No pude conectar con el traductor en vivo: " + str(e)[:120])
                 return
             escuchar = str(hello.get("modo", "")) == "escuchar"      # solo subtítulos en español: no se reenvía la voz traducida
             to = "es" if escuchar else _LIVE_LANGS.get(str(hello.get("to", "en")), "en")
@@ -2025,7 +2046,12 @@ class Handler(BaseHTTPRequestHandler):
                         elif tp == "error":
                             msg = (ev.get("error") or {}).get("message", "error del traductor")
                             log.warning("live upstream error: %s", msg[:200])
-                            aviso("error", m=msg[:240])
+                            import donna_diariza as _dz
+                            if _dz.sin_saldo(msg) or (ev.get("error") or {}).get("code") == "insufficient_quota":
+                                _aviso_sin_saldo()
+                                aviso("error", m=msg[:240], grave="saldo")                       # la pantalla lo deja fijo (no se borra) y no reconecta en bucle
+                            else:
+                                aviso("error", m=msg[:240])
                         elif tp.endswith(".done") or tp in ("session.created", "session.updated"):
                             if rid and tp.endswith("input_transcript.done"):
                                 rescatar("in")

@@ -95,6 +95,14 @@ def _multipart(campos: list, archivo: Path) -> tuple:
     return bytes(cuerpo), "multipart/form-data; boundary=" + b
 
 
+SALDO_RX = re.compile(r"(?i)no credits remaining|insufficient[_ ]quota|exceeded your current quota|billing[_ ]hard[_ ]limit|add credits")
+
+
+def sin_saldo(texto: str) -> bool:
+    """¿El mensaje de error de OpenAI significa que la cuenta se quedó sin saldo/créditos?"""
+    return bool(SALDO_RX.search(str(texto or "")))
+
+
 def llamar_openai(key: str, archivo: Path, referencias: list = None) -> dict:
     campos = [("model", MODELO), ("response_format", "diarized_json"), ("chunking_strategy", "auto")]
     for nombre, data_url in (referencias or []):
@@ -104,7 +112,10 @@ def llamar_openai(key: str, archivo: Path, referencias: list = None) -> dict:
     try:
         return json.loads(urllib.request.urlopen(req, timeout=1800).read())
     except urllib.error.HTTPError as e:
-        raise RuntimeError("OpenAI respondió %s: %s" % (e.code, e.read()[:300].decode("utf-8", "replace")))
+        cuerpo_err = e.read()[:300].decode("utf-8", "replace")
+        if e.code in (402, 429) and sin_saldo(cuerpo_err):
+            raise RuntimeError("OpenAI no tiene saldo (error %s: sin créditos). Recarga en https://platform.openai.com/settings/organization/billing y vuelve a intentarlo." % e.code)
+        raise RuntimeError("OpenAI respondió %s: %s" % (e.code, cuerpo_err))
 
 
 def leer_segmentos(resp: dict) -> list:

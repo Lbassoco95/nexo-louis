@@ -1746,14 +1746,21 @@ function esConnect(){
     else if(m.t==='fin_silencio'){esFinSilencio(m.seg)}
     else if(m.t==='silencio'){ES.ask=true;{const tx=$('#es-asktx');if(tx){const mi=Math.max(1,Math.round((m.seg||0)/60));tx.textContent='Llevo '+(mi>=60?Math.floor(mi/60)+' h'+(mi%60?' '+mi%60+' min':''):mi+' min')+' sin oír a nadie. ¿Sigo escuchando?'}}esAsk(true);if(navigator.vibrate)navigator.vibrate([120,80,120])}
     else if(m.t==='voz'){ES.ask=false;esAsk(false)}
-    else if(m.t==='error'){esSt('No pude seguir: '+m.m);clog('escuchar: '+m.m)}
+    else if(m.t==='error'){if(m.grave==='saldo')esSaldo(m.m);else esSt('No pude seguir: '+m.m);clog('escuchar: '+m.m)}
     else if(m.t==='end'){clog('escuchar end: '+m.m);esReconnect(m.m)}
   };
   ws.onclose=()=>{if(ES.on&&ES.ws===ws)esReconnect('conexión cerrada')};
   ws.onerror=()=>clog('escuchar ws error');
 }
+function esSaldo(msg){                                      // OpenAI sin saldo: aviso rojo FIJO (no se borra); no se reconecta en bucle y la grabación del audio sigue
+  ES.sinSaldo=true;let a=$('#es-alerta');
+  if(!a){a=document.createElement('div');a.id='es-alerta';a.setAttribute('role','alert');a.style.cssText='margin:8px 12px;padding:12px 14px;border-radius:12px;background:#fee2e2;color:#7f1d1d;border:1px solid #fca5a5;font-weight:600;line-height:1.4';const v=$('#v-es');if(v)v.insertBefore(a,v.firstChild);else document.body.prepend(a)}
+  a.innerHTML='⚠️ OpenAI no tiene saldo: <b>NO se está transcribiendo</b>. La grabación del audio <b>sigue guardándose</b>: cuando recargues el saldo (platform.openai.com/settings/organization/billing) podrás recuperar el texto desde el audio, y lo que se hable en chino saldrá traducido.<div style="font-weight:400;margin-top:6px;font-size:13px">'+esc(String(msg||'').slice(0,160))+'</div><div class="nq"><button id="es-alerta-r">Ya recargué: reintentar</button></div>';
+  esSt('⚠️ Sin saldo en OpenAI: grabando audio, sin transcripción');
+  const r=$('#es-alerta-r');if(r)r.onclick=()=>{ES.sinSaldo=false;ES.retry=0;a.remove();esSt('Reconectando…');esConnect()}
+}
 function esReconnect(why){
-  if(!ES.on||ES.stop)return;
+  if(!ES.on||ES.stop||ES.sinSaldo)return;
   if(ES.retry>=8){esSt('Se perdió la conexión ('+why+'). Tu transcripción sigue aquí; toca «Continuar» para reintentar.');ES.paused=true;ES.pauseAt=Date.now();ES.retry=0;esUI();return}
   ES.retry++;esSt('Reconectando… ('+ES.retry+')');try{ES.ws&&(ES.ws.onclose=null,ES.ws.close())}catch(e){}
   setTimeout(()=>{if(ES.on&&!ES.stop)esConnect()},Math.min(8000,1200*ES.retry));
